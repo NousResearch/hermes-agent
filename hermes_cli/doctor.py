@@ -263,8 +263,11 @@ def run_doctor(args):
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         
-        # Check for common issues
-        content = env_path.read_text()
+        # Check for common issues. Pin encoding to UTF-8 because .env files are
+        # written as UTF-8 everywhere in the codebase, while Path.read_text()
+        # defaults to the system locale — which crashes on non-UTF-8 Windows
+        # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
+        content = env_path.read_text(encoding="utf-8")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:

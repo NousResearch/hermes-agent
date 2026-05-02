@@ -51,6 +51,57 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+class TestDoctorEnvFileEncoding:
+    """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
+    Chinese locale (GBK) because `.env` was read with Path.read_text() which
+    defaults to the system locale encoding, not UTF-8."""
+
+    def test_doctor_reads_env_as_utf8_even_when_locale_is_not_utf8(
+        self, monkeypatch, tmp_path
+    ):
+        import pathlib
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        # Write a UTF-8 .env containing an em dash (U+2014 = e2 80 94). The
+        # 0x94 byte is exactly the one the issue reporter hit: it's invalid
+        # as a GBK trailing byte in this position, so locale-default reads
+        # raise UnicodeDecodeError on Chinese Windows.
+        env_path = hermes_home / ".env"
+        env_path.write_text(
+            "OPENAI_API_KEY=sk-test  # em-dash here — should not crash\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        orig_read_text = pathlib.Path.read_text
+
+        def gbk_like_read_text(self, encoding=None, errors=None, **kwargs):
+            # Simulate a GBK locale: refuse to decode this specific UTF-8
+            # .env unless the caller pins encoding="utf-8".
+            if self == env_path and encoding != "utf-8":
+                raise UnicodeDecodeError(
+                    "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
+                )
+            return orig_read_text(self, encoding=encoding, errors=errors, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", gbk_like_read_text)
+
+        # Short-circuit the expensive tool-availability probe — we only
+        # need doctor to reach the .env read without crashing.
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Run doctor. If the .env read still uses locale encoding, this
+        # raises UnicodeDecodeError and the test fails.
+        with pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+
 class TestDoctorToolAvailabilityOverrides:
     def test_marks_honcho_available_when_configured(self, monkeypatch):
         monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)

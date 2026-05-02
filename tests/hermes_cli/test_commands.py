@@ -102,6 +102,7 @@ class TestResolveCommand:
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
         assert resolve_command("reset").name == "new"
+        assert resolve_command("start").name == "new"
         assert resolve_command("q").name == "queue"
         assert resolve_command("exit").name == "quit"
         assert resolve_command("gateway").name == "platforms"
@@ -327,12 +328,13 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
+        """Aliases (/btw, /bg, /reset, /start, /q) must be registered as standalone
         slashes — this is the whole point of native-slashes parity."""
         names = {n for n, _d, _h in slack_native_slashes()}
         assert "btw" in names
         assert "bg" in names
         assert "reset" in names
+        assert "start" in names
         assert "q" in names
 
     def test_telegram_parity(self):

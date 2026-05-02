@@ -177,13 +177,25 @@ def _build_skill_message(
             supporting.extend(entries)
 
     if not supporting and skill_dir:
+        skip_dirs = {
+            ".git", ".hg", ".svn", "node_modules", ".venv", "venv", ".tox",
+            "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        }
+        max_supporting_files = 200
         for subdir in ("references", "templates", "scripts", "assets"):
             subdir_path = skill_dir / subdir
             if subdir_path.exists():
                 for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
+                    if any(part in skip_dirs for part in f.parts):
+                        continue
+                    if f.is_file() and not f.is_symlink() and f.stat().st_size > 0:
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
+                        if len(supporting) >= max_supporting_files:
+                            supporting.append(f"... (truncated, {max_supporting_files} file limit)")
+                            break
+                if len(supporting) >= max_supporting_files:
+                    break
 
     if supporting and skill_dir:
         try:

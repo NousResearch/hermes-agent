@@ -15,8 +15,12 @@ def get_config_language() -> str:
     Returns:
         Language code: 'zh' for Chinese, 'en' for English (default)
     """
-    # Try to read from config without importing the full config module
+     # Try to read from config without importing the full config module
     config_path = os.path.expanduser("~/.hermes/config.yaml")
+    # Respect HERMES_HOME env var for test isolation
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        config_path = os.path.join(hermes_home, "config.yaml")
     if not os.path.exists(config_path):
         return "en"
     
@@ -153,7 +157,7 @@ def format_zh(text: str, **kwargs) -> str:
         "initializing": "初始化中",
 
         # Home channel
-        "No home channel is set for": "{0} 未设置主频道",
+        "No home channel is set for": "{name} 未设置主频道",
         "A home channel is where Hermes delivers cron job results": "主频道是 Hermes 投递定时任务结果和跨平台消息的地方",
         "Type /sethome to make this chat your home channel,": "输入 /sethome 将此聊天设为主频道，",
         "or ignore to skip.": "或忽略以跳过。",

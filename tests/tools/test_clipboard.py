@@ -256,6 +256,7 @@ class TestIsWsl:
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────
 
+@pytest.mark.skipif(not _is_wsl(), reason="WSL-only: requires powershell.exe via WSL interop")
 class TestWslHasImage:
     def test_clipboard_has_image(self):
         with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
@@ -286,6 +287,7 @@ class TestWslHasImage:
             assert _wsl_has_image() is False
 
 
+@pytest.mark.skipif(not _is_wsl(), reason="WSL-only: requires powershell.exe via WSL interop")
 class TestWslSave:
     def test_successful_extraction(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -549,6 +551,7 @@ class TestLinuxSave:
 
 # ── Native Windows (PowerShell) ─────────────────────────────────────────
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: requires native PowerShell")
 class TestWindowsHasImage:
     def setup_method(self):
         import hermes_cli.clipboard as cb
@@ -593,6 +596,7 @@ class TestWindowsHasImage:
                 assert _windows_has_image() is False
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: requires native PowerShell")
 class TestWindowsSave:
     def setup_method(self):
         import hermes_cli.clipboard as cb

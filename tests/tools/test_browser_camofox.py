@@ -290,7 +290,7 @@ class TestCamofoxVisionConfig:
 
         assert result["success"] is True
         assert result["analysis"] == "Camofox screenshot analysis"
-        assert mock_llm.call_args.kwargs["temperature"] == 0.1
+        assert mock_llm.call_args.kwargs["temperature"] == 1.0
         assert mock_llm.call_args.kwargs["timeout"] == 45.0
 
     @patch("tools.browser_camofox.requests.post")

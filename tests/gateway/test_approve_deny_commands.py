@@ -351,12 +351,16 @@ class TestBlockingApprovalE2E:
         os.environ.pop("HERMES_EXEC_ASK", None)
         os.environ.pop("HERMES_SESSION_KEY", None)
 
-    def test_blocking_approval_approve_once(self):
+    def test_blocking_approval_approve_once(self, monkeypatch):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""
         from tools.approval import (
             register_gateway_notify, unregister_gateway_notify,
             resolve_gateway_approval, check_all_command_guards,
         )
+
+        # Mock smart approval to avoid blocking on auxiliary LLM call
+        from unittest.mock import MagicMock
+        monkeypatch.setattr("tools.approval._smart_approve", MagicMock(return_value="escalate"))
 
         session_key = "e2e-test"
         notified = []
@@ -400,12 +404,16 @@ class TestBlockingApprovalE2E:
         assert result_holder[0]["approved"] is True
         unregister_gateway_notify(session_key)
 
-    def test_blocking_approval_deny(self):
+    def test_blocking_approval_deny(self, monkeypatch):
         """check_all_command_guards returns BLOCKED when denied."""
         from tools.approval import (
             register_gateway_notify, unregister_gateway_notify,
             resolve_gateway_approval, check_all_command_guards,
         )
+
+        # Mock smart approval to avoid blocking on auxiliary LLM call
+        from unittest.mock import MagicMock
+        monkeypatch.setattr("tools.approval._smart_approve", MagicMock(return_value="escalate"))
 
         session_key = "e2e-deny"
         notified = []

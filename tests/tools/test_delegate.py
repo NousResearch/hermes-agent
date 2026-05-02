@@ -901,6 +901,95 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["model"])
         self.assertIsNone(creds["provider"])
 
+    def test_custom_providers_api_key_is_prioritized(self):
+        """Test that when using custom_providers list format, the api_key in config is prioritized."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-pro",
+        }
+        
+        # Mock load_config to return the user's custom_providers format
+        with patch("hermes_cli.config.load_config") as mock_load_config:
+            mock_load_config.return_value = {
+                "custom_providers": [
+                    {
+                        "name": "Finna deepseek-v4-pro",
+                        "base_url": "https://www.finna.com.cn/v1",
+                        "api_key": "app-lUeqweqweqweHiGvBil",  # This should be prioritized
+                        "model": "deepseek-v4-pro",
+                    },
+                    {
+                        "name": "Finna deepseek-v4-flash",
+                        "base_url": "https://www.finna.com.cn/v1",
+                        "api_key": "app-TBqweqwewqeweqwh",
+                        "model": "deepseek-v4-flash",
+                    }
+                ]
+            }
+            
+            # Mock the has_usable_secret (if imported)
+            try:
+                from tools.delegate_tool import has_usable_secret
+                with patch("tools.delegate_tool.has_usable_secret") as mock_has_secret:
+                    mock_has_secret.return_value = True
+                    creds = _resolve_delegation_credentials(cfg, parent)
+            except ImportError:
+                # If has_usable_secret not imported, just test directly
+                creds = _resolve_delegation_credentials(cfg, parent)
+            
+            # Verify the results
+            self.assertEqual(creds["model"], "deepseek-v4-pro")
+            self.assertEqual(creds["provider"], "custom")
+            self.assertEqual(creds["base_url"], "https://www.finna.com.cn/v1")
+            self.assertEqual(creds["api_key"], "app-lUeqweqweqweHiGvBil")
+
+    def test_custom_providers_key_env_fallback(self):
+        """Test that when custom_providers has key_env but no api_key, key_env is used."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-flash",
+        }
+        
+        with patch.dict(os.environ, {"FINNA_API_KEY": "env-key-from-key_env"}, clear=False):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {
+                    "custom_providers": [
+                        {
+                            "name": "Finna deepseek-v4-flash",
+                            "base_url": "https://www.finna.com.cn/v1",
+                            "key_env": "FINNA_API_KEY",
+                            "model": "deepseek-v4-flash",
+                        }
+                    ]
+                }
+                
+                creds = _resolve_delegation_credentials(cfg, parent)
+                
+                self.assertEqual(creds["api_key"], "env-key-from-key_env")
+
+    def test_providers_dict_format_api_key_priority(self):
+        """Test that the new providers dict format also properly prioritizes api_key."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-pro",
+        }
+        
+        with patch("hermes_cli.config.load_config") as mock_load_config:
+            mock_load_config.return_value = {
+                "providers": {
+                    "finna-deepseek-pro": {
+                        "name": "Finna deepseek-v4-pro",
+                        "api": "https://www.finna.com.cn/v1",
+                        "api_key": "app-lUeqweqweqweHiGvBil",
+                        "model": "deepseek-v4-pro",
+                    }
+                }
+            }
+            
+            creds = _resolve_delegation_credentials(cfg, parent)
+            
+            self.assertEqual(creds["api_key"], "app-lUeqweqweqweHiGvBil")
+
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""

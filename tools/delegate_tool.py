@@ -2351,8 +2351,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
         
         # Follow the same priority as runtime_provider.py!
         api_key_candidates = [
-            os.getenv(str(found_provider_data.get("key_env", "") or "").strip(), "").strip(),
             str(found_provider_data.get("api_key", "") or "").strip(),
+            os.getenv(str(found_provider_data.get("key_env", "") or "").strip(), "").strip(),
             configured_api_key or "",
             os.getenv("OPENAI_API_KEY", "").strip(),
             os.getenv("OPENROUTER_API_KEY", "").strip(),

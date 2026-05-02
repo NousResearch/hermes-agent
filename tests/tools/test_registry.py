@@ -311,6 +311,7 @@ class TestBuiltinDiscovery:
             "tools.rl_training_tool",
             "tools.send_message_tool",
             "tools.session_search_tool",
+            "tools.schedule_nudge_tool",
             "tools.skill_manager_tool",
             "tools.skills_tool",
             "tools.terminal_tool",

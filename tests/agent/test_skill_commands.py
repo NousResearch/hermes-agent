@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
+import agent.skill_commands as _sc_mod
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
@@ -583,3 +586,81 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestScanPreservesCacheOnFailure:
+    """scan_skill_commands must keep the previous _skill_commands cache when
+    the scan fails instead of unconditionally clearing it to ``{}``.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/18659
+    """
+
+    def test_outer_exception_preserves_existing_commands(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "cached-skill")
+            first = scan_skill_commands()
+        assert "/cached-skill" in first
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils.iter_skill_index_files",
+                side_effect=OSError("unreadable"),
+            ),
+        ):
+            second = scan_skill_commands()
+
+        assert "/cached-skill" in second
+        assert second == first
+
+    def test_outer_exception_logs_warning(self, tmp_path, caplog):
+        import logging
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skill-a")
+            scan_skill_commands()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils.iter_skill_index_files",
+                side_effect=OSError("boom"),
+            ),
+            caplog.at_level(logging.WARNING, logger="agent.skill_commands"),
+        ):
+            scan_skill_commands()
+
+        assert any("skill scan failed" in r.message for r in caplog.records)
+
+    def test_empty_scan_replaces_cache(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "old-skill")
+            first = scan_skill_commands()
+        assert "/old-skill" in first
+
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with patch("tools.skills_tool.SKILLS_DIR", empty_dir):
+            second = scan_skill_commands()
+
+        assert "/old-skill" not in second
+        assert second == {}
+
+    def test_reload_skills_preserves_commands_on_scan_failure(self, tmp_path):
+        from agent.skill_commands import reload_skills
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "survivor")
+            reload_skills()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils.iter_skill_index_files",
+                side_effect=OSError("disk error"),
+            ),
+        ):
+            result = reload_skills()
+
+        assert "/survivor" not in result.get("removed", [])
+        assert result["total"] >= 1

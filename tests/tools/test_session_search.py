@@ -242,6 +242,21 @@ class TestSessionSearchConcurrency:
 
 
 class TestRecentSessionListing:
+    def test_recent_mode_requests_last_active_ordering(self):
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        result = json.loads(_list_recent_sessions(mock_db, limit=5))
+
+        assert result["success"] is True
+        mock_db.list_sessions_rich.assert_called_once_with(
+            limit=10,
+            exclude_sources=["tool"],
+            order_by_last_active=True,
+        )
+
     def test_current_child_session_excludes_root_lineage_even_when_child_id_is_longer(self):
         from unittest.mock import MagicMock
 

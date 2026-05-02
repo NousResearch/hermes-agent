@@ -248,7 +248,9 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
@@ -533,6 +535,18 @@ class SignalAdapter(BasePlatformAdapter):
                         media_types.append(content_type)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
+
+        # Skip envelopes with no meaningful content (no text, no attachments).
+        # Catches profile key updates, empty messages, and other metadata-only
+        # envelopes that still carry a dataMessage wrapper but have nothing
+        # worth processing. See issue: signal-cli logs "Profile key update" +
+        # Hermes receives msg='' triggering a full agent turn for nothing.
+        if (not text or not text.strip()) and not media_urls:
+            logger.debug(
+                "Signal: skipping contentless envelope from %s (%d attachments)",
+                redact_phone(sender), len(media_urls) if media_urls else 0,
+            )
+            return
 
         # Build session source
         source = self.build_source(

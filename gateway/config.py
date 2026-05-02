@@ -36,11 +36,40 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def _coerce_float(value: Any, default: float) -> float:
+    """Coerce numeric config values, falling back on malformed input."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Coerce integer config values, falling back on malformed input."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
     """Normalize unauthorized DM behavior to a supported value."""
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"pair", "ignore"}:
+            return normalized
+    return default
+
+
+def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
+    """Normalize notice delivery mode to a supported value."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"public", "private"}:
             return normalized
     return default
 
@@ -301,13 +330,13 @@ class StreamingConfig:
         if not data:
             return cls()
         return cls(
-            enabled=data.get("enabled", False),
+            enabled=_coerce_bool(data.get("enabled"), False),
             transport=data.get("transport", "edit"),
-            edit_interval=float(data.get("edit_interval", 1.0)),
-            buffer_threshold=int(data.get("buffer_threshold", 40)),
+            edit_interval=_coerce_float(data.get("edit_interval"), 1.0),
+            buffer_threshold=_coerce_int(data.get("buffer_threshold"), 40),
             cursor=data.get("cursor", " ▉"),
-            fresh_final_after_seconds=float(
-                data.get("fresh_final_after_seconds", 60.0)
+            fresh_final_after_seconds=_coerce_float(
+                data.get("fresh_final_after_seconds"), 60.0
             ),
         )
 
@@ -572,6 +601,17 @@ class GatewayConfig:
                 )
         return self.unauthorized_dm_behavior
 
+    def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
+        """Return the effective notice-delivery mode for a platform."""
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            if platform_cfg and "notice_delivery" in platform_cfg.extra:
+                return _normalize_notice_delivery(
+                    platform_cfg.extra.get("notice_delivery"),
+                    "public",
+                )
+        return "public"
+
 
 def load_gateway_config() -> GatewayConfig:
     """
@@ -686,6 +726,11 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                         platform_cfg.get("unauthorized_dm_behavior"),
                         gw_data.get("unauthorized_dm_behavior", "pair"),
+                    )
+                if "notice_delivery" in platform_cfg:
+                    bridged["notice_delivery"] = _normalize_notice_delivery(
+                        platform_cfg.get("notice_delivery"),
+                        "public",
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
@@ -900,6 +945,12 @@ def load_gateway_config() -> GatewayConfig:
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 
+            # Feishu settings → env vars (env vars take precedence)
+            feishu_cfg = yaml_cfg.get("feishu", {})
+            if isinstance(feishu_cfg, dict):
+                if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
+                    os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
@@ -1051,7 +1102,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.WHATSAPP not in config.platforms:
             config.platforms[Platform.WHATSAPP] = PlatformConfig()
         config.platforms[Platform.WHATSAPP].enabled = True
-    
+    whatsapp_home = os.getenv("WHATSAPP_HOME_CHANNEL")
+    if whatsapp_home and Platform.WHATSAPP in config.platforms:
+        config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(
+            platform=Platform.WHATSAPP,
+            chat_id=whatsapp_home,
+            name=os.getenv("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
+        )
+
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:

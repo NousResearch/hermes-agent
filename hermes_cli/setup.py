@@ -1190,6 +1190,13 @@ def _setup_tts_provider(config: dict):
                     "Falling back to Edge TTS."
                 )
                 selected = "edge"
+        if selected == "xai":
+            print()
+            voice_id = prompt("xAI voice_id (Enter for 'eve', or paste a custom voice ID)")
+            if voice_id and voice_id.strip():
+                config.setdefault("tts", {}).setdefault("xai", {})["voice_id"] = voice_id.strip()
+                print_success(f"xAI voice_id set to: {voice_id.strip()}")
+
 
     elif selected == "minimax":
         existing = get_env_value("MINIMAX_API_KEY")
@@ -1643,7 +1650,11 @@ def setup_terminal_backend(config: dict):
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
     config.setdefault("agent", {})["max_turns"] = 90
-    save_env_value("HERMES_MAX_ITERATIONS", "90")
+    # config.yaml is the authoritative source for max_turns; the gateway
+    # bridges it into HERMES_MAX_ITERATIONS at startup. We no longer write
+    # to .env to avoid the dual-source inconsistency that caused the
+    # 60-vs-500 bug (stale .env entry silently shadowing config.yaml).
+    remove_env_value("HERMES_MAX_ITERATIONS")
 
     config.setdefault("display", {})["tool_progress"] = "all"
 
@@ -1673,9 +1684,10 @@ def setup_agent_settings(config: dict):
     print()
 
     # ── Max Iterations ──
-    current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
-        cfg_get(config, "agent", "max_turns", default=90)
-    )
+    # config.yaml is authoritative; read from there. If a legacy .env
+    # entry is still around (from pre-PR#18413 setups), prefer the
+    # config value so we don't surface a stale number to the user.
+    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info(
@@ -1686,9 +1698,13 @@ def setup_agent_settings(config: dict):
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
-            save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
+            # Write to config.yaml (authoritative) only. Also clean up any
+            # stale .env entry from earlier setup runs — the gateway's
+            # bridge in gateway/run.py now unconditionally derives
+            # HERMES_MAX_ITERATIONS from agent.max_turns at startup.
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
+            remove_env_value("HERMES_MAX_ITERATIONS")
             print_success(f"Max iterations set to {max_iter}")
     except ValueError:
         print_warning("Invalid number, keeping current value")

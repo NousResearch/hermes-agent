@@ -345,6 +345,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
+    "goals": "agent",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
@@ -2345,6 +2346,254 @@ async def delete_cron_job(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
+# ---------------------------------------------------------------------------
+
+
+class ProfileCreate(BaseModel):
+    name: str
+    clone_from_default: bool = False
+
+
+class ProfileRename(BaseModel):
+    new_name: str
+
+
+class ProfileSoulUpdate(BaseModel):
+    content: str
+
+
+def _profile_attr(info, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(info, name)
+    except Exception:
+        return default
+
+
+def _profile_to_dict(info) -> Dict[str, Any]:
+    return {
+        "name": _profile_attr(info, "name", ""),
+        "path": str(_profile_attr(info, "path", "")),
+        "is_default": bool(_profile_attr(info, "is_default", False)),
+        "model": _profile_attr(info, "model"),
+        "provider": _profile_attr(info, "provider"),
+        "has_env": bool(_profile_attr(info, "has_env", False)),
+        "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+    }
+
+
+def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
+    def _safe(callable_, default):
+        try:
+            return callable_()
+        except Exception:
+            return default
+
+    profiles: List[Dict[str, Any]] = []
+    default_home = profiles_mod._get_default_hermes_home()
+    if default_home.is_dir():
+        model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        profiles.append({
+            "name": "default",
+            "path": str(default_home),
+            "is_default": True,
+            "model": model,
+            "provider": provider,
+            "has_env": (default_home / ".env").exists(),
+            "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
+        })
+
+    profiles_root = profiles_mod._get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
+                continue
+            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            profiles.append({
+                "name": entry.name,
+                "path": str(entry),
+                "is_default": False,
+                "model": model,
+                "provider": provider,
+                "has_env": (entry / ".env").exists(),
+                "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
+            })
+
+    return profiles
+
+
+def _resolve_profile_dir(name: str) -> Path:
+    """Validate ``name`` and resolve to its directory or raise an HTTPException."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        profiles_mod.validate_profile_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(name):
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
+    return profiles_mod.get_profile_dir(name)
+
+
+def _profile_setup_command(name: str) -> str:
+    """Return the shell command used to configure a profile in the CLI."""
+    _resolve_profile_dir(name)
+    return "hermes setup" if name == "default" else f"{name} setup"
+
+
+@app.get("/api/profiles")
+async def list_profiles_endpoint():
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+    except Exception:
+        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+
+@app.post("/api/profiles")
+async def create_profile_endpoint(body: ProfileCreate):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.create_profile(
+            name=body.name,
+            clone_from="default" if body.clone_from_default else None,
+            clone_config=body.clone_from_default,
+        )
+        # Match the CLI's profile-create flow: fresh named profiles get the
+        # bundled skills installed. When cloning from default, create_profile()
+        # has already copied the source profile's skills, including any
+        # user-installed skills.
+        if not body.clone_from_default:
+            profiles_mod.seed_profile_skills(path, quiet=True)
+
+        # Match the CLI's profile-create flow: named profiles should get a
+        # wrapper in ~/.local/bin when the alias is safe to create.
+        collision = profiles_mod.check_alias_collision(body.name)
+        if not collision:
+            profiles_mod.create_wrapper_script(body.name)
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "name": body.name, "path": str(path)}
+
+
+@app.get("/api/profiles/{name}/setup-command")
+async def get_profile_setup_command(name: str):
+    return {"command": _profile_setup_command(name)}
+
+
+@app.post("/api/profiles/{name}/open-terminal")
+async def open_profile_terminal_endpoint(name: str):
+    try:
+        command = _profile_setup_command(name)
+
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+        elif sys.platform == "darwin":
+            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+            applescript = (
+                'tell application "Terminal"\n'
+                "activate\n"
+                f'do script "{escaped}"\n'
+                "end tell"
+            )
+            subprocess.Popen(["osascript", "-e", applescript])
+        else:
+            terminal_commands = [
+                ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
+                ("gnome-terminal", ["gnome-terminal", "--", "sh", "-lc", command]),
+                ("konsole", ["konsole", "-e", "sh", "-lc", command]),
+                ("xfce4-terminal", ["xfce4-terminal", "-e", f"sh -lc '{command}'"]),
+                ("mate-terminal", ["mate-terminal", "-e", f"sh -lc '{command}'"]),
+                ("lxterminal", ["lxterminal", "-e", f"sh -lc '{command}'"]),
+                ("tilix", ["tilix", "-e", "sh", "-lc", command]),
+                ("alacritty", ["alacritty", "-e", "sh", "-lc", command]),
+                ("kitty", ["kitty", "sh", "-lc", command]),
+                ("xterm", ["xterm", "-e", "sh", "-lc", command]),
+            ]
+            for executable, popen_args in terminal_commands:
+                if subprocess.call(
+                    ["which", executable],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ) == 0:
+                    subprocess.Popen(popen_args)
+                    break
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No supported terminal emulator found",
+                )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/open-terminal failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "command": command}
+
+
+@app.patch("/api/profiles/{name}")
+async def rename_profile_endpoint(name: str, body: ProfileRename):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.rename_profile(name, body.new_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("PATCH /api/profiles/%s failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "name": body.new_name, "path": str(path)}
+
+
+@app.delete("/api/profiles/{name}")
+async def delete_profile_endpoint(name: str):
+    """Delete a profile. The dashboard collects the user's confirmation in
+    its own dialog before this request, so we always pass ``yes=True`` to
+    skip the CLI's interactive prompt."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.delete_profile(name, yes=True)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("DELETE /api/profiles/%s failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "path": str(path)}
+
+
+@app.get("/api/profiles/{name}/soul")
+async def get_profile_soul(name: str):
+    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    if soul_path.exists():
+        try:
+            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+    return {"content": "", "exists": False}
+
+
+@app.put("/api/profiles/{name}/soul")
+async def update_profile_soul(name: str, body: ProfileSoulUpdate):
+    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    try:
+        soul_path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        _log.exception("PUT /api/profiles/%s/soul failed", name)
+        raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 # ---------------------------------------------------------------------------
 
@@ -2633,6 +2882,25 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
+
+def _is_public_bind() -> bool:
+    """True when bound to all-interfaces (operator used --insecure)."""
+    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+
+
+def _ws_client_is_allowed(ws: "WebSocket") -> bool:
+    """Check if the WebSocket client IP is acceptable.
+
+    Allows loopback always; allows any IP when bound to all-interfaces
+    (--insecure mode, guarded by session token auth).
+    """
+    if _is_public_bind():
+        return True
+    client_host = ws.client.host if ws.client else ""
+    if not client_host:
+        return True
+    return client_host in _LOOPBACK_HOSTS
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -2723,8 +2991,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -2831,8 +3098,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -2864,8 +3130,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -2894,8 +3159,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3369,12 +3633,16 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
-    """Return discovered dashboard plugins."""
+    """Return discovered dashboard plugins (excludes user-hidden ones)."""
     plugins = _get_dashboard_plugins()
-    # Strip internal fields before sending to frontend.
+    # Read user's hidden plugins list from config.
+    config = load_config()
+    hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    # Strip internal fields before sending to frontend and filter out hidden.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
+        if p["name"] not in hidden
     ]
 
 
@@ -3383,6 +3651,268 @@ async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
     return {"ok": True, "count": len(plugins)}
+
+
+class _AgentPluginInstallBody(BaseModel):
+    identifier: str
+    force: bool = False
+    enable: bool = True
+
+
+def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in p.items() if not k.startswith("_")}
+
+
+def _merged_plugins_hub() -> Dict[str, Any]:
+    """Agent discovery + dashboard manifests + optional provider picker metadata."""
+    from hermes_cli.plugins_cmd import (
+        _discover_all_plugins,
+        _get_current_context_engine,
+        _get_current_memory_provider,
+        _discover_context_engines,
+        _discover_memory_providers,
+        _get_disabled_set,
+        _get_enabled_set,
+        _read_manifest as _read_plugin_manifest_at,
+    )
+
+    dashboard_list = _get_dashboard_plugins()
+    dash_by_name = {str(p["name"]): p for p in dashboard_list}
+
+    disabled_set = _get_disabled_set()
+    enabled_set = _get_enabled_set()
+
+    # Read user-hidden plugins from config for the user_hidden field.
+    config = load_config()
+    hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+
+    plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
+    rows: List[Dict[str, Any]] = []
+
+    for name, version, description, source, dir_str in _discover_all_plugins():
+        if name in disabled_set:
+            runtime_status = "disabled"
+        elif name in enabled_set:
+            runtime_status = "enabled"
+        else:
+            runtime_status = "inactive"
+
+        dir_path = Path(dir_str)
+        dm = dash_by_name.get(name)
+        has_dash_manifest = dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
+
+        under_user_tree = False
+        try:
+            dir_path.resolve().relative_to(plugins_root_resolved)
+            under_user_tree = True
+        except ValueError:
+            pass
+
+        can_remove_update = (
+            source in ("user", "git") and under_user_tree and Path(dir_str).is_dir()
+        )
+
+        # Check if this plugin provides tools that require auth
+        auth_required = False
+        auth_command = ""
+        manifest_data = _read_plugin_manifest_at(dir_path)
+        provides_tools = manifest_data.get("provides_tools") or []
+        if provides_tools:
+            try:
+                from tools.registry import registry
+                for tname in provides_tools:
+                    entry = registry.get_entry(tname)
+                    if entry and entry.check_fn and not entry.check_fn():
+                        auth_required = True
+                        auth_command = f"hermes auth {name}"
+                        break
+            except Exception:
+                pass
+
+        rows.append({
+            "name": name,
+            "version": version or "",
+            "description": description or "",
+            "source": source,
+            "runtime_status": runtime_status,
+            "has_dashboard_manifest": has_dash_manifest,
+            "dashboard_manifest": _strip_dashboard_manifest(dm) if dm else None,
+            "path": dir_str,
+            "can_remove": can_remove_update,
+            "can_update_git": can_remove_update and (Path(dir_str) / ".git").exists(),
+            "auth_required": auth_required,
+            "auth_command": auth_command,
+            "user_hidden": name in hidden_plugins,
+        })
+
+    agent_names = {r["name"] for r in rows}
+    orphan_dashboard = [
+        _strip_dashboard_manifest(p)
+        for p in dashboard_list
+        if str(p["name"]) not in agent_names
+    ]
+
+    memory_providers: List[Dict[str, str]] = []
+    try:
+        for n, desc in _discover_memory_providers():
+            memory_providers.append({"name": n, "description": desc})
+    except Exception:
+        memory_providers = []
+
+    context_engines: List[Dict[str, str]] = []
+    try:
+        for n, desc in _discover_context_engines():
+            context_engines.append({"name": n, "description": desc})
+    except Exception:
+        context_engines = []
+
+    return {
+        "plugins": rows,
+        "orphan_dashboard_plugins": orphan_dashboard,
+        "providers": {
+            "memory_provider": _get_current_memory_provider() or "",
+            "memory_options": memory_providers,
+            "context_engine": _get_current_context_engine(),
+            "context_options": context_engines,
+        },
+    }
+
+
+@app.get("/api/dashboard/plugins/hub")
+async def get_plugins_hub(request: Request):
+    """Unified agent plugins + dashboard extension metadata (session protected)."""
+    _require_token(request)
+    try:
+        return _merged_plugins_hub()
+    except Exception as exc:
+        _log.warning("plugins/hub failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
+
+
+@app.post("/api/dashboard/agent-plugins/install")
+async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
+    _require_token(request)
+    from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+    result = dashboard_install_plugin(
+        body.identifier.strip(),
+        force=body.force,
+        enable=body.enable,
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error") or "Install failed.",
+        )
+    _get_dashboard_plugins(force_rescan=True)
+    # Strip internal paths from the response
+    result.pop("after_install_path", None)
+    return result
+
+
+def _validate_plugin_name(name: str) -> str:
+    """Reject path-traversal attempts in plugin name URL parameters."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid plugin name.")
+    return name
+
+
+@app.post("/api/dashboard/agent-plugins/{name}/enable")
+async def post_agent_plugin_enable(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(name, enabled=True)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Enable failed.")
+    return result
+
+
+@app.post("/api/dashboard/agent-plugins/{name}/disable")
+async def post_agent_plugin_disable(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(name, enabled=False)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Disable failed.")
+    return result
+
+
+@app.post("/api/dashboard/agent-plugins/{name}/update")
+async def post_agent_plugin_update(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_update_user_plugin
+
+    result = dashboard_update_user_plugin(name)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
+    _get_dashboard_plugins(force_rescan=True)
+    return result
+
+
+@app.delete("/api/dashboard/agent-plugins/{name}")
+async def delete_agent_plugin(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
+
+    result = dashboard_remove_user_plugin(name)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
+    _get_dashboard_plugins(force_rescan=True)
+    return result
+
+
+class _PluginProvidersPutBody(BaseModel):
+    memory_provider: Optional[str] = None
+    context_engine: Optional[str] = None
+
+
+@app.put("/api/dashboard/plugin-providers")
+async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
+    """Persist memory provider / context engine selection (writes config.yaml)."""
+    _require_token(request)
+    from hermes_cli.plugins_cmd import (
+        _save_context_engine,
+        _save_memory_provider,
+    )
+
+    if body.memory_provider is not None:
+        _save_memory_provider(body.memory_provider)
+    if body.context_engine is not None:
+        _save_context_engine(body.context_engine)
+    return {"ok": True}
+
+
+class _PluginVisibilityBody(BaseModel):
+    hidden: bool
+
+
+@app.post("/api/dashboard/plugins/{name}/visibility")
+async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
+    """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
+    _require_token(request)
+    name = _validate_plugin_name(name)
+
+    config = load_config()
+    if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
+        config["dashboard"] = {}
+    hidden_list: list = config["dashboard"].get("hidden_plugins") or []
+    if not isinstance(hidden_list, list):
+        hidden_list = []
+
+    if body.hidden and name not in hidden_list:
+        hidden_list.append(name)
+    elif not body.hidden and name in hidden_list:
+        hidden_list.remove(name)
+
+    config["dashboard"]["hidden_plugins"] = hidden_list
+    save_config(config)
+    return {"ok": True, "name": name, "hidden": body.hidden}
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")

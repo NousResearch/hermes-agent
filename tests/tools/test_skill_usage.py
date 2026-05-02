@@ -315,6 +315,41 @@ def test_restore_skill_moves_back(skills_home):
     assert get_record("temp-skill")["state"] == "active"
 
 
+def test_restore_skill_finds_nested_archive_subdir(skills_home):
+    """Skills archived under nested category subdirs (e.g.
+    .archive/<category>/<skill>/) — left behind by older archive layouts or
+    external imports — must still be restorable by name."""
+    from tools.skill_usage import restore_skill, get_record
+    skills_dir = skills_home / "skills"
+    nested = skills_dir / ".archive" / "openclaw-imports" / "nested-skill"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: nested-skill\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("nested-skill")
+    assert ok, msg
+    assert (skills_dir / "nested-skill" / "SKILL.md").exists()
+    assert not nested.exists()
+    assert get_record("nested-skill")["state"] == "active"
+
+
+def test_restore_skill_finds_nested_timestamped_prefix(skills_home):
+    """Prefix-match path (timestamped dupes) must also descend into nested
+    archive subdirs, not just .archive/ top-level."""
+    from tools.skill_usage import restore_skill
+    skills_dir = skills_home / "skills"
+    nested = skills_dir / ".archive" / "imports" / "dup-skill-20260101000000"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: dup-skill\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("dup-skill")
+    assert ok, msg
+    assert (skills_dir / "dup-skill" / "SKILL.md").exists()
+
+
 def test_archive_collision_gets_suffix(skills_home):
     from tools.skill_usage import archive_skill
     skills_dir = skills_home / "skills"
@@ -365,6 +400,26 @@ def test_agent_created_report_excludes_bundled_and_hub(skills_home):
     assert "bundled" not in names
     assert "hubbed" not in names
 
+
+def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, monkeypatch):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mine")
+    timestamps = iter([
+        "2026-04-30T10:00:00+00:00",
+        "2026-04-30T11:00:00+00:00",
+        "2026-04-30T12:00:00+00:00",
+        "2026-04-30T13:00:00+00:00",
+    ])
+    monkeypatch.setattr(skill_usage, "_now_iso", lambda: next(timestamps))
+
+    skill_usage.bump_view("mine")
+    skill_usage.bump_patch("mine")
+
+    row = next(r for r in skill_usage.agent_created_report() if r["name"] == "mine")
+    assert row["activity_count"] == 2
+    assert row["last_activity_at"] == "2026-04-30T12:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

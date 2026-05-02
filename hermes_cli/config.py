@@ -400,7 +400,12 @@ DEFAULT_CONFIG = {
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
-        "restart_drain_timeout": 60,
+        #
+        # 180s is calibrated for realistic in-flight agent turns: a typical
+        # coding conversation mid-reasoning runs 60–150s per call, so a 60s
+        # budget routinely interrupted legitimate work on /restart. Raise
+        # further in config.yaml if you run very-long-reasoning models.
+        "restart_drain_timeout": 180,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -457,6 +462,7 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        "disabled_toolsets": [],
     },
     
     "terminal": {
@@ -604,6 +610,24 @@ DEFAULT_CONFIG = {
         "max_bytes": 50_000,
         "max_lines": 2000,
         "max_line_length": 2000,
+    },
+
+    # Tool loop guardrails nudge models when they repeat failed or
+    # non-progressing tool calls. Soft warnings are always-on by default;
+    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    "tool_loop_guardrails": {
+        "warnings_enabled": True,
+        "hard_stop_enabled": False,
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
+        "hard_stop_after": {
+            "exact_failure": 5,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
+        },
     },
 
     "compression": {
@@ -758,6 +782,14 @@ DEFAULT_CONFIG = {
         "still_working_interval": 600,  # Seconds between long-running task heartbeats in the gateway (0/false/off disables)
         "still_working_overrides": {},  # Per-platform interval overrides: {"signal": "off", "telegram": 300}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Auto-delete system-notice replies (e.g. "✨ New session started!",
+        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
+        # that support message deletion (currently Telegram; other platforms
+        # ignore and leave the message in place).  Only affects slash-command
+        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
+        # responses and content messages are never touched.  Default 0
+        # (disabled) preserves prior behavior.
+        "ephemeral_system_ttl": 0,
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
@@ -800,7 +832,7 @@ DEFAULT_CONFIG = {
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
         "xai": {
-            "voice_id": "eve",
+            "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
             "language": "en",
             "sample_rate": 24000,
             "bit_rate": 128000,
@@ -927,7 +959,23 @@ DEFAULT_CONFIG = {
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
-    
+
+    # Goals — persistent cross-turn goals (Ralph-style loop).
+    # After every turn, a lightweight judge call asks the auxiliary model
+    # whether the active /goal is satisfied by the assistant's last
+    # response. If not, Hermes feeds a continuation prompt back into the
+    # same session and keeps working until the goal is done, the turn
+    # budget is exhausted, or the user pauses/clears it. Judge failures
+    # fail OPEN (continue) so a flaky judge never wedges progress — the
+    # turn budget is the real backstop.
+    "goals": {
+        # Max continuation turns before Hermes auto-pauses the goal and
+        # asks the user to /goal resume. Protects against judge false
+        # negatives (goal actually done but judge says continue) and
+        # unbounded model spend on fuzzy / unachievable goals.
+        "max_turns": 20,
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -981,6 +1029,14 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Pre-run backup: before every real curator pass (dry-run is
+        # skipped), snapshot ~/.hermes/skills/ into
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
+        # user can roll back with `hermes curator rollback`.
+        "backup": {
+            "enabled": True,
+            "keep": 5,  # retain last N regular snapshots
+        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -1104,6 +1160,24 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+    },
+
+    # Kanban multi-agent coordination — controls the dispatcher loop that
+    # spawns workers for ready tasks. The dispatcher ticks every N seconds
+    # (default 60), reclaims stale claims, promotes dependency-satisfied
+    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
+    # each claimable ready task. One dispatcher per profile is sufficient;
+    # running more than one on the same kanban.db will race for claims.
+    "kanban": {
+        # Run the dispatcher inside the gateway process. On by default —
+        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
+        # and gateway is the supervisor users already have. Set to false
+        # only if you run the dispatcher as a separate systemd unit or
+        # don't want the gateway to spawn workers.
+        "dispatch_in_gateway": True,
+        # Seconds between dispatcher ticks (idle or not). Lower = snappier
+        # pickup of newly-ready tasks; higher = less SQL pressure.
+        "dispatch_interval_seconds": 60,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2402,7 +2476,17 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-    all_vars = discover_all_skill_config_vars()
+    try:
+        all_vars = discover_all_skill_config_vars()
+    except Exception as e:
+        # A malformed SKILL.md, unreadable external skill dir, or similar
+        # should never break `hermes update`.  Skill-config prompting is a
+        # post-migration nicety, not a blocker.
+        import logging
+        logging.getLogger(__name__).debug(
+            "discover_all_skill_config_vars failed: %s", e
+        )
+        return []
     if not all_vars:
         return []
 

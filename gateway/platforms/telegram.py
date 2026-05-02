@@ -1568,7 +1568,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
+                message_thread_id=self._message_thread_id_for_send(thread_id),
                 **self._link_preview_kwargs(),
             )
 

@@ -51,13 +51,117 @@ export const isCopyShortcut = (
     (isMac && key.ctrl && (key.meta || key.super === true)))
 
 /**
- * Voice recording toggle key (Ctrl+B).
+ * Voice recording toggle key — configurable via ``voice.record_key`` in
+ * ``config.yaml`` (default ``ctrl+b``).
  *
- * Documented as "Ctrl+B" everywhere: tips.py, config.yaml's voice.record_key
- * default, and the Python CLI prompt_toolkit handler. We accept raw Ctrl+B on
- * every platform so the TUI matches those docs. On macOS we additionally
- * accept Cmd+B (the platform action modifier) so existing macOS muscle memory
- * keeps working.
+ * Documented in tips.py, the Python CLI prompt_toolkit handler, and the
+ * config.yaml default. The TUI honours the same config knob (#18994);
+ * when ``voice.record_key`` is e.g. ``ctrl+o`` the TUI binds Ctrl+O.
+ *
+ * On macOS we additionally accept the platform action modifier (Cmd) for
+ * the configured letter so existing macOS muscle memory keeps working
+ * alongside the documented Ctrl+<letter> shortcut.
  */
-export const isVoiceToggleKey = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
-  (key.ctrl || isActionMod(key)) && ch.toLowerCase() === 'b'
+export type VoiceRecordKeyMod = 'alt' | 'ctrl' | 'meta' | 'super'
+
+export interface ParsedVoiceRecordKey {
+  ch: string
+  mod: VoiceRecordKeyMod
+  raw: string
+}
+
+export const DEFAULT_VOICE_RECORD_KEY: ParsedVoiceRecordKey = {
+  ch: 'b',
+  mod: 'ctrl',
+  raw: 'ctrl+b'
+}
+
+const _MOD_ALIASES: Record<string, VoiceRecordKeyMod> = {
+  alt: 'alt',
+  cmd: 'meta',
+  command: 'meta',
+  control: 'ctrl',
+  ctrl: 'ctrl',
+  meta: 'meta',
+  option: 'alt',
+  opt: 'alt',
+  super: 'super',
+  win: 'super',
+  windows: 'super'
+}
+
+/**
+ * Parse a config-string voice record key like ``ctrl+b`` / ``alt+r`` /
+ * ``cmd+space`` into ``{mod, ch}``. Falls back to the documented Ctrl+B
+ * default for empty / malformed input so a typo never silently disables
+ * the shortcut.
+ */
+export const parseVoiceRecordKey = (raw: string): ParsedVoiceRecordKey => {
+  const lower = (raw ?? '').trim().toLowerCase()
+
+  if (!lower) {
+    return DEFAULT_VOICE_RECORD_KEY
+  }
+
+  const parts = lower.split('+').map(p => p.trim()).filter(Boolean)
+
+  if (!parts.length) {
+    return DEFAULT_VOICE_RECORD_KEY
+  }
+
+  const ch = parts[parts.length - 1]
+  const modCandidates = parts.slice(0, -1)
+
+  let mod: VoiceRecordKeyMod = 'ctrl'
+
+  for (const cand of modCandidates) {
+    const norm = _MOD_ALIASES[cand]
+
+    if (norm) {
+      mod = norm
+      break
+    }
+  }
+
+  // Reject multi-character chunks (e.g. "ctrl+space" → ch="space" — we
+  // only support single-character bindings, matching the Python side's
+  // prompt_toolkit binding shape).
+  if (ch.length !== 1) {
+    return DEFAULT_VOICE_RECORD_KEY
+  }
+
+  return { ch, mod, raw: lower }
+}
+
+/** Render a parsed key back as ``Ctrl+B`` for status text. */
+export const formatVoiceRecordKey = (parsed: ParsedVoiceRecordKey): string => {
+  const modLabel = parsed.mod === 'meta' ? 'Cmd' : parsed.mod[0].toUpperCase() + parsed.mod.slice(1)
+
+  return `${modLabel}+${parsed.ch.toUpperCase()}`
+}
+
+export const isVoiceToggleKey = (
+  key: { alt?: boolean; ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  configured: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
+): boolean => {
+  if (ch.toLowerCase() !== configured.ch) {
+    return false
+  }
+
+  switch (configured.mod) {
+    case 'alt':
+      // Most terminals surface Alt as either ``alt`` or ``meta``; accept
+      // both so the binding works across xterm-style and kitty-style
+      // protocols.
+      return key.alt === true || key.meta
+    case 'ctrl':
+      // Doc default — also accept the platform action modifier so macOS
+      // Cmd+<letter> muscle memory keeps working alongside Ctrl+<letter>.
+      return key.ctrl || isActionMod(key)
+    case 'meta':
+      return key.meta || key.super === true
+    case 'super':
+      return key.super === true
+  }
+}

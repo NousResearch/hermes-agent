@@ -7,6 +7,11 @@ import type {
   ConfigMtimeResponse,
   ReloadMcpResponse
 } from '../gatewayTypes.js'
+import {
+  DEFAULT_VOICE_RECORD_KEY,
+  parseVoiceRecordKey,
+  type ParsedVoiceRecordKey
+} from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 import {
@@ -89,10 +94,23 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
   }
 }
 
-export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
+const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceRecordKey => {
+  const raw = cfg?.config?.voice?.record_key
+
+  return raw ? parseVoiceRecordKey(raw) : DEFAULT_VOICE_RECORD_KEY
+}
+
+export const applyDisplay = (
+  cfg: ConfigFullResponse | null,
+  setBell: (v: boolean) => void,
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+) => {
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
+  if (setVoiceRecordKey) {
+    setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
+  }
   patchUiState({
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
@@ -109,7 +127,13 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
   })
 }
 
-export function useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid }: UseConfigSyncOptions) {
+export function useConfigSync({
+  gw,
+  setBellOnComplete,
+  setVoiceEnabled,
+  setVoiceRecordKey,
+  sid
+}: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
 
   useEffect(() => {
@@ -125,8 +149,10 @@ export function useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid }: U
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
     })
-    quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r => applyDisplay(r, setBellOnComplete))
-  }, [gw, setBellOnComplete, setVoiceEnabled, sid])
+    quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r =>
+      applyDisplay(r, setBellOnComplete, setVoiceRecordKey)
+    )
+  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -154,17 +180,20 @@ export function useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid }: U
         quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
           r => r && turnController.pushActivity('MCP reloaded after config change')
         )
-        quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r => applyDisplay(r, setBellOnComplete))
+        quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r =>
+          applyDisplay(r, setBellOnComplete, setVoiceRecordKey)
+        )
       })
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-  }, [gw, setBellOnComplete, sid])
+  }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
   setVoiceEnabled: (v: boolean) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string
 }

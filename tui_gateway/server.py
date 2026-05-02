@@ -5120,8 +5120,15 @@ def _(rid, params: dict) -> dict:
         # Mirror CLI's _show_voice_status: include STT/TTS provider
         # availability so the user can tell at a glance *why* voice mode
         # isn't working ("STT provider: MISSING ..." is the common case).
+        # ``record_key`` mirrors the configured ``voice.record_key`` so the
+        # TUI can both bind it (frontend ``isVoiceToggleKey``) and display
+        # it in /voice status — previously the TUI hardcoded Ctrl+B and
+        # ignored the config (#18994).
         payload: dict = {
             "enabled": _voice_mode_enabled(),
+            "record_key": str(
+                (_load_cfg().get("voice") or {}).get("record_key") or "ctrl+b"
+            ),
             "tts": _voice_tts_enabled(),
         }
         try:
@@ -5158,7 +5165,16 @@ def _(rid, params: dict) -> dict:
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
 
-        return _ok(rid, {"enabled": enabled, "tts": _voice_tts_enabled()})
+        return _ok(
+            rid,
+            {
+                "enabled": enabled,
+                "record_key": str(
+                    (_load_cfg().get("voice") or {}).get("record_key") or "ctrl+b"
+                ),
+                "tts": _voice_tts_enabled(),
+            },
+        )
 
     if action == "tts":
         if not _voice_mode_enabled():

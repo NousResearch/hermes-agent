@@ -439,7 +439,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isVoiceToggleKey(key, ch)) {
+    if (isVoiceToggleKey(key, ch, voice.recordKey)) {
       return voiceRecordToggle()
     }
 

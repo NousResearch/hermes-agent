@@ -75,8 +75,12 @@ export interface ConfigDisplayConfig {
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 
+export interface ConfigVoiceConfig {
+  record_key?: string
+}
+
 export interface ConfigFullResponse {
-  config?: { display?: ConfigDisplayConfig }
+  config?: { display?: ConfigDisplayConfig; voice?: ConfigVoiceConfig }
 }
 
 export interface ConfigMtimeResponse {
@@ -279,6 +283,7 @@ export interface VoiceToggleResponse {
   available?: boolean
   details?: string
   enabled?: boolean
+  record_key?: string
   stt_available?: boolean
   tts?: boolean
 }

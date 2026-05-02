@@ -10,6 +10,7 @@ import type {
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
@@ -221,6 +222,12 @@ export const sessionCommands: SlashCommand[] = [
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
 
+          // Render the configured record key (config.yaml ``voice.record_key``)
+          // instead of hardcoded "Ctrl+B" — the gateway response carries the
+          // current value so /voice status and /voice on stay in sync with
+          // both the CLI and the TUI's actual binding (#18994).
+          const recordKeyLabel = formatVoiceRecordKey(parseVoiceRecordKey(r.record_key ?? 'ctrl+b'))
+
           // Match CLI's _show_voice_status / _enable_voice_mode /
           // _toggle_voice_tts output shape so users don't have to learn
           // two vocabularies.
@@ -230,11 +237,11 @@ export const sessionCommands: SlashCommand[] = [
             ctx.transcript.sys('Voice Mode Status')
             ctx.transcript.sys(`  Mode:       ${mode}`)
             ctx.transcript.sys(`  TTS:        ${tts}`)
-            ctx.transcript.sys('  Record key: Ctrl+B')
+            ctx.transcript.sys(`  Record key: ${recordKeyLabel}`)
 
             // CLI's "Requirements:" block — surfaces STT/audio setup issues
             // so the user sees "STT provider: MISSING ..." instead of
-            // silently failing on every Ctrl+B press.
+            // silently failing on every record-key press.
             if (r.details) {
               ctx.transcript.sys('')
               ctx.transcript.sys('  Requirements:')
@@ -259,7 +266,7 @@ export const sessionCommands: SlashCommand[] = [
           if (r.enabled) {
             const tts = r.tts ? ' (TTS enabled)' : ''
             ctx.transcript.sys(`Voice mode enabled${tts}`)
-            ctx.transcript.sys('  Ctrl+B to start/stop recording')
+            ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
             ctx.transcript.sys('  /voice tts  to toggle speech output')
             ctx.transcript.sys('  /voice off  to disable voice mode')
           } else {

@@ -1,8 +1,14 @@
 name: Build and Push Ted Agent Image
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - "Tests"
+      - "Nix"
+      - "Supply Chain Audit"
+      - "Contributor Attribution Check"
     branches: [main]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -11,9 +17,16 @@ permissions:
 
 jobs:
   build:
+    # Only run if all required workflows succeeded
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -31,8 +44,10 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=sha
+            type=sha,prefix=sha-,format=short
             type=raw,value=latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Build and push
         uses: docker/build-push-action@v5

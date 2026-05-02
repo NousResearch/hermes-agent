@@ -587,6 +587,63 @@ SESSION_SEARCH_SCHEMA = {
 }
 
 
+# ── Hermes 2.8: Task-centric search ──
+
+def search_by_task_id(
+    task_id: str,
+    db=None,
+) -> str:
+    """Search events.db for all events related to a task_id.
+
+    Returns the event chain and replay summary if events exist.
+    """
+    try:
+        from agent.session_event_log import EventLog
+        event_log = EventLog()
+        try:
+            summary = event_log.build_replay_summary(task_id)
+            if "error" in summary:
+                return json.dumps({"success": False, "error": summary["error"]}, ensure_ascii=False)
+            return json.dumps({"success": True, "replay_summary": summary}, ensure_ascii=False)
+        finally:
+            event_log.close()
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+
+def search_replay_chain(
+    task_id: str,
+    db=None,
+) -> str:
+    """Return the full chronological event chain for a task.
+
+    Returns each event with timestamp, type, and payload for replay/debugging.
+    """
+    try:
+        from agent.session_event_log import EventLog
+        event_log = EventLog()
+        try:
+            events = event_log.get_events_for_task(task_id)
+            chain = [
+                {
+                    "timestamp": e["timestamp"],
+                    "event_type": e["type"],
+                    "payload": e.get("payload", {}),
+                }
+                for e in events
+            ]
+            return json.dumps({
+                "success": True,
+                "task_id": task_id,
+                "event_count": len(chain),
+                "chain": chain,
+            }, ensure_ascii=False)
+        finally:
+            event_log.close()
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 

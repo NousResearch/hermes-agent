@@ -37,6 +37,18 @@ EVENT_EXECUTION_COMPLETED = "execution_completed"
 EVENT_EXECUTION_FAILED = "execution_failed"
 EVENT_ARTIFACT_CREATED = "artifact_created"
 
+# ── Event types (Sprint 5: Decision Log) ──
+EVENT_INTENT_INFERRED = "intent_inferred"
+EVENT_TASK_CLASSIFIED = "task_classified"
+EVENT_DISPATCH_DECISION = "dispatch_decision"
+EVENT_AGENT_CALLED = "agent_called"
+EVENT_AGENT_RESULT = "agent_result"
+EVENT_AGENT_RESULT_ACCEPTED = "agent_result_accepted"
+EVENT_AGENT_RESULT_REVISED = "agent_result_revised"
+EVENT_QUALITY_CHECK = "quality_check"
+EVENT_USER_FEEDBACK = "user_feedback"
+EVENT_MEMORY_CANDIDATE = "memory_candidate"
+
 SPRINT_1_EVENT_TYPES = frozenset([
     EVENT_TASK_CREATED,
     EVENT_TASK_UPDATED,
@@ -362,3 +374,192 @@ class EventLog:
             }
             for r in rows
         ]
+
+    # ── Sprint 5: Replay summary ──
+
+    def build_replay_summary(self, task_id: str) -> Dict[str, Any]:
+        """Generate a task replay summary from the event log chain."""
+        events = self.get_events_for_task(task_id)
+        if not events:
+            return {"task_id": task_id, "error": "No events found"}
+
+        chain = [e["type"] for e in events]
+
+        # Extract key decision events
+        key_decisions = []
+        for e in events:
+            etype = e["type"]
+            payload = e.get("payload", {})
+            if etype == EVENT_DISPATCH_DECISION:
+                key_decisions.append({
+                    "decision": "dispatch",
+                    "mode": payload.get("mode", ""),
+                    "agents": payload.get("agents", []),
+                    "reason": payload.get("reason", ""),
+                })
+            elif etype == EVENT_AGENT_RESULT_ACCEPTED:
+                key_decisions.append({
+                    "decision": "agent_result_accepted",
+                    "agent": payload.get("agent_name", ""),
+                })
+            elif etype == EVENT_AGENT_RESULT_REVISED:
+                key_decisions.append({
+                    "decision": "agent_result_revised",
+                    "agent": payload.get("agent_name", ""),
+                    "revision": payload.get("revision", ""),
+                })
+            elif etype == EVENT_QUALITY_CHECK:
+                key_decisions.append({
+                    "decision": "quality_check",
+                    "score": payload.get("quality_score", 0),
+                    "passed": payload.get("passed", False),
+                })
+
+        # Determine result status
+        status_events = [e for e in events if e["type"] == EVENT_STATUS_CHANGED]
+        final_status = "unknown"
+        if status_events:
+            final_status = status_events[-1].get("payload", {}).get("to_status", "unknown")
+
+        quality_passed = any(
+            e["type"] == EVENT_QUALITY_CHECK
+            and e.get("payload", {}).get("passed")
+            for e in events
+        )
+
+        # Find user request from task_created event
+        user_request = ""
+        for e in events:
+            if e["type"] == EVENT_TASK_CREATED:
+                user_request = e.get("payload", {}).get("raw_user_request_preview", "")
+                break
+
+        return {
+            "task_id": task_id,
+            "user_request": user_request,
+            "task_type": self._find_payload(events, EVENT_TASK_CREATED, "task_category", ""),
+            "dispatch_decision": self._find_payload(events, EVENT_DISPATCH_DECISION, "mode", "self_execute"),
+            "dispatch_reason": self._find_payload(events, EVENT_DISPATCH_DECISION, "reason", ""),
+            "quality_gate_passed": quality_passed,
+            "result_status": final_status,
+            "key_decisions": key_decisions,
+            "events_chain": chain,
+            "event_count": len(events),
+        }
+
+    @staticmethod
+    def _find_payload(
+        events: List[Dict[str, Any]], event_type: str, key: str, default: Any
+    ) -> Any:
+        for e in events:
+            if e["type"] == event_type:
+                return e.get("payload", {}).get(key, default)
+        return default
+
+    # ── Sprint 5: Convenience factories ──
+
+    def log_intent_inferred(
+        self, task_id: str, session_id: str,
+        inferred_intent: str, task_category: str,
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_INTENT_INFERRED, {
+            "inferred_intent": inferred_intent,
+            "task_category": task_category,
+        })
+
+    def log_task_classified(
+        self, task_id: str, session_id: str,
+        task_category: str, classification_reason: str = "",
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_TASK_CLASSIFIED, {
+            "task_category": task_category,
+            "classification_reason": classification_reason,
+        })
+
+    def log_dispatch_decision(
+        self, task_id: str, session_id: str,
+        mode: str, agents: List[str], reason: str,
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_DISPATCH_DECISION, {
+            "mode": mode,
+            "agents": agents,
+            "reason": reason,
+        })
+
+    def log_agent_called(
+        self, task_id: str, session_id: str,
+        agent_name: str, prompt_preview: str = "",
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_AGENT_CALLED, {
+            "agent_name": agent_name,
+            "prompt_preview": prompt_preview[:200],
+        })
+
+    def log_agent_result(
+        self, task_id: str, session_id: str,
+        agent_name: str, result_summary: str = "", success: bool = True,
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_AGENT_RESULT, {
+            "agent_name": agent_name,
+            "result_summary": result_summary[:300],
+            "success": success,
+        })
+
+    def log_agent_result_accepted(
+        self, task_id: str, session_id: str, agent_name: str,
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_AGENT_RESULT_ACCEPTED, {
+            "agent_name": agent_name,
+        })
+
+    def log_agent_result_revised(
+        self, task_id: str, session_id: str,
+        agent_name: str, revision: str = "",
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_AGENT_RESULT_REVISED, {
+            "agent_name": agent_name,
+            "revision": revision,
+        })
+
+    def log_quality_check(
+        self, task_id: str, session_id: str,
+        quality_score: int, passed: bool, risks: List[str] = None,
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_QUALITY_CHECK, {
+            "quality_score": quality_score,
+            "passed": passed,
+            "risks": risks or [],
+        })
+
+    def log_user_feedback(
+        self, task_id: str, session_id: str,
+        feedback: str = "", sentiment: str = "",
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_USER_FEEDBACK, {
+            "feedback": feedback[:200],
+            "sentiment": sentiment,
+        })
+
+    def log_memory_candidate(
+        self, task_id: str, session_id: str,
+        candidate_type: str, content_preview: str = "",
+    ) -> SessionEvent:
+        return self._log_event(task_id, session_id, EVENT_MEMORY_CANDIDATE, {
+            "candidate_type": candidate_type,
+            "content_preview": content_preview[:200],
+        })
+
+    def _log_event(
+        self, task_id: str, session_id: str, event_type: str, payload: Dict[str, Any],
+    ) -> SessionEvent:
+        event = SessionEvent(
+            event_id=str(uuid.uuid4()),
+            session_id=session_id,
+            task_id=task_id,
+            type=event_type,
+            timestamp=time.time(),
+            source="system",
+            payload=payload,
+        )
+        self.write_event(event)
+        return event

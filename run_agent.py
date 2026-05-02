@@ -10929,6 +10929,13 @@ class AIAgent:
                     session_id=self.session_id,
                     updated_fields=["execution_plan", "routing_basis"],
                 )
+                self._event_log.log_dispatch_decision(
+                    task_id=tc.task_id,
+                    session_id=self.session_id,
+                    mode=routing.mode,
+                    agents=routing.agents,
+                    reason=routing.reason,
+                )
             except Exception:
                 logger.warning("Agent routing failed", exc_info=True)
 
@@ -14358,6 +14365,13 @@ class AIAgent:
                     task_id=tc.task_id,
                     session_id=self.session_id,
                     updated_fields=["review_result"],
+                )
+                self._event_log.log_quality_check(
+                    task_id=tc.task_id,
+                    session_id=self.session_id,
+                    quality_score=review_result.quality_score,
+                    passed=not ReviewGate.is_blocked(review_result),
+                    risks=review_result.risks,
                 )
 
                 if ReviewGate.is_blocked(review_result):

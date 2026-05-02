@@ -6,13 +6,45 @@ from pathlib import Path
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
-def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
+def test_user_env_fills_missing_shell_values(tmp_path, monkeypatch):
+    """Default (12-factor): .env fills missing vars, does NOT override existing."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("OPENAI_BASE_URL=https://new.example/v1\n", encoding="utf-8")
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
+
+
+def test_default_does_not_override_shell_values(tmp_path, monkeypatch):
+    """Default (12-factor): shell env wins over .env file (override=False)."""
     home = tmp_path / "hermes"
     home.mkdir()
     env_file = home / ".env"
     env_file.write_text("OPENAI_BASE_URL=https://new.example/v1\n", encoding="utf-8")
 
     monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("OPENAI_BASE_URL") == "https://old.example/v1"
+
+
+def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
+    """Opt-in override: HERMES_DOTENV_OVERRIDE=1 restores legacy .env-over-shell behavior."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("OPENAI_BASE_URL=https://new.example/v1\n", encoding="utf-8")
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
+    monkeypatch.setenv("HERMES_DOTENV_OVERRIDE", "1")
 
     loaded = load_hermes_dotenv(hermes_home=home)
 
@@ -60,6 +92,7 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     user_env.write_text("OPENAI_BASE_URL=https://user.example/v1\n", encoding="utf-8")
     project_env.write_text("OPENAI_BASE_URL=https://project.example/v1\nOPENAI_API_KEY=project-key\n", encoding="utf-8")
 
+    monkeypatch.setenv("HERMES_DOTENV_OVERRIDE", "1")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -79,6 +112,7 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     )
 
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_DOTENV_OVERRIDE", "1")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
 

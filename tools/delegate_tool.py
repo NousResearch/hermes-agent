@@ -2351,8 +2351,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
         
         # Follow the same priority as runtime_provider.py!
         api_key_candidates = [
-            str(found_provider_data.get("api_key", "") or "").strip(),
             os.getenv(str(found_provider_data.get("key_env", "") or "").strip(), "").strip(),
+            str(found_provider_data.get("api_key", "") or "").strip(),
             configured_api_key or "",
             os.getenv("OPENAI_API_KEY", "").strip(),
             os.getenv("OPENROUTER_API_KEY", "").strip(),
@@ -2362,7 +2362,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
         if has_usable_secret:
             api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
         else:
-            # Fallback to just checking for non-empty
+            # Fall back to just checking for non-empty
             api_key = next((candidate for candidate in api_key_candidates if candidate), "")
 
         if not api_key:
@@ -2445,7 +2445,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
                 f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
             ) from exc
 
-        api_key = configured_api_key or runtime.get("api_key", "")
+        api_key = runtime.get("api_key", "") or configured_api_key
         if not api_key:
             raise ValueError(
                 f"Delegation provider '{effective_provider}' resolved but has no API key. "

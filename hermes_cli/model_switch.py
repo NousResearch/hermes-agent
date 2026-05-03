@@ -20,9 +20,12 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
@@ -500,8 +503,8 @@ def get_authenticated_provider_slugs(
 ) -> list[str]:
     """Return slugs of providers that have credentials.
 
-    Uses ``list_authenticated_providers()`` which is backed by the models.dev
-    in-memory cache (1 hr TTL) — no extra network cost.
+    Uses ``list_authenticated_providers()`` which is backed by the authenticated
+    picker cache when available — no extra provider endpoint cost.
     """
     try:
         providers = list_authenticated_providers(
@@ -1009,6 +1012,112 @@ def _merge_model_lists(primary: list[str] | None, fallback: list[str] | None) ->
     return out
 
 
+def _picker_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "authenticated_provider_models.json"
+
+
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _read_authenticated_provider_cache() -> list[dict[str, Any]]:
+    try:
+        with open(_picker_cache_path(), encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return []
+    rows = payload.get("providers")
+    if not isinstance(rows, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        models = [str(m).strip() for m in row.get("models") or [] if str(m).strip()]
+        out.append({
+            "slug": slug,
+            "name": str(row.get("name") or slug),
+            "source": str(row.get("source") or "cache"),
+            "is_user_defined": bool(row.get("is_user_defined")),
+            "api_url": str(row.get("api_url") or ""),
+            "models": models,
+            "total_models": _safe_int(row.get("total_models"), len(models)),
+        })
+    return out
+
+
+def _write_authenticated_provider_cache(rows: list[dict[str, Any]]) -> None:
+    clean_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        models = [str(m).strip() for m in row.get("models") or [] if str(m).strip()]
+        clean_rows.append({
+            "slug": slug,
+            "name": str(row.get("name") or slug),
+            "source": str(row.get("source") or ""),
+            "is_user_defined": bool(row.get("is_user_defined")),
+            "api_url": str(row.get("api_url") or ""),
+            "models": models,
+            "total_models": _safe_int(row.get("total_models"), len(models)),
+        })
+
+    path = _picker_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    payload = {
+        "version": 1,
+        "updated_at": int(time.time()),
+        "providers": clean_rows,
+    }
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    tmp_path.replace(path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _shape_provider_rows(
+    rows: list[dict[str, Any]],
+    *,
+    current_provider: str = "",
+    max_models: int = 8,
+) -> list[dict[str, Any]]:
+    shaped: list[dict[str, Any]] = []
+    current = (current_provider or "").strip().lower()
+    limit = max(0, int(max_models))
+    for row in rows:
+        models = [str(m).strip() for m in row.get("models") or [] if str(m).strip()]
+        slug = str(row.get("slug") or "").strip()
+        total = _safe_int(row.get("total_models"), len(models))
+        out = dict(row)
+        out["slug"] = slug
+        out["name"] = str(row.get("name") or slug)
+        out["models"] = models[:limit]
+        out["total_models"] = total
+        out["is_current"] = bool(slug and slug.lower() == current)
+        shaped.append(out)
+    shaped.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+    return shaped
+
+
 def _live_catalog_for_provider(
     provider_id: str,
     *,
@@ -1016,12 +1125,15 @@ def _live_catalog_for_provider(
     pdata: dict[str, Any] | None = None,
     pconfig: Any = None,
     overlay: Any = None,
+    live_refresh: bool = False,
 ) -> list[str]:
     """Return the fullest available model list for a configured provider."""
 
     from hermes_cli.models import fetch_api_models, provider_model_ids
 
     normalized = provider_id.strip().lower()
+    if not live_refresh:
+        return list(fallback)
 
     # Providers with bespoke live discovery.
     if normalized in {
@@ -1109,13 +1221,16 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    live_refresh: bool = False,
+    cache_result: bool = False,
 ) -> List[dict]:
     """Detect configured providers and list the fullest available model catalogs.
 
-    For providers with credentials, Hermes prefers the provider's live
-    ``/models`` catalog and unions it with the curated/models.dev fallback. This
-    keeps the picker complete for local ``~/.zshenv`` providers while preserving
-    offline behavior.
+    The default path is startup-safe: it uses the authenticated picker cache
+    written by ``hermes model --refresh`` and otherwise falls back to static
+    catalogs without probing provider endpoints.  Pass ``live_refresh=True`` to
+    query provider ``/models`` endpoints and ``cache_result=True`` to publish
+    those live rows for later fast startup.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
@@ -1140,6 +1255,15 @@ def list_authenticated_providers(
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
     )
     from hermes_cli.providers import HERMES_OVERLAYS
+
+    if not live_refresh:
+        cached_rows = _read_authenticated_provider_cache()
+        if cached_rows:
+            return _shape_provider_rows(
+                cached_rows,
+                current_provider=current_provider,
+                max_models=max_models,
+            )
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -1269,6 +1393,7 @@ def list_authenticated_providers(
             pdata=pdata,
             pconfig=pconfig,
             overlay=HERMES_OVERLAYS.get(hermes_id) or HERMES_OVERLAYS.get(mdev_id),
+            live_refresh=live_refresh,
         )
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -1379,6 +1504,7 @@ def list_authenticated_providers(
                 fallback=provider_model_ids(hermes_slug),
                 pconfig=_auth_registry.get(hermes_slug) or _auth_registry.get(pid),
                 overlay=overlay,
+                live_refresh=live_refresh,
             )
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
@@ -1401,6 +1527,7 @@ def list_authenticated_providers(
                 fallback=fallback_ids,
                 pconfig=_auth_registry.get(hermes_slug) or _auth_registry.get(pid),
                 overlay=overlay,
+                live_refresh=live_refresh,
             )
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -1487,6 +1614,7 @@ def list_authenticated_providers(
                 fallback=curated.get(_cp.slug, []),
                 pconfig=_cp_config,
                 overlay=HERMES_OVERLAYS.get(_cp.slug),
+                live_refresh=live_refresh,
             )
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
@@ -1571,7 +1699,7 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in ("false", "no", "0")
-            if api_url and api_key and discover:
+            if live_refresh and api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1745,5 +1873,11 @@ def list_authenticated_providers(
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+
+    if cache_result:
+        try:
+            _write_authenticated_provider_cache(results)
+        except Exception:
+            logger.debug("authenticated provider cache write failed", exc_info=True)
 
     return results

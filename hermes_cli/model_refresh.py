@@ -241,8 +241,10 @@ def _snapshot_authenticated_picker() -> dict[str, Any]:
         current_base_url=str(cfg.get("base_url") or ""),
         user_providers=user_providers,
         custom_providers=get_compatible_custom_providers(cfg),
-        max_models=3,
+        max_models=10000,
         current_model=str(cfg.get("model") or ""),
+        live_refresh=True,
+        cache_result=True,
     )
     providers = [
         {

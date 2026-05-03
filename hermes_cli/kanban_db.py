@@ -62,15 +62,24 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+    """Return the path to ``kanban.db`` under the default HERMES_HOME.
+    
+    Profile-agnostic on purpose: multiple profiles on the same machine all
+    see the same board, which IS the coordination primitive for multi-agent
+    orchestrator → worker workflows.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "kanban.db"
 
 
 def workspaces_root() -> Path:
-    """Return the directory under which ``scratch`` workspaces are created."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "workspaces"
+    """Return the directory under which ``scratch`` workspaces are created.
+    
+    Profile-agnostic: all profiles share the same workspace root so that
+    orchestrator-created task directories are visible to worker profiles.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "kanban" / "workspaces"
 
 
 # ---------------------------------------------------------------------------

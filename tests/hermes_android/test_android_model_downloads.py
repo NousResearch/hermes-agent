@@ -116,6 +116,19 @@ def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
     assert 'download the .litertlm artifact instead' in proxy
 
 
+def test_release_build_recovers_existing_model_files_without_run_as_access():
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+
+    assert 'importExistingModelFiles(' in download_manager
+    assert 'repairPreferredDownload(store, refreshed)' in download_manager
+    assert 'downloadManagerId = -1L' in download_manager
+    assert 'Imported existing model file from disk' in download_manager
+    assert 'lower.endsWith(".litertlm") && "gemma-4" in lower -> 0' in download_manager
+    assert 'lower.endsWith(".task") && !isLiteRtWebTaskArtifact(lower)' in download_manager
+    assert 'HermesModelDownloadManager.refreshDownloads(context, store)' in backend_manager
+
+
 def test_portal_screen_exposes_fullscreen_and_minimize_controls():
     portal = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
 

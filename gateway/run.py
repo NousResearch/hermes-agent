@@ -1161,6 +1161,10 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Recent voice transcripts per (guild,user) for duplicate suppression.
+        # Protects against the same utterance being emitted twice by the voice
+        # capture / STT pipeline, which otherwise produces a second delayed reply.
+        self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -8261,6 +8265,47 @@ class GatewayRunner:
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
 
+    def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
+        """Suppress repeated STT outputs for the same recent utterance.
+
+        Voice capture can occasionally emit the same utterance twice a few
+        seconds apart, which creates a second queued agent run and overlapping
+        spoken replies. Dedup exact and near-exact repeats per guild/user over a
+        short window while allowing genuinely new turns through.
+        """
+        from difflib import SequenceMatcher
+
+        normalized = re.sub(r"\s+", " ", transcript).strip().lower()
+        normalized = re.sub(r"[^\w\s]", "", normalized)
+        if not normalized:
+            return False
+
+        now = time.monotonic()
+        window_seconds = 12.0
+        key = (guild_id, user_id)
+        recent_store = getattr(self, "_recent_voice_transcripts", None)
+        if not isinstance(recent_store, dict):
+            recent_store = {}
+            self._recent_voice_transcripts = recent_store
+        recent = [
+            (ts, txt)
+            for ts, txt in recent_store.get(key, [])
+            if now - ts <= window_seconds
+        ]
+
+        for _, prior in recent:
+            if prior == normalized:
+                recent_store[key] = recent
+                return True
+            if len(prior) >= 16 and len(normalized) >= 16:
+                if SequenceMatcher(None, prior, normalized).ratio() >= 0.95:
+                    recent_store[key] = recent
+                    return True
+
+        recent.append((now, normalized))
+        recent_store[key] = recent[-5:]
+        return False
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
     ):
@@ -8296,6 +8341,15 @@ class GatewayRunner:
         # Check authorization before processing voice input
         if not self._is_user_authorized(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
+            return
+
+        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+            logger.info(
+                "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
+                guild_id,
+                user_id,
+                transcript[:100],
+            )
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)

@@ -954,6 +954,46 @@ class TestVoiceChannelCommands:
         assert "Test transcript" in msg
         assert "42" in msg  # user_id in mention
 
+    @pytest.mark.asyncio
+    async def test_input_suppresses_duplicate_transcript(self, runner):
+        """Near-immediate duplicate STT output should not dispatch twice."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+
+        mock_adapter.handle_message.assert_called_once()
+        mock_channel.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_suppresses_near_duplicate_transcript(self, runner):
+        """Small STT wording drift should still be treated as the same utterance."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "This is a test of the voice system")
+        await runner._handle_voice_channel_input(111, 42, "This is a test for the voice system")
+
+        mock_adapter.handle_message.assert_called_once()
+        mock_channel.send.assert_called_once()
+
     # -- _get_guild_id --
 
     def test_get_guild_id_from_guild(self, runner):

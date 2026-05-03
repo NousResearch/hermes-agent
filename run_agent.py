@@ -10443,6 +10443,15 @@ class AIAgent:
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
         
+        # Clear per-session memoization cache at the start of each turn so
+        # file reads, web fetches, and other idempotent tool results from a
+        # prior turn are never served stale in the current turn.
+        try:
+            from model_tools import clear_memo_cache
+            clear_memo_cache(self.session_id)
+        except Exception:
+            pass
+
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
         self._invalid_tool_retries = 0

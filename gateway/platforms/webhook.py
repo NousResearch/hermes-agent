@@ -316,7 +316,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Validate HMAC signature FIRST
         secret = route_config.get("secret", self._global_secret)
         if secret:
-           if not self._validate_signature(request, raw_body, secret):
+          if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
                 )

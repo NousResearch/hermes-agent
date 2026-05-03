@@ -587,6 +587,10 @@ class TestCapabilitiesEndpoint:
             assert data["model"] == "hermes-agent"
             assert data["auth"]["type"] == "bearer"
             assert data["auth"]["required"] is False
+            assert data["runtime"]["mode"] == "server_agent"
+            assert data["runtime"]["tool_execution"] == "server"
+            assert data["runtime"]["split_runtime"] is False
+            assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True

@@ -17,6 +17,7 @@ import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 object LiteRtLmOpenAiProxy {
@@ -55,6 +56,15 @@ object LiteRtLmOpenAiProxy {
         }
 
         stop()
+        val artifactError = validateModelArtifact(modelPath)
+        if (artifactError != null) {
+            return LocalBackendStatus(
+                backendKind = BackendKind.LITERT_LM,
+                started = false,
+                sourceModelPath = modelPath,
+                statusMessage = artifactError,
+            )
+        }
         return try {
             val newServer = LiteRtLmServer(
                 context = context.applicationContext,
@@ -90,6 +100,51 @@ object LiteRtLmOpenAiProxy {
         server?.shutdown()
         server = null
         activeModelPath = ""
+    }
+
+    private fun validateModelArtifact(modelPath: String): String? {
+        val modelFile = File(modelPath)
+        if (!modelFile.exists()) {
+            return "Preferred local model is missing on disk: $modelPath"
+        }
+        val header = ByteArray(8)
+        val bytesRead = runCatching {
+            modelFile.inputStream().use { it.read(header) }
+        }.getOrElse { error ->
+            return "Unable to inspect local LiteRT-LM model file: ${error.message ?: error.javaClass.simpleName}"
+        }
+        if (bytesRead <= 0) {
+            return "Local LiteRT-LM model file is empty: ${modelFile.name}"
+        }
+
+        val lowerName = modelFile.name.lowercase(Locale.US)
+        val startsWithLiteRtLm = bytesRead >= 8 &&
+            header[0] == 'L'.code.toByte() &&
+            header[1] == 'I'.code.toByte() &&
+            header[2] == 'T'.code.toByte() &&
+            header[3] == 'E'.code.toByte() &&
+            header[4] == 'R'.code.toByte() &&
+            header[5] == 'T'.code.toByte() &&
+            header[6] == 'L'.code.toByte() &&
+            header[7] == 'M'.code.toByte()
+        val startsWithZip = bytesRead >= 4 &&
+            header[0] == 'P'.code.toByte() &&
+            header[1] == 'K'.code.toByte()
+        val containsTfl3Magic = bytesRead >= 8 &&
+            header[4] == 'T'.code.toByte() &&
+            header[5] == 'F'.code.toByte() &&
+            header[6] == 'L'.code.toByte() &&
+            header[7] == '3'.code.toByte()
+
+        return when {
+            lowerName.endsWith(".litertlm") && !startsWithLiteRtLm ->
+                "${modelFile.name} is not a valid LiteRT-LM bundle. Download the .litertlm artifact from the LiteRT-LM repo."
+            lowerName.endsWith(".task") && containsTfl3Magic ->
+                "${modelFile.name} is a web/browser .task FlatBuffer, not an Android LiteRT-LM zip bundle. Remove it and download the .litertlm artifact instead."
+            lowerName.endsWith(".task") && !startsWithZip ->
+                "${modelFile.name} is not an Android LiteRT-LM .task zip bundle. Download the .litertlm artifact instead."
+            else -> null
+        }
     }
 
     private class LiteRtLmServer(

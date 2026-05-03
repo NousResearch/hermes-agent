@@ -577,7 +577,8 @@ object HermesModelDownloadManager {
     private fun isCompatibleRepoFile(path: String, runtimeFlavor: String): Boolean {
         val lower = path.substringBefore('?').lowercase(Locale.US)
         return when (runtimeFlavor.uppercase(Locale.US)) {
-            "LITERT-LM" -> lower.endsWith(".litertlm") || lower.endsWith(".task")
+            "LITERT-LM" -> lower.endsWith(".litertlm") ||
+                (lower.endsWith(".task") && !isLiteRtWebTaskArtifact(lower))
             else -> lower.endsWith(".gguf")
         }
     }
@@ -586,10 +587,12 @@ object HermesModelDownloadManager {
         val lower = path.lowercase(Locale.US)
         return when (runtimeFlavor.uppercase(Locale.US)) {
             "LITERT-LM" -> when {
+                isLiteRtWebTaskArtifact(lower) -> Int.MAX_VALUE
                 "_qualcomm_" in lower || ".mediatek." in lower || "_mt" in lower || "_sm" in lower -> 30
+                lower.endsWith(".litertlm") -> 0
                 "q4" in lower || "int4" in lower -> 0
                 "q8" in lower || "int8" in lower -> 1
-                lower.endsWith(".task") && ("web" in lower || "int4" in lower || "q4" in lower) -> 0
+                lower.endsWith(".task") -> 8
                 "f32" in lower || "float32" in lower -> 20
                 else -> 2
             }
@@ -604,6 +607,16 @@ object HermesModelDownloadManager {
                 else -> 7
             }
         }
+    }
+
+    private fun isLiteRtWebTaskArtifact(lowerPath: String): Boolean {
+        return lowerPath.endsWith(".task") && (
+            lowerPath.endsWith("-web.task") ||
+                lowerPath.endsWith("_web.task") ||
+                "-web." in lowerPath ||
+                "_web." in lowerPath ||
+                "/web/" in lowerPath
+            )
     }
 
     private fun headProbe(sourceUrl: String, hfToken: String): HeadProbeResult {

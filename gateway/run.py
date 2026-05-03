@@ -589,6 +589,38 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _quick_commands_from_config(config: Any) -> Dict[str, Any]:
+    """Extract a quick_commands mapping from dict or GatewayConfig-like objects."""
+    if isinstance(config, dict):
+        quick_commands = config.get("quick_commands", {}) or {}
+    else:
+        quick_commands = getattr(config, "quick_commands", {}) or {}
+    return dict(quick_commands) if isinstance(quick_commands, dict) else {}
+
+
+def _load_live_quick_commands(fallback: Any = None) -> Dict[str, Any]:
+    """Return quick commands with live config.yaml merged over fallback state.
+
+    Gateway processes are long-lived. If a model-switch alias is added to
+    config.yaml after boot, relying only on self.config makes Weixin/Telegram
+    keep saying "unknown command" until restart. Reloading just this tiny
+    mapping at dispatch time keeps synthetic tests/fallback config intact while
+    making real config edits visible immediately.
+    """
+    merged = _quick_commands_from_config(fallback)
+    try:
+        import yaml as _yaml
+        cfg_path = _hermes_home / "config.yaml"
+        if cfg_path.exists():
+            data = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            live = data.get("quick_commands")
+            if isinstance(live, dict):
+                merged.update(live)
+    except Exception as exc:
+        logger.debug("Could not reload live quick_commands: %s", exc)
+    return merged
+
+
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -4420,6 +4452,56 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _dispatch_quick_command(
+        self,
+        event: MessageEvent,
+        command: str,
+        quick_commands: Dict[str, Any],
+    ) -> str:
+        """Execute a user-defined quick command or alias chain."""
+        seen_quick_commands: set[str] = set()
+        for _ in range(8):
+            if command not in quick_commands:
+                break
+            if command in seen_quick_commands:
+                return f"Quick command '/{command}' alias loop detected."
+            seen_quick_commands.add(command)
+
+            qcmd = quick_commands[command]
+            if qcmd.get("type") == "exec":
+                exec_cmd = qcmd.get("command", "")
+                if exec_cmd:
+                    try:
+                        proc = await asyncio.create_subprocess_shell(
+                            exec_cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                        output = (stdout or stderr).decode().strip()
+                        return output if output else "Command returned no output."
+                    except asyncio.TimeoutError:
+                        return "Quick command timed out (30s)."
+                    except Exception as e:
+                        return f"Quick command error: {e}"
+                return f"Quick command '/{command}' has no command defined."
+
+            if qcmd.get("type") == "alias":
+                target = qcmd.get("target", "").strip()
+                if not target:
+                    return f"Quick command '/{command}' has no target defined."
+                target = target if target.startswith("/") else f"/{target}"
+                target_command = target.lstrip("/").split(maxsplit=1)[0]
+                target_args = target[len(target.split(maxsplit=1)[0]):].strip()
+                user_args = event.get_command_args().strip()
+                combined_args = " ".join(part for part in (target_args, user_args) if part)
+                event.text = f"/{target_command} {combined_args}".strip()
+                command = target_command
+                continue
+
+            return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+        return "Quick command alias chain is too deep."
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -4732,6 +4814,16 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            # User-defined quick commands must also work while a previous
+            # agent turn is still unwinding. Otherwise `/tk1` is treated as
+            # plain text/interrupt or falls through to "Unknown command"
+            # whenever the session lock is present, even though it is a
+            # config-level control command.
+            if _evt_cmd:
+                _quick_commands = _load_live_quick_commands(self.config)
+                if _evt_cmd in _quick_commands:
+                    return await self._dispatch_quick_command(event, _evt_cmd, _quick_commands)
 
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
@@ -5209,45 +5301,9 @@ class GatewayRunner:
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
+            quick_commands = _load_live_quick_commands(self.config)
             if command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command
-                        # Fall through to normal command dispatch below
-                    else:
-                        return f"Quick command '/{command}' has no target defined."
-                else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+                return await self._dispatch_quick_command(event, command, quick_commands)
 
         # Plugin-registered slash commands
         if command:

@@ -115,7 +115,20 @@ SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
 # leaks into the user's actual mailbox or SMS thread on Inkbox.  Drop
 # them at adapter.send() so they never get delivered as real messages.
 _ADMIN_NOTICE_PREFIXES: Tuple[str, ...] = (
-    "◐", "◆", "📬", "🔄", "✓", "✗", "⚠️", "⚠",
+    "◐", "◆", "📬", "🔄", "✓", "✗", "⚠️", "⚠", "⚡", "💡",
+)
+
+# Substrings that mark CLI/TUI runtime chatter even when the leading glyph is
+# absent (some Hermes notices fold across sentences, e.g. the busy/queue tip
+# arrives mid-paragraph after the ⚡ banner).  Match any of these → suppress.
+_ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
+    "Interrupting current task",
+    "First-time tip",
+    "/busy queue",
+    "/busy steer",
+    "/busy status",
+    "Session automatically reset",
+    "No home channel is set",
 )
 
 
@@ -123,11 +136,15 @@ def _is_hermes_admin_notice(content: str) -> bool:
     """True when *content* is a Hermes-internal status/admin chatter line.
 
     Triggered when the message starts with one of the well-known glyphs
-    Hermes uses to flag system messages in the CLI/TUI.  These have no
-    business landing in a real human's email inbox or SMS thread.
+    Hermes uses to flag system messages in the CLI/TUI, or when the body
+    contains any of ``_ADMIN_NOTICE_SUBSTRINGS``.  These have no business
+    landing in a real human's email inbox, SMS thread, or — worst of all
+    — being read aloud as TTS over a live phone call.
     """
     head = (content or "").lstrip().lstrip("﻿")
-    return head.startswith(_ADMIN_NOTICE_PREFIXES)
+    if head.startswith(_ADMIN_NOTICE_PREFIXES):
+        return True
+    return any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS)
 
 
 def check_inkbox_requirements() -> bool:
@@ -391,11 +408,17 @@ class InkboxAdapter(BasePlatformAdapter):
             )
 
         # Phone number: text webhook + incoming-call action.
+        # ``incoming_call_action="auto_accept"`` tells Inkbox to pick up the
+        # call itself and immediately open a WS to ``client_websocket_url``,
+        # without round-tripping a webhook first.  Lower setup latency than
+        # ``webhook`` mode, and the call context arrives on the WS itself
+        # via the ``x-call-context`` header (parsed in ``_handle_call_ws``).
         if identity.phone_number is not None:
             self._inkbox.phone_numbers.update(
                 identity.phone_number.id,
                 incoming_text_webhook_url=webhook_url,
                 incoming_call_webhook_url=webhook_url,
+                incoming_call_action="auto_accept",
                 client_websocket_url=ws_url,
             )
             logger.info(
@@ -467,9 +490,26 @@ class InkboxAdapter(BasePlatformAdapter):
         meta = metadata or {}
         mode = (meta.get("mode") or "").lower().strip()
 
-        # Voice replies short-circuit before consulting the SDK — they ride
-        # the per-call WebSocket that the WS handler keeps open for the
-        # duration of the call.
+        # Resolve mode if the gateway didn't pass one explicitly.  Order of
+        # preference:
+        #   1. An open live-call WebSocket on this chat — voice trumps
+        #      everything because dropping it would leave the caller hearing
+        #      silence while we send an email.
+        #   2. The modality of the most-recent inbound from this chat —
+        #      SMS-conversations on contact-UUID chat_ids land here (the
+        #      chat_id shape doesn't reveal which channel inbound came in
+        #      on).
+        #   3. SMS if the chat target itself looks like an E.164 number.
+        #   4. Email otherwise (contact UUIDs, raw email addresses).
+        if not mode and chat_id in self._active_call_ws:
+            mode = "voice"
+        if not mode:
+            mode = self._last_inbound_modality.get(str(chat_id), "")
+        if not mode:
+            mode = "sms" if str(chat_id).startswith("+") else "email"
+
+        # Voice replies ride the per-call WebSocket the WS handler keeps
+        # open for the duration of the call.  No SDK round-trip.
         if mode == "voice":
             ws = self._active_call_ws.get(chat_id)
             if ws is None:
@@ -480,13 +520,17 @@ class InkboxAdapter(BasePlatformAdapter):
                         "Voice replies require an open call."
                     ),
                 )
+            turn_id = str(meta.get("turn_id") or "")
             try:
-                await ws.send_str(json.dumps({
-                    "event": "text",
-                    "delta": content,
-                    "done": True,
-                    "turn_id": meta.get("turn_id"),
-                }))
+                # Two-frame protocol matching the legacy phone-bridge: a
+                # delta carrying the text, then a final ``done: true`` frame
+                # that flushes Inkbox's TTS and ends the turn.
+                await ws.send_str(json.dumps(
+                    {"event": "text", "delta": content, "turn_id": turn_id}
+                ))
+                await ws.send_str(json.dumps(
+                    {"event": "text", "done": True, "turn_id": turn_id}
+                ))
                 return SendResult(success=True)
             except Exception as exc:
                 return SendResult(success=False, error=str(exc), retryable=True)
@@ -500,18 +544,6 @@ class InkboxAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             return SendResult(success=False, error=f"get_identity failed: {exc}")
-
-        # Default mode resolution.  Order of preference:
-        # 1. The modality of the most-recent inbound from this chat — this
-        #    is what carries SMS-conversations on contact-UUID chat_ids,
-        #    where the chat_id shape doesn't reveal which channel inbound
-        #    actually came in on.
-        # 2. SMS if the chat target itself looks like an E.164 number.
-        # 3. Email otherwise (contact UUIDs, raw email addresses).
-        if not mode:
-            mode = self._last_inbound_modality.get(str(chat_id), "")
-        if not mode:
-            mode = "sms" if str(chat_id).startswith("+") else "email"
 
         if mode == "sms":
             to_number = str(meta.get("to_phone") or chat_id).strip()
@@ -601,13 +633,23 @@ class InkboxAdapter(BasePlatformAdapter):
         ws = self._active_call_ws.get(chat_id)
         if ws is None:
             return SendResult(success=False, error="Not supported")
+        # Same admin-notice guard as send() — runtime banners are even more
+        # offensive when read aloud over a live call than when delivered as
+        # text to email/SMS.
+        if _is_hermes_admin_notice(content):
+            return SendResult(success=True, message_id="suppressed-admin-notice")
         try:
-            await ws.send_str(json.dumps({
-                "event": "text",
-                "delta": content,
-                "done": bool(finalize),
-                "turn_id": message_id,
-            }))
+            # Match the bridge's two-frame protocol — Inkbox's TTS pipeline
+            # mixes ``delta`` and ``done`` into separate frames rather than
+            # one combined message.
+            if content:
+                await ws.send_str(json.dumps(
+                    {"event": "text", "delta": content, "turn_id": message_id}
+                ))
+            if finalize:
+                await ws.send_str(json.dumps(
+                    {"event": "text", "done": True, "turn_id": message_id}
+                ))
             return SendResult(success=True)
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
@@ -821,25 +863,115 @@ class InkboxAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_call_ws(self, request: "web.Request") -> "web.WebSocketResponse":
-        ws = web.WebSocketResponse(
-            headers={
-                "x-use-inkbox-text-to-speech": "true",
-                "x-use-inkbox-speech-to-text": "true",
-            },
-        )
+        # ``WebSocketResponse`` doesn't take ``headers=`` as a constructor kwarg;
+        # we mutate ``ws.headers`` before ``prepare()`` instead, which is what
+        # aiohttp's ``StreamResponse`` accepts.  These two headers tell Inkbox
+        # to handle STT + TTS itself and bridge text events on the WS — without
+        # them Inkbox would expect raw audio frames in both directions.
+        ws = web.WebSocketResponse()
+        ws.headers["x-use-inkbox-text-to-speech"] = "true"
+        ws.headers["x-use-inkbox-speech-to-text"] = "true"
         await ws.prepare(request)
 
+        # Resolve call context.  Three sources, tried in order:
+        #   1. webhook-mode pre-stash from ``_on_incoming_call`` (legacy)
+        #   2. ``x-call-context`` header (some Inkbox versions ship it)
+        #   3. ``ink.phone.calls.get(...)`` round-trip — the only reliable
+        #      source when Inkbox accepts the call itself and connects the
+        #      WS without forwarding caller metadata.  Without this, every
+        #      call lands as ``contact=unknown`` and the agent can't tell
+        #      who's on the line until it manually queries the SDK.
         call_id = request.query.get("call_id", "")
         meta = self._call_ws_meta.pop(hash(call_id), None) or {}
+
+        if not meta:
+            ctx_raw = request.headers.get("x-call-context", "") or ""
+            try:
+                ctx = json.loads(ctx_raw) if ctx_raw else {}
+            except json.JSONDecodeError:
+                ctx = {}
+            call_id = call_id or str(ctx.get("call_id") or ctx.get("id") or "")
+            remote = (ctx.get("remote_phone_number") or "").strip()
+
+            # SDK fallback when the header didn't carry the remote number.
+            if not remote and call_id and self._inkbox is not None:
+                try:
+                    identity = await asyncio.to_thread(
+                        self._inkbox.get_identity, self._identity_handle,
+                    )
+                    pn_id = getattr(identity.phone_number, "id", None)
+                    if pn_id:
+                        # ``_calls`` is the SDK's private call resource — same
+                        # accessor the legacy phone-bridge used.  Public
+                        # attribute is not yet exposed on Inkbox().
+                        call = await asyncio.to_thread(
+                            self._inkbox._calls.get, pn_id, call_id,
+                        )
+                        remote = (getattr(call, "remote_phone_number", "") or "").strip()
+                except Exception as exc:
+                    logger.warning(
+                        "[Inkbox] Call lookup failed for call_id=%s: %s", call_id, exc,
+                    )
+
+            contact = (
+                await self._resolve_contact_full(kind="phone", value=remote)
+                if remote else None
+            )
+            meta = {
+                "call_id": call_id,
+                "contact_id": (contact["id"] if contact else (remote or call_id or "unknown")),
+                "contact_name": (
+                    contact["name"] if contact and contact.get("name") else (remote or "unknown")
+                ),
+                "contact": contact,
+                "remote_phone_number": remote,
+            }
+
         contact_id = meta.get("contact_id") or call_id or "unknown"
         contact_name = meta.get("contact_name") or contact_id
-        # Bind this WS as the active sink for the contact.
+        # Bind this WS as the active sink for the contact, and tag the
+        # contact's most-recent inbound modality as ``voice`` so the gateway's
+        # outbound ``send()`` path routes the agent's reply onto this WS
+        # rather than falling through to the SMS/email default heuristic.
         self._active_call_ws[contact_id] = ws
+        self._last_inbound_modality[str(contact_id)] = "voice"
 
         logger.info(
-            "[Inkbox] Call WS open: call_id=%s contact_id=%s",
-            call_id, contact_id,
+            "[Inkbox] Call WS open: call_id=%s contact_id=%s remote=%s",
+            call_id, contact_id, meta.get("remote_phone_number"),
         )
+
+        async def _send_text_delta(text: str, *, turn_id: str) -> None:
+            await ws.send_str(json.dumps(
+                {"event": "text", "delta": text, "turn_id": turn_id}
+            ))
+
+        async def _send_text_done(*, turn_id: str) -> None:
+            await ws.send_str(json.dumps(
+                {"event": "text", "done": True, "turn_id": turn_id}
+            ))
+
+        greeting_sent = False
+
+        async def _send_greeting() -> None:
+            """Speak an opening line so the caller hears something immediately.
+
+            Sent direct from the adapter without going through the agent — the
+            agent's first turn will be the caller's first transcript.  Mirrors
+            what the legacy phone-bridge did so call setup latency stays low.
+            """
+            contact = meta.get("contact") or {}
+            first_name = ""
+            if contact.get("name"):
+                first_name = str(contact["name"]).split()[0]
+            who = f"{first_name}" if first_name else "there"
+            text = f"Hi {who}, this is your Inkbox on-call agent. How can I help?"
+            try:
+                await _send_text_delta(text, turn_id="greeting")
+                await _send_text_done(turn_id="greeting")
+                logger.info("[Inkbox] Sent greeting to call_id=%s", call_id)
+            except Exception as exc:
+                logger.warning("[Inkbox] Failed to send greeting: %s", exc)
 
         try:
             async for msg in ws:
@@ -850,6 +982,10 @@ class InkboxAdapter(BasePlatformAdapter):
                 except json.JSONDecodeError:
                     continue
                 ev = payload.get("event")
+                if ev == "start" and not greeting_sent:
+                    greeting_sent = True
+                    asyncio.create_task(_send_greeting())
+                    continue
                 if ev == "transcript" and payload.get("is_final"):
                     text = (payload.get("text") or "").strip()
                     if not text:
@@ -879,11 +1015,15 @@ class InkboxAdapter(BasePlatformAdapter):
                     await self._enqueue(event)
                 elif ev == "stop":
                     break
-                # 'start' and 'barge_in' are informational; the agent's response
-                # tasks are managed by the gateway runner via per-session
-                # interrupt events, not by adapter-side cancellation.
+                # 'barge_in' is informational here — proper interruption
+                # would require cancelling the in-flight gateway turn, which
+                # crosses module boundaries we don't yet expose.
         finally:
             self._active_call_ws.pop(contact_id, None)
+            # Clear the voice tag so a follow-up SMS/email from this contact
+            # doesn't get mis-routed to a closed call socket.
+            if self._last_inbound_modality.get(str(contact_id)) == "voice":
+                self._last_inbound_modality.pop(str(contact_id), None)
             with suppress(Exception):
                 await ws.close()
             logger.info("[Inkbox] Call WS closed: call_id=%s", call_id)

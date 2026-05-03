@@ -25,6 +25,36 @@ with Inkbox(api_key="ApiKey_...") as inkbox:
 
 Constructor: `Inkbox(api_key, base_url="https://inkbox.ai", timeout=30.0)`
 
+## Runtime notes for Inkbox-routed Hermes sessions
+
+When answering factual questions about the live Inkbox state (identity channels, contact records, messages, delivery status), use the Inkbox API/SDK as source of truth, not transcript memory. In Hermes tool contexts, `execute_code` may run in a sandbox without `INKBOX_API_KEY` / `INKBOX_IDENTITY`, and the SDK may not be importable unless the repo SDK path is inserted. If that happens, run via `terminal` with the Hermes venv and local SDK path, for example:
+
+```bash
+/home/ec2-user/inkbox-powered-hermes-agent/.venv/bin/python3 - <<'PY'
+import os, sys
+sys.path.insert(0, '/home/ec2-user/inkbox/sdk/python')
+from inkbox import Inkbox
+with Inkbox(api_key=os.environ['INKBOX_API_KEY']) as ink:
+    identity = ink.get_identity(os.environ.get('INKBOX_IDENTITY', 'inkbox-on-call-agent'))
+    print(identity.email_address)
+    print(identity.phone_number.number if identity.phone_number else None)
+    print(ink.contacts.lookup(phone='+15167251294'))
+PY
+```
+
+The inbound routing marker already contains the resolved Contact fields; it is acceptable immediate context for conversational identity questions, but verify through the SDK when asked for live/current contact or channel facts.
+
+**Voice-call caller identity pitfall:** if a voice turn arrives with `contact=unknown_in_inkbox`, the caller may still exist in the contact book. Use the marker's `call_id` to find the live call via `identity.list_calls(...)`, read `remote_phone_number`, then run `inkbox.contacts.lookup(phone=remote_phone_number)` before saying you do not know who the caller is. This is especially useful for natural questions like “what's my name?”, “do you know my number?”, or “can you look me up?”.
+
+```python
+call_id = "59e84d61-..."
+with Inkbox(api_key=os.environ["INKBOX_API_KEY"]) as ink:
+    identity = ink.get_identity(os.environ.get("INKBOX_IDENTITY", "inkbox-on-call-agent"))
+    call = next((c for c in identity.list_calls(limit=50, offset=0) if str(c.id) == call_id), None)
+    remote = call.remote_phone_number if call else None
+    contact = ink.contacts.lookup(phone=remote) if remote else None
+```
+
 ## Core Model
 
 ```
@@ -500,7 +530,7 @@ inkbox.phone_contact_rules.list_all(phone_number_id=str(number.id))
 
 ## Contacts
 
-Admin-only address book with per-identity access grants and vCard import/export.
+Admin-only address book with per-identity access grants and vCard import/export. For routed-session contact-book upsert patterns, transport-sender-vs-described-person pitfalls, and user-facing distinctions between the Inkbox contact book and Hermes memory/user profile, see `references/contact-book-upserts.md`.
 
 ```python
 from inkbox import (
@@ -528,6 +558,39 @@ inkbox.contacts.lookup(email_domain="example.com")
 inkbox.contacts.lookup(phone="+15551234567")
 inkbox.contacts.lookup(email_contains="ada")
 inkbox.contacts.lookup(phone_contains="555")
+
+# Contact-book updates in Inkbox-routed sessions:
+# - If the inbound marker resolves to a contact and the user gives details for that same person,
+#   update that contact_id directly and verify the returned record.
+# - If the user asks the agent to “remember” a role/title for a known or lookupable third party,
+#   save durable memory if appropriate AND update that person's contact record; do not treat
+#   Hermes memory as a substitute for the Inkbox contact book.
+# - If the user says “add Ray too” (or otherwise names a different person) while texting from
+#   someone else's channel, do NOT overwrite the sender's contact. Require/use the new person's
+#   email or phone, lookup by email then phone, and update-or-create a separate contact.
+# - Normalize phones to E.164 before lookup/create/update. Dict payloads work for email/phone
+#   collections when importing ContactEmail/ContactPhone is inconvenient.
+# Example upsert for a distinct person:
+email = "ray@example.com"
+phone = "+18573008599"
+existing = None
+for kwargs in ({"email": email}, {"phone": phone}):
+    try:
+        match = inkbox.contacts.lookup(**kwargs)
+        existing = match[0] if isinstance(match, list) and match else match
+        if existing:
+            break
+    except Exception:
+        pass
+payload = dict(
+    preferred_name="Ray",
+    given_name="Ray",
+    company_name="Inkbox",
+    job_title="Cofounder",
+    emails=[{"label": "work", "value": email, "is_primary": True}],
+    phones=[{"label": "mobile", "value_e164": phone, "is_primary": True}],
+)
+contact = inkbox.contacts.update(str(existing.id), **payload) if existing else inkbox.contacts.create(**payload)
 
 # Access grants (admin + JWT only; agents can self-revoke)
 inkbox.contacts.access.list(str(contact.id))

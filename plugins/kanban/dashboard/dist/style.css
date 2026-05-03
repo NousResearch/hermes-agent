@@ -606,8 +606,11 @@
 /* ---- Markdown rendering -------------------------------------------- */
 
 .hermes-kanban-md {
+  font-family: var(--theme-font-sans, var(--font-sans, system-ui, sans-serif));
   font-size: 0.8rem;
   line-height: 1.55;
+  letter-spacing: normal;
+  text-transform: none;
   color: var(--color-foreground);
 }
 .hermes-kanban-md p  { margin: 0.25rem 0; }

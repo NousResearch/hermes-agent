@@ -640,6 +640,19 @@ def test_markdown_code_uses_theme_foreground_for_contrast():
     assert "text-shadow: none;" in css
 
 
+def test_markdown_prose_preserves_source_casing_and_normal_font():
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert ".hermes-kanban-md {" in css
+    assert "font-family: var(--theme-font-sans" in css
+    assert "letter-spacing: normal;" in css
+    assert "text-transform: none;" in css
+    assert "font-family: var(--theme-font-mono" not in css
+    assert ".hermes-kanban-md code" in css
+    assert "font-family: var(--font-mono, ui-monospace, monospace);" in css
+
+
 # ---------------------------------------------------------------------------
 # Runs surfacing (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------

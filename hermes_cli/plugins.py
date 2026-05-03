@@ -80,6 +80,7 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "transform_terminal_output",
     "transform_tool_result",
+    "pre_model_route",
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",
@@ -1060,8 +1061,13 @@ class PluginManager:
 
         Returns a list of non-``None`` return values from callbacks.
 
-        For ``pre_llm_call``, callbacks may return a dict describing
-        context to inject into the current turn's user message::
+        ``pre_model_route`` callbacks may return a dict describing a runtime
+        model route proposal::
+
+            {"provider": "openai-codex", "model": "gpt-5.4"}
+
+        ``pre_llm_call`` callbacks may return a dict describing context to
+        inject into the current turn's user message::
 
             {"context": "recalled text..."}
             "recalled text..."          # plain string, equivalent

@@ -431,6 +431,7 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
 | [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
+| [`pre_model_route`](/docs/user-guide/features/hooks#pre_model_route) | Once per turn, before system prompt build and LLM calls | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, provider: str, platform: str` | `{"provider": str, "model": str, "reason": str}` to switch runtime model for the turn |
 | [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
@@ -438,13 +439,13 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_model_route`, which can switch the runtime model for the turn, and `pre_llm_call`, which can inject context into the conversation.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
 
 #### Return format
 

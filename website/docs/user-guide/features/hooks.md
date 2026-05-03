@@ -367,7 +367,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_model_route`](#pre_model_route) can **switch the runtime model**, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
 
 ### Quick reference
 
@@ -375,6 +375,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
+| [`pre_model_route`](#pre_model_route) | Once per turn, before system prompt build and LLM calls | `{"provider": str, "model": str, "reason": str}` to switch runtime model for the turn |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -500,9 +501,66 @@ def register(ctx):
 
 ---
 
+### `pre_model_route`
+
+Fires **once per turn**, before Hermes builds the system prompt and before any LLM API call. Plugins can use this hook to choose a runtime model based on the current message, conversation history, platform, user, benchmark policy, or account limits.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, user_message: str, conversation_history: list,
+                is_first_turn: bool, model: str, provider: str,
+                platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `user_message` | `str` | The user's original message for this turn |
+| `conversation_history` | `list` | Copy of the message list at the start of the turn |
+| `is_first_turn` | `bool` | `True` if this is the first turn of a new session |
+| `model` | `str` | Current model before routing |
+| `provider` | `str` | Current provider before routing |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+
+**Return value — runtime route proposal:**
+
+```python
+return {
+    "provider": "openai-codex",
+    "model": "gpt-5.4",
+    "reason": "coding task"
+}
+```
+
+`model` is required. `provider` is optional; if omitted, Hermes resolves the model against the current provider. Hermes treats the return value as a route proposal, not raw credentials. API keys, base URLs, aliases, API mode, and provider-specific normalization are resolved through the same `model_switch` pipeline used by `/model`.
+
+If multiple plugins return route proposals, the first valid dict result wins. Invalid proposals are logged and ignored so the turn continues on the current model.
+
+**Use cases:** Benchmark-driven routing, task-aware model selection, per-user subscription policy, account limit steering, and low-cost default routing with high-capability escalation.
+
+**Example — route coding tasks to a stronger model:**
+
+```python
+def route_model(user_message: str, model: str, provider: str, **kwargs):
+    text = (user_message or "").lower()
+    if any(word in text for word in ("bug", "test", "refactor", "pull request")):
+        return {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "reason": "coding task",
+        }
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_model_route", route_model)
+```
+
+---
+
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. It can inject context into the current turn's user message.
 
 **Callback signature:**
 
@@ -1117,6 +1175,7 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 | Events | `VALID_HOOKS` (incl. `subagent_stop`) | `VALID_HOOKS` | Gateway lifecycle (`gateway:startup`, `agent:*`, `command:*`) |
 | Can block a tool call | Yes (`pre_tool_call`) | Yes (`pre_tool_call`) | No |
 | Can inject LLM context | Yes (`pre_llm_call`) | Yes (`pre_llm_call`) | No |
+| Can route the runtime model | Yes (`pre_model_route`) | Yes (`pre_model_route`) | No |
 | Consent | First-use prompt per `(event, command)` pair | Implicit (Python plugin trust) | Implicit (dir trust) |
 | Inter-process isolation | Yes (subprocess) | No (in-process) | No (in-process) |
 
@@ -1151,7 +1210,7 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 }
 ```
 
-`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
+`tool_name` and `tool_input` are `null` for non-tool events (`pre_model_route`, `pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
 
 **stdout — optional response:**
 

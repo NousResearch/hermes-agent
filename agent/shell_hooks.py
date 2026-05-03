@@ -492,8 +492,8 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     skipping the translation silently breaks every ``pre_tool_call``
     block directive.
 
-    For ``pre_llm_call``, ``{"context": "..."}`` is passed through
-    unchanged to match the existing plugin-hook contract.
+    For ``pre_model_route`` and ``pre_llm_call``, route/context payloads are
+    passed through unchanged to match the existing plugin-hook contracts.
 
     Anything else returns ``None``.
     """
@@ -522,6 +522,19 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             message = data.get("reason") or data.get("message") or ""
             if isinstance(message, str) and message:
                 return {"action": "block", "message": message}
+        return None
+
+    if event == "pre_model_route":
+        model = data.get("model") or data.get("new_model")
+        if isinstance(model, str) and model.strip():
+            result = {"model": model.strip()}
+            provider = data.get("provider") or data.get("target_provider")
+            reason = data.get("reason")
+            if isinstance(provider, str) and provider.strip():
+                result["provider"] = provider.strip()
+            if isinstance(reason, str) and reason.strip():
+                result["reason"] = reason.strip()
+            return result
         return None
 
     context = data.get("context")

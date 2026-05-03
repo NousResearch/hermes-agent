@@ -134,6 +134,16 @@ _DEFAULT_PAYLOADS = {
         "model": "gpt-4",
         "platform": "cli",
     },
+    "pre_model_route": {
+        "session_id": "test-session",
+        "user_message": "Review this pull request",
+        "conversation_history": [],
+        "is_first_turn": True,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "platform": "cli",
+        "sender_id": "user-1",
+    },
     "post_llm_call": {
         "session_id": "test-session",
         "model": "gpt-4",

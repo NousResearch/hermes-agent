@@ -2279,7 +2279,16 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        *,
+        prune_fallback_chain=True,
+    ):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -2292,6 +2301,10 @@ class AIAgent:
         client-swap logic but also updates ``_primary_runtime`` so the
         change persists across turns (unlike fallback which is
         turn-scoped).
+
+        ``prune_fallback_chain`` is kept on for explicit user switches. Plugin
+        route hooks can disable it so task-aware routing does not permanently
+        remove configured fallback providers while moving between models.
         """
         from hermes_cli.providers import determine_api_mode
 
@@ -2449,7 +2462,7 @@ class AIAgent:
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
-        if old_norm and new_norm and old_norm != new_norm:
+        if prune_fallback_chain and old_norm and new_norm and old_norm != new_norm:
             fallback_chain = [
                 entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
@@ -2461,6 +2474,114 @@ class AIAgent:
             "Model switched in-place: %s (%s) -> %s (%s)",
             old_model, old_provider, new_model, new_provider,
         )
+
+    def _apply_pre_model_route_hook(
+        self,
+        user_message: str,
+        conversation_history: list,
+        is_first_turn: bool,
+    ) -> None:
+        """Allow plugins to route the current turn before the system prompt/API call.
+
+        The hook returns a route proposal, not credentials. Credentials,
+        base_url, api_mode, aliases, and provider-specific normalization stay
+        inside Hermes's existing model_switch pipeline.
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _route_results = _invoke_hook(
+                "pre_model_route",
+                session_id=self.session_id,
+                user_message=user_message,
+                conversation_history=list(conversation_history or []),
+                is_first_turn=is_first_turn,
+                model=self.model,
+                provider=self.provider,
+                platform=getattr(self, "platform", None) or "",
+                sender_id=getattr(self, "_user_id", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("pre_model_route hook failed: %s", exc)
+            return
+
+        route = None
+        requested_model = ""
+        requested_provider = ""
+        route_reason = ""
+        for candidate in _route_results or []:
+            if not isinstance(candidate, dict):
+                continue
+            requested_model = str(
+                candidate.get("model") or candidate.get("new_model") or ""
+            ).strip()
+            if not requested_model:
+                logger.warning("pre_model_route result ignored: missing model")
+                continue
+            route = candidate
+            requested_provider = str(
+                route.get("provider") or route.get("target_provider") or ""
+            ).strip()
+            route_reason = str(route.get("reason") or "").strip()
+            break
+        if not route:
+            return
+
+        current_provider = (self.provider or "").strip()
+        effective_provider = requested_provider or current_provider
+        if (
+            requested_model == (self.model or "")
+            and effective_provider == current_provider
+        ):
+            return
+
+        try:
+            from hermes_cli.config import (
+                get_compatible_custom_providers,
+                load_config,
+            )
+            from hermes_cli.model_switch import switch_model as _switch_model
+
+            config = load_config()
+            user_providers = config.get("providers", {}) if isinstance(config, dict) else {}
+            custom_providers = get_compatible_custom_providers(config)
+            result = _switch_model(
+                raw_input=requested_model,
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+                current_api_key=getattr(self, "api_key", "") or "",
+                is_global=False,
+                explicit_provider=requested_provider,
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            )
+            if not result.success:
+                logger.warning(
+                    "pre_model_route result ignored: %s",
+                    result.error_message or "model switch failed",
+                )
+                return
+
+            old_model = self.model
+            old_provider = self.provider
+            self.switch_model(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+                prune_fallback_chain=False,
+            )
+            logging.info(
+                "pre_model_route switched model for this turn: %s (%s) -> %s (%s)%s",
+                old_model,
+                old_provider,
+                self.model,
+                self.provider,
+                f" reason={route_reason!r}" if route_reason else "",
+            )
+        except Exception as exc:
+            logger.warning("pre_model_route switch failed: %s", exc)
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -10542,6 +10663,12 @@ class AIAgent:
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)
             self._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
+
+        self._apply_pre_model_route_hook(
+            original_user_message,
+            messages,
+            is_first_turn=(not bool(conversation_history)),
+        )
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.

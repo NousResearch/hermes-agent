@@ -87,6 +87,23 @@ class TestParseResponse:
         )
         assert r == {"context": "today is Friday"}
 
+    def test_pre_model_route_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_model_route",
+            '{"provider": "openai-codex", "model": "gpt-5.4", "reason": "coding"}',
+        )
+        assert r == {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "reason": "coding",
+        }
+
+    def test_pre_model_route_requires_model(self):
+        r = shell_hooks._parse_response(
+            "pre_model_route", '{"provider": "openai-codex"}',
+        )
+        assert r is None
+
     def test_subagent_stop_context_passthrough(self):
         r = shell_hooks._parse_response(
             "subagent_stop", '{"context": "child role=leaf"}',

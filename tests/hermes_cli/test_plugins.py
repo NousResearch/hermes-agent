@@ -328,6 +328,7 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "pre_model_route" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
 

@@ -1,8 +1,0 @@
-enabled: true
-telegram_source_account: telegram-businessos-operator
-timezone: America/New_York
-morning_digest_local_time: "08:00"
-send_run_started: true
-send_step_updates: true
-send_run_completed: true
-send_daily_summary: true

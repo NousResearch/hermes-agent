@@ -1,8 +1,0 @@
-[Unit]
-Description=BusinessOS canonical-doc sync into Holographic memory
-After=network.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=/home/yuiop/.hermes/hermes-agent
-ExecStart=/home/yuiop/.hermes/hermes-agent/BusinessOS/04_AUTOMATIONS/scripts/run_businessos_memory_sync.sh

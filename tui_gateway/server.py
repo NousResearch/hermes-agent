@@ -573,6 +573,23 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _wire_callbacks(sid)
             _notify_session_boundary("on_session_reset", key)
 
+            pending_title = (current.get("pending_title") or "").strip()
+            if pending_title:
+                try:
+                    db = _get_db()
+                    if db is not None:
+                        try:
+                            if db.set_session_title(key, pending_title):
+                                current["pending_title"] = None
+                        except ValueError:
+                            # Duplicate / invalid titles are terminal, not
+                            # retriable — drop the pending placeholder so the
+                            # session doesn't keep advertising a title that the
+                            # backing store will never accept.
+                            current["pending_title"] = None
+                except Exception:
+                    pass
+
             info = _session_info(agent)
             warn = _probe_credentials(agent)
             if warn:

@@ -42,7 +42,7 @@ import httpx
 import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, get_default_hermes_root
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -746,8 +746,85 @@ def _auth_file_path() -> Path:
     return path
 
 
+def _auth_inherit_root_enabled() -> bool:
+    """Return true when this profile explicitly opts into root auth fallback."""
+    try:
+        raw_config = read_raw_config()
+    except Exception:
+        return False
+    auth_config = raw_config.get("auth") if isinstance(raw_config, dict) else None
+    if not isinstance(auth_config, dict):
+        return False
+    return is_truthy_value(auth_config.get("inherit_root"), default=False)
+
+
+def _default_root_auth_file_path() -> Optional[Path]:
+    """Return the shared root auth.json for opt-in profile fallback.
+
+    Profiles are auth-isolated by default. When a named profile sets
+    ``auth.inherit_root: true``, missing provider auth / credential-pool buckets
+    may be read from the root profile's ``auth.json``. Profile-local state still
+    wins whenever it defines the same provider or pool bucket.
+    """
+    if not _auth_inherit_root_enabled():
+        return None
+
+    current = _auth_file_path()
+    root_auth = get_default_hermes_root() / "auth.json"
+    try:
+        if root_auth.resolve(strict=False) == current.resolve(strict=False):
+            return None
+    except Exception:
+        if root_auth == current:
+            return None
+    return root_auth
+
+
 def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
+
+
+def _merge_auth_store_fallback(primary: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlay missing providers/pool entries from a shared root auth store.
+
+    Primary profile state wins.  Missing provider records, missing pool buckets,
+    and an absent active_provider inherit from the root auth store.
+    """
+    if not isinstance(primary, dict):
+        primary = {"version": AUTH_STORE_VERSION, "providers": {}}
+    if not isinstance(fallback, dict):
+        return primary
+
+    merged = dict(primary)
+
+    primary_providers = primary.get("providers")
+    if not isinstance(primary_providers, dict):
+        primary_providers = {}
+    fallback_providers = fallback.get("providers")
+    if isinstance(fallback_providers, dict) and fallback_providers:
+        merged_providers = dict(fallback_providers)
+        merged_providers.update(primary_providers)
+        merged["providers"] = merged_providers
+    else:
+        merged["providers"] = dict(primary_providers)
+
+    primary_pool = primary.get("credential_pool")
+    if isinstance(primary_pool, dict):
+        merged_pool = dict(primary_pool)
+    else:
+        merged_pool = {}
+    fallback_pool = fallback.get("credential_pool")
+    if isinstance(fallback_pool, dict):
+        for provider_id, entries in fallback_pool.items():
+            if provider_id not in merged_pool:
+                merged_pool[provider_id] = entries
+    if merged_pool:
+        merged["credential_pool"] = merged_pool
+
+    if not merged.get("active_provider") and fallback.get("active_provider"):
+        merged["active_provider"] = fallback.get("active_provider")
+
+    return merged
 
 
 _auth_lock_holder = threading.local()
@@ -812,42 +889,52 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
+    should_merge_root_fallback = auth_file == _auth_file_path()
     if not auth_file.exists():
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
-
-    try:
-        raw = json.loads(auth_file.read_text())
-    except Exception as exc:
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
+        primary = {"version": AUTH_STORE_VERSION, "providers": {}}
+    else:
         try:
-            import shutil
-            shutil.copy2(auth_file, corrupt_path)
-        except Exception:
-            pass
-        logger.warning(
-            "auth: failed to parse %s (%s) — starting with empty store. "
-            "Corrupt file preserved at %s",
-            auth_file, exc, corrupt_path,
-        )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+            raw = json.loads(auth_file.read_text())
+        except Exception as exc:
+            corrupt_path = auth_file.with_suffix(".json.corrupt")
+            try:
+                import shutil
+                shutil.copy2(auth_file, corrupt_path)
+            except Exception:
+                pass
+            logger.warning(
+                "auth: failed to parse %s (%s) — starting with empty store. "
+                "Corrupt file preserved at %s",
+                auth_file, exc, corrupt_path,
+            )
+            primary = {"version": AUTH_STORE_VERSION, "providers": {}}
+        else:
+            if isinstance(raw, dict) and (
+                isinstance(raw.get("providers"), dict)
+                or isinstance(raw.get("credential_pool"), dict)
+            ):
+                raw.setdefault("providers", {})
+                primary = raw
+            # Migrate from PR's "systems" format if present
+            elif isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
+                systems = raw["systems"]
+                providers = {}
+                if "nous_portal" in systems:
+                    providers["nous"] = systems["nous_portal"]
+                primary = {"version": AUTH_STORE_VERSION, "providers": providers,
+                           "active_provider": "nous" if providers else None}
+            else:
+                primary = {"version": AUTH_STORE_VERSION, "providers": {}}
 
-    if isinstance(raw, dict) and (
-        isinstance(raw.get("providers"), dict)
-        or isinstance(raw.get("credential_pool"), dict)
-    ):
-        raw.setdefault("providers", {})
-        return raw
+    if not should_merge_root_fallback:
+        return primary
 
-    # Migrate from PR's "systems" format if present
-    if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
-        systems = raw["systems"]
-        providers = {}
-        if "nous_portal" in systems:
-            providers["nous"] = systems["nous_portal"]
-        return {"version": AUTH_STORE_VERSION, "providers": providers,
-                "active_provider": "nous" if providers else None}
+    fallback_path = _default_root_auth_file_path()
+    if not fallback_path or not fallback_path.exists():
+        return primary
 
-    return {"version": AUTH_STORE_VERSION, "providers": {}}
+    fallback = _load_auth_store(fallback_path)
+    return _merge_auth_store_fallback(primary, fallback)
 
 
 def _save_auth_store(auth_store: Dict[str, Any]) -> Path:

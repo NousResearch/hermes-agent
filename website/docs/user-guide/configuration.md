@@ -760,6 +760,17 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
 
+## Auth Settings
+
+OAuth credentials and credential pools live in each profile's `auth.json`. Profiles are isolated by default. To let a named profile read missing providers or credential-pool buckets from the root `~/.hermes/auth.json`, opt in explicitly:
+
+```yaml
+auth:
+  inherit_root: true   # default: false
+```
+
+Profile-local auth entries always override root entries, and writes still go to the profile-local `auth.json`. See [Profiles: Optional root auth inheritance](./profiles.md#optional-root-auth-inheritance) for details.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, web page summarization, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision and web extraction).

@@ -183,6 +183,28 @@ If you want this profile to work in a specific project by default, also set its 
 coder config set terminal.cwd /absolute/path/to/project
 ```
 
+### Optional root auth inheritance
+
+Profiles are isolated by default, including OAuth credentials and credential pools in `auth.json`. A new profile does **not** automatically reuse the default profile's Codex, Nous, MiniMax, Qwen, Copilot, or other stored auth state.
+
+If you intentionally want a named profile to reuse missing credentials from the root `~/.hermes/auth.json`, enable explicit inheritance in that profile's `config.yaml`:
+
+```bash
+coder config set auth.inherit_root true
+```
+
+With inheritance enabled:
+
+- Profile-local credentials still win when the same provider exists in `~/.hermes/profiles/<name>/auth.json`.
+- Missing provider entries and missing credential-pool buckets fall back to the root auth store.
+- Writes still go to the profile's own `auth.json`; the root file is only a read fallback.
+
+Disable it again with:
+
+```bash
+coder config set auth.inherit_root false
+```
+
 ## Updating
 
 `hermes update` pulls code once (shared) and syncs new bundled skills to **all** profiles automatically:

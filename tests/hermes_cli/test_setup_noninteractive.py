@@ -144,6 +144,47 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
+    def test_chat_headless_with_provider_exits_before_prompt_toolkit(self, capsys):
+        """Configured bare `hermes` should fail clearly without a TTY instead of crashing in prompt_toolkit."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args()
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("hermes_cli.banner.prefetch_update_check"),
+            patch("tools.skills_sync.sync_skills"),
+            patch("cli.main", side_effect=AssertionError("prompt_toolkit should not start")),
+            patch("sys.stdin") as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_chat(args)
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "interactive Hermes chat requires a terminal" in err
+        assert "hermes chat -q" in err
+
+    def test_chat_headless_query_mode_still_runs(self):
+        """`hermes chat -q ...` is the supported non-interactive chat mode."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query="hello")
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("hermes_cli.banner.prefetch_update_check"),
+            patch("tools.skills_sync.sync_skills"),
+            patch("sys.stdin") as mock_stdin,
+            patch("cli.main") as mock_cli_main,
+        ):
+            mock_stdin.isatty.return_value = False
+            cmd_chat(args)
+
+        mock_cli_main.assert_called_once()
+        assert mock_cli_main.call_args.kwargs["query"] == "hello"
+
     def test_main_accepts_tts_setup_section(self, monkeypatch):
         """`hermes setup tts` should parse and dispatch like other setup sections."""
         from hermes_cli import main as main_mod

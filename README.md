@@ -39,10 +39,15 @@ Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the p
 >
 > **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 
-After installation:
+After installation, reload the shell config for your current shell and then start Hermes:
 
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+# zsh (macOS default):
+source ~/.zshrc
+
+# bash:
+source ~/.bashrc
+
 hermes              # start chatting!
 ```
 

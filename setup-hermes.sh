@@ -389,11 +389,19 @@ echo "  hermes cron list     # View scheduled jobs"
 echo "  hermes doctor        # Diagnose issues"
 echo ""
 
-# Ask if they want to run setup wizard now
-read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-    echo ""
-    # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+# Ask if they want to run setup wizard now, but only when stdin is a real
+# terminal.  When this script is run from a non-interactive context, `read`
+# returns an empty reply; treating that as the default "yes" launches the
+# interactive setup wizard without a usable TTY.
+if [ -t 0 ]; then
+    read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        echo ""
+        # Run directly with venv Python (no activation needed)
+        "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    fi
+else
+    echo "Skipping setup wizard prompt (no interactive terminal detected)."
+    echo "Run 'hermes setup' in a terminal when you're ready to configure Hermes."
 fi

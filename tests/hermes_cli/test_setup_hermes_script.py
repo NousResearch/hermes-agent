@@ -19,3 +19,10 @@ def test_setup_hermes_script_has_termux_path():
     assert "constraints-termux.txt" in content
     assert "$PREFIX/bin" in content
     assert "Skipping tinker-atropos on Termux" in content
+
+
+def test_setup_hermes_script_skips_wizard_prompt_without_tty():
+    content = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "if [ -t 0 ]; then" in content
+    assert "Skipping setup wizard prompt (no interactive terminal detected)." in content

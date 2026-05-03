@@ -1262,6 +1262,20 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
+    # Interactive chat needs a real terminal.  `hermes chat -q ...` remains
+    # valid in pipes, scripts, and installer subprocesses, but the prompt_toolkit
+    # UI will crash on some platforms (notably macOS/kqueue) if stdin is not a
+    # selectable TTY.  Fail early with actionable guidance instead of showing a
+    # traceback from loop.add_reader(fd=0).
+    if not getattr(args, "query", None) and not sys.stdin.isatty():
+        print(
+            "Error: interactive Hermes chat requires a terminal.\n"
+            "Run `hermes` directly in your terminal, or use "
+            "`hermes chat -q \"your prompt\"` for non-interactive use.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Start update check in background (runs while other init happens)
     try:
         from hermes_cli.banner import prefetch_update_check

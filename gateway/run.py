@@ -23,6 +23,7 @@ import re
 import shlex
 import sys
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -4949,6 +4950,11 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            # /raw must bypass the guard — it delegates to an external scraper
+            # (wiki_scrape.py) and never interacts with the running agent.
+            if _cmd_def_inner and _cmd_def_inner.name == "raw":
+                return await self._handle_raw_command(event)
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -5260,6 +5266,9 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "raw":
+            return await self._handle_raw_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -8591,6 +8600,115 @@ class GatewayRunner:
                 f"A pre-rollback snapshot was saved automatically."
             )
         return f"❌ {result['error']}"
+
+
+    async def _handle_raw_command(self, event: MessageEvent) -> str:
+        """Handle /raw command — scrape URL(s) and save to Wiki Raw/ folder.
+
+        Routes YouTube URLs to fetch_youtube_transcript.py (full transcript via API),
+        all other URLs to wiki_scrape.py (Camoufox/Firecrawl). Returns a structured
+        response per the LLM-Wiki skill spec.
+        """
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            return (
+                "❌ Usage: /raw <url> [url2 ...]\n"
+                "   Scrapes URL(s) and saves to Raw/ for nightly compilation.\n"
+                "   X/Twitter and YouTube URLs get special handling."
+            )
+
+        # Determine wiki raw directory
+        script_dir = os.path.expanduser("~/.hermes/scripts")
+        wiki_script = os.path.join(script_dir, "wiki_scrape.py")
+        youtube_script = os.path.expanduser(
+            "~/.hermes/skills/note-taking/llm-wiki/scripts/fetch_youtube_transcript.py"
+        )
+        default_raw = os.path.expanduser(
+            "~/Documents/Personal/My Second Brain/Resources/Raw"
+        )
+        raw_dir = default_raw
+        try:
+            if hasattr(self, "config") and self.config:
+                cfg = self.config
+                if hasattr(cfg, "skills") and cfg.skills:
+                    wiki_path = cfg.skills.get("config", {}).get("wiki", {}).get("path")
+                    if wiki_path:
+                        raw_dir = os.path.join(os.path.expanduser(str(wiki_path)), "Raw")
+        except Exception:
+            pass  # fall back to default
+        os.makedirs(raw_dir, exist_ok=True)
+
+        urls = shlex.split(raw_args)
+        total_images = 0
+        total_sources = 0
+        saved_files = []
+        errors = []
+
+        # YouTube domain patterns — these get the full transcript via API
+        youtube_pattern = re.compile(
+            r"(youtube\.com|youtu\.be)", re.IGNORECASE
+        )
+
+        for url in urls:
+            url = url.strip().rstrip("/")
+            if url in ("/raw", "!raw"):
+                continue
+            if not url or url.startswith("http://") or url.startswith("https://"):
+                pass
+            elif "." in url:
+                url = "https://" + url
+
+            safe_url = url.replace("&", "\\&").replace(";", "\\")
+
+            # YouTube URLs get full transcript via API; everything else uses wiki_scrape.py
+            is_youtube = bool(youtube_pattern.search(url))
+            script_to_use = youtube_script if is_youtube else wiki_script
+
+            result = subprocess.run(
+                [sys.executable, script_to_use, safe_url, "--raw-dir", raw_dir],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                errors.append(f"❌ {url}: {result.stderr.strip() or result.stdout.strip()}")
+                continue
+
+            # Both scripts output file path to stdout prefixed with "→ "
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+
+            # Parse file path from stdout: "→ /path/to/file.md"
+            filepath = stdout.lstrip("→ ").strip() if stdout else ""
+
+            # Parse images count from stderr: " | N image(s)"
+            images = 0
+            img_match = re.search(r'(\d+)\s+image\(s\)', stderr)
+            if img_match:
+                images = int(img_match.group(1))
+
+            total_sources += 1
+            total_images += images
+            if filepath:
+                saved_files.append(os.path.basename(filepath))
+            else:
+                saved_files.append(url)
+
+        lines = []
+        if saved_files:
+            lines.append("✅ Saved to Raw/")
+            for f in saved_files:
+                lines.append(f"📄 {f}")
+            lines.append(f"🔗 {total_sources} source(s)")
+            lines.append(f"🖼 {total_images} image(s)")
+            lines.append(f"⏰ Compile at next nightly cron")
+            if errors:
+                lines.append("")
+                lines.extend(errors)
+        elif errors:
+            lines.extend(errors)
+        else:
+            lines.append("🤷 Nothing to scrape — no valid URLs found.")
+
+        return "\n".join(lines)
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
@@ -12151,9 +12269,17 @@ class GatewayRunner:
                         break
                 return
 
+            # Check config: auto_delete_tool_progress (default: True)
+            try:
+                from hermes_cli.config import load_config as _lc
+                _auto_delete = cfg_get(_lc(), "display", "auto_delete_tool_progress", default=True)
+            except Exception:
+                _auto_delete = True
+
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_delete = True        # Separate from can_edit — Discord supports delete even after edit failures
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -12200,6 +12326,21 @@ class GatewayRunner:
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
+
+                        # Delete the closed-off progress bubble if the adapter
+                        # supports it — keeps Discord chats clean
+                        if _auto_delete and can_delete and progress_lines and progress_msg_id:
+                            try:
+                                if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
+                                    _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
+                                    logger.info("Deleting progress bubble %s in chat %s (__reset__)", progress_msg_id, _progress_chat_id)
+                                    result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
+                                    logger.info("Delete result: %s", result)
+                                    if not result:
+                                        can_delete = False
+                            except Exception as e:
+                                logger.warning("Delete error: %s", e)
+                                can_delete = False
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None
@@ -12223,6 +12364,22 @@ class GatewayRunner:
                         continue
 
                     if not _run_still_current():
+                        # Delete the progress bubble on normal completion if the
+                        # adapter supports it — keeps Discord chats clean.
+                        # (The CancelledError handler below handles the interrupt
+                        # path; this covers the "agent finished normally" case.)
+                        if _auto_delete and progress_msg_id:
+                            try:
+                                if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
+                                    _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
+                                    logger.info("Deleting progress bubble %s in chat %s (normal-completion)", progress_msg_id, _progress_chat_id)
+                                    result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
+                                    logger.info("Delete result: %s", result)
+                                    if not result:
+                                        can_delete = False
+                            except Exception as e:
+                                logger.warning("Delete error on normal completion: %s", e)
+                                can_delete = False
                         return
 
                     if can_edit and progress_msg_id is not None:
@@ -12288,6 +12445,20 @@ class GatewayRunner:
                                         )
                                     except Exception:
                                         pass
+                                    # Delete the closed-off progress bubble if the
+                                    # adapter supports it — keeps Discord chats clean
+                                    if _auto_delete:
+                                        try:
+                                            if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
+                                                _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
+                                                logger.info("Deleting progress bubble %s in chat %s (__reset__)", progress_msg_id, _progress_chat_id)
+                                                result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
+                                                logger.info("Delete result: %s", result)
+                                                if not result:
+                                                    can_delete = False
+                                        except Exception as e:
+                                            logger.warning("Delete error: %s", e)
+                                            can_delete = False
                                 progress_msg_id = None
                                 progress_lines = []
                                 last_progress_msg[0] = None
@@ -12307,6 +12478,21 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+
+                    # Delete the progress bubble after final edit if the
+                    # adapter supports it — keeps Discord chats clean
+                    if _auto_delete and progress_msg_id:
+                        try:
+                            if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
+                                _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
+                                logger.info("Deleting progress bubble %s in chat %s (final-drain)", progress_msg_id, _progress_chat_id)
+                                result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
+                                logger.info("Delete result: %s", result)
+                                if not result:
+                                    can_delete = False
+                        except Exception as e:
+                            logger.warning("Delete error in final drain: %s", e)
+                            can_delete = False
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)

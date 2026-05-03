@@ -510,3 +510,4 @@ export type GatewayEvent =
       type: 'message.complete'
     }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }
+  | { payload?: { usage?: Usage }; session_id?: string; type: 'usage.delta' }

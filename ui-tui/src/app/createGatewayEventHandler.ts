@@ -615,9 +615,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'usage.delta': {
-        patchUiState(state => ({
-          usage: { ...state.usage, ...ev.payload.usage }
-        }))
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload?.usage } }))
         return
       }
       case 'message.delta': {

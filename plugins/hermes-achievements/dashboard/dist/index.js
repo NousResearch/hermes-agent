@@ -21,17 +21,7 @@
 
   async function api(path, options) {
     const url = "/api/plugins/hermes-achievements" + path;
-    const res = await fetch(url, options || {});
-    if (!res.ok) {
-      const text = await res.text().catch(function () { return res.statusText; });
-      throw new Error(res.status + ": " + text);
-    }
-    const text = await res.text();
-    try {
-      return JSON.parse(text);
-    } catch (_) {
-      return null;
-    }
+    return SDK.fetchJSON(url, options || {});
   }
 
   function AchievementIcon({ icon }) {

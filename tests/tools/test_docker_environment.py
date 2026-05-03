@@ -1,7 +1,7 @@
 import logging
-from io import StringIO
 import subprocess
 import sys
+import tempfile
 import types
 
 import pytest
@@ -202,16 +202,27 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
-def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When persistent=false, cleanup() must schedule docker stop + rm."""
+def test_non_persistent_cleanup_removes_container_without_shell(monkeypatch):
+    """When persistent=false, cleanup() must schedule argv-safe docker cleanup."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = _mock_subprocess_run(monkeypatch)
+    _mock_subprocess_run(monkeypatch)
 
-    popen_cmds = []
-    monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
-    )
+    popen_calls = []
+
+    class _FakeCleanupProcess:
+        def __init__(self):
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+    def _popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        if isinstance(cmd, list) and cmd[:2] == [sys.executable, "-c"]:
+            return _FakeCleanupProcess()
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _popen)
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
     assert env._container_id
@@ -219,16 +230,23 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
 
     env.cleanup()
 
-    # Should have stop and rm calls via Popen
-    stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
-    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    cleanup_popen_calls = [call for call in popen_calls if isinstance(call[0], list) and call[0][:2] == [sys.executable, "-c"]]
+    assert len(cleanup_popen_calls) == 1
+    cmd, kwargs = cleanup_popen_calls[0]
+    assert isinstance(cmd, list)
+    assert cmd[:2] == [sys.executable, "-c"]
+    assert cmd[-3:] == ["/usr/bin/docker", container_id, "0"]
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["start_new_session"] is True
+    assert "shell" not in kwargs
 
 
 class _FakePopen:
     def __init__(self, cmd, **kwargs):
         self.cmd = cmd
         self.kwargs = kwargs
-        self.stdout = StringIO("")
+        self.stdout = tempfile.TemporaryFile(mode="w+b")
         self.stdin = None
         self.returncode = 0
 

@@ -225,7 +225,7 @@ async def host_header_middleware(request: Request, call_next):
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
@@ -3953,18 +3953,37 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
+def _resolve_plugin_api_path(plugin_dir: str | Path, api_file_name: str) -> Path:
+    """Return a safe plugin API file path contained by the plugin dashboard dir."""
+    api_path = Path(api_file_name)
+    if api_path.is_absolute():
+        raise ValueError("absolute paths are not allowed")
+    if api_path.suffix != ".py":
+        raise ValueError("api file must be a Python module")
+
+    base = Path(plugin_dir).resolve()
+    resolved = (base / api_path).resolve()
+    if not resolved.is_relative_to(base):
+        raise ValueError("path escapes the plugin dashboard directory")
+    return resolved
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
-    Each plugin's ``api`` field points to a Python file that must expose
-    a ``router`` (FastAPI APIRouter).  Routes are mounted under
-    ``/api/plugins/<name>/``.
+    Each plugin's ``api`` field points to a Python file under the plugin's
+    dashboard directory that must expose a ``router`` (FastAPI APIRouter).
+    Routes are mounted under ``/api/plugins/<name>/``.
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        api_path = Path(plugin["_dir"]) / api_file_name
+        try:
+            api_path = _resolve_plugin_api_path(plugin["_dir"], api_file_name)
+        except ValueError as exc:
+            _log.warning("Plugin %s declares invalid api=%s: %s", plugin["name"], api_file_name, exc)
+            continue
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue

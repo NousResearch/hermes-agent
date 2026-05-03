@@ -13,15 +13,13 @@ reads run alongside the dispatcher's IMMEDIATE write transactions).
 
 Security note
 -------------
-The dashboard's HTTP auth middleware (``web_server.auth_middleware``)
-explicitly skips ``/api/plugins/`` — plugin routes are unauthenticated by
-design because the dashboard binds to localhost by default. For the
-WebSocket we still require the session token as a ``?token=`` query
-parameter (browsers cannot set the ``Authorization`` header on an upgrade
-request), matching the established pattern used by the in-browser PTY
-bridge in ``hermes_cli/web_server.py``. If you run the dashboard with
-``--host 0.0.0.0``, every plugin route — kanban included — becomes
-reachable from the network. Don't do that on a shared host.
+Plugin HTTP routes are protected by the dashboard's session-token auth
+middleware (``web_server.auth_middleware``). Dashboard frontends should call
+these routes through ``window.__HERMES_PLUGIN_SDK__.fetchJSON`` or include the
+``X-Hermes-Session-Token`` header. The WebSocket also requires the session token
+as a ``?token=`` query parameter (browsers cannot set the ``Authorization``
+header on an upgrade request), matching the established pattern used by the
+in-browser PTY bridge in ``hermes_cli/web_server.py``.
 """
 
 from __future__ import annotations

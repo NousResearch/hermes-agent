@@ -146,3 +146,37 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+
+class TestPluginApiSecurity:
+    def test_plugin_api_routes_require_session_token(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        client = TestClient(app)
+        resp = client.get("/api/plugins/example/anything")
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Unauthorized"
+
+    def test_plugin_api_path_must_stay_under_dashboard_dir(self, tmp_path):
+        from hermes_cli.web_server import _resolve_plugin_api_path
+
+        plugin_dir = tmp_path / "plugin" / "dashboard"
+        plugin_dir.mkdir(parents=True)
+        api_file = plugin_dir / "api.py"
+        api_file.write_text("router = None\n")
+
+        assert _resolve_plugin_api_path(plugin_dir, "api.py") == api_file.resolve()
+        assert _resolve_plugin_api_path(plugin_dir, "nested/../api.py") == api_file.resolve()
+
+        for bad in ("../api.py", "/tmp/api.py", "api.txt"):
+            with pytest.raises(ValueError):
+                _resolve_plugin_api_path(plugin_dir, bad)
+
+    def test_bundled_plugin_api_fetches_use_session_aware_sdk(self):
+        repo = Path(__file__).resolve().parents[2]
+        achievements_js = repo / "plugins" / "hermes-achievements" / "dashboard" / "dist" / "index.js"
+        text = achievements_js.read_text(encoding="utf-8")
+
+        assert "SDK.fetchJSON(url, options || {})" in text
+        assert 'fetch(url, options || {})' not in text

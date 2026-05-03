@@ -618,25 +618,55 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
-            try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
-                )
-                subprocess.Popen(stop_cmd, shell=True)
-            except Exception as e:
-                logger.warning("Failed to stop container %s: %s", self._container_id, e)
+            container_id = self._container_id
+            docker_exe = self._docker_exe
+            persistent_arg = "1" if self._persistent else "0"
+            helper_code = r"""
+import subprocess
+import sys
+import time
 
-            if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
-                try:
-                    subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
-                    )
-                except Exception:
-                    pass
+docker_exe, container_id, persistent = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+try:
+    stopped = subprocess.run(
+        [docker_exe, "stop", container_id],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=60,
+        check=False,
+    )
+    if stopped.returncode != 0:
+        subprocess.run(
+            [docker_exe, "rm", "-f", container_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    elif not persistent:
+        time.sleep(3)
+        subprocess.run(
+            [docker_exe, "rm", "-f", container_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+except Exception:
+    pass
+"""
+            try:
+                # Spawn an independent helper so cleanup survives parent exit,
+                # while passing docker paths and container IDs as argv rather
+                # than interpolating them into a shell command.
+                subprocess.Popen(
+                    [sys.executable, "-c", helper_code, docker_exe, container_id, persistent_arg],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                logger.warning("Failed to schedule cleanup for container %s: %s", container_id, e)
             self._container_id = None
 
         if not self._persistent:

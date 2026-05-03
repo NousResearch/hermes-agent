@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
@@ -469,6 +470,24 @@ def _reports_root() -> Path:
     return root
 
 
+def _needle_in_path_component(needle: str, path: str) -> bool:
+    """Check if *needle* is a complete filename stem or directory name in *path*.
+
+    Unlike simple substring matching, this avoids false positives where short
+    skill names are embedded in longer filenames (e.g. "api" matching
+    "references/api-design.md").  Hyphens and underscores are normalised so
+    "open-webui-setup" matches "open_webui_setup.md".
+    """
+    norm_needle = needle.replace("-", "_")
+    for part in path.replace("\\", "/").split("/"):
+        if not part:
+            continue
+        stem = part.rsplit(".", 1)[0] if "." in part else part
+        if stem.replace("-", "_") == norm_needle:
+            return True
+    return False
+
+
 def _classify_removed_skills(
     removed: List[str],
     added: List[str],
@@ -547,15 +566,29 @@ def _classify_removed_skills(
                 continue
 
             # Look for the removed skill's name in file_path / content / raw.
-            haystacks: List[str] = []
+            # Matching strategy differs by field type:
+            #   file_path — needle must be a complete path component
+            #     (filename stem or directory name), so "api" does NOT
+            #     falsely match "references/api-design.md".
+            #   content fields — word-boundary regex so "test" does NOT
+            #     falsely match "latest" or "testing".
+            haystacks: List[tuple[str, str]] = []
             for key in ("file_path", "file_content", "content", "new_string", "_raw"):
                 v = args.get(key)
                 if isinstance(v, str):
-                    haystacks.append(v)
+                    haystacks.append((key, v))
             hit = False
-            for hay in haystacks:
+            for key, hay in haystacks:
                 for needle in needles:
-                    if needle and needle in hay:
+                    if not needle:
+                        continue
+                    if key == "file_path":
+                        matched = _needle_in_path_component(needle, hay)
+                    else:
+                        matched = bool(
+                            re.search(rf'\b{re.escape(needle)}\b', hay)
+                        )
+                    if matched:
                         hit = True
                         evidence = (
                             f"skill_manage action={args.get('action', '?')} "

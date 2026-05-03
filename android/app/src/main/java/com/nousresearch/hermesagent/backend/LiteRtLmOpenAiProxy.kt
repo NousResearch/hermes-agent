@@ -236,7 +236,8 @@ object LiteRtLmOpenAiProxy {
             supportAudio: Boolean,
         ): EngineInitResult {
             var lastError: Throwable? = null
-            val backends = if (isTranslatedArm64OnX86(context)) {
+            val openClAvailable = hasLoadableOpenClLibrary()
+            val backends = if (isTranslatedArm64OnX86(context) || !openClAvailable) {
                 listOf(Backend.CPU() to "cpu")
             } else {
                 listOf(
@@ -244,12 +245,22 @@ object LiteRtLmOpenAiProxy {
                     Backend.CPU() to "cpu",
                 )
             }
+            val visionBackend = when {
+                !supportImage -> null
+                openClAvailable -> Backend.GPU()
+                else -> Backend.CPU()
+            }
+            val visionBackendLabel = when {
+                !supportImage -> "none"
+                openClAvailable -> "gpu"
+                else -> "cpu"
+            }
             for ((backend, label) in backends) {
                 val candidate = Engine(
                     EngineConfig(
                         modelPath = modelPath,
                         backend = backend,
-                        visionBackend = if (supportImage) Backend.GPU() else null,
+                        visionBackend = visionBackend,
                         audioBackend = if (supportAudio) Backend.CPU() else null,
                         maxNumImages = if (supportImage) 1 else null,
                         cacheDir = context.cacheDir.absolutePath,
@@ -260,7 +271,7 @@ object LiteRtLmOpenAiProxy {
                     return EngineInitResult(
                         engine = candidate,
                         backend = label,
-                        visionBackend = if (supportImage) "gpu" else "none",
+                        visionBackend = visionBackendLabel,
                         audioBackend = if (supportAudio) "cpu" else "none",
                     )
                 } catch (error: Throwable) {
@@ -277,6 +288,22 @@ object LiteRtLmOpenAiProxy {
                 nativeLibraryDir.contains("\\arm64")
             val deviceSupportsX86 = Build.SUPPORTED_ABIS.any { it.startsWith("x86") }
             return packageUsesArm64 && deviceSupportsX86
+        }
+
+        private fun hasLoadableOpenClLibrary(): Boolean {
+            return listOf(
+                "/vendor/lib64/libOpenCL.so",
+                "/system/vendor/lib64/libOpenCL.so",
+                "/system/lib64/libOpenCL.so",
+                "/odm/lib64/libOpenCL.so",
+                "/vendor/lib/libOpenCL.so",
+                "/system/vendor/lib/libOpenCL.so",
+                "/system/lib/libOpenCL.so",
+                "/odm/lib/libOpenCL.so",
+            ).any { path ->
+                val file = File(path)
+                file.isFile && runCatching { System.load(file.absolutePath) }.isSuccess
+            }
         }
 
         private fun handleChatCompletions(session: IHTTPSession): Response {

@@ -128,6 +128,18 @@ def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
     assert 'LiteRT-LM generation timed out after' in proxy
 
 
+def test_litert_proxy_skips_gpu_when_opencl_is_missing():
+    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+
+    assert 'val openClAvailable = hasLoadableOpenClLibrary()' in proxy
+    assert 'isTranslatedArm64OnX86(context) || !openClAvailable' in proxy
+    assert '"/vendor/lib64/libOpenCL.so"' in proxy
+    assert '"/system/vendor/lib64/libOpenCL.so"' in proxy
+    assert 'System.load(file.absolutePath)' in proxy
+    assert 'visionBackend = visionBackend' in proxy
+    assert 'else -> "cpu"' in proxy
+
+
 def test_release_build_recovers_existing_model_files_without_run_as_access():
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
     backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")

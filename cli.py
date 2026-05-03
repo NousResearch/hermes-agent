@@ -4817,7 +4817,7 @@ class HermesCLI:
         try:
             sessions = self._session_db.list_sessions_rich(
                 source="cli",
-                exclude_sources=["tool"],
+                exclude_sources=["tool", "cron"],
                 limit=limit,
             )
         except Exception:
@@ -5415,6 +5415,7 @@ class HermesCLI:
             "stage": "provider",
             "providers": providers,
             "selected": default_idx,
+            "scroll_offset": 0,
             "current_model": current_model,
             "current_provider": current_provider,
             "user_provs": user_provs,
@@ -5565,6 +5566,7 @@ class HermesCLI:
             state["provider_data"] = provider_data
             state["model_list"] = model_list
             state["selected"] = 0
+            state["scroll_offset"] = 0
             self._invalidate(min_interval=0.0)
             return
         if stage == "model":
@@ -5575,6 +5577,7 @@ class HermesCLI:
             if selected == back_idx:
                 state["stage"] = "provider"
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                state["scroll_offset"] = 0
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
@@ -10271,11 +10274,16 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- /model picker: arrow-key navigation ---
+        # --- /model picker: arrow-key navigation with scroll ---
         @kb.add('up', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_up(event):
-            if self._model_picker_state:
-                self._model_picker_state["selected"] = max(0, self._model_picker_state.get("selected", 0) - 1)
+            state = self._model_picker_state
+            if state:
+                new_selected = max(0, state.get("selected", 0) - 1)
+                state["selected"] = new_selected
+                # Keep cursor within scroll window
+                if new_selected < state.get("scroll_offset", 0):
+                    state["scroll_offset"] = new_selected
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._model_picker_state)))

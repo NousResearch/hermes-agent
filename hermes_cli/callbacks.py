@@ -22,6 +22,21 @@ def clarify_callback(cli, question, choices):
     responds. Returns the user's choice or a timeout message.
     """
     from cli import CLI_CONFIG
+    import subprocess
+
+    # Fire macOS notification + terminal bell so user notices even if terminal is in background
+    notification_body = question[:120] + ("..." if len(question) > 120 else "")
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "{notification_body}" with title "Hermes — 需要确认" sound name "Glass"'],
+            timeout=3, capture_output=True,
+        )
+    except Exception:
+        pass
+    try:
+        subprocess.run(["echo", "-e", "\\a"], timeout=2, capture_output=True)
+    except Exception:
+        pass
 
     timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
@@ -201,6 +216,22 @@ def approval_callback(cli, command: str, description: str) -> str:
 
     with lock:
         from cli import CLI_CONFIG
+        import subprocess
+
+        # Fire macOS notification + terminal bell for dangerous command approvals
+        notification_body = (description or command)[:120] + ("..." if len(description or command) > 120 else "")
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{notification_body}" with title "Hermes — 命令待批准" sound name "Alert"'],
+                timeout=3, capture_output=True,
+            )
+        except Exception:
+            pass
+        try:
+            subprocess.run(["echo", "-e", "\\a"], timeout=2, capture_output=True)
+        except Exception:
+            pass
+
         timeout = CLI_CONFIG.get("approvals", {}).get("timeout", 60)
         response_queue = queue.Queue()
         choices = ["once", "session", "always", "deny"]

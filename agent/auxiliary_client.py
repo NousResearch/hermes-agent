@@ -191,9 +191,9 @@ OMIT_TEMPERATURE: object = object()
 
 
 def _is_kimi_model(model: Optional[str]) -> bool:
-    """True for any Kimi / Moonshot model that manages temperature server-side."""
+    """True for any Kimi / Moonshot / Qwen model that manages temperature server-side."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return bare.startswith("kimi-") or bare == "kimi"
+    return bare.startswith("kimi-") or bare == "kimi" or bare.startswith("qwen")
 
 
 def _fixed_temperature_for_model(
@@ -1005,19 +1005,19 @@ def _read_nous_auth() -> Optional[dict]:
     """
     pool_present, entry = _select_pool_entry("nous")
     if pool_present:
-        if entry is None:
-            return None
-        return {
-            "access_token": getattr(entry, "access_token", ""),
-            "refresh_token": getattr(entry, "refresh_token", None),
-            "agent_key": getattr(entry, "agent_key", None),
-            "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
-            "portal_base_url": getattr(entry, "portal_base_url", None),
-            "client_id": getattr(entry, "client_id", None),
-            "scope": getattr(entry, "scope", None),
-            "token_type": getattr(entry, "token_type", "Bearer"),
-            "source": "pool",
-        }
+        if entry is not None:
+            return {
+                "access_token": getattr(entry, "access_token", ""),
+                "refresh_token": getattr(entry, "refresh_token", None),
+                "agent_key": getattr(entry, "agent_key", None),
+                "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
+                "portal_base_url": getattr(entry, "portal_base_url", None),
+                "client_id": getattr(entry, "client_id", None),
+                "scope": getattr(entry, "scope", None),
+                "token_type": getattr(entry, "token_type", "Bearer"),
+                "source": "pool",
+            }
+        # entry is None → pool exists but all exhausted, fall through to auth.json
 
     try:
         if not _AUTH_JSON_PATH.is_file():

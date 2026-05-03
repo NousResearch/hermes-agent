@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -39,6 +40,10 @@ from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+# Delivery retry configuration for transient network/platform failures.
+_MAX_DELIVERY_RETRIES = 3
+_DELIVERY_RETRY_BACKOFF = [10, 30, 60]  # seconds between attempts
 
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
@@ -475,32 +480,45 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
-            try:
-                result = asyncio.run(coro)
-            except RuntimeError:
-                # asyncio.run() checks for a running loop before awaiting the coroutine;
-                # when it raises, the original coro was never started — close it to
-                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-                # fresh thread that has no running loop.
-                coro.close()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                    result = future.result(timeout=30)
-            except Exception as e:
-                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
-                continue
+            # Standalone path with retry: attempt delivery up to _MAX_DELIVERY_RETRIES
+            # times on transient failures (network errors, platform disconnects).
+            last_error = None
+            for attempt in range(_MAX_DELIVERY_RETRIES):
+                if attempt > 0:
+                    backoff = _DELIVERY_RETRY_BACKOFF[min(attempt - 1, len(_DELIVERY_RETRY_BACKOFF) - 1)]
+                    logger.info("Job '%s': delivery retry %d/%d to %s:%s after %ds",
+                                job["id"], attempt + 1, _MAX_DELIVERY_RETRIES,
+                                platform_name, chat_id, backoff)
+                    time.sleep(backoff)
 
-            if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
-                logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
-                continue
+                coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+                try:
+                    result = asyncio.run(coro)
+                except RuntimeError:
+                    coro.close()
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        result = future.result(timeout=30)
+                except Exception as e:
+                    last_error = f"delivery to {platform_name}:{chat_id} failed (attempt {attempt + 1}): {e}"
+                    logger.warning("Job '%s': %s", job["id"], last_error)
+                    continue  # retry
 
-            logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+                if result and result.get("error"):
+                    last_error = f"delivery error (attempt {attempt + 1}): {result['error']}"
+                    logger.warning("Job '%s': %s", job["id"], last_error)
+                    continue  # retry
+
+                # Success
+                logger.info("Job '%s': delivered to %s:%s (attempt %d)", job["id"], platform_name, chat_id, attempt + 1)
+                last_error = None
+                break
+
+            if last_error:
+                logger.error("Job '%s': giving up delivery to %s:%s after %d attempts: %s",
+                            job["id"], platform_name, chat_id, _MAX_DELIVERY_RETRIES, last_error)
+                delivery_errors.append(last_error)
+                continue
 
     if delivery_errors:
         return "; ".join(delivery_errors)

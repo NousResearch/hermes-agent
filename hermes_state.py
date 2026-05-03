@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -102,25 +102,31 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content
+    content,
+    tool_name,
+    tool_calls,
+    content='messages',
+    content_rowid='id'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, new.content, new.tool_name, new.tool_calls
     );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls) VALUES (
+        'delete', old.id, old.content, old.tool_name, old.tool_calls
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
-    INSERT INTO messages_fts(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls) VALUES (
+        'delete', old.id, old.content, old.tool_name, old.tool_calls
+    );
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, new.content, new.tool_name, new.tool_calls
     );
 END;
 """
@@ -132,25 +138,31 @@ END;
 FTS_TRIGRAM_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
+    tool_name,
+    tool_calls,
+    content='messages',
+    content_rowid='id',
     tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, new.content, new.tool_name, new.tool_calls
     );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls) VALUES (
+        'delete', old.id, old.content, old.tool_name, old.tool_calls
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls) VALUES (
+        'delete', old.id, old.content, old.tool_name, old.tool_calls
+    );
+    INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, new.content, new.tool_name, new.tool_calls
     );
 END;
 """
@@ -480,6 +492,42 @@ class SessionDB:
                     "COALESCE(tool_name, '') || ' ' || "
                     "COALESCE(tool_calls, '') "
                     "FROM messages"
+                )
+            if current_version < 12:
+                # v12: switch from inline FTS5 to external-content FTS5.
+                # The v11 inline mode duplicated all content in FTS tables,
+                # causing ~1.2GB state.db where messages are only ~270MB.
+                # External-content mode keeps only index data in FTS tables;
+                # content is read from the messages table on demand.
+                # All 3 indexed columns (content, tool_name, tool_calls) are
+                # preserved. Estimated ~33% DB size reduction.
+                for _trig in (
+                    "messages_fts_insert",
+                    "messages_fts_delete",
+                    "messages_fts_update",
+                    "messages_fts_trigram_insert",
+                    "messages_fts_trigram_delete",
+                    "messages_fts_trigram_update",
+                ):
+                    try:
+                        cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
+                    except sqlite3.OperationalError:
+                        pass
+                for _tbl in ("messages_fts", "messages_fts_trigram"):
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.executescript(FTS_SQL)
+                cursor.executescript(FTS_TRIGRAM_SQL)
+                # Rebuild both FTS indexes from the messages table.
+                # External-content mode (content='messages', content_rowid='id')
+                # reads all column values from messages automatically.
+                cursor.execute(
+                    "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+                )
+                cursor.execute(
+                    "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')"
                 )
             if current_version < SCHEMA_VERSION:
                 cursor.execute(

@@ -3982,7 +3982,9 @@ class GatewayRunner:
             if not check_discord_requirements():
                 logger.warning("Discord: discord.py not installed")
                 return None
-            return DiscordAdapter(config)
+            adapter = DiscordAdapter(config)
+            adapter.gateway_runner = self  # For cross-platform admin alerts on unauthorized slash
+            return adapter
         
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements

@@ -358,6 +358,13 @@ export function useMainApp(gw: GatewayClient) {
   const die = useCallback(() => {
     gw.kill()
     exit()
+    // Ink's exit() calls unmount() which resets terminal modes but does NOT
+    // call process.exit().  Without an explicit exit the Node process stays
+    // alive (stdin listener keeps the event loop open), so the process.on('exit')
+    // handler in entry.tsx — which sends the final resetTerminalModes() — never
+    // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
+    // in the parent shell.  See issue #19194.
+    process.exit(0)
   }, [exit, gw])
 
   const session = useSessionLifecycle({

@@ -1,0 +1,10 @@
+name: poe-image-gen
+kind: backend
+version: 1.0.0
+description: >
+  Poe.com image generation backend for Hermes Agent.
+  Supports DALL-E-3, FLUX, Imagen-4, GPT-Image-1.5, and Stable Diffusion XL
+  via Poe's OpenAI-compatible API.
+author: Hermes Agent
+requires_env:
+  - POE_API_KEY

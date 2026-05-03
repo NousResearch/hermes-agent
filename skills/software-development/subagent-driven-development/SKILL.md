@@ -32,6 +32,13 @@ Use this skill when:
 - Consistent quality checks across all tasks
 - Subagents can ask questions before starting work
 
+## Operator Defaults on This Mac
+
+- Child subagents do **not** automatically inherit the parent conversation memory or user preferences. The controller must pass important constraints explicitly in `context` every time.
+- The user prefers Chinese output unless a task says otherwise; include that in child context when user-facing summaries matter.
+- RTK discipline is mandatory for terminal-heavy subtasks: tell child agents to prefer `rtk` for noisy terminal output (`rtk git diff`, `rtk git status`, `rtk log`, `rtk test ...`, `rtk err ...`, `rtk grep`, `rtk tree`) and to use raw commands only for tiny or exact-output cases.
+- Production/remote repair discipline still belongs to the parent/controller: subagents may analyze or produce candidate patches, but Hermes applies changes, reviews diff, restarts services, and verifies health.
+
 ## The Process
 
 ### 1. Read and Parse Plan

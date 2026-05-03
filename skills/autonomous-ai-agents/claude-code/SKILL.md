@@ -715,6 +715,54 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 10. **Start new sessions for distinct tasks** — sessions last 5 hours; fresh context is more efficient.
 11. **Use `--no-session-persistence`** in CI to avoid accumulating saved sessions on disk.
 
+## GStack methodology policy for this user
+
+Adopted on 2026-05-01: **GStack is a Claude Code methodology layer, not a Hermes main-runtime skill bundle.**
+
+Operational rules:
+
+- Do not install `garrytan/gstack/*` into `~/.hermes/skills` or make Hermes load the full GStack bundle.
+- Prefer the safe wrapper with distilled GStack methodology in the prompt (`claude_code_safe.py --mode ask|review|code`) for review/debug/QA/plan tasks.
+- Use real `/gstack-*` slash skills only inside an isolated Claude Code session when the user explicitly wants real GStack behavior.
+- If real GStack is installed for Claude Code, keep namespaced skills (`/gstack-review`, not `/review`), telemetry off, auto-upgrade/team mode off.
+- Never run high-side-effect GStack skills (`/gstack-ship`, `/gstack-land-and-deploy`, `/gstack-setup-gbrain`, `/gstack-setup-browser-cookies`, `/gstack-pair-agent`, `/gstack-skillify`, `/gstack-gstack-upgrade`) without separate explicit approval.
+
+Detailed policy and prompt templates: `references/gstack-methodology-policy.md`.
+
+## Hermes local reliability wrapper / no-response timeout fix
+
+On this Mac, direct Claude Code calls can look like they “timeout” or “give no answer” for two main reasons:
+
+1. Non-bare `claude -p` loads user settings, plugins/hooks/CLAUDE.md discovery and starts with a large prompt surface. A simple `只回复 OK` measured ~23k input tokens and ~6s, while `--bare` measured ~854 input tokens and ~2-4s.
+2. Coding runs that hit `error_max_turns` often stop with `stop_reason=tool_use` and an empty `result`, so Hermes sees “no answer” even though Claude changed files. This is not a transport failure; it is a closeout failure.
+
+Use the local wrapper for Hermes-driven Claude Code work:
+
+```bash
+~/.hermes/scripts/claude_code_safe.py --mode ask \
+  --prompt '只回复 OK，不要解释。' \
+  --turns 1 --timeout 120
+
+~/.hermes/scripts/claude_code_safe.py --mode code \
+  --workdir /path/to/project \
+  --prompt 'Fix the bug, run focused tests, then summarize.' \
+  --turns 8 --segments 3 --timeout 900
+```
+
+Wrapper behavior:
+- always uses `claude --bare -p --output-format json`
+- defaults to max effort unless explicitly overridden
+- disables tools for ask/closeout mode
+- restricts common tools for code/review mode
+- parses JSON leniently when shell output contains control characters
+- if a work segment returns `error_max_turns`, automatically resumes with tools disabled to create a checkpoint summary, then resumes the same Claude Code session with tools enabled and continues from current state; repeats up to `--segments` before a final closeout
+
+Practical rule for Hermes:
+- For one-shot answers/reviews, use wrapper `--mode ask|review` or raw `claude --bare -p ... --effort max --output-format json --no-session-persistence`.
+- For code edits, use wrapper `--mode code` with `--workdir`, `--turns 8-12`, `--segments 3` or more for large tasks, and a foreground timeout of 600-900s or a Hermes background process with `notify_on_complete=true`.
+- Avoid calling interactive `claude` directly from a non-PTY terminal. Use tmux only when a true multi-turn Claude TUI is required.
+- Do not call a plain Hermes `delegate_task` “Claude”; only `acp_command='claude'` or launching `claude` CLI is actually Claude Code.
+
 ## Pitfalls & Gotchas
 
 1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.

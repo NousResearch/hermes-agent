@@ -4,9 +4,9 @@ Model Tools Module
 
 Thin orchestration layer over the tool registry. Each tool file in tools/
 self-registers its schema, handler, and metadata via tools.registry.register().
-This module triggers discovery (by importing all tool modules), then provides
-the public API that run_agent.py, cli.py, batch_runner.py, and the RL
-environments consume.
+This module keeps public compatibility APIs for run_agent.py, cli.py,
+batch_runner.py, and RL environments while letting built-in tool modules load
+lazily on demand.
 
 Public API (signatures preserved from the original 2,400-line version):
     get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode) -> list
@@ -27,7 +27,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -174,10 +174,8 @@ def _run_async(coro):
 
 
 # =============================================================================
-# Tool Discovery  (importing each module triggers its registry.register calls)
+# Tool Discovery  (built-in modules now import lazily on demand)
 # =============================================================================
-
-discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config) used to run here as
 # a module-level side effect.  It was removed because discover_mcp_tools()
@@ -192,21 +190,46 @@ discover_builtin_tools()
 #   - tui_gateway/server.py     -> inline on startup (no event loop)
 #   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
-# Plugin tool discovery (user/project/pip plugins)
-try:
-    from hermes_cli.plugins import discover_plugins
-    discover_plugins()
-except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
+# Plugin discovery is intentionally lazy.
+#
+# Import-time plugin loading used to make every model_tools import pay the cost
+# of scanning manifests and importing enabled plugin modules, even for commands
+# that never build tool schemas. We now defer this until the first actual tool
+# resolution / hook dispatch path.
 
 
 # =============================================================================
-# Backward-compat constants  (built once after discovery)
+# Backward-compat constants  (kept in sync with the live registry)
 # =============================================================================
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
+TOOL_TO_TOOLSET_MAP: Dict[str, str] = {}
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
+TOOLSET_REQUIREMENTS: Dict[str, dict] = {}
+
+
+def _refresh_registry_snapshots(include_toolset_requirements: bool = False) -> None:
+    """Refresh mutable compatibility dicts from the live registry."""
+    TOOL_TO_TOOLSET_MAP.clear()
+    TOOL_TO_TOOLSET_MAP.update(registry.get_tool_to_toolset_map())
+    if include_toolset_requirements:
+        TOOLSET_REQUIREMENTS.clear()
+        TOOLSET_REQUIREMENTS.update(registry.get_toolset_requirements())
+
+
+def _ensure_plugin_tools_loaded() -> None:
+    """Load plugin-provided tools on first real tool resolution."""
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        before_generation = registry._generation
+        discover_plugins()
+        if registry._generation != before_generation:
+            _refresh_registry_snapshots()
+    except Exception as e:
+        logger.debug("Plugin discovery failed: %s", e)
+
+
+_refresh_registry_snapshots()
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
@@ -286,6 +309,11 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    # Ensure plugin-provided tools are registered before cache-keying on the
+    # registry generation. This keeps the first schema build lazy while still
+    # making later cache hits deterministic.
+    _ensure_plugin_tools_loaded()
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -294,6 +322,7 @@ def get_tool_definitions(
     # user-visible config edits that affect dynamic schemas (execute_code
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
+    cfg_fp = None
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -320,6 +349,14 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
+        # Cache under the post-computation generation, because lazy built-in
+        # imports can register tools while _compute_tool_definitions() runs.
+        cache_key = (
+            frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+            frozenset(disabled_toolsets) if disabled_toolsets else None,
+            registry._generation,
+            cfg_fp,
+        )
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
         # schemas to self.tools) don't poison the cache. Without this, a
@@ -667,6 +704,9 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # Ensure plugin tools are present before schema lookup / dispatch.
+    _ensure_plugin_tools_loaded()
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
@@ -789,24 +829,37 @@ def handle_function_call(
 
 def get_all_tool_names() -> List[str]:
     """Return all registered tool names."""
+    _ensure_plugin_tools_loaded()
+    _refresh_registry_snapshots()
     return registry.get_all_tool_names()
 
 
 def get_toolset_for_tool(tool_name: str) -> Optional[str]:
     """Return the toolset a tool belongs to."""
+    toolset = registry.get_toolset_for_tool(tool_name)
+    if toolset is not None:
+        return toolset
+    _ensure_plugin_tools_loaded()
+    _refresh_registry_snapshots()
     return registry.get_toolset_for_tool(tool_name)
 
 
 def get_available_toolsets() -> Dict[str, dict]:
     """Return toolset availability info for UI display."""
+    _ensure_plugin_tools_loaded()
+    _refresh_registry_snapshots(include_toolset_requirements=True)
     return registry.get_available_toolsets()
 
 
 def check_toolset_requirements() -> Dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
+    _ensure_plugin_tools_loaded()
+    _refresh_registry_snapshots(include_toolset_requirements=True)
     return registry.check_toolset_requirements()
 
 
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
+    _ensure_plugin_tools_loaded()
+    _refresh_registry_snapshots(include_toolset_requirements=True)
     return registry.check_tool_availability(quiet=quiet)

@@ -408,6 +408,26 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"context": "memory from plugin"}
 
+    def test_invoke_hook_discovers_plugins_lazily(self, tmp_path, monkeypatch):
+        """Module-level invoke_hook() should work before explicit discovery."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "lazy_hook_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"tool": kw.get("tool_name")})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            results = invoke_hook("pre_tool_call", tool_name="lazy-tool", args={}, task_id="t1")
+
+        assert results == [{"tool": "lazy-tool"}]
+
     def test_hook_none_returns_excluded(self, tmp_path, monkeypatch):
         """invoke_hook() excludes None returns from the result list."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -622,6 +642,38 @@ class TestPluginToolVisibility:
         tools3 = get_tool_definitions(quiet_mode=True)
         tool_names3 = [t["function"]["name"] for t in tools3]
         assert "vis_tool" in tool_names3
+
+    def test_plugin_tools_discovered_lazily_by_get_tool_definitions(self, tmp_path, monkeypatch):
+        """get_tool_definitions() should load enabled plugin tools on first use."""
+        import hermes_cli.plugins as plugins_mod
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "lazy_tool_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "lazy_tool_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="lazy_vis_tool",\n'
+            '        toolset="plugin_lazy_tool_plugin",\n'
+            '        schema={"name": "lazy_vis_tool", "description": "Lazy visible", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '    )\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["lazy_tool_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from model_tools import TOOL_TO_TOOLSET_MAP, get_tool_definitions
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            tools = get_tool_definitions(enabled_toolsets=["plugin_lazy_tool_plugin"], quiet_mode=True)
+
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "lazy_vis_tool" in tool_names
+        assert TOOL_TO_TOOLSET_MAP["lazy_vis_tool"] == "plugin_lazy_tool_plugin"
 
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────

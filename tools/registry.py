@@ -7,9 +7,9 @@ queries the registry instead of maintaining its own parallel data structures.
 Import chain (circular-import safe):
     tools/registry.py  (no imports from model_tools or tool files)
            ^
-    tools/*.py  (import from tools.registry at module level)
+    tools/*.py  (import from tools.registry at module level when lazily loaded)
            ^
-    model_tools.py  (imports tools.registry + all tool modules)
+    model_tools.py  (imports tools.registry and resolves tools on demand)
            ^
     run_agent.py, cli.py, batch_runner.py, etc.
 """
@@ -20,10 +20,22 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+_DISCOVERED_BUILTIN_MODULES_CACHE: Dict[tuple[str, str, tuple[tuple[str, int, int], ...]], List[str]] = {}
+_DISCOVERED_BUILTIN_SPECS_CACHE: Dict[tuple[str, str, tuple[tuple[str, int, int], ...]], List["BuiltinToolSpec"]] = {}
+_DISCOVERED_BUILTIN_MODULES_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class BuiltinToolSpec:
+    module_name: str
+    tool_name: str
+    toolset: str
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -54,15 +66,109 @@ def _module_registers_tools(module_path: Path) -> bool:
     return any(_is_registry_register_call(stmt) for stmt in tree.body)
 
 
+def _resolve_static_string(node: ast.AST | None, bindings: Dict[str, str]) -> Optional[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return bindings.get(node.id)
+    return None
+
+
+def _module_string_bindings(tree: ast.AST) -> Dict[str, str]:
+    bindings: Dict[str, str] = {}
+    for stmt in getattr(tree, "body", []):
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            value = _resolve_static_string(stmt.value, bindings)
+            if value is not None:
+                bindings[stmt.targets[0].id] = value
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            value = _resolve_static_string(stmt.value, bindings)
+            if value is not None:
+                bindings[stmt.target.id] = value
+    return bindings
+
+
+def _module_tool_specs(module_path: Path, module_prefix: str) -> List[BuiltinToolSpec]:
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+    except (OSError, SyntaxError):
+        return []
+
+    bindings = _module_string_bindings(tree)
+    specs: List[BuiltinToolSpec] = []
+    module_name = f"{module_prefix}.{module_path.stem}"
+    for stmt in tree.body:
+        if not _is_registry_register_call(stmt):
+            continue
+        call = stmt.value
+        keywords = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+        name = _resolve_static_string(keywords.get("name"), bindings)
+        toolset = _resolve_static_string(keywords.get("toolset"), bindings)
+        if name and toolset:
+            specs.append(BuiltinToolSpec(module_name=module_name, tool_name=name, toolset=toolset))
+    return specs
+
+
+def _discoverable_tool_paths(tools_path: Path) -> List[Path]:
+    return [
+        path
+        for path in sorted(tools_path.glob("*.py"))
+        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
+    ]
+
+
+def _builtin_discovery_cache_key(
+    tools_path: Path,
+    module_prefix: str = "tools",
+) -> tuple[str, str, tuple[tuple[str, int, int], ...]]:
+    paths = _discoverable_tool_paths(tools_path)
+    fingerprint = tuple(
+        (path.name, path.stat().st_mtime_ns, path.stat().st_size)
+        for path in paths
+    )
+    return (str(tools_path.resolve()), module_prefix, fingerprint)
+
+
+def discover_builtin_tool_specs(
+    tools_dir: Optional[Path] = None,
+    *,
+    module_prefix: str = "tools",
+) -> List[BuiltinToolSpec]:
+    """Return statically-discovered built-in tool specs without importing modules."""
+    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    cache_key = _builtin_discovery_cache_key(tools_path, module_prefix=module_prefix)
+    with _DISCOVERED_BUILTIN_MODULES_LOCK:
+        cached = _DISCOVERED_BUILTIN_SPECS_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
+    specs: List[BuiltinToolSpec] = []
+    for path in _discoverable_tool_paths(tools_path):
+        specs.extend(_module_tool_specs(path, module_prefix))
+
+    with _DISCOVERED_BUILTIN_MODULES_LOCK:
+        _DISCOVERED_BUILTIN_SPECS_CACHE.clear()
+        _DISCOVERED_BUILTIN_SPECS_CACHE[cache_key] = list(specs)
+    return specs
+
+
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     """Import built-in self-registering tool modules and return their module names."""
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
-    module_names = [
-        f"tools.{path.stem}"
-        for path in sorted(tools_path.glob("*.py"))
-        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-        and _module_registers_tools(path)
-    ]
+    cache_key = _builtin_discovery_cache_key(tools_path)
+    with _DISCOVERED_BUILTIN_MODULES_LOCK:
+        cached = _DISCOVERED_BUILTIN_MODULES_CACHE.get(cache_key)
+    if cached is None:
+        module_names = []
+        for spec in discover_builtin_tool_specs(tools_path):
+            if spec.module_name not in module_names:
+                module_names.append(spec.module_name)
+        with _DISCOVERED_BUILTIN_MODULES_LOCK:
+            _DISCOVERED_BUILTIN_MODULES_CACHE.clear()
+            _DISCOVERED_BUILTIN_MODULES_CACHE[cache_key] = list(module_names)
+    else:
+        module_names = list(cached)
 
     imported: List[str] = []
     for mod_name in module_names:
@@ -143,10 +249,17 @@ def invalidate_check_fn_cache() -> None:
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        builtin_tools_dir: Path | None = None,
+        builtin_module_prefix: str = "tools",
+    ):
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        self._builtin_tools_dir = Path(builtin_tools_dir) if builtin_tools_dir is not None else None
+        self._builtin_module_prefix = builtin_module_prefix
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -157,6 +270,61 @@ class ToolRegistry:
         # against it: a cache entry keyed on the generation is valid for as
         # long as the generation hasn't changed.
         self._generation: int = 0
+
+    def _builtin_specs(self) -> List[BuiltinToolSpec]:
+        if self._builtin_tools_dir is None:
+            return []
+        return discover_builtin_tool_specs(
+            self._builtin_tools_dir,
+            module_prefix=self._builtin_module_prefix,
+        )
+
+    def _import_builtin_modules(self, module_names: List[str]) -> List[str]:
+        imported: List[str] = []
+        for mod_name in module_names:
+            try:
+                importlib.import_module(mod_name)
+                imported.append(mod_name)
+            except Exception as e:
+                logger.warning("Could not import tool module %s: %s", mod_name, e)
+        return imported
+
+    def ensure_builtin_tools_loaded(self, tool_names: Set[str] | List[str]) -> List[str]:
+        if self._builtin_tools_dir is None:
+            return []
+        requested = set(tool_names)
+        if not requested:
+            return []
+        with self._lock:
+            missing = requested.difference(self._tools)
+        if not missing:
+            return []
+        module_names: List[str] = []
+        for spec in self._builtin_specs():
+            if spec.tool_name in missing and spec.module_name not in module_names:
+                module_names.append(spec.module_name)
+        return self._import_builtin_modules(module_names)
+
+    def ensure_builtin_toolsets_loaded(self, toolsets: Set[str] | List[str]) -> List[str]:
+        if self._builtin_tools_dir is None:
+            return []
+        requested = set(toolsets)
+        if not requested:
+            return []
+        module_names: List[str] = []
+        for spec in self._builtin_specs():
+            if spec.toolset in requested and spec.module_name not in module_names:
+                module_names.append(spec.module_name)
+        return self._import_builtin_modules(module_names)
+
+    def ensure_all_builtin_tools_loaded(self) -> List[str]:
+        if self._builtin_tools_dir is None:
+            return []
+        module_names: List[str] = []
+        for spec in self._builtin_specs():
+            if spec.module_name not in module_names:
+                module_names.append(spec.module_name)
+        return self._import_builtin_modules(module_names)
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
@@ -184,7 +352,12 @@ class ToolRegistry:
     def get_entry(self, name: str) -> Optional[ToolEntry]:
         """Return a registered tool entry by name, or None."""
         with self._lock:
-            return self._tools.get(name)
+            entry = self._tools.get(name)
+        if entry is None:
+            self.ensure_builtin_tools_loaded({name})
+            with self._lock:
+                entry = self._tools.get(name)
+        return entry
 
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
@@ -318,6 +491,7 @@ class ToolRegistry:
         still take effect in near-real-time without forcing a full cache
         flush on every call.
         """
+        self.ensure_builtin_tools_loaded(tool_names)
         result = []
         # Per-call cache on top of the 30 s TTL — handles repeat probes of the
         # same check_fn within one definitions pass without re-reading the
@@ -379,7 +553,10 @@ class ToolRegistry:
 
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
-        return sorted(entry.name for entry in self._snapshot_entries())
+        names = {entry.name for entry in self._snapshot_entries()}
+        for spec in self._builtin_specs():
+            names.add(spec.tool_name)
+        return sorted(names)
 
     def get_schema(self, name: str) -> Optional[dict]:
         """Return a tool's raw schema dict, bypassing check_fn filtering.
@@ -392,8 +569,14 @@ class ToolRegistry:
 
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""
-        entry = self.get_entry(name)
-        return entry.toolset if entry else None
+        with self._lock:
+            entry = self._tools.get(name)
+        if entry is not None:
+            return entry.toolset
+        for spec in self._builtin_specs():
+            if spec.tool_name == name:
+                return spec.toolset
+        return None
 
     def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Return the emoji for a tool, or *default* if unset."""
@@ -402,7 +585,10 @@ class ToolRegistry:
 
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
-        return {entry.name: entry.toolset for entry in self._snapshot_entries()}
+        mapping = {entry.name: entry.toolset for entry in self._snapshot_entries()}
+        for spec in self._builtin_specs():
+            mapping.setdefault(spec.tool_name, spec.toolset)
+        return mapping
 
     def is_toolset_available(self, toolset: str) -> bool:
         """Check if a toolset's requirements are met.
@@ -416,6 +602,7 @@ class ToolRegistry:
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""
+        self.ensure_all_builtin_tools_loaded()
         entries, toolset_checks = self._snapshot_state()
         toolsets = sorted({entry.toolset for entry in entries})
         return {
@@ -425,6 +612,7 @@ class ToolRegistry:
 
     def get_available_toolsets(self) -> Dict[str, dict]:
         """Return toolset metadata for UI display."""
+        self.ensure_all_builtin_tools_loaded()
         toolsets: Dict[str, dict] = {}
         entries, toolset_checks = self._snapshot_state()
         for entry in entries:
@@ -447,6 +635,7 @@ class ToolRegistry:
 
     def get_toolset_requirements(self) -> Dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
+        self.ensure_all_builtin_tools_loaded()
         result: Dict[str, dict] = {}
         entries, toolset_checks = self._snapshot_state()
         for entry in entries:
@@ -468,6 +657,7 @@ class ToolRegistry:
 
     def check_tool_availability(self, quiet: bool = False):
         """Return (available_toolsets, unavailable_info) like the old function."""
+        self.ensure_all_builtin_tools_loaded()
         available = []
         unavailable = []
         seen = set()
@@ -489,7 +679,10 @@ class ToolRegistry:
 
 
 # Module-level singleton
-registry = ToolRegistry()
+registry = ToolRegistry(
+    builtin_tools_dir=Path(__file__).resolve().parent,
+    builtin_module_prefix="tools",
+)
 
 
 # ---------------------------------------------------------------------------

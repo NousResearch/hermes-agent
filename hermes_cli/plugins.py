@@ -1165,7 +1165,7 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    return _ensure_plugins_discovered().invoke_hook(hook_name, **kwargs)
 
 
 

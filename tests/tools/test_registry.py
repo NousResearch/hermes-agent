@@ -1,6 +1,7 @@
 """Tests for the central tool registry."""
 
 import json
+import os
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -343,6 +344,55 @@ class TestBuiltinDiscovery:
         assert imported == ["tools.alpha"]
         mock_import.assert_called_once_with("tools.alpha")
 
+    def test_discovers_toolset_string_constants_without_importing(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "alpha.py").write_text(
+            "_TOOLSET = 'x'\n"
+            "from tools.registry import registry\n"
+            "registry.register(name='alpha', toolset=_TOOLSET, schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            imported = discover_builtin_tools(tools_dir)
+
+        assert imported == ["tools.alpha"]
+        mock_import.assert_called_once_with("tools.alpha")
+
+    def test_reuses_cached_module_scan_until_file_changes(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "alpha.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+
+        from tools import registry as registry_mod
+        real_parse = registry_mod._module_tool_specs
+        calls = {"count": 0}
+
+        def counting_parse(path, module_prefix):
+            calls["count"] += 1
+            return real_parse(path, module_prefix)
+
+        with patch("tools.registry._module_tool_specs", side_effect=counting_parse), \
+             patch("tools.registry.importlib.import_module"):
+            discover_builtin_tools(tools_dir)
+            discover_builtin_tools(tools_dir)
+
+        assert calls["count"] == 1
+
+        before = os.stat(tools_dir / "alpha.py").st_mtime_ns
+        os.utime(tools_dir / "alpha.py", ns=(before + 1_000_000, before + 1_000_000))
+        with patch("tools.registry._module_tool_specs", side_effect=counting_parse), \
+             patch("tools.registry.importlib.import_module"):
+            discover_builtin_tools(tools_dir)
+
+        assert calls["count"] == 2
+
     def test_skips_mcp_tool_even_if_it_registers(self, tmp_path):
         tools_dir = tmp_path / "tools"
         tools_dir.mkdir()
@@ -419,6 +469,48 @@ class TestEntryLookup:
     def test_get_entry_returns_none_for_unknown_tool(self):
         reg = ToolRegistry()
         assert reg.get_entry("missing") is None
+
+    def test_builtin_metadata_is_available_without_import(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "alpha.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        reg = ToolRegistry(builtin_tools_dir=tools_dir)
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            assert reg.get_toolset_for_tool("alpha") == "x"
+            assert reg.get_all_tool_names() == ["alpha"]
+
+        mock_import.assert_not_called()
+
+    def test_builtin_schema_loads_on_first_lookup(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "alpha.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        reg = ToolRegistry(builtin_tools_dir=tools_dir)
+
+        def fake_import(module_name):
+            assert module_name == "tools.alpha"
+            reg.register(
+                name="alpha",
+                toolset="x",
+                schema=_make_schema("alpha"),
+                handler=_dummy_handler,
+            )
+            return object()
+
+        with patch("tools.registry.importlib.import_module", side_effect=fake_import) as mock_import:
+            schema = reg.get_schema("alpha")
+
+        assert schema == _make_schema("alpha")
+        mock_import.assert_called_once_with("tools.alpha")
 
 
 class TestSecretCaptureResultContract:

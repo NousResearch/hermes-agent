@@ -1,6 +1,6 @@
 """Tests for agent-settings copy in the interactive setup wizard."""
 
-from hermes_cli.setup import setup_agent_settings
+from hermes_cli.setup_wizard import setup_agent_settings
 
 
 def test_setup_agent_settings_uses_displayed_max_iterations_value(tmp_path, monkeypatch, capsys):
@@ -21,11 +21,11 @@ def test_setup_agent_settings_uses_displayed_max_iterations_value(tmp_path, monk
 
     prompt_answers = iter(["60", "all", "0.5"])
 
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
-    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
-    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
-    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: next(prompt_answers))
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup_wizard.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.save_config", lambda *args, **kwargs: None)
 
     setup_agent_settings(config)
 
@@ -54,19 +54,19 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
 
     # Simulate stale .env value — the wizard must ignore this.
     monkeypatch.setattr(
-        "hermes_cli.setup.get_env_value",
+        "hermes_cli.setup_wizard.get_env_value",
         lambda key: "60" if key == "HERMES_MAX_ITERATIONS" else "",
     )
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
-    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: next(prompt_answers))
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup_wizard.save_env_value", lambda *args, **kwargs: None)
 
     removed_keys: list[str] = []
     monkeypatch.setattr(
-        "hermes_cli.setup.remove_env_value",
+        "hermes_cli.setup_wizard.remove_env_value",
         lambda key: (removed_keys.append(key), True)[1],
     )
-    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.save_config", lambda *args, **kwargs: None)
 
     setup_agent_settings(config)
 

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
-# ─── UI Helpers (shared with setup.py) ────────────────────────────────────────
+# ─── UI Helpers (shared with setup_wizard.py) ────────────────────────────────────────
 
 from hermes_cli.cli_output import (  # noqa: E402 — late import block
     print_error as _print_error,

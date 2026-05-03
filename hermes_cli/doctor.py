@@ -11,7 +11,8 @@ import shutil
 import importlib.util
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.banner import check_for_updates
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, recommended_update_command
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -142,6 +143,14 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _format_update_behind_notice(behind: int | None) -> str | None:
+    """Return a human-readable update notice for positive behind counts."""
+    if not behind or behind <= 0:
+        return None
+    commits_word = "commit" if behind == 1 else "commits"
+    return f"⚠ {behind} {commits_word} behind — run {recommended_update_command()} to update"
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -191,7 +200,16 @@ def run_doctor(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
+    try:
+        behind = check_for_updates()
+        behind_notice = _format_update_behind_notice(behind)
+        if behind_notice:
+            print()
+            print(color(f"  {behind_notice}", Colors.YELLOW))
+    except Exception:
+        pass
+
     # =========================================================================
     # Check: Python version
     # =========================================================================

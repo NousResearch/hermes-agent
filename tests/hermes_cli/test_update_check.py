@@ -16,24 +16,80 @@ def test_version_string_no_v_prefix():
     assert not __version__.startswith("v"), f"__version__ should not start with 'v', got {__version__!r}"
 
 
-def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+def test_check_for_updates_uses_cache_same_head(tmp_path, monkeypatch):
+    """When cache is fresh and HEAD matches, the cached value should be reused."""
     from hermes_cli.banner import check_for_updates
 
-    # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "head": "abc123"}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+    with patch("hermes_cli.banner.subprocess.run", return_value=MagicMock(returncode=0, stdout="abc123\n")) as mock_run:
         result = check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
+    assert mock_run.call_count == 1  # HEAD lookup only
+    assert mock_run.call_args.args[0] == ["git", "rev-parse", "HEAD"]
+
+
+def test_check_for_updates_recomputes_when_head_changes(tmp_path, monkeypatch):
+    """A fresh cache must be ignored when the checkout HEAD has changed."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 27, "head": "old-head"}))
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="new-head\n")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="5\n")
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run) as mock_run:
+        result = check_for_updates()
+
+    assert result == 5
+    assert mock_run.call_count == 3  # HEAD + fetch + rev-list
+
+
+def test_check_for_updates_ignores_old_null_cache(tmp_path, monkeypatch):
+    """A cache with null rev/head must not force a stale behind value."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 27, "rev": None, "head": None}))
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="current-head\n")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="0\n")
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run) as mock_run:
+        result = check_for_updates()
+
+    assert result == 0
+    assert mock_run.call_count == 3
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
@@ -55,7 +111,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count == 3  # HEAD + git fetch + git rev-list
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

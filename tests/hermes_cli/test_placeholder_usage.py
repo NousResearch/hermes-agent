@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.config import config_command, show_config
-from hermes_cli.setup import _print_setup_summary
+from hermes_cli.setup_wizard import _print_setup_summary
 
 
 def test_config_set_usage_marks_placeholders(capsys):

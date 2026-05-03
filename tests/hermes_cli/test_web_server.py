@@ -678,11 +678,17 @@ class TestNewEndpoints:
         assert resp.json()["command"] == "hermes setup"
 
     def test_profiles_create_creates_wrapper_alias_when_safe(self, monkeypatch, tmp_path):
+        import subprocess
         import hermes_cli.profiles as profiles_mod
 
         wrapper_dir = tmp_path / "bin"
         wrapper_dir.mkdir()
         monkeypatch.setattr(profiles_mod, "_get_wrapper_dir", lambda: wrapper_dir)
+        monkeypatch.setattr(
+            profiles_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr=""),
+        )
 
         resp = self.client.post(
             "/api/profiles",

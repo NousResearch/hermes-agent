@@ -1,4 +1,4 @@
-"""Tests for setup.py configuration flows."""
+"""Tests for setup_wizard.py configuration flows."""
 import json
 import os
 import sys
@@ -9,7 +9,7 @@ import pytest
 from hermes_cli.auth import get_active_provider
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
-from hermes_cli.setup import setup_model_provider
+from hermes_cli.setup_wizard import setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -43,11 +43,11 @@ def _clear_vercel_env(monkeypatch):
 
 def _stub_tts(monkeypatch):
     """Stub out TTS prompts so setup_model_provider doesn't block."""
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda q, c, d=0: (
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", lambda q, c, d=0: (
         _maybe_keep_current_tts(q, c) if _maybe_keep_current_tts(q, c) is not None
         else d
     ))
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_yes_no", lambda *a, **kw: False)
 
 
 def _write_model_config(tmp_path, provider, base_url="", model_name="test-model"):
@@ -225,7 +225,7 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
     monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
 
-    # Patch is_container at the import location in setup.py
+    # Patch is_container at the import location in setup_wizard.py
     import hermes_constants
     monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
 
@@ -412,7 +412,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
 
 def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("hermes_cli.setup_wizard.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = load_config()
 
@@ -427,11 +427,11 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
         assert "Modal Token" not in message
         raise AssertionError(f"Unexpected prompt call: {message}")
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
-    monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", lambda config: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup_wizard._prompt_container_resources", lambda config: None)
     monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
+        "hermes_cli.setup_wizard.get_nous_subscription_features",
         lambda config: type("Features", (), {"nous_auth_present": True})(),
     )
     monkeypatch.setitem(
@@ -443,7 +443,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
         ),
     )
 
-    from hermes_cli.setup import setup_terminal_backend
+    from hermes_cli.setup_wizard import setup_terminal_backend
 
     setup_terminal_backend(config)
 
@@ -454,7 +454,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("hermes_cli.setup_wizard.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -469,11 +469,11 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     prompt_values = iter(["token-id", "token-secret", ""])
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
-    monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", lambda config: None)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: next(prompt_values))
+    monkeypatch.setattr("hermes_cli.setup_wizard._prompt_container_resources", lambda config: None)
     monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
+        "hermes_cli.setup_wizard.get_nous_subscription_features",
         lambda config: type("Features", (), {"nous_auth_present": True})(),
     )
     monkeypatch.setitem(
@@ -486,7 +486,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     )
     monkeypatch.setitem(sys.modules, "swe_rex", object())
 
-    from hermes_cli.setup import setup_terminal_backend
+    from hermes_cli.setup_wizard import setup_terminal_backend
 
     setup_terminal_backend(config)
 
@@ -508,10 +508,10 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
     prompt_values = iter(["python3.13", "yes", "2", "4096", "token", "project", "team"])
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: next(prompt_values))
 
-    from hermes_cli.setup import setup_terminal_backend
+    from hermes_cli.setup_wizard import setup_terminal_backend
 
     setup_terminal_backend(config)
 
@@ -555,10 +555,10 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
         value = next(prompt_values)
         return value or default
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", fake_prompt)
 
-    from hermes_cli.setup import setup_terminal_backend
+    from hermes_cli.setup_wizard import setup_terminal_backend
 
     setup_terminal_backend(config)
 

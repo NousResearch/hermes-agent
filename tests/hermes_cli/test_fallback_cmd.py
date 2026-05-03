@@ -354,7 +354,7 @@ class TestRemoveCommand:
         })
 
         # Picker returns index 1 (the middle entry, "nous / Hermes-4")
-        with patch("hermes_cli.setup._curses_prompt_choice", return_value=1):
+        with patch("hermes_cli.setup_wizard._curses_prompt_choice", return_value=1):
             from hermes_cli.fallback_cmd import cmd_fallback_remove
             cmd_fallback_remove(types.SimpleNamespace())
 
@@ -375,7 +375,7 @@ class TestRemoveCommand:
         })
 
         # Cancel = last item (index == len(chain) == 1 in our menu)
-        with patch("hermes_cli.setup._curses_prompt_choice", return_value=1):
+        with patch("hermes_cli.setup_wizard._curses_prompt_choice", return_value=1):
             from hermes_cli.fallback_cmd import cmd_fallback_remove
             cmd_fallback_remove(types.SimpleNamespace())
 

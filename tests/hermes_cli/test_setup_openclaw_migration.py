@@ -17,7 +17,7 @@ class TestOfferOpenclawMigration:
 
     def test_skips_when_no_openclaw_dir(self, tmp_path):
         """Should return False immediately when ~/.openclaw does not exist."""
-        with patch("hermes_cli.setup.Path.home", return_value=tmp_path):
+        with patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path):
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
 
     def test_skips_when_migration_script_missing(self, tmp_path):
@@ -25,7 +25,7 @@ class TestOfferOpenclawMigration:
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", tmp_path / "nonexistent.py"),
         ):
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
@@ -37,7 +37,7 @@ class TestOfferOpenclawMigration:
         script = tmp_path / "openclaw_to_hermes.py"
         script.write_text("# placeholder")
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=False),
         ):
@@ -69,7 +69,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             # Both prompts answered Yes: preview offer + proceed confirmation
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
@@ -139,7 +139,7 @@ class TestOfferOpenclawMigration:
         prompt_responses = iter([True, False])
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", side_effect=prompt_responses),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -176,7 +176,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -202,7 +202,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_cli.setup_wizard.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),

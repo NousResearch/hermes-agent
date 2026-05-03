@@ -316,6 +316,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/messages", adapter._handle_anthropic_messages)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
@@ -1128,6 +1129,100 @@ class TestChatCompletionsEndpoint:
                     session_ids.append(mock_run.call_args.kwargs["session_id"])
 
         assert session_ids[0] != session_ids[1]
+
+
+class _FakeJSONRequest:
+    def __init__(self, body, headers=None):
+        self._body = body
+        self.headers = headers or {}
+
+    async def json(self):
+        return self._body
+
+
+class TestAnthropicMessagesEndpoint:
+    def test_stream_true_routes_to_anthropic_sse_writer(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("Hello")
+                cb(" world")
+            return (
+                {"final_response": "Hello world", "messages": [], "api_calls": 1},
+                {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+            )
+
+        async def _mock_writer(**kwargs):
+            return web.Response(text="stream ok", content_type="text/event-stream")
+
+        request = _FakeJSONRequest({
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+
+        with (
+            patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            patch.object(adapter, "_write_sse_anthropic_messages", side_effect=_mock_writer) as mock_writer,
+        ):
+            resp = asyncio.run(adapter._handle_anthropic_messages(request))
+
+        assert resp.status == 200
+        assert "text/event-stream" in resp.content_type
+        assert mock_writer.call_args.kwargs["model"] == "claude-test"
+        assert mock_writer.call_args.kwargs["session_id"]
+
+    def test_stream_false_returns_anthropic_json(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("ignored because final response wins")
+            return (
+                {"final_response": "Plain JSON", "messages": [], "api_calls": 1},
+                {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+            )
+
+        request = _FakeJSONRequest({
+            "model": "claude-test",
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        })
+
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+            resp = asyncio.run(adapter._handle_anthropic_messages(request))
+
+        assert resp.status == 200
+        data = json.loads(resp.text)
+        assert data["type"] == "message"
+        assert data["role"] == "assistant"
+        assert data["content"] == [{"type": "text", "text": "Plain JSON"}]
+        assert data["stop_reason"] == "end_turn"
+        assert data["usage"] == {"input_tokens": 7, "output_tokens": 3}
+        assert mock_run.call_args.kwargs["ephemeral_system_prompt"] == "You are concise."
+
+    def test_missing_stream_defaults_to_json_and_aggregates_deltas(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("SSE-only ")
+                cb("answer")
+            return (
+                {"final_response": "", "messages": [], "api_calls": 1},
+                {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            )
+
+        request = _FakeJSONRequest({
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+            resp = asyncio.run(adapter._handle_anthropic_messages(request))
+
+        assert resp.status == 200
+        data = json.loads(resp.text)
+        assert data["content"] == [{"type": "text", "text": "SSE-only answer"}]
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
 - POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header)
+- POST /v1/messages                — Anthropic Messages-compatible format
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
@@ -834,6 +835,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
+                "anthropic_messages": True,
+                "anthropic_messages_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
@@ -849,6 +852,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+                "anthropic_messages": {"method": "POST", "path": "/v1/messages"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
@@ -1111,6 +1115,256 @@ class APIServerAdapter(BasePlatformAdapter):
         }
 
         return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+
+    async def _handle_anthropic_messages(self, request: "web.Request") -> "web.Response":
+        """POST /v1/messages — Anthropic Messages-compatible format."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {"error": {"type": "invalid_request_error", "message": "Invalid JSON in request body"}},
+                status=400,
+            )
+
+        messages = body.get("messages")
+        if not messages or not isinstance(messages, list):
+            return web.json_response(
+                {"error": {"type": "invalid_request_error", "message": "Missing or invalid 'messages' field"}},
+                status=400,
+            )
+
+        system_prompt = _normalize_chat_content(body.get("system"))
+        conversation_messages: List[Dict[str, Any]] = []
+        for idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                return web.json_response(
+                    {"error": {"type": "invalid_request_error", "message": f"messages[{idx}] must be an object"}},
+                    status=400,
+                )
+            role = str(msg.get("role") or "")
+            if role == "system":
+                content = _normalize_chat_content(msg.get("content", ""))
+                system_prompt = f"{system_prompt}\n{content}".strip() if system_prompt else content
+                continue
+            if role not in {"user", "assistant"}:
+                continue
+            try:
+                content = _normalize_multimodal_content(msg.get("content", ""))
+            except ValueError as exc:
+                return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+            conversation_messages.append({"role": role, "content": content})
+
+        user_message: Any = ""
+        history: List[Dict[str, Any]] = []
+        if conversation_messages:
+            user_message = conversation_messages[-1].get("content", "")
+            history = conversation_messages[:-1]
+
+        if not _content_has_visible_payload(user_message):
+            return web.json_response(
+                {"error": {"type": "invalid_request_error", "message": "No user message found in messages"}},
+                status=400,
+            )
+
+        session_id = request.headers.get("X-Hermes-Session-Id", "").strip() or str(uuid.uuid4())
+        message_id = f"msg_{uuid.uuid4().hex[:24]}"
+        model_name = body.get("model", self._model_name)
+
+        stream = bool(body.get("stream", False))
+        if stream:
+            import queue as _q
+
+            stream_q: _q.Queue = _q.Queue()
+
+            def _on_delta(delta):
+                if delta is not None:
+                    stream_q.put(delta)
+
+            agent_ref = [None]
+            agent_task = asyncio.ensure_future(self._run_agent(
+                user_message=user_message,
+                conversation_history=history,
+                ephemeral_system_prompt=system_prompt,
+                session_id=session_id,
+                stream_delta_callback=_on_delta,
+                agent_ref=agent_ref,
+            ))
+            return await self._write_sse_anthropic_messages(
+                request=request,
+                message_id=message_id,
+                model=model_name,
+                stream_q=stream_q,
+                agent_task=agent_task,
+                agent_ref=agent_ref,
+                session_id=session_id,
+            )
+
+        deltas: List[str] = []
+
+        def _collect_delta(delta):
+            if isinstance(delta, str):
+                deltas.append(delta)
+
+        try:
+            result, usage = await self._run_agent(
+                user_message=user_message,
+                conversation_history=history,
+                ephemeral_system_prompt=system_prompt,
+                session_id=session_id,
+                stream_delta_callback=_collect_delta,
+            )
+        except Exception as e:
+            logger.error("Error running agent for anthropic messages: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"type": "server_error", "message": f"Internal server error: {e}"}},
+                status=500,
+            )
+
+        final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+        if not final_response and deltas:
+            final_response = "".join(deltas)
+        if not final_response and isinstance(result, dict):
+            final_response = result.get("error", "(No response generated)")
+        usage = usage or {}
+        return web.json_response(
+            {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "model": model_name,
+                "content": [{"type": "text", "text": final_response}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                },
+            },
+            headers={"X-Hermes-Session-Id": session_id},
+        )
+
+    async def _write_sse_anthropic_messages(
+        self,
+        request: "web.Request",
+        message_id: str,
+        model: str,
+        stream_q,
+        agent_task,
+        agent_ref=None,
+        session_id: str = None,
+    ) -> "web.StreamResponse":
+        """Write Anthropic Messages SSE while aggregating agent deltas."""
+        import queue as _q
+
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        if session_id:
+            sse_headers["X-Hermes-Session-Id"] = session_id
+
+        response = web.StreamResponse(status=200, headers=sse_headers)
+        await response.prepare(request)
+        text_parts: List[str] = []
+
+        async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
+            await response.write(f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode())
+
+        try:
+            await _write_event("message_start", {
+                "type": "message_start",
+                "message": {
+                    "id": message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
+            })
+            await _write_event("content_block_start", {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            })
+
+            loop = asyncio.get_running_loop()
+            while True:
+                try:
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                except _q.Empty:
+                    if agent_task.done():
+                        while True:
+                            try:
+                                delta = stream_q.get_nowait()
+                            except _q.Empty:
+                                break
+                            if isinstance(delta, str) and delta:
+                                text_parts.append(delta)
+                                await _write_event("content_block_delta", {
+                                    "type": "content_block_delta",
+                                    "index": 0,
+                                    "delta": {"type": "text_delta", "text": delta},
+                                })
+                        break
+                    continue
+                if isinstance(delta, str) and delta:
+                    text_parts.append(delta)
+                    await _write_event("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": delta},
+                    })
+
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            try:
+                result, agent_usage = await agent_task
+                usage = agent_usage or usage
+                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                if final_response and not text_parts:
+                    text_parts.append(final_response)
+                    await _write_event("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": final_response},
+                    })
+            except Exception as e:
+                logger.error("Error running agent for streaming anthropic messages: %s", e, exc_info=True)
+
+            await _write_event("content_block_stop", {"type": "content_block_stop", "index": 0})
+            await _write_event("message_delta", {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": usage.get("output_tokens", 0)},
+            })
+            await _write_event("message_stop", {"type": "message_stop"})
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                try:
+                    agent.interrupt("SSE client disconnected")
+                except Exception:
+                    pass
+            if not agent_task.done():
+                agent_task.cancel()
+                try:
+                    await agent_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            logger.info("Anthropic SSE client disconnected; interrupted agent task %s", message_id)
+
+        return response
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -2783,6 +3037,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            self._app.router.add_post("/v1/messages", self._handle_anthropic_messages)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)

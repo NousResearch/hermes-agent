@@ -11,6 +11,9 @@ def test_chat_screen_has_bubbles_history_and_action_icons():
     assert 'ChatBubble(' in chat_screen
     assert 'R.drawable.ic_action_history' in chat_screen
     assert 'R.drawable.ic_action_mic' in chat_screen
+    assert 'R.drawable.ic_action_image' in chat_screen
+    assert 'HermesChatAttachImageButton' in chat_screen
+    assert 'HermesChatAttachments' in chat_screen
     assert 'R.drawable.ic_action_speaker' in chat_screen
     assert 'R.drawable.ic_action_cog' in chat_screen
     assert 'onOpenContextActions' in chat_screen

@@ -181,6 +181,104 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Suggested model: $modelHint"
     }
 
+    fun modelSelectionTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "模型选择"
+        AppLanguage.SPANISH -> "Selección de modelo"
+        AppLanguage.GERMAN -> "Modellauswahl"
+        AppLanguage.PORTUGUESE -> "Seleção de modelo"
+        AppLanguage.FRENCH -> "Sélection du modèle"
+        AppLanguage.ENGLISH -> "Model selection"
+    }
+
+    fun modelSelectionDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "从提供商建议、Gemma 4、Gemma 3 和 Gemma 3n 本地模型中选择，或直接输入自定义模型 ID。"
+        AppLanguage.SPANISH -> "Elige entre la sugerencia del proveedor, modelos locales Gemma 4, Gemma 3 y Gemma 3n, o escribe un ID de modelo personalizado."
+        AppLanguage.GERMAN -> "Wähle den Anbietervorschlag, lokale Gemma-4-, Gemma-3- und Gemma-3n-Modelle oder gib eine eigene Modell-ID ein."
+        AppLanguage.PORTUGUESE -> "Escolha entre a sugestão do provedor, modelos locais Gemma 4, Gemma 3 e Gemma 3n, ou digite um ID de modelo personalizado."
+        AppLanguage.FRENCH -> "Choisissez la suggestion du fournisseur, des modèles locaux Gemma 4, Gemma 3 et Gemma 3n, ou saisissez un ID de modèle personnalisé."
+        AppLanguage.ENGLISH -> "Choose a provider suggestion, first-class local Gemma 4, Gemma 3, and Gemma 3n models, or type a custom model ID."
+    }
+
+    fun addImage(): String = when (language) {
+        AppLanguage.CHINESE -> "添加图片"
+        AppLanguage.SPANISH -> "Añadir imagen"
+        AppLanguage.GERMAN -> "Bild hinzufügen"
+        AppLanguage.PORTUGUESE -> "Adicionar imagem"
+        AppLanguage.FRENCH -> "Ajouter une image"
+        AppLanguage.ENGLISH -> "Add image"
+    }
+
+    fun removeAttachment(): String = when (language) {
+        AppLanguage.CHINESE -> "移除附件"
+        AppLanguage.SPANISH -> "Quitar adjunto"
+        AppLanguage.GERMAN -> "Anhang entfernen"
+        AppLanguage.PORTUGUESE -> "Remover anexo"
+        AppLanguage.FRENCH -> "Retirer la pièce jointe"
+        AppLanguage.ENGLISH -> "Remove attachment"
+    }
+
+    fun attachedImages(count: Int): String = when (language) {
+        AppLanguage.CHINESE -> "已附加 $count 张图片"
+        AppLanguage.SPANISH -> "$count imagen(es) adjunta(s)"
+        AppLanguage.GERMAN -> "$count Bild(er) angehängt"
+        AppLanguage.PORTUGUESE -> "$count imagem(ns) anexada(s)"
+        AppLanguage.FRENCH -> "$count image(s) jointe(s)"
+        AppLanguage.ENGLISH -> "$count image(s) attached"
+    }
+
+    fun retryHermes(): String = when (language) {
+        AppLanguage.CHINESE -> "重试 Hermes"
+        AppLanguage.SPANISH -> "Reintentar Hermes"
+        AppLanguage.GERMAN -> "Hermes erneut versuchen"
+        AppLanguage.PORTUGUESE -> "Tentar Hermes novamente"
+        AppLanguage.FRENCH -> "Réessayer Hermes"
+        AppLanguage.ENGLISH -> "Retry Hermes"
+    }
+
+    fun gettingStartedTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "开始使用"
+        AppLanguage.SPANISH -> "Primeros pasos"
+        AppLanguage.GERMAN -> "Erste Schritte"
+        AppLanguage.PORTUGUESE -> "Primeiros passos"
+        AppLanguage.FRENCH -> "Premiers pas"
+        AppLanguage.ENGLISH -> "Getting started"
+    }
+
+    fun gettingStartedStep(index: Int): String = when (index) {
+        1 -> when (language) {
+            AppLanguage.CHINESE -> "1. 账户：连接 ChatGPT、Claude、Gemini、电子邮件、电话或 Google。"
+            AppLanguage.SPANISH -> "1. Cuentas: conecta ChatGPT, Claude, Gemini, email, teléfono o Google."
+            AppLanguage.GERMAN -> "1. Konten: Verbinde ChatGPT, Claude, Gemini, E-Mail, Telefon oder Google."
+            AppLanguage.PORTUGUESE -> "1. Contas: conecte ChatGPT, Claude, Gemini, email, telefone ou Google."
+            AppLanguage.FRENCH -> "1. Comptes : connectez ChatGPT, Claude, Gemini, e-mail, téléphone ou Google."
+            AppLanguage.ENGLISH -> "1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google."
+        }
+        2 -> when (language) {
+            AppLanguage.CHINESE -> "2. 设置：选择提供商，确认基础 URL/模型，并保存 API 密钥。"
+            AppLanguage.SPANISH -> "2. Ajustes: elige proveedor, confirma la URL base/modelo y guarda la clave API."
+            AppLanguage.GERMAN -> "2. Einstellungen: Wähle Anbieter, prüfe Basis-URL/Modell und speichere den API-Schlüssel."
+            AppLanguage.PORTUGUESE -> "2. Configurações: escolha provedor, confirme URL base/modelo e salve a chave API."
+            AppLanguage.FRENCH -> "2. Réglages : choisissez le fournisseur, vérifiez l’URL de base/le modèle et enregistrez la clé API."
+            AppLanguage.ENGLISH -> "2. Settings: choose a provider, confirm the base URL/model, and save your API key."
+        }
+        3 -> when (language) {
+            AppLanguage.CHINESE -> "3. 设备：如果希望 Hermes 直接编辑真实手机文件，请授予共享文件夹访问权限。"
+            AppLanguage.SPANISH -> "3. Equipo: concede acceso a carpeta compartida si quieres que Hermes edite archivos móviles reales."
+            AppLanguage.GERMAN -> "3. Gerät: Erteile Freigabeordner-Zugriff, wenn Hermes echte mobile Dateien direkt bearbeiten soll."
+            AppLanguage.PORTUGUESE -> "3. Aparelho: conceda acesso à pasta compartilhada se quiser que Hermes edite arquivos móveis reais."
+            AppLanguage.FRENCH -> "3. Appareil : accordez l’accès au dossier partagé pour que Hermes modifie de vrais fichiers mobiles."
+            AppLanguage.ENGLISH -> "3. Device: grant shared-folder access if you want Hermes to edit real mobile files directly."
+        }
+        else -> when (language) {
+            AppLanguage.CHINESE -> "4. Hermes 聊天：运行时就绪后，可使用语音输入、聊天命令或齿轮按钮执行页面操作。"
+            AppLanguage.SPANISH -> "4. Chat Hermes: usa voz, comandos de chat o el botón de engranaje cuando el runtime esté listo."
+            AppLanguage.GERMAN -> "4. Hermes-Chat: Nutze Spracheingabe, Chat-Befehle oder das Zahnrad, sobald die Runtime bereit ist."
+            AppLanguage.PORTUGUESE -> "4. Chat Hermes: use voz, comandos de chat ou o botão de engrenagem quando o runtime estiver pronto."
+            AppLanguage.FRENCH -> "4. Chat Hermes : utilisez la voix, les commandes ou le bouton engrenage quand le runtime est prêt."
+            AppLanguage.ENGLISH -> "4. Hermes chat: use voice input, chat commands, or the cog button for page-specific actions once the runtime is ready."
+        }
+    }
+
     fun apiKeyHelp(): String = when (language) {
         AppLanguage.CHINESE -> "粘贴所选提供商的密钥，然后点保存以重启本地 Hermes 后端并应用新配置。"
         AppLanguage.SPANISH -> "Pega la clave del proveedor seleccionado y pulsa Guardar para reiniciar el backend local de Hermes con la nueva configuración."

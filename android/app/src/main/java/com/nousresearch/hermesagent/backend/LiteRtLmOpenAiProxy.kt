@@ -2,6 +2,7 @@ package com.nousresearch.hermesagent.backend
 
 import android.content.Context
 import android.os.Build
+import android.util.Base64
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -116,6 +117,7 @@ object LiteRtLmOpenAiProxy {
         private val runtimeBackendLabel = engineInitResult.backend
         private val visionBackendLabel = engineInitResult.visionBackend
         private val audioBackendLabel = engineInitResult.audioBackend
+        private val supportsImageInput = inferenceConfig.supportImage
 
         val modelName: String = requestedModelName.ifBlank { File(modelPath).name }
         private val samplerConfig = SamplerConfig(
@@ -186,6 +188,7 @@ object LiteRtLmOpenAiProxy {
                         backend = backend,
                         visionBackend = if (supportImage) Backend.GPU() else null,
                         audioBackend = if (supportAudio) Backend.CPU() else null,
+                        maxNumImages = if (supportImage) 1 else null,
                         cacheDir = context.cacheDir.absolutePath,
                     )
                 )
@@ -219,6 +222,15 @@ object LiteRtLmOpenAiProxy {
             if (requestMessages.length() == 0) {
                 return jsonResponse(
                     JSONObject().put("error", "messages are required"),
+                    status = Response.Status.BAD_REQUEST,
+                )
+            }
+            if (requestContainsImage(requestMessages) && !supportsImageInput) {
+                return jsonResponse(
+                    JSONObject().put(
+                        "error",
+                        "image input requires a LiteRT-LM model started with image support, such as Gemma 3n or Gemma 3 vision models",
+                    ),
                     status = Response.Status.BAD_REQUEST,
                 )
             }
@@ -277,7 +289,7 @@ object LiteRtLmOpenAiProxy {
                 val message = messages.optJSONObject(index) ?: continue
                 when (message.optString("role")) {
                     "system" -> Unit
-                    "user" -> mapped += Message.user(extractTextContent(message))
+                    "user" -> mapped += Message.user(extractMessageContents(message))
                     "assistant" -> {
                         val content = extractTextContent(message)
                         val toolCalls = mutableListOf<ToolCall>()
@@ -467,6 +479,74 @@ object LiteRtLmOpenAiProxy {
                 JSONObject.NULL, null -> ""
                 else -> content.toString()
             }
+        }
+
+        private fun extractMessageContents(message: JSONObject): com.google.ai.edge.litertlm.Contents {
+            val content = message.opt("content")
+            val parts = when (content) {
+                is JSONArray -> extractContentParts(content)
+                is JSONObject -> listOfNotNull(content.optString("text").takeIf { it.isNotBlank() }?.let { Content.Text(it) })
+                JSONObject.NULL, null -> emptyList()
+                else -> listOf(Content.Text(content.toString()))
+            }
+            return com.google.ai.edge.litertlm.Contents.of(parts)
+        }
+
+        private fun extractContentParts(content: JSONArray): List<Content> {
+            val parts = mutableListOf<Content>()
+            for (index in 0 until content.length()) {
+                val part = content.optJSONObject(index) ?: continue
+                when (part.optString("type")) {
+                    "text" -> {
+                        val text = part.optString("text")
+                        if (text.isNotBlank()) {
+                            parts += Content.Text(text)
+                        }
+                    }
+                    "image_url", "input_image" -> {
+                        val imageUrl = part.optJSONObject("image_url")?.optString("url").orEmpty()
+                            .ifBlank { part.optString("image_url") }
+                            .ifBlank { part.optString("url") }
+                        contentFromImageUrl(imageUrl)?.let { parts += it }
+                    }
+                }
+            }
+            return parts
+        }
+
+        private fun contentFromImageUrl(imageUrl: String): Content? {
+            val url = imageUrl.trim()
+            if (url.isBlank()) {
+                return null
+            }
+            if (url.startsWith("data:", ignoreCase = true)) {
+                val base64Payload = url.substringAfter("base64,", missingDelimiterValue = "")
+                require(base64Payload.isNotBlank()) { "image_url data URI must include base64 data" }
+                return Content.ImageBytes(Base64.decode(base64Payload, Base64.DEFAULT))
+            }
+            if (url.startsWith("file://", ignoreCase = true)) {
+                return Content.ImageFile(url.removePrefix("file://"))
+            }
+            if (url.startsWith("/")) {
+                return Content.ImageFile(url)
+            }
+            throw IllegalArgumentException("LiteRT-LM local vision only supports data: image URLs or app-local file paths")
+        }
+
+        private fun requestContainsImage(messages: JSONArray): Boolean {
+            for (index in 0 until messages.length()) {
+                val content = messages.optJSONObject(index)?.opt("content")
+                if (content is JSONArray) {
+                    for (partIndex in 0 until content.length()) {
+                        val part = content.optJSONObject(partIndex) ?: continue
+                        val type = part.optString("type")
+                        if (type == "image_url" || type == "input_image") {
+                            return true
+                        }
+                    }
+                }
+            }
+            return false
         }
 
         private fun parseJsonValue(raw: String): Any? {

@@ -86,9 +86,11 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'findFallbackRepoFile' in download_manager
     assert 'compatibilityHintForFile' in download_manager
     assert 'does not publish a native LiteRT-LM artifact' in download_manager
-    assert 'does not publish a .litertlm file' in download_manager
+    assert 'does not publish a .litertlm or .task file' in download_manager
     assert 'litert-community/gemma-4-E2B-it-litert-lm' in download_manager
     assert 'litert-community/gemma-4-E4B-it-litert-lm' in download_manager
+    assert 'litert-community/Gemma3-1B-IT' in download_manager
+    assert 'litert-community/Gemma3-4B-IT' in download_manager
     assert 'Downloading is allowed; the selected backend will decide at load time whether it can run this file.' in download_manager
     assert 'Backend.GPU() to "gpu"' in litert_proxy
     assert 'Backend.CPU() to "cpu"' in litert_proxy

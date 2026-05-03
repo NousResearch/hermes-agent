@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.ui.chat
 import android.Manifest
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -98,6 +99,17 @@ fun ChatScreen(
         } else {
             viewModel.setListening(false)
             viewModel.setStatus("Microphone permission is required for voice input")
+        }
+    }
+    val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            viewModel.attachImage(uri.toString())
         }
     }
 
@@ -206,7 +218,11 @@ fun ChatScreen(
 
     fun handleSend() {
         val input = uiState.input.trim()
-        if (input.isEmpty()) return
+        if (input.isEmpty() && uiState.attachments.isEmpty()) return
+        if (input.isEmpty()) {
+            viewModel.sendMessage()
+            return
+        }
         val commandResult = ChatCommandRouter.execute(
             rawInput = input,
             host = ChatCommandHost(
@@ -295,9 +311,12 @@ fun ChatScreen(
                 }
                 ChatComposer(
                     input = uiState.input,
+                    attachments = uiState.attachments,
                     isSending = uiState.isSending,
                     isListening = uiState.isListening,
                     onInputChange = viewModel::updateInput,
+                    onAttachImage = { imageLauncher.launch(arrayOf("image/*")) },
+                    onRemoveAttachment = viewModel::removeAttachment,
                     onMic = ::startVoiceInput,
                     onSend = ::handleSend,
                 )
@@ -547,9 +566,12 @@ private fun ConversationHistoryList(
 @Composable
 private fun ChatComposer(
     input: String,
+    attachments: List<ChatAttachment>,
     isSending: Boolean,
     isListening: Boolean,
     onInputChange: (String) -> Unit,
+    onAttachImage: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     onMic: () -> Unit,
     onSend: () -> Unit,
 ) {
@@ -560,43 +582,90 @@ private fun ChatComposer(
         shape = RoundedCornerShape(28.dp),
         tonalElevation = 2.dp,
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            IconButton(onClick = onMic) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_action_mic),
-                    contentDescription = "Voice input",
-                    tint = if (isListening) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp),
-                )
+            if (attachments.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("HermesChatAttachments"),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(strings.attachedImages(attachments.size), style = MaterialTheme.typography.bodySmall)
+                    attachments.forEach { attachment ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = MaterialTheme.shapes.small,
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(attachment.displayName, style = MaterialTheme.typography.labelMedium)
+                                IconButton(onClick = { onRemoveAttachment(attachment.uri) }, modifier = Modifier.size(28.dp)) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_action_close),
+                                        contentDescription = strings.removeAttachment(),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputChange,
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .testTag("HermesChatInput"),
-                shape = RoundedCornerShape(28.dp),
-                label = { Text(strings.messageHermes.ifBlank { "Message Hermes" }) },
-                maxLines = 5,
-                supportingText = {
-                    Text(
-                        strings.chatCommandsTip(isListening),
-                        textAlign = TextAlign.Start,
-                    )
-                },
-            )
-            Button(
-                onClick = onSend,
-                enabled = !isSending,
-                modifier = Modifier.testTag("HermesChatSendButton"),
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(if (isSending) "…" else strings.send.ifBlank { "Send" })
+                IconButton(onClick = onAttachImage, modifier = Modifier.testTag("HermesChatAttachImageButton")) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_action_image),
+                        contentDescription = strings.addImage(),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                IconButton(onClick = onMic) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_action_mic),
+                        contentDescription = "Voice input",
+                        tint = if (isListening) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("HermesChatInput"),
+                    shape = RoundedCornerShape(28.dp),
+                    label = { Text(strings.messageHermes.ifBlank { "Message Hermes" }) },
+                    maxLines = 5,
+                    supportingText = {
+                        Text(
+                            strings.chatCommandsTip(isListening),
+                            textAlign = TextAlign.Start,
+                        )
+                    },
+                )
+                Button(
+                    onClick = onSend,
+                    enabled = !isSending && (input.isNotBlank() || attachments.isNotEmpty()),
+                    modifier = Modifier.testTag("HermesChatSendButton"),
+                ) {
+                    Text(if (isSending) "…" else strings.send.ifBlank { "Send" })
+                }
             }
         }
     }

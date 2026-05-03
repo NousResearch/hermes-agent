@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -19,6 +20,7 @@ class HermesRuntimeService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        promoteToForeground(runtime = null)
         running = true
         DeviceStateWriter.write(applicationContext)
     }
@@ -37,7 +39,7 @@ class HermesRuntimeService : Service() {
     }
 
     private fun startOrRefreshForeground() {
-        startForeground(NOTIFICATION_ID, buildNotification(runtime = null))
+        promoteToForeground(runtime = null)
         running = true
         DeviceStateWriter.write(applicationContext)
 
@@ -46,6 +48,15 @@ class HermesRuntimeService : Service() {
         manager.notify(NOTIFICATION_ID, buildNotification(runtime))
         running = true
         DeviceStateWriter.write(applicationContext)
+    }
+
+    private fun promoteToForeground(runtime: HermesRuntimeManager.RuntimeState?) {
+        val notification = buildNotification(runtime)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun buildNotification(runtime: HermesRuntimeManager.RuntimeState?): Notification {

@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.json.JSONObject
 
 class HermesApiClientTest {
     private lateinit var server: MockWebServer
@@ -68,7 +69,39 @@ class HermesApiClientTest {
         assertEquals("/v1/chat/completions", recorded.path)
         assertEquals("Bearer secret", recorded.getHeader("Authorization"))
         assertEquals("session-123", recorded.getHeader(HermesApiClient.SESSION_HEADER))
-        assertTrue(recorded.body.readUtf8().contains("\"hello\""))
+        val recordedBody = recorded.body.readUtf8()
+        assertTrue(recordedBody.contains("\"hello\""))
         assertEquals("{\"ok\":true}", result.rawBody)
+    }
+
+    @Test
+    fun createChatCompletion_sendsOpenAiMultimodalContentParts() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{" + "\"ok\":true}"))
+
+        val client = HermesApiClient(server.url("/").toString())
+        client.createChatCompletion(
+            ChatCompletionRequest(
+                model = "gemma-3n-local",
+                messages = listOf(
+                    ChatMessage(
+                        role = "user",
+                        content = "describe this",
+                        contentParts = listOf(
+                            ChatContentPart(type = "text", text = "describe this"),
+                            ChatContentPart(type = "image_url", imageUrl = "data:image/png;base64,AA=="),
+                        ),
+                    )
+                ),
+            )
+        )
+
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        val content = body
+            .getJSONArray("messages")
+            .getJSONObject(0)
+            .getJSONArray("content")
+        assertEquals("text", content.getJSONObject(0).getString("type"))
+        assertEquals("image_url", content.getJSONObject(1).getString("type"))
+        assertEquals("data:image/png;base64,AA==", content.getJSONObject(1).getJSONObject("image_url").getString("url"))
     }
 }

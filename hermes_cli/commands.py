@@ -114,6 +114,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
+    CommandDef("codex-quota", "Show OpenAI Codex quota usage and reset windows", "Info",
+               cli_only=True, aliases=("quota",)),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),

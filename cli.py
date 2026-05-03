@@ -2037,6 +2037,12 @@ class HermesCLI:
         if self.final_response_markdown not in {"render", "strip", "raw"}:
             self.final_response_markdown = "strip"
 
+        self.codex_quota_display = str(
+            CLI_CONFIG["display"].get("codex_quota", "minimal")
+        ).strip().lower() or "minimal"
+        if self.codex_quota_display not in {"minimal", "detailed"}:
+            self.codex_quota_display = "minimal"
+
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
@@ -2290,6 +2296,10 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        self._codex_quota_snapshot = None
+        self._codex_quota_last_refresh = 0.0
+        self._codex_quota_refreshing = False
+        self._codex_quota_lock = threading.Lock()
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -2353,6 +2363,44 @@ class HermesCLI:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+
+    def _is_codex_provider_active(self) -> bool:
+        agent = getattr(self, "agent", None)
+        provider = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "").lower()
+        base_url = (getattr(agent, "base_url", None) or getattr(self, "base_url", None) or "").lower()
+        return provider == "openai-codex" or "chatgpt.com/backend-api/codex" in base_url
+
+    def _maybe_refresh_codex_quota(self, *, force: bool = False) -> None:
+        if not self._is_codex_provider_active():
+            return
+        now = time.monotonic()
+        with self._codex_quota_lock:
+            if self._codex_quota_refreshing:
+                return
+            if not force and self._codex_quota_last_refresh and (now - self._codex_quota_last_refresh) < 30.0:
+                return
+            self._codex_quota_refreshing = True
+            self._codex_quota_last_refresh = now
+
+        def _worker() -> None:
+            try:
+                from agent.codex_quota import fetch_codex_quota
+                snapshot = fetch_codex_quota(timeout=8.0)
+                with self._codex_quota_lock:
+                    self._codex_quota_snapshot = snapshot
+            except Exception:
+                pass
+            finally:
+                with self._codex_quota_lock:
+                    self._codex_quota_refreshing = False
+                self._invalidate(min_interval=0.0)
+
+        threading.Thread(target=_worker, name="codex-quota-refresh", daemon=True).start()
+
+    def _get_codex_quota_snapshot(self):
+        self._maybe_refresh_codex_quota()
+        with self._codex_quota_lock:
+            return self._codex_quota_snapshot
 
     @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
@@ -2658,6 +2706,45 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    quota_snapshot = self._get_codex_quota_snapshot() if self._is_codex_provider_active() else None
+                    if quota_snapshot is not None:
+                        try:
+                            from agent.codex_quota import format_window_metadata, render_quota_bar_fragments
+                            if quota_snapshot.ok and quota_snapshot.windows:
+                                detailed_quota = getattr(self, "codex_quota_display", "minimal") == "detailed"
+                                frags.append(("class:status-bar-dim", " │ codex "))
+                                if detailed_quota:
+                                    bar_width = 10 if width >= 140 else 8
+                                    for idx, window in enumerate(quota_snapshot.windows[:2]):
+                                        if idx:
+                                            frags.append(("class:status-bar-dim", "  "))
+                                        frags.extend(render_quota_bar_fragments(
+                                            window.used_percent,
+                                            window.elapsed_percent,
+                                            width=bar_width,
+                                        ))
+                                        frags.append(("class:status-bar-dim", " "))
+                                        frags.append((
+                                            self._status_bar_context_style(round(window.used_percent)),
+                                            format_window_metadata(window, compact=True),
+                                        ))
+                                else:
+                                    for idx, window in enumerate(quota_snapshot.windows[:2]):
+                                        if idx:
+                                            frags.append(("class:status-bar-dim", " "))
+                                        frags.extend(render_quota_bar_fragments(
+                                            window.used_percent,
+                                            window.elapsed_percent,
+                                            width=8,
+                                        ))
+                                        frags.append(("class:status-bar-dim", " "))
+                                        frags.append((self._status_bar_context_style(round(window.used_percent)), f"{round(window.used_percent)}%"))
+                            elif quota_snapshot.error:
+                                frags.append(("class:status-bar-dim", f" │ {quota_snapshot.error}"))
+                        except Exception:
+                            pass
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -2666,7 +2753,7 @@ class HermesCLI:
                         (bar_style, percent_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                    ]
+                    ])
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:
@@ -5870,6 +5957,26 @@ class HermesCLI:
             self._console_print(f"    {header:40s}  {bar}  {pct_str}")
         self._console_print()
 
+    def _handle_codex_quota_command(self, cmd_original: str) -> None:
+        """Show OpenAI Codex quota usage for the current OAuth account."""
+        try:
+            from agent.codex_quota import fetch_codex_quota, format_codex_quota_full
+        except ImportError as exc:
+            self._console_print(f"  [red]Codex quota module unavailable: {exc}[/]")
+            return
+        result = fetch_codex_quota(timeout=8.0)
+        with self._codex_quota_lock:
+            self._codex_quota_snapshot = result
+            self._codex_quota_last_refresh = time.monotonic()
+        rendered = format_codex_quota_full(result)
+        if result.ok:
+            self._console_print()
+            for line in rendered.splitlines():
+                self._console_print(f"  {line}")
+            self._console_print()
+        else:
+            self._console_print(f"  [yellow]{rendered}[/]")
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -6429,6 +6536,8 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "codex-quota":
+            self._handle_codex_quota_command(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
@@ -11544,6 +11653,7 @@ class HermesCLI:
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()
                         self._last_scrollback_tool = ""
+                        self._maybe_refresh_codex_quota(force=True)
 
                         app.invalidate()  # Refresh status line
 

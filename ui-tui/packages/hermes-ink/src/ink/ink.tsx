@@ -73,7 +73,13 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
-import { supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
+import {
+  needsAltScreenResizeScrollbackClear,
+  supportsExtendedKeys,
+  SYNC_OUTPUT_SUPPORTED,
+  type Terminal,
+  writeDiffToTerminal
+} from './terminal.js'
 import {
   CURSOR_HOME,
   cursorMove,
@@ -82,7 +88,8 @@ import {
   DISABLE_MODIFY_OTHER_KEYS,
   ENABLE_KITTY_KEYBOARD,
   ENABLE_MODIFY_OTHER_KEYS,
-  ERASE_SCREEN
+  ERASE_SCREEN,
+  ERASE_SCROLLBACK
 } from './termio/csi.js'
 import {
   DBP,
@@ -119,6 +126,11 @@ const CURSOR_HOME_PATCH = Object.freeze({
 const ERASE_THEN_HOME_PATCH = Object.freeze({
   type: 'stdout' as const,
   content: ERASE_SCREEN + CURSOR_HOME
+})
+
+const DEEP_ERASE_THEN_HOME_PATCH = Object.freeze({
+  type: 'stdout' as const,
+  content: ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
 })
 
 // Cached per-Ink-instance, invalidated on resize. frame.cursor.y for
@@ -863,17 +875,17 @@ export default class Ink {
       // position independently. Parking at bottom (not 0,0) keeps the guide
       // where the user's attention is.
       //
-      // After resize, prepend ERASE_SCREEN too. The diff only writes cells
+      // After resize, prepend a clear too. The diff only writes cells
       // that changed; cells where new=blank and prev-buffer=blank get skipped
       // — but the physical terminal still has stale content there (shorter
-      // lines at new width leave old-width text tails visible). ERASE inside
-      // BSU/ESU is atomic: old content stays visible until the whole
-      // erase+paint lands, then swaps in one go. Writing ERASE_SCREEN
-      // synchronously in handleResize would blank the screen for the ~80ms
-      // render() takes.
+      // lines at new width leave old-width text tails visible). Apple Terminal
+      // can also preserve alt-screen reflow artifacts in scrollback during
+      // resize, so it gets CSI 3J in this one recovery path. When BSU/ESU is
+      // supported, the clear+paint lands atomically; otherwise the final state
+      // is still healed even if the repaint is visible.
       if (this.needsEraseBeforePaint) {
         this.needsEraseBeforePaint = false
-        optimized.unshift(ERASE_THEN_HOME_PATCH)
+        optimized.unshift(needsAltScreenResizeScrollbackClear() ? DEEP_ERASE_THEN_HOME_PATCH : ERASE_THEN_HOME_PATCH)
       } else {
         optimized.unshift(CURSOR_HOME_PATCH)
       }

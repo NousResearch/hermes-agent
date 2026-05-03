@@ -4231,6 +4231,14 @@ def _config_provider_matches(provider_id: Optional[str]) -> bool:
     return _get_config_provider() == provider_id.strip().lower()
 
 
+def _should_reset_config_provider_on_logout(provider_id: Optional[str]) -> bool:
+    """Return True when logout should reset the model provider config."""
+    if not provider_id:
+        return False
+    normalized = provider_id.strip().lower()
+    return normalized in PROVIDER_REGISTRY and _config_provider_matches(normalized)
+
+
 def _logout_default_provider_from_config() -> Optional[str]:
     """Fallback logout target when auth.json has no active provider.
 
@@ -5316,15 +5324,18 @@ def logout_command(args) -> None:
         print("No provider is currently logged in.")
         return
 
-    config_matches = _config_provider_matches(target)
+    should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
 
-    if clear_provider_auth(target) or config_matches:
-        _reset_config_provider()
+    if clear_provider_auth(target) or should_reset_config:
+        if should_reset_config:
+            _reset_config_provider()
         print(f"Logged out of {provider_name}.")
-        if os.getenv("OPENROUTER_API_KEY"):
+        if should_reset_config and os.getenv("OPENROUTER_API_KEY"):
             print("Hermes will use OpenRouter for inference.")
-        else:
+        elif should_reset_config:
             print("Run `hermes model` or configure an API key to use Hermes.")
+        else:
+            print("Model provider configuration was unchanged.")
     else:
         print(f"No auth state found for {provider_name}.")

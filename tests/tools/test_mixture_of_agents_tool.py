@@ -33,12 +33,21 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
     warn = MagicMock()
     err = MagicMock()
 
-    monkeypatch.setattr(moa, "_get_openrouter_client", lambda: fake_client)
+    monkeypatch.setattr(
+        moa,
+        "resolve_provider_client",
+        lambda *a, **k: (fake_client, "openai/gpt-5.4-pro"),
+    )
     monkeypatch.setattr(moa.logger, "warning", warn)
     monkeypatch.setattr(moa.logger, "error", err)
 
+    entry = {
+        "model": "openai/gpt-5.4-pro",
+        "provider": "openrouter",
+        "reasoning_config": None,
+    }
     model, message, success = await moa._run_reference_model_safe(
-        "openai/gpt-5.4-pro", "hello", max_retries=2
+        entry, "hello", max_retries=2
     )
 
     assert model == "openai/gpt-5.4-pro"

@@ -454,6 +454,52 @@ def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkey
     assert "missing run 'hermes setup' to configure" not in output
 
 
+def test_setup_summary_marks_codex_only_moa_as_available_without_openrouter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client._read_codex_access_token", lambda: "codex-token")
+
+    config = load_config()
+    config["moa"] = {
+        "enabled": True,
+        "reference_models": [{"model": "gpt-5.4", "provider": "openai-codex"}],
+        "aggregator_model": {"model": "gpt-5.4", "provider": "openai-codex"},
+    }
+    save_config(config)
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Mixture of Agents" in output
+    assert "missing OPENROUTER_API_KEY" not in output
+    assert "missing credentials for openai-codex" not in output
+
+
+def test_setup_summary_reports_configured_moa_provider_not_openrouter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client._read_codex_access_token", lambda: "")
+
+    config = load_config()
+    config["moa"] = {
+        "enabled": True,
+        "reference_models": [{"model": "gpt-5.4", "provider": "openai-codex"}],
+        "aggregator_model": {"model": "gpt-5.4", "provider": "openai-codex"},
+    }
+    save_config(config)
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Mixture of Agents" in output
+    assert "missing credentials for openai-codex" in output
+    assert "missing OPENROUTER_API_KEY" not in output
+
+
 def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)

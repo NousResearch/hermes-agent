@@ -215,6 +215,34 @@ def _fixed_temperature_for_model(
         return OMIT_TEMPERATURE
     return None
 
+
+def resolve_chat_temperature(
+    model: str,
+    base_url: Optional[str],
+    requested: Optional[float],
+) -> Optional[float]:
+    """Resolve the temperature to send for a chat-completions style request.
+
+    ``None`` means omit the request field and let the provider/server default
+    apply.  This public helper lets direct auxiliary callers share the same
+    strict-model handling as ``_build_call_kwargs`` without importing private
+    sentinel helpers.
+    """
+    temperature = requested
+    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    if fixed_temperature is OMIT_TEMPERATURE:
+        return None
+    if fixed_temperature is not None:
+        temperature = fixed_temperature
+
+    if temperature is not None:
+        from agent.anthropic_adapter import _forbids_sampling_params
+
+        if _forbids_sampling_params(model):
+            return None
+
+    return temperature
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
@@ -496,34 +524,33 @@ class _CodexCompletionsAdapter:
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
 
-        # Translate extra_body.reasoning (chat.completions shape) into the
-        # Responses API's top-level reasoning + include fields.  Mirrors
-        # agent/transports/codex.py::build_kwargs() so auxiliary callers
-        # that configure reasoning via auxiliary.<task>.extra_body get the
-        # same behavior as the main agent's Codex transport.
-        extra_body = kwargs.get("extra_body") or {}
-        if isinstance(extra_body, dict):
-            reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
-                if reasoning_cfg.get("enabled") is False:
-                    # Reasoning explicitly disabled — do not set reasoning
-                    # or include.  The Codex backend still thinks by
-                    # default, but we honor the caller's intent where the
-                    # API allows it.
-                    pass
-                else:
-                    effort = reasoning_cfg.get("effort", "medium")
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
-                    if effort == "minimal":
-                        effort = "low"
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+        reasoning_cfg = kwargs.get("reasoning_config")
+        if not isinstance(reasoning_cfg, dict):
+            # Translate extra_body.reasoning (chat.completions shape) into the
+            # Responses API's top-level reasoning + include fields.  Mirrors
+            # agent/transports/codex.py::build_kwargs() so auxiliary callers
+            # that configure reasoning via auxiliary.<task>.extra_body get the
+            # same behavior as the main agent's Codex transport.
+            extra_body = kwargs.get("extra_body") or {}
+            if isinstance(extra_body, dict):
+                reasoning_cfg = extra_body.get("reasoning")
 
-        # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
+        if isinstance(reasoning_cfg, dict):
+            if reasoning_cfg.get("enabled") is False:
+                # Reasoning explicitly disabled — do not set reasoning or
+                # include. The Codex backend still thinks by default, but we
+                # honor the caller's intent where the API allows it.
+                pass
+            else:
+                effort = str(reasoning_cfg.get("effort") or "medium").strip().lower()
+                # Codex backend rejects "minimal"; clamp to "low" to match
+                # the main-agent Codex transport behavior.
+                if effort == "minimal":
+                    effort = "low"
+                resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
+                resp_kwargs["include"] = ["reasoning.encrypted_content"]
+
+        # Tools support for auxiliary callers that pass function schemas
         tools = kwargs.get("tools")
         if tools:
             converted = []
@@ -738,14 +765,16 @@ class _AnthropicCompletionsAdapter:
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
-            reasoning_config=None,
+            reasoning_config=kwargs.get("reasoning_config"),
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
         # additionally strips these keys as a safety net — keep both layers.
-        if temperature is not None:
+        # Also skip if build_anthropic_kwargs already set temperature (e.g. to 1
+        # when thinking is enabled on older models) so we don't clobber it.
+        if temperature is not None and "temperature" not in anthropic_kwargs:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
@@ -3206,20 +3235,7 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
-    fixed_temperature = _fixed_temperature_for_model(model, base_url)
-    if fixed_temperature is OMIT_TEMPERATURE:
-        temperature = None  # strip — let server choose
-    elif fixed_temperature is not None:
-        temperature = fixed_temperature
-
-    # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
-    # drop here so auxiliary callers that hardcode temperature (e.g. 0 on
-    # structured-JSON extraction) don't 400 the moment
-    # the aux model is flipped to 4.7.
-    if temperature is not None:
-        from agent.anthropic_adapter import _forbids_sampling_params
-        if _forbids_sampling_params(model):
-            temperature = None
+    temperature = resolve_chat_temperature(model, base_url, temperature)
 
     if temperature is not None:
         kwargs["temperature"] = temperature

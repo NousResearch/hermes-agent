@@ -367,11 +367,18 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
-    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
-    if get_env_value("OPENROUTER_API_KEY"):
-        tool_status.append(("Mixture of Agents", True, None))
-    else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+    # Mixture of Agents — availability depends on the configured roster.
+    try:
+        from tools.mixture_of_agents_tool import get_moa_preflight_status
+
+        moa_available, moa_hint = get_moa_preflight_status()
+    except Exception:
+        moa_available, moa_hint = False, "configured MoA provider credentials"
+    tool_status.append((
+        "Mixture of Agents",
+        moa_available,
+        None if moa_available else (moa_hint or "configured MoA provider credentials"),
+    ))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:

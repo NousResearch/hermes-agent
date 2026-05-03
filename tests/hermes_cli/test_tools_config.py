@@ -269,6 +269,22 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     assert _toolset_has_keys("vision") is True
 
 
+def test_toolset_has_keys_for_moa_uses_config_aware_preflight(monkeypatch):
+    import tools.mixture_of_agents_tool as moa
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(moa, "get_moa_preflight_status", lambda: (True, None))
+
+    assert _toolset_has_keys("moa") is True
+
+    monkeypatch.setattr(
+        moa,
+        "get_moa_preflight_status",
+        lambda: (False, "credentials for openai-codex"),
+    )
+    assert _toolset_has_keys("moa") is False
+
+
 def test_save_platform_tools_preserves_mcp_server_names():
     """Ensure MCP server names are preserved when saving platform tools.
 

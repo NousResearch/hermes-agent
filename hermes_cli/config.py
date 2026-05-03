@@ -664,6 +664,29 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Mixture-of-Agents tool: per-model provider routing and reasoning effort.
+    # Absent/empty moa block inherits these defaults; omitted provider fields
+    # default to "openrouter". Routing multiple reference models through Codex
+    # multiplies consumption against the Codex plan's daily cap.
+    "moa": {
+        "enabled": True,
+        "reference_models": [
+            {"model": "anthropic/claude-opus-4.7", "provider": "openrouter", "reasoning": "xhigh"},
+            {"model": "google/gemini-2.5-pro", "provider": "openrouter", "reasoning": "xhigh"},
+            {"model": "openai/gpt-5.5-pro", "provider": "openrouter", "reasoning": "xhigh"},
+            {"model": "deepseek/deepseek-v3.2", "provider": "openrouter", "reasoning": "xhigh"},
+        ],
+        "aggregator_model": {
+            "model": "anthropic/claude-opus-4.7",
+            "provider": "openrouter",
+            "reasoning": "xhigh",
+        },
+        "reference_temperature": 0.6,
+        "aggregator_temperature": 0.4,
+        # min_successful_references: defaults to min(2, len(reference_models))
+        # when omitted so a single silent reference failure doesn't pass.
+    },
+
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
     # "auto" for provider = auto-detect best available provider.
@@ -1315,7 +1338,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "OPENROUTER_API_KEY": {
-        "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
+        "description": "OpenRouter API key (for vision, web scraping helpers, and OpenRouter-routed MoA entries)",
         "prompt": "OpenRouter API key",
         "url": "https://openrouter.ai/keys",
         "password": True,

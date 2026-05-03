@@ -664,7 +664,7 @@ platform_toolsets:
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
-#   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
+#   moa          - mixture_of_agents  (configure providers under `moa:`)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)

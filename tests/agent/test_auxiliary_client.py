@@ -1025,6 +1025,33 @@ class TestKimiTemperatureOmitted:
 
         assert "temperature" not in kwargs
 
+    def test_public_temperature_resolver_omits_kimi(self):
+        from agent.auxiliary_client import resolve_chat_temperature
+
+        assert resolve_chat_temperature(
+            "kimi-k2.6",
+            "https://api.kimi.com/coding/v1",
+            0.3,
+        ) is None
+
+    def test_public_temperature_resolver_omits_anthropic_no_sampling_model(self):
+        from agent.auxiliary_client import resolve_chat_temperature
+
+        assert resolve_chat_temperature(
+            "claude-opus-4-7",
+            "https://api.anthropic.com",
+            0.3,
+        ) is None
+
+    def test_public_temperature_resolver_preserves_regular_model(self):
+        from agent.auxiliary_client import resolve_chat_temperature
+
+        assert resolve_chat_temperature(
+            "gpt-5.4",
+            "https://api.openai.com/v1",
+            0.3,
+        ) == 0.3
+
     def test_sync_call_omits_temperature(self):
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"

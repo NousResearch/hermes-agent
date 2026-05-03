@@ -1,3 +1,5 @@
+import base64
+import json
 from datetime import datetime, timezone
 
 from agent.account_usage import (
@@ -33,6 +35,30 @@ class _Client:
 
     def get(self, url, headers=None):
         return _Response(self._payload)
+
+
+class _RecordingClient:
+    def __init__(self, payload):
+        self._payload = payload
+        self.requests = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        self.requests.append((url, headers or {}))
+        return _Response(self._payload)
+
+
+def _jwt_with_claims(claims: dict) -> str:
+    def encode(part: dict) -> str:
+        raw = json.dumps(part, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{encode({'alg': 'none'})}.{encode(claims)}.sig"
 
 
 class _RoutingClient:
@@ -93,6 +119,39 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_uses_live_pool_token_for_account_id(monkeypatch):
+    pool_token = _jwt_with_claims(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": "acct_pool_live"}}
+    )
+    recorded = _RecordingClient(
+        {
+            "plan_type": "pro",
+            "rate_limit": {"primary_window": {"used_percent": 10}},
+        }
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: (_ for _ in ()).throw(AssertionError("singleton auth should not be used")),
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(AssertionError("singleton token store should not be read")),
+    )
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: recorded)
+
+    snapshot = fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key=pool_token,
+    )
+
+    assert snapshot is not None
+    assert recorded.requests
+    _, headers = recorded.requests[0]
+    assert headers["Authorization"] == f"Bearer {pool_token}"
+    assert headers["ChatGPT-Account-Id"] == "acct_pool_live"
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

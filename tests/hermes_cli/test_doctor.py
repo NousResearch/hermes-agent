@@ -35,7 +35,7 @@ class TestDoctorPlatformHints:
 
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
-        content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***
+        content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"
         assert _has_provider_env_config(content)
 
     def test_detects_custom_endpoint_without_openrouter_key(self):
@@ -43,7 +43,7 @@ class TestProviderEnvDetection:
         assert _has_provider_env_config(content)
 
     def test_detects_kimi_cn_api_key(self):
-        content = "KIMI_CN_API_KEY=***
+        content = "KIMI_CN_API_KEY=sk-test\n"
         assert _has_provider_env_config(content)
 
     def test_returns_false_when_no_provider_settings(self):
@@ -69,7 +69,7 @@ class TestDoctorEnvFileEncoding:
         # raise UnicodeDecodeError on Chinese Windows.
         env_path = hermes_home / ".env"
         env_path.write_text(
-            "OPENAI_API_KEY=***  # em-dash here — should not crash\n",
+            "OPENAI_API_KEY=sk-test  # em-dash here — should not crash\n",
             encoding="utf-8",
         )
 
@@ -449,6 +449,38 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
         encoding="utf-8",
     )
 
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert f"model.provider '{provider}' is not a recognised provider" not in out
+    assert f"model.provider '{provider}' is unknown" not in out
+    if provider in {"ai-gateway", "opencode-zen", "kilocode"}:
+        assert (
+            f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
+            not in out
+        )
+
+
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -485,39 +517,6 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
 
     out = buf.getvalue()
     assert "model.provider 'kimi-coding-cn' is not a recognised provider" not in out
-
-
-    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
-    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    (tmp_path / "project").mkdir(exist_ok=True)
-
-    fake_model_tools = types.SimpleNamespace(
-        check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
-    )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-
-    try:
-        from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-    except Exception:
-        pass
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        doctor_mod.run_doctor(Namespace(fix=False))
-
-    out = buf.getvalue()
-    assert f"model.provider '{provider}' is not a recognised provider" not in out
-    assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode"}:
-        assert (
-            f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
-            not in out
-        )
-
 
 def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
@@ -566,7 +565,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    (home / ".env").write_text("KIMI_CN_API_KEY=*** encoding="utf-8")
+    (home / ".env").write_text("KIMI_CN_API_KEY=sk-test\n", encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 
@@ -614,7 +613,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    (home / ".env").write_text("OPENCODE_GO_API_KEY=*** encoding="utf-8")
+    (home / ".env").write_text("OPENCODE_GO_API_KEY=***\n", encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 

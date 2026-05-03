@@ -3040,3 +3040,103 @@ class TestSlashEphemeralAck:
         # the normal single-user case; the ContextVar path is the precise one.
         # The key invariant is: when the ContextVar IS set, it matches exactly.
         assert ctx is not None  # fallback path finds the entry
+
+
+# ---------------------------------------------------------------------------
+# Slack Block Kit markdown block type tests (PR #8554)
+# ---------------------------------------------------------------------------
+
+class TestSlackMarkdownBlockType:
+    """Tests for Slack Block Kit `markdown` block type rendering.
+
+    Verifies that messages use `blocks` with the `markdown` type instead of
+    legacy `mrkdwn`, enabling native GFM table rendering, bold, italic, and
+    link support in Slack.
+    """
+
+    @pytest.fixture()
+    def adapter(self):
+        config = PlatformConfig(enabled=True, token="***")
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._bot_user_id = "U_BOT"
+        a._running = True
+        a.handle_message = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_send_uses_markdown_block_type(self, adapter):
+        """send() should use blocks with markdown type, not mrkdwn."""
+        content = "Hello **world**"
+        result = await adapter.send("C123", content)
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args[1]
+        assert "blocks" in call_kwargs, "send() must include blocks parameter"
+        assert call_kwargs["blocks"] == [{"type": "markdown", "text": content}]
+        assert "mrkdwn" not in call_kwargs, "send() should not pass mrkdwn flag"
+
+    @pytest.mark.asyncio
+    async def test_send_passes_tables_unchanged(self, adapter):
+        """send() should pass markdown tables unchanged to the markdown block."""
+        table = "| Column A | Column B |\n|----------|----------|\n| Value 1  | Value 2  |"
+        result = await adapter.send("C123", table)
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args[1]
+        assert call_kwargs["blocks"][0]["text"] == table
+
+    @pytest.mark.asyncio
+    async def test_send_text_fallback_is_mrkdwn(self, adapter):
+        """send() should pass format_message() output as the text fallback."""
+        content = "**bold text**"
+        result = await adapter.send("C123", content)
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args[1]
+        # text field should have the mrkdwn-formatted version
+        assert call_kwargs["text"] == "*bold text*"
+
+    @pytest.mark.asyncio
+    async def test_send_chunking_respects_markdown_limit(self, adapter):
+        """send() should chunk long messages within the 12,000 char markdown block limit."""
+        # Content that exceeds MAX_MESSAGE_LENGTH (11,800)
+        content = "Line\n" * 12000  # ~60,000 chars
+
+        result = await adapter.send("C123", content)
+        assert result.success
+
+        # Should have been called multiple times (chunked)
+        calls = adapter._app.client.chat_postMessage.call_args_list
+        assert len(calls) > 1, "Long messages should be chunked"
+
+        # Each chunk should use markdown block type
+        for call in calls:
+            kwargs = call[1]
+            assert kwargs["blocks"][0]["type"] == "markdown"
+            assert len(kwargs["blocks"][0]["text"]) <= SlackAdapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_edit_message_uses_markdown_block_type(self, adapter):
+        """edit_message() should use blocks with markdown type."""
+        content = "Updated **content**"
+        result = await adapter.edit_message("C123", "12345.67890", content)
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_update.call_args[1]
+        assert "blocks" in call_kwargs, "edit_message() must include blocks parameter"
+        assert call_kwargs["blocks"] == [{"type": "markdown", "text": content}]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_truncates_long_content(self, adapter):
+        """edit_message() should truncate content to markdown block limit."""
+        # Content that exceeds MAX_MESSAGE_LENGTH
+        content = "X" * 20000
+
+        result = await adapter.edit_message("C123", "12345.67890", content)
+        assert result.success
+
+        call_kwargs = adapter._app.client.chat_update.call_args[1]
+        # Content should be truncated to fit within MAX_MESSAGE_LENGTH
+        assert len(call_kwargs["blocks"][0]["text"]) <= SlackAdapter.MAX_MESSAGE_LENGTH

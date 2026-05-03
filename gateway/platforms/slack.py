@@ -281,7 +281,7 @@ class SlackAdapter(BasePlatformAdapter):
       - Typing indicators (not natively supported by Slack bots)
     """
 
-    MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    MAX_MESSAGE_LENGTH = 11800  # Slack markdown block type caps at 12,000 chars; leave margin
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -707,11 +707,15 @@ class SlackAdapter(BasePlatformAdapter):
                     slash_ctx, content,
                 )
 
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
+            # Use raw content for the Block Kit markdown block type which
+            # natively renders standard markdown (tables, bold, links, etc.).
+            # format_message() converts to legacy mrkdwn and is only used for
+            # the plain-text fallback (notifications, search, accessibility).
+            fallback = self.format_message(content)
 
             # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+            fallback_chunks = self.truncate_message(fallback, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -721,10 +725,11 @@ class SlackAdapter(BasePlatformAdapter):
             broadcast = self.config.extra.get("reply_broadcast", False)
 
             for i, chunk in enumerate(chunks):
+                fallback_chunk = fallback_chunks[i] if i < len(fallback_chunks) else chunk
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
+                    "text": fallback_chunk,
+                    "blocks": [{"type": "markdown", "text": chunk}],
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
@@ -809,11 +814,29 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            formatted = self.format_message(content)
+            # Use raw content for the markdown block; mrkdwn fallback for text field.
+            # Slack markdown block type caps at 12,000 chars — truncate to stay
+            # within the limit to avoid `markdown_text_too_long` errors.
+            fallback = self.format_message(content)
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+            fallback_chunks = self.truncate_message(fallback, self.MAX_MESSAGE_LENGTH)
+
+            # If the content fits in a single block, update in place.
+            # Otherwise send the first chunk and log a warning — chat_update
+            # only replaces one message, so multi-chunk means the rest is lost.
+            update_content = chunks[0]
+            update_fallback = fallback_chunks[0] if fallback_chunks else update_content
+            if len(chunks) > 1:
+                logger.warning(
+                    "[Slack] edit_message() truncated content from %d chunks to 1 "
+                    "(markdown block limit is 12,000 chars).",
+                    len(chunks),
+                )
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=formatted,
+                text=update_fallback,
+                blocks=[{"type": "markdown", "text": update_content}],
             )
             if finalize:
                 await self.stop_typing(chat_id)

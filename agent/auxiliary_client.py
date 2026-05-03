@@ -2862,10 +2862,11 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     """
     custom_base = _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
-    # Only use max_completion_tokens for direct OpenAI custom endpoints
+    # Use max_completion_tokens for direct OpenAI-compatible providers that reject
+    # max_tokens on newer GPT-4o/o-series/GPT-5-style models.
     if (not or_key
             and _read_nous_auth() is None
-            and base_url_hostname(custom_base) == "api.openai.com"):
+            and base_url_hostname(custom_base) in {"api.openai.com", "api.githubcopilot.com"}):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 

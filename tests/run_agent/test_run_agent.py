@@ -3666,6 +3666,18 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_github_copilot(self, agent):
+        """GitHub Copilot's OpenAI-compatible API rejects max_tokens for newer models."""
+        agent.base_url = "https://api.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_github_copilot_path(self, agent):
+        """Detect Copilot by hostname even when the configured URL includes a path."""
+        agent.base_url = "https://api.githubcopilot.com/chat/completions"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
 
 class TestAzureOpenAIRouting:
     """Verify Azure OpenAI endpoints stay on chat_completions for gpt-5.x."""

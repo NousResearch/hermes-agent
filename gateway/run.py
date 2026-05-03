@@ -5461,6 +5461,28 @@ class GatewayRunner:
         return event.platform_update_id <= recorded_uid
 
 
+    @staticmethod
+    def _sanitize_telegram_command_mentions(text: str) -> str:
+        """Rewrite ``/CommandName`` mentions in help text for Telegram.
+
+        Telegram requires slash-command names to be lowercase with underscores
+        only.  The gateway's help renderer produces raw names from the registry
+        (e.g. ``/Linear``, ``/Branch``).  This helper rewrites every
+        ``/SomeName`` or ``/SomeName args`` inside backtick-delimited spans to
+        the Telegram-safe form so the names remain clickable and autocomplete
+        works.
+        """
+        from hermes_cli.commands import _sanitize_telegram_name
+
+        def _rewrite(m: re.Match) -> str:
+            name = _sanitize_telegram_name(m.group(1))
+            args = m.group(2) or ""
+            return f"`/{name}{args}`"
+
+        # Match: backtick + / + command-name (letters, digits, hyphens, underscores)
+        #         + optional trailing args + closing backtick
+        return re.sub(r"`/([A-Za-z][A-Za-z0-9_-]*)(\s[^`]*)?`", _rewrite, text)
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         from hermes_cli.commands import gateway_help_lines
@@ -5481,7 +5503,11 @@ class GatewayRunner:
                     lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
         except Exception:
             pass
-        return "\n".join(lines)
+        from gateway.config import Platform
+        result = "\n".join(lines)
+        if event.source.platform == Platform.TELEGRAM:
+            result = self._sanitize_telegram_command_mentions(result)
+        return result
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         """Handle /commands [page] - paginated list of all commands and skills."""
@@ -5534,8 +5560,12 @@ class GatewayRunner:
             lines.extend(["", " | ".join(nav_parts)])
         if page != requested_page:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
-        return "\n".join(lines)
-    
+        from gateway.config import Platform
+        result = "\n".join(lines)
+        if event.source.platform == Platform.TELEGRAM:
+            result = self._sanitize_telegram_command_mentions(result)
+        return result
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 

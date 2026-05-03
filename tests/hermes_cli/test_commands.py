@@ -612,6 +612,61 @@ class TestSanitizeTelegramName:
         assert _sanitize_telegram_name("valid_name_123") == "valid_name_123"
 
 
+
+class TestSanitizeTelegramCommandMentions:
+    """Tests for GatewayRunner._sanitize_telegram_command_mentions().
+
+    The method rewrites ``/CommandName`` in help text to Telegram-safe
+    lowercase form so that slash commands are clickable and autocomplete
+    works in the Telegram UI.
+    """
+
+    def test_uppercase_command_lowercased(self):
+        from gateway.run import GatewayRunner
+        text = "`/Linear args` — Linear integration"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`/linear args`" in result
+        assert "`/Linear" not in result
+
+    def test_hyphens_replaced_with_underscores(self):
+        from gateway.run import GatewayRunner
+        text = "`/reload-mcp` — Reload MCP servers"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`/reload_mcp`" in result
+
+    def test_mixed_case_and_hyphens(self):
+        from gateway.run import GatewayRunner
+        text = "`/My-Command args` — Description"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`/my_command args`" in result
+
+    def test_already_valid_command_unchanged(self):
+        from gateway.run import GatewayRunner
+        text = "`/help` — Show help"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`/help`" in result
+
+    def test_multiple_commands_sanitized(self):
+        from gateway.run import GatewayRunner
+        text = "`/Linear` — Linear\n`/Branch args` — Branch"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`/linear`" in result
+        assert "`/branch args`" in result
+
+    def test_non_command_backticks_preserved(self):
+        from gateway.run import GatewayRunner
+        text = "Use `code` for formatting, `/MyCmd` for commands"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`code`" in result
+        assert "`/mycmd`" in result
+
+    def test_commands_with_args(self):
+        from gateway.run import GatewayRunner
+        text = "`/model gpt-4 --global` — Switch model"
+        result = GatewayRunner._sanitize_telegram_command_mentions(text)
+        assert "`/model gpt-4 --global`" in result
+
+
 # ---------------------------------------------------------------------------
 # Telegram command name clamping (32-char limit)
 # ---------------------------------------------------------------------------

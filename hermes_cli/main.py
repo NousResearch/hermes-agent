@@ -46,6 +46,8 @@ Usage:
 import argparse
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -970,8 +972,11 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
-    if shutil.which("node") and shutil.which("npm"):
-        return
+    node_path = shutil.which("node")
+    npm_path = shutil.which("npm")
+    if node_path and npm_path:
+        if not (_is_windows_exe_in_wsl(npm_path) and not _is_windows_exe_in_wsl(node_path)):
+            return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
         return
 
@@ -1014,20 +1019,108 @@ def _ensure_tui_node() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+_WSL_UNC_RE = re.compile(r'^\\\\wsl(?:\.localhost)?\\[^\\]+(.+)$', re.IGNORECASE)
+
+
+def _is_wsl_unc_path(p: Path) -> bool:
+    return bool(_WSL_UNC_RE.match(str(p)))
+
+
+def _is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_windows_exe_in_wsl(path: str) -> bool:
+    if not _is_wsl():
+        return False
+    norm = Path(path).as_posix()
+    return norm.startswith("/mnt/") and "/microsoft/" not in norm.lower()
+
+
+def _unc_to_linux_path(p: Path) -> str:
+    m = _WSL_UNC_RE.match(str(p))
+    if m:
+        return m.group(1).replace('\\', '/')
+    return str(p)
+
+
+def _windows_path_to_wsl(p: str) -> str:
+    if _is_wsl_unc_path(Path(p)):
+        return _unc_to_linux_path(Path(p))
+    if len(p) >= 3 and p[1] == ':' and p[2] == '\\':
+        drive = p[0].lower()
+        rest = p[3:].replace('\\', '/')
+        return f"/mnt/{drive}/{rest}"
+    if len(p) >= 3 and p[1] == ':' and p[2] == '/':
+        drive = p[0].lower()
+        rest = p[3:]
+        return f"/mnt/{drive}/{rest}"
+    return p
+
+
+def _wsl_which(bin: str) -> Optional[str]:
+    try:
+        r = subprocess.run(
+            ["wsl", "-e", "which", bin],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _wsl_run(args, cwd, *, env=None, **kwargs):
+    linux_cwd = _unc_to_linux_path(Path(cwd))
+    cmd_str = shlex.join(str(a) for a in args)
+    full_cmd = f"cd {shlex.quote(linux_cwd)} && {cmd_str}"
+    wsl_args = ["wsl", "-e", "bash", "-c", full_cmd]
+    effective_env = env if env is not None else os.environ
+    return subprocess.run(wsl_args, env=effective_env, **kwargs)
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
     _ensure_tui_node()
+    in_wsl_unc = _is_wsl_unc_path(tui_dir)
 
     def _node_bin(bin: str) -> str:
         if bin == "node":
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
+        if in_wsl_unc:
+            wsl_path = _wsl_which(bin)
+            if wsl_path:
+                return wsl_path
+            print(f"{bin} not found in WSL — install Node.js inside WSL to use the TUI.")
+            sys.exit(1)
         path = shutil.which(bin)
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)
+        if _is_windows_exe_in_wsl(path):
+            print(
+                f"Error: resolved {bin} is a Windows binary ({path})\n"
+                f"Windows {bin} cannot build or run the TUI from the WSL filesystem.\n"
+                f"Install Node.js natively inside WSL:\n"
+                f"  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -\n"
+                f"  sudo apt-get install -y nodejs\n"
+                f"Or set HERMES_NODE to a WSL-native node path."
+            )
+            sys.exit(1)
         return path
+
+    def _run(args, cwd, **kwargs):
+        if in_wsl_unc:
+            return _wsl_run(args, cwd, **kwargs)
+        return subprocess.run(args, cwd=str(cwd), **kwargs)
 
     # pre-built dist + node_modules (nix / full HERMES_TUI_DIR) skips npm.
     if not tui_dev:
@@ -1042,9 +1135,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if _tui_need_npm_install(tui_dir):
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
-        result = subprocess.run(
+        result = _run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=str(tui_dir),
+            tui_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
@@ -1060,9 +1153,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     if tui_dev:
         if _hermes_ink_bundle_stale(tui_dir):
-            result = subprocess.run(
+            result = _run(
                 [npm, "run", "build", "--prefix", "packages/hermes-ink"],
-                cwd=str(tui_dir),
+                tui_dir,
                 capture_output=True,
                 text=True,
             )
@@ -1079,9 +1172,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         return [npm, "start"], tui_dir
 
     if _tui_build_needed(tui_dir):
-        result = subprocess.run(
+        result = _run(
             [npm, "run", "build"],
-            cwd=str(tui_dir),
+            tui_dir,
             capture_output=True,
             text=True,
         )
@@ -1174,8 +1267,29 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
-    code: Optional[int] = None
-    try:
+
+    if _is_wsl_unc_path(cwd):
+        linux_cwd = _unc_to_linux_path(cwd)
+        linux_argv0 = _unc_to_linux_path(Path(argv[1])) if len(argv) > 1 else ""
+        node_bin = argv[0]
+        node_cmd = f"{shlex.quote(node_bin)} {shlex.quote(linux_argv0)}"
+        wsl_env_pairs = []
+        for key in (
+            "HERMES_PYTHON_SRC_ROOT", "HERMES_CWD",
+            "NODE_OPTIONS", "HERMES_TUI_RESUME", "HERMES_HOME",
+            "HERMES_HEAPDUMP_ON_START",
+        ):
+            val = env.get(key)
+            if val is not None:
+                wsl_env_pairs.append(f"{shlex.quote(key)}={shlex.quote(_windows_path_to_wsl(val))}")
+        env_prefix = " ".join(wsl_env_pairs)
+        inner_cmd = f"cd {shlex.quote(linux_cwd)} && {env_prefix} {node_cmd}" if env_prefix else f"cd {shlex.quote(linux_cwd)} && {node_cmd}"
+        wsl_argv = ["wsl", "-e", "bash", "-c", inner_cmd]
+        try:
+            code = subprocess.call(wsl_argv)
+        except KeyboardInterrupt:
+            code = 130
+    else:
         try:
             code = subprocess.call(argv, cwd=str(cwd), env=env)
         except KeyboardInterrupt:
@@ -6255,6 +6369,8 @@ def _install_python_dependencies_with_optional_fallback(
 def _update_node_dependencies() -> None:
     npm = shutil.which("npm")
     if not npm:
+        return
+    if _is_windows_exe_in_wsl(npm):
         return
 
     paths = (

@@ -6,9 +6,7 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 # Environment Variables Reference
 
-Put Hermes-managed variables in `~/.hermes/.env`. You can also set them with `hermes config set VAR value`.
-
-For operator shells that already keep provider keys in `~/.zshenv`, Hermes also reads simple `export KEY=value` lines as a fallback after the live process environment and `~/.hermes/.env`. Shell code is not executed.
+All variables go in `~/.hermes/.env`. You can also set them with `hermes config set VAR value`.
 
 ## LLM Providers
 
@@ -512,15 +510,13 @@ For task-specific direct endpoints, Hermes uses the task's configured API key or
 
 ## Fallback Model (config.yaml only)
 
-The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a top-level `fallback_providers` list with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
+The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a `fallback_model` section with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
 
 ```yaml
-fallback_providers:
-  - provider: openrouter
-    model: anthropic/claude-sonnet-4
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
 ```
-
-The legacy single-dict `fallback_model` key is still accepted for backward compatibility.
 
 See [Fallback Providers](/docs/user-guide/features/fallback-providers) for full details.
 

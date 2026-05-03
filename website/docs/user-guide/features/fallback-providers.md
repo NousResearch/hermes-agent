@@ -27,20 +27,20 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Press `a` to add a fallback, `↑`/`↓` to reorder, `d` to remove, `q` to save and exit. Changes persist under the top-level `fallback_providers` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Press `a` to add a fallback, `↑`/`↓` to reorder, `d` to remove, `q` to save and exit. Changes persist under `model.fallback_providers` in `config.yaml`.
 
-If you'd rather edit the YAML directly, add a `fallback_providers` list to `~/.hermes/config.yaml`:
+If you'd rather edit the YAML directly, add a `fallback_model` section to `~/.hermes/config.yaml`:
 
 ```yaml
-fallback_providers:
-  - provider: openrouter
-    model: anthropic/claude-sonnet-4
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
 ```
 
 Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
 
 :::note `fallback_model` vs `fallback_providers`
-`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, top-level list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
+`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
 :::
 
 ### Supported Providers
@@ -88,11 +88,11 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:
 
 ```yaml
-fallback_providers:
-  - provider: custom
-    model: my-local-model
-    base_url: http://localhost:8000/v1
-    key_env: MY_LOCAL_KEY              # env var name containing the API key
+fallback_model:
+  provider: custom
+  model: my-local-model
+  base_url: http://localhost:8000/v1
+  key_env: MY_LOCAL_KEY              # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -114,8 +114,8 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-:::info Per-Turn, With Provider Cooldowns
-Fallback is **turn-scoped by default**: a new user message normally starts by restoring the primary model. If the primary fails mid-turn, Hermes advances through the configured fallback chain for that turn. Provider cooldowns can delay restoration: transient rate-limit failover keeps the session on the fallback briefly, while quota/billing exhaustion (for example, OpenRouter "key limit exceeded") keeps the exhausted primary out of rotation longer so the next turn does not immediately retry a provider that cannot succeed.
+:::info Per-Turn, Not Per-Session
+Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
 :::
 
 ### Examples
@@ -165,7 +165,7 @@ fallback_model:
 | CLI sessions | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Subagent delegation | ✘ (subagents do not inherit fallback config) |
-| Cron jobs | ✔ (inherit `fallback_providers` / legacy `fallback_model`) |
+| Cron jobs | ✘ (run with a fixed provider) |
 | Auxiliary tasks (vision, compression) | ✘ (use their own provider chain — see below) |
 
 :::tip
@@ -257,13 +257,13 @@ auxiliary:
     base_url: null                                    # Custom OpenAI-compatible endpoint
 ```
 
-And fallback providers use:
+And the fallback model uses:
 
 ```yaml
-fallback_providers:
-  - provider: openrouter
-    model: anthropic/claude-sonnet-4
-    # base_url: http://localhost:8000/v1             # Optional custom endpoint
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # base_url: http://localhost:8000/v1               # Optional custom endpoint
 ```
 
 For `auxiliary.session_search`, Hermes also supports:
@@ -353,7 +353,7 @@ See [Subagent Delegation](/docs/user-guide/features/delegation) for full configu
 
 ## Cron Job Providers
 
-Cron jobs run with whatever provider is configured at execution time and inherit the same configured fallback chain as CLI and gateway sessions. To use a different primary provider for a specific cron job, configure `provider` and `model` overrides on the cron job itself:
+Cron jobs run with whatever provider is configured at execution time. They do not support a fallback model. To use a different provider for cron jobs, configure `provider` and `model` overrides on the cron job itself:
 
 ```python
 cronjob(
@@ -373,7 +373,7 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_providers` in config.yaml — ordered failover chain with provider cooldowns | `fallback_providers:` (top-level) |
+| Main agent model | `fallback_model` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_model:` (top-level) |
 | Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` |

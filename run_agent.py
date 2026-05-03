@@ -177,9 +177,6 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname, e
 from hermes_cli.config import cfg_get
 
 
-_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS = 60
-_BILLING_FALLBACK_COOLDOWN_SECONDS = 24 * 60 * 60
-
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -7485,12 +7482,7 @@ class AIAgent:
             current_provider = (getattr(self, "provider", "") or "").strip().lower()
             primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
             if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-                cooldown_seconds = (
-                    _BILLING_FALLBACK_COOLDOWN_SECONDS
-                    if reason == FailoverReason.billing
-                    else _RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS
-                )
-                self._rate_limited_until = time.monotonic() + cooldown_seconds
+                self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
@@ -7683,7 +7675,7 @@ class AIAgent:
             return False
 
         if getattr(self, "_rate_limited_until", 0) > time.monotonic():
-            return False  # primary still in rate-limit/quota cooldown, stay on fallback
+            return False  # primary still in rate-limit cooldown, stay on fallback
 
         rt = self._primary_runtime
         try:
@@ -12264,13 +12256,10 @@ class AIAgent:
                         # Fall through to normal error handling if compression
                         # is exhausted or didn't help.
 
-                    # Eager fallback for rate-limit or quota/billing errors.
+                    # Eager fallback for rate-limit errors (429 or quota exhaustion).
                     # When a fallback model is configured, switch immediately instead
-                    # of burning through retries with exponential backoff. Billing
-                    # failures such as OpenRouter "Key limit exceeded (total
-                    # limit)" also receive a longer primary cooldown in
-                    # _try_activate_fallback(), so the next turn does not
-                    # immediately restore the unusable provider.
+                    # of burning through retries with exponential backoff -- the
+                    # primary provider won't recover within the retry window.
                     is_rate_limited = classified.reason in (
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
@@ -12283,13 +12272,7 @@ class AIAgent:
                             self._credential_pool
                         )
                         if not pool_may_recover:
-                            if classified.reason == FailoverReason.billing:
-                                self._emit_status(
-                                    "⚠️ Provider quota/billing exhausted — "
-                                    "switching to fallback provider..."
-                                )
-                            else:
-                                self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0

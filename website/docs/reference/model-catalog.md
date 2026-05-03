@@ -1,16 +1,14 @@
 ---
 sidebar_position: 11
 title: Model Catalog
-description: Remotely-hosted manifest providing curated fallback model picker lists for OpenRouter and Nous Portal.
+description: Remotely-hosted manifest driving curated model picker lists for OpenRouter and Nous Portal.
 ---
 
 # Model Catalog
 
-Hermes fetches curated fallback model lists for **OpenRouter** and **Nous Portal** from a JSON manifest hosted alongside the docs site. This lets maintainers update bundled picker fallbacks without shipping a new `hermes-agent` release.
+Hermes fetches curated model lists for **OpenRouter** and **Nous Portal** from a JSON manifest hosted alongside the docs site. This lets maintainers update picker lists without shipping a new `hermes-agent` release.
 
-For authenticated providers, the model picker prefers live provider catalogs (`/models` or provider-specific discovery) and merges those IDs with this curated fallback. The manifest is still important for offline behavior, badges, and providers whose live catalog is unavailable or intentionally partial.
-
-When the manifest or a provider's live catalog is unreachable (offline, network blocked, hosting failure), Hermes silently falls back to cached data or the in-repo snapshot that ships with the CLI. The manifest never breaks the picker — worst case you see whatever list was bundled with your installed version.
+When the manifest is unreachable (offline, network blocked, hosting failure), Hermes silently falls back to the in-repo snapshot that ships with the CLI. The manifest never breaks the picker — worst case you see whatever list was bundled with your installed version.
 
 ## Live manifest URL
 
@@ -57,16 +55,13 @@ Field notes:
 
 | When | What happens |
 |---|---|
-| `/model` or `hermes model` | Fetches live provider catalogs when authenticated; uses this manifest/cache as fallback |
-| `hermes model --refresh` | Forces a non-interactive refresh of models.dev, the hosted manifest, Ollama Cloud, and authenticated picker catalogs |
-| Daily model-refresh cron | Calls the same refresh path through `scripts/refresh_model_catalogs.py` and emits `{"wakeAgent": false}` so no LLM turn is used |
+| `/model` or `hermes model` | Fetches if disk cache is stale, else uses cache |
 | Disk cache fresh (< TTL) | No network hit |
 | Network failure with cache | Silent fallback to cache, one log line |
 | Network failure, no cache | Silent fallback to in-repo snapshot |
 | Manifest fails schema validation | Treated as unreachable |
 
 Cache location: `~/.hermes/cache/model_catalog.json`.
-Refresh status location: `~/.hermes/cache/model_catalog_refresh_status.json`.
 
 ## Config
 

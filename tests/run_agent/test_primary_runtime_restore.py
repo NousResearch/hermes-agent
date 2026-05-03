@@ -15,11 +15,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from run_agent import (
-    AIAgent,
-    _BILLING_FALLBACK_COOLDOWN_SECONDS,
-    _RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS,
-)
+from run_agent import AIAgent
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -457,7 +453,7 @@ class TestRestoreInRunConversation:
 # =============================================================================
 
 class TestRateLimitCooldown:
-    """Verify _restore_primary_runtime() respects failover cooldowns."""
+    """Verify _restore_primary_runtime() respects the 60s rate-limit cooldown."""
 
     def test_restore_blocked_during_cooldown(self):
         """While _rate_limited_until is in the future, restore returns False."""
@@ -509,33 +505,7 @@ class TestRateLimitCooldown:
             agent._try_activate_fallback(reason=FailoverReason.rate_limit)
 
         assert hasattr(agent, "_rate_limited_until")
-        assert (
-            agent._rate_limited_until
-            > before + _RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS - 10
-        )
-
-    def test_billing_reason_sets_long_cooldown(self):
-        """Billing/quota exhaustion should not restore the primary after 60s."""
-        from run_agent import FailoverReason
-        agent = _make_agent(
-            fallback_model={"provider": "opencode-go", "model": "kimi-k2.6"},
-        )
-        before = time.monotonic()
-        mock_client = _mock_resolve(
-            base_url="https://opencode.ai/zen/go/v1",
-            api_key="fallback-key-1234",
-        )
-        with patch(
-            "agent.auxiliary_client.resolve_provider_client",
-            return_value=(mock_client, None),
-        ):
-            agent._try_activate_fallback(reason=FailoverReason.billing)
-
-        assert hasattr(agent, "_rate_limited_until")
-        assert (
-            agent._rate_limited_until
-            > before + _BILLING_FALLBACK_COOLDOWN_SECONDS - 10
-        )
+        assert agent._rate_limited_until > before + 50  # ~60s from now
 
     def test_cooldown_not_set_when_already_on_fallback(self):
         """Chain-switching while already on fallback must not reset cooldown."""

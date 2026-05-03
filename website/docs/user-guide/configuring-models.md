@@ -31,7 +31,7 @@ Click **Change** on the Main model row:
 The picker has two columns:
 
 - **Left** — authenticated providers. Only providers you've set up (API key set, OAuth'd, or defined as a custom endpoint) show up here. If a provider is missing, head to **Keys** and add its credential.
-- **Right** — the available model list for the selected provider. When credentials are present, Hermes prefers the provider's live `/models` catalog and merges it with the curated/models.dev fallback so newly available models appear without a Hermes release. Offline or unauthenticated providers fall back to the bundled curated list.
+- **Right** — the curated model list for the selected provider. These are the agentic models Hermes recommends for that provider, not the raw `/models` dump (which on OpenRouter includes 400+ models including TTS, image generators, and rerankers).
 
 Type in the filter box to narrow by provider name, slug, or model ID.
 
@@ -164,12 +164,9 @@ Inside any `hermes chat` session:
 ### `hermes model` subcommand
 
 ```bash
-hermes model                        # provider setup + model picker
-hermes model --refresh              # refresh provider model catalogs, then exit
-hermes model --refresh --json       # same refresh, machine-readable output
+hermes model list                   # list authenticated providers + models
+hermes model set anthropic/claude-opus-4.7 --provider openrouter
 ```
-
-`hermes model --refresh` is the non-interactive path for keeping picker data fresh. It refreshes the models.dev cache, the hosted curated manifest, Ollama Cloud's cache, and the authenticated provider snapshot used by dashboard/TUI picker surfaces.
 
 ### Direct config edit
 
@@ -180,7 +177,7 @@ Edit `~/.hermes/config.yaml` and restart whatever reads it. See the [Configurati
 The dashboard uses three endpoints. Useful for scripting:
 
 ```bash
-# List authenticated providers + available model lists
+# List authenticated providers + curated model lists
 curl -H "X-Hermes-Session-Token: $TOKEN" http://localhost:PORT/api/model/options
 
 # Read current main + auxiliary assignments

@@ -910,9 +910,9 @@ def _build_snapshot_entry(
     """Build a serialisable metadata dict for one skill."""
     rel_path = skill_file.relative_to(skills_dir)
     parts = rel_path.parts
-    if len(parts) >= 2:
+    if len(parts) > 2:
         skill_name = parts[-2]
-        category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+        category = "/".join(parts[:-2])
     else:
         category = "general"
         skill_name = skill_file.parent.name

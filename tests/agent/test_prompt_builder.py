@@ -266,6 +266,30 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    @pytest.mark.parametrize(
+        ("skill_name", "description"),
+        [
+            ("handoff-doc", "Handoff notes"),
+            ("hermes-dev-workflow", "Hermes development workflow"),
+            ("dogfood", "Exploratory QA"),
+        ],
+    )
+    def test_root_level_skills_use_general_category(
+        self, monkeypatch, tmp_path, skill_name, description
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / skill_name
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {description}\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "  general:" in result
+        assert f"    - {skill_name}: {description}" in result
+        assert f"  {skill_name}:" not in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

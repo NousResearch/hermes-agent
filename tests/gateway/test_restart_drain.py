@@ -62,6 +62,56 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
 
 
 @pytest.mark.asyncio
+async def test_drain_queue_mode_persists_follow_up_for_replacement_gateway(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+
+    event = MessageEvent(
+        text="follow up after restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(thread_id="topic-1"),
+        message_id="m-restart-follow-up",
+        media_urls=["/tmp/photo.jpg"],
+        media_types=["image/jpeg"],
+        channel_prompt="topic prompt",
+    )
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(event)
+
+    pending_path = runner._restart_pending_events_path()
+    assert pending_path.exists()
+    stored = gateway_run.json.loads(pending_path.read_text(encoding="utf-8"))
+    entry = stored["events"][session_key]
+    assert entry["session_key"] == session_key
+    assert entry["event"]["text"] == "follow up after restart"
+    assert entry["event"]["message_id"] == "m-restart-follow-up"
+    assert entry["event"]["media_urls"] == ["/tmp/photo.jpg"]
+    assert entry["event"]["media_types"] == ["image/jpeg"]
+    assert entry["event"]["channel_prompt"] == "topic prompt"
+    assert entry["event"]["source"]["platform"] == "telegram"
+    assert entry["event"]["source"]["thread_id"] == "topic-1"
+
+    restored_runner, restored_adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    restored = restored_runner._load_and_clear_restart_pending_events()
+    restored_runner._restore_restart_pending_events(restored)
+
+    assert session_key in restored_adapter._pending_messages
+    restored_event = restored_adapter._pending_messages[session_key]
+    assert restored_event.text == "follow up after restart"
+    assert restored_event.message_id == "m-restart-follow-up"
+    assert restored_event.media_urls == ["/tmp/photo.jpg"]
+    assert restored_event.media_types == ["image/jpeg"]
+    assert restored_event.channel_prompt == "topic prompt"
+    assert not pending_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_draining_rejects_new_session_messages():
     runner, _adapter = make_restart_runner()
     runner._draining = True

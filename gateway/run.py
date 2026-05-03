@@ -1659,6 +1659,128 @@ class GatewayRunner:
         # process to pick up.  "interrupt" mode drops them (current behaviour).
         return self._restart_requested and self._busy_input_mode in ("queue", "steer")
 
+    def _restart_pending_events_path(self) -> Path:
+        """Durable handoff file for follow-ups received while restart-draining."""
+        return _hermes_home / ".gateway_restart_pending_events.json"
+
+    @staticmethod
+    def _serialize_restart_pending_event(event: MessageEvent) -> dict[str, Any]:
+        source_payload = event.source.to_dict() if event.source else None
+        if event.source and getattr(event.source, "is_bot", False):
+            source_payload = dict(source_payload or {})
+            source_payload["is_bot"] = True
+        return {
+            "text": event.text,
+            "message_type": event.message_type.value if isinstance(event.message_type, MessageType) else str(event.message_type),
+            "source": source_payload,
+            "message_id": event.message_id,
+            "platform_update_id": event.platform_update_id,
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
+            "reply_to_message_id": event.reply_to_message_id,
+            "reply_to_text": event.reply_to_text,
+            "auto_skill": event.auto_skill,
+            "channel_prompt": event.channel_prompt,
+            "internal": bool(event.internal),
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+        }
+
+    @staticmethod
+    def _deserialize_restart_pending_event(payload: dict[str, Any]) -> MessageEvent:
+        source_payload = payload.get("source") or {}
+        source = SessionSource.from_dict(source_payload) if source_payload else None
+        if source is not None and source_payload.get("is_bot"):
+            source.is_bot = True
+        timestamp = payload.get("timestamp")
+        try:
+            parsed_timestamp = datetime.fromisoformat(timestamp) if timestamp else datetime.now()
+        except (TypeError, ValueError):
+            parsed_timestamp = datetime.now()
+        message_type_value = payload.get("message_type") or MessageType.TEXT.value
+        try:
+            message_type = MessageType(message_type_value)
+        except ValueError:
+            message_type = MessageType.TEXT
+        return MessageEvent(
+            text=payload.get("text") or "",
+            message_type=message_type,
+            source=source,
+            raw_message=None,
+            message_id=payload.get("message_id"),
+            platform_update_id=payload.get("platform_update_id"),
+            media_urls=list(payload.get("media_urls") or []),
+            media_types=list(payload.get("media_types") or []),
+            reply_to_message_id=payload.get("reply_to_message_id"),
+            reply_to_text=payload.get("reply_to_text"),
+            auto_skill=payload.get("auto_skill"),
+            channel_prompt=payload.get("channel_prompt"),
+            internal=bool(payload.get("internal", False)),
+            timestamp=parsed_timestamp,
+        )
+
+    def _persist_restart_pending_event(self, session_key: str, event: MessageEvent) -> None:
+        """Atomically persist one drain-time queued event for restart handoff."""
+        path = self._restart_pending_events_path()
+        payload: dict[str, Any] = {"version": 1, "events": {}}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and isinstance(loaded.get("events"), dict):
+                    payload = loaded
+            except Exception:
+                logger.warning("Ignoring unreadable gateway restart pending-event handoff: %s", path)
+        payload.setdefault("version", 1)
+        events = payload.setdefault("events", {})
+        events[session_key] = {
+            "session_key": session_key,
+            "event": self._serialize_restart_pending_event(event),
+        }
+        atomic_json_write(path, payload)
+
+    def _load_and_clear_restart_pending_events(self) -> list[dict[str, Any]]:
+        """Load restart handoff events once and remove the durable buffer."""
+        path = self._restart_pending_events_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not read gateway restart pending-event handoff %s: %s", path, exc)
+            return []
+        finally:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Could not remove gateway restart pending-event handoff %s: %s", path, exc)
+        events = payload.get("events") if isinstance(payload, dict) else None
+        if not isinstance(events, dict):
+            return []
+        return [entry for entry in events.values() if isinstance(entry, dict)]
+
+    def _restore_restart_pending_events(self, entries: list[dict[str, Any]]) -> int:
+        """Restore restart handoff events into connected adapters' pending slots."""
+        restored = 0
+        for entry in entries:
+            session_key = entry.get("session_key")
+            event_payload = entry.get("event")
+            if not session_key or not isinstance(event_payload, dict):
+                continue
+            try:
+                event = self._deserialize_restart_pending_event(event_payload)
+            except Exception as exc:
+                logger.warning("Skipping invalid gateway restart pending event for %s: %s", session_key, exc)
+                continue
+            platform = getattr(getattr(event, "source", None), "platform", None)
+            adapter = self.adapters.get(platform)
+            if adapter is None:
+                logger.warning("No connected adapter for restart pending event: session=%s platform=%s", session_key, platform)
+                continue
+            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            restored += 1
+        return restored
+
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
     # order, with no merging.  The adapter's _pending_messages dict is a
@@ -2075,6 +2197,11 @@ class GatewayRunner:
         if not adapter:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
+        if self._queue_during_drain_enabled():
+            try:
+                self._persist_restart_pending_event(session_key, event)
+            except Exception as exc:
+                logger.warning("Could not persist gateway restart pending event for %s: %s", session_key, exc)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -3006,6 +3133,14 @@ class GatewayRunner:
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
+        restored_restart_events = self._restore_restart_pending_events(
+            self._load_and_clear_restart_pending_events()
+        )
+        if restored_restart_events:
+            logger.info(
+                "Restored %d restart pending message(s) for next-turn processing",
+                restored_restart_events,
+            )
         
         self._running = True
         self._update_runtime_status("running")

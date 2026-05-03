@@ -65,18 +65,30 @@ jobs:
 
       - name: Test image starts
         run: |
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
           # The image runs as the hermes user (UID 10000).  GitHub Actions
           # creates /tmp/hermes-test root-owned by default, which hermes
           # can't write to — chown it to match the in-container UID before
           # bind-mounting.  Real users doing `docker run -v ~/.hermes:...`
           # with their own UID hit the same issue and have their own
           # remediations (HERMES_UID env var, or chown locally).
-          mkdir -p /tmp/hermes-test
-          sudo chown -R 10000:10000 /tmp/hermes-test
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
             --entrypoint /opt/hermes/docker/entrypoint.sh \
             nousresearch/hermes-agent:test --help
+
+      - name: Test dashboard subcommand
+        run: |
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
+          # Verify the dashboard subcommand is included in the Docker image.
+          # This prevents regressions like #9153 where the dashboard command
+          # was present in source but missing from the published image.
+          docker run --rm \
+            -v /tmp/hermes-test:/opt/data \
+            --entrypoint /opt/hermes/docker/entrypoint.sh \
+            nousresearch/hermes-agent:test dashboard --help
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'

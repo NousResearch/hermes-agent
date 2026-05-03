@@ -50,6 +50,12 @@ def test_start_worktree_creates_codex_shaped_worktree_without_launching(tmp_path
     assert result["branch"] == f"codex/fix-onboarding-bug-{result['job_id']}"
     assert result["tmux_session"] == f"codex-{result['job_id']}"
     assert result["attach_command"] == f"tmux attach -t codex-{result['job_id']}"
+    assert result["profile"] == "base-rich"
+    assert result["profile_source"] == "built-in"
+    assert result["sandbox"] == "workspace-write"
+    assert result["search"] is False
+    assert result["codex_profile"] is None
+    assert "--search" not in result["codex_launch_flags"]
     assert _git(result["worktree_path"], "rev-parse", "--show-toplevel") == result["worktree_path"]
     assert _git(result["worktree_path"], "branch", "--show-current") == result["branch"]
 
@@ -76,6 +82,68 @@ def test_start_local_uses_existing_checkout_without_worktree(tmp_path, monkeypat
     assert result["worktree_path"] is None
     assert result["workspace_path"] == str(repo.resolve())
     assert result["branch"] == "main"
+
+
+def test_review_profile_uses_readonly_launch_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import codex_job_tool
+
+    result = json.loads(codex_job_tool({
+        "action": "start",
+        "title": "Review branch safely",
+        "prompt": "Review only.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "profile": "review-rich-readonly",
+        "launch": False,
+        "discord": False,
+    }))
+
+    assert result["success"] is True
+    assert result["profile"] == "review-rich-readonly"
+    assert result["sandbox"] == "read-only"
+    assert result["approval"] == "never"
+    assert any("file mutation" in item for item in result["omitted_capabilities"])
+    assert "-s read-only" in "\n".join(result["tmux_commands"])
+
+
+def test_codex_profile_config_overrides_and_search_are_rendered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import codex_job_tool
+
+    result = json.loads(codex_job_tool({
+        "action": "start",
+        "title": "Web job",
+        "prompt": "Build and verify.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "profile": "web-full",
+        "codex_profile": "web",
+        "codex_config_overrides": {
+            "features.browser": True,
+            "model_reasoning_effort": "high",
+        },
+        "launch": False,
+        "discord": False,
+    }))
+
+    joined = "\n".join(result["tmux_commands"])
+    assert result["success"] is True
+    assert result["profile"] == "web-full"
+    assert result["search"] is True
+    assert result["codex_profile"] == "web"
+    assert "-p web" in joined
+    assert "--search" in joined
+    assert "-c features.browser=true" in joined
+    assert "model_reasoning_effort=" in joined
+    assert "high" in joined
+    assert "--search" in result["codex_launch_flags"]
 
 
 def test_start_scratch_creates_documents_codex_git_workspace(tmp_path, monkeypatch):
@@ -160,6 +228,11 @@ def test_status_reads_job_record(tmp_path, monkeypatch):
     assert status["success"] is True
     assert status["job"]["job_id"] == start["job_id"]
     assert status["job"]["workspace_path"] == str(repo.resolve())
+    assert status["summary"]["profile"] == "base-rich"
+    assert status["summary"]["model"] == "gpt-5.5"
+    assert status["summary"]["effort"] == "xhigh"
+    assert status["summary"]["workspace_path"] == str(repo.resolve())
+    assert status["summary"]["tests"] == "not_run"
     assert status["tmux_alive"] is False
 
 
@@ -195,7 +268,11 @@ Planned fix: Apply habit limits at presentation and reminder boundaries.
     message = _render_monitor_status(job, alive=True, output=output)
 
     assert "**Task summary / key findings**" in message
+    assert "**Profile:** `base-rich`" in message
+    assert "**Capabilities:**" in message
+    assert "**Tests/verification:** Ran swift test" in message
     assert "Bug: Free-tier habit access" in message
+    assert "Planned fix: Apply habit limits" in message
     assert "Root cause: PlanLimitEnforcer" in message
     assert "**Workspace changes**" in message
     assert "README.md" in message
@@ -354,6 +431,37 @@ def test_completion_summary_send_is_idempotent(monkeypatch, tmp_path):
     assert job["completion_summary_sent_at"]
 
 
+def test_completion_record_persists_worker_handoff_and_distillation_marker():
+    from tools.codex_job_tool import _detect_completion_state, _record_completion_state
+
+    output = """
+Result: Implemented profile-aware job metadata.
+Files changed: tools/codex_job_tool.py, tests/tools/test_codex_job_tool.py
+Tests run: scripts/run_tests.sh tests/tools/test_codex_job_tool.py -q passed.
+Known blockers: MCP allowlists are metadata only unless Codex config profiles enforce them.
+Notable lessons for future runs: Keep profile dashboards generic, not bug-specific.
+Suggested docs/skill updates: Add a Hermes orchestration skill note.
+
+HERMES_JOB_DONE {"status":"completed","recommendation":"open_pr","summary":"Profile support landed","tests":"passed"}
+"""
+    job = {
+        "job_id": "done3",
+        "status": "running",
+        "phase": "running",
+        "monitor_status": "running",
+    }
+    state = _detect_completion_state(output, tmux_alive=True)
+
+    _record_completion_state(job, state, output)
+
+    assert job["status"] == "completed"
+    assert job["final_handoff"]["files_changed"].startswith("tools/codex_job_tool.py")
+    assert job["tests"].startswith("scripts/run_tests.sh")
+    assert "MCP allowlists are metadata only" in job["blockers"]
+    assert job["distillation"]["recommended"] is True
+    assert "worker suggested docs or skill updates" in job["distillation"]["reasons"]
+
+
 def test_start_appends_machine_readable_completion_protocol(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -373,11 +481,37 @@ def test_start_appends_machine_readable_completion_protocol(tmp_path, monkeypatc
 
     assert result["success"] is True
     assert "Review the branch and give a normal human-readable summary." in result["prompt"]
+    assert "Lightweight final handoff" in result["prompt"]
+    assert "Files changed" in result["prompt"]
+    assert "Suggested docs/skill updates" in result["prompt"]
     assert "Hermes completion protocol" in result["prompt"]
     assert "HERMES_JOB_DONE" in result["prompt"]
     assert "Do the task normally" in result["prompt"]
     assert "exactly one line" in result["prompt"]
     assert "HERMES_JOB_DONE" in "\n".join(result["tmux_commands"])
+
+
+def test_start_can_disable_worker_handoff_template(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import codex_job_tool
+
+    result = json.loads(codex_job_tool({
+        "action": "start",
+        "title": "Plain protocol",
+        "prompt": "Return only the completion sentinel.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "launch": False,
+        "discord": False,
+        "append_handoff_template": False,
+    }))
+
+    assert result["success"] is True
+    assert "Lightweight final handoff" not in result["prompt"]
+    assert "Hermes completion protocol" in result["prompt"]
 
 
 def test_completion_detector_parses_sentinel_json():

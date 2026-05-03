@@ -295,6 +295,7 @@ class TestBuiltinDiscovery:
             "tools.browser_dialog_tool",
             "tools.browser_tool",
             "tools.clarify_tool",
+            "tools.codex_job_tool",
             "tools.code_execution_tool",
             "tools.cronjob_tools",
             "tools.delegate_tool",

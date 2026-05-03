@@ -303,7 +303,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   return (
     <aside
       className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 normal-case lg:w-80",
+        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 normal-case lg:w-80",
         className,
       )}
     >
@@ -355,12 +355,12 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         </Card>
       )}
 
-      <Card className="flex min-h-0 flex-1 flex-col px-2 py-2">
+      <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
         <div className="px-1 pb-2 text-xs uppercase tracking-wider text-muted-foreground">
           tools
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-1">
+        <div className="flex min-h-0 flex-col gap-1.5">
           {tools.length === 0 ? (
             <div className="px-2 py-4 text-center text-xs text-muted-foreground">
               no tool calls yet

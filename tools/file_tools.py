@@ -162,6 +162,10 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
+    # /private/var/folders is the macOS per-user temporary directory tree; it is
+    # safe to write and must not be treated as a sensitive system path.
+    if resolved.startswith("/private/var/folders/"):
+        return None
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

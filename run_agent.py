@@ -13498,6 +13498,29 @@ class AIAgent:
                             _has_structured
                             and self._thinking_prefill_retries >= 2
                         )
+                        if _truly_empty:
+                            _raw_chars = len(final_response or "")
+                            _has_think_blocks = bool(
+                                final_response
+                                and re.search(
+                                    r'<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b',
+                                    final_response,
+                                    re.IGNORECASE,
+                                )
+                            )
+                            logger.debug(
+                                "Empty response diagnostics: finish_reason=%r "
+                                "raw_content_chars=%d has_think_blocks=%s "
+                                "structured_reasoning=%s tool_calls=%s model=%s "
+                                "raw_preview=%r",
+                                finish_reason,
+                                _raw_chars,
+                                _has_think_blocks,
+                                _has_structured,
+                                bool(getattr(assistant_message, "tool_calls", None)),
+                                self.model,
+                                (final_response or "")[:300],
+                            )
                         if _truly_empty and (not _has_structured or _prefill_exhausted) and self._empty_content_retries < 3:
                             self._empty_content_retries += 1
                             logger.warning(

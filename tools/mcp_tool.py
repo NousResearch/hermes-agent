@@ -3106,8 +3106,9 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
-    # Phase 2: Wait for graceful exit
-    _time.sleep(2)
+    # Phase 2: Wait for graceful exit (skip if nothing was signalled)
+    if pids:
+        _time.sleep(2)
 
     # Phase 3: SIGKILL any survivors
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)

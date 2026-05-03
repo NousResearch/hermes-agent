@@ -14,6 +14,7 @@ import os
 import sys
 from pathlib import Path
 import pytest
+from unittest.mock import patch
 
 # Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -34,6 +35,7 @@ except ImportError:
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
+    @patch.dict("os.environ", {"TERMINAL_ENV": "local"})
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
         from model_tools import get_tool_definitions
@@ -45,6 +47,7 @@ class TestToolResolution:
         expected = {"terminal", "process", "read_file", "write_file", "search_files", "patch"}
         assert expected == names, f"Expected {expected}, got {names}"
 
+    @patch.dict("os.environ", {"TERMINAL_ENV": "local"})
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
         from model_tools import get_tool_definitions

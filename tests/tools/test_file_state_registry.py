@@ -217,8 +217,14 @@ class FileToolsIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         file_state.get_registry().clear()
         self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        self._orig_terminal_env = os.environ.get("TERMINAL_ENV")
+        os.environ["TERMINAL_ENV"] = "local"
 
     def tearDown(self) -> None:
+        if self._orig_terminal_env is None:
+            os.environ.pop("TERMINAL_ENV", None)
+        else:
+            os.environ["TERMINAL_ENV"] = self._orig_terminal_env
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
         file_state.get_registry().clear()

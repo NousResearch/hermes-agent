@@ -266,33 +266,33 @@ class TestFindAllSkillsFiltering:
         skills = _find_all_skills()
         assert not any(s["name"] == "my-skill" for s in skills)
 
+    @patch("agent.skill_utils.iter_skill_index_files")
     @patch("tools.skills_tool._get_disabled_skill_names", return_value=set())
     @patch("tools.skills_tool.skill_matches_platform", return_value=True)
-    def test_enabled_skill_included(self, mock_platform, mock_disabled, tmp_path, monkeypatch):
+    @patch("tools.skills_tool.SKILLS_DIR")
+    def test_enabled_skill_included(self, mock_dir, mock_platform, mock_disabled, mock_iter, tmp_path):
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
-        import tools.skills_tool as _st
-        import agent.skill_utils as _su
-        monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
-        monkeypatch.setattr(_su, "get_external_skills_dirs", lambda: [])
+        mock_dir.exists.return_value = True
+        mock_iter.return_value = [skill_md]
         from tools.skills_tool import _find_all_skills
         skills = _find_all_skills()
         assert any(s["name"] == "my-skill" for s in skills)
 
+    @patch("agent.skill_utils.iter_skill_index_files")
     @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
     @patch("tools.skills_tool.skill_matches_platform", return_value=True)
-    def test_skip_disabled_returns_all(self, mock_platform, mock_disabled, tmp_path, monkeypatch):
+    @patch("tools.skills_tool.SKILLS_DIR")
+    def test_skip_disabled_returns_all(self, mock_dir, mock_platform, mock_disabled, mock_iter, tmp_path):
         """skip_disabled=True ignores the disabled set (for config UI)."""
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
-        import tools.skills_tool as _st
-        import agent.skill_utils as _su
-        monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
-        monkeypatch.setattr(_su, "get_external_skills_dirs", lambda: [])
+        mock_dir.exists.return_value = True
+        mock_iter.return_value = [skill_md]
         from tools.skills_tool import _find_all_skills
         skills = _find_all_skills(skip_disabled=True)
         assert any(s["name"] == "my-skill" for s in skills)

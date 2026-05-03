@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
+# Validation callback: () -> bool. Called before the LLM request in
+# generate_title(). Return False to skip (e.g. model was switched).
+RuntimeValidator = Callable[[], bool]
+
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
@@ -32,6 +36,7 @@ def generate_title(
     timeout: float = 30.0,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    runtime_validator: Optional[RuntimeValidator] = None,
 ) -> Optional[str]:
     """Generate a session title from the first exchange.
 
@@ -43,7 +48,23 @@ def generate_title(
     auxiliary call raises — the caller typically wires this to
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
     of silently accumulating untitled sessions.
+
+    ``runtime_validator`` is called right before the LLM request. If it
+    returns False (e.g. the user's model was switched since this thread
+    started), the call is skipped silently — no request is sent, so no
+    stale model reloads are triggered. This prevents background title
+    generation from re-loading an unloaded Ollama model when the user has
+    already moved on to a new prompt with a different model.
     """
+    # Guard: check if the main runtime is still valid before sending a request.
+    if runtime_validator is not None:
+        try:
+            if not runtime_validator():
+                logger.debug("Title generation skipped: runtime validator returned False")
+                return None
+        except Exception:
+            pass
+
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""
@@ -92,6 +113,7 @@ def auto_title_session(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    runtime_validator: Optional[RuntimeValidator] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -100,6 +122,7 @@ def auto_title_session(
     - session_db is None
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
+    - runtime_validator returns False (model was switched)
     """
     if not session_db or not session_id:
         return
@@ -113,7 +136,10 @@ def auto_title_session(
         return
 
     title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
+        user_message, assistant_response,
+        failure_callback=failure_callback,
+        main_runtime=main_runtime,
+        runtime_validator=runtime_validator,
     )
     if not title:
         return
@@ -139,12 +165,18 @@ def maybe_auto_title(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    runtime_validator: Optional[RuntimeValidator] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
     Only generates a title when:
     - This appears to be the first user→assistant exchange
     - No title is already set
+
+    ``runtime_validator`` is passed through to ``generate_title`` so the
+    background thread can check whether the main runtime is still valid
+    before sending a request. Callers should provide a validator that
+    compares the snapshot model with the current live model.
     """
     if not session_db or not session_id or not user_message or not assistant_response:
         return
@@ -164,6 +196,7 @@ def maybe_auto_title(
             "failure_callback": failure_callback,
             "main_runtime": main_runtime,
             "title_callback": title_callback,
+            "runtime_validator": runtime_validator,
         },
         daemon=True,
         name="auto-title",

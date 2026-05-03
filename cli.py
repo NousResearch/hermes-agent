@@ -9555,6 +9555,8 @@ class HermesCLI:
                     _title_failure_cb = getattr(
                         self.agent, "_emit_auxiliary_failure", None
                     ) if self.agent else None
+                    _title_model = self.model
+                    _title_provider = self.provider
                     maybe_auto_title(
                         self._session_db,
                         self.session_id,
@@ -9569,6 +9571,10 @@ class HermesCLI:
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
                         },
+                        runtime_validator=lambda: (
+                            getattr(self, "model", None) == _title_model
+                            and getattr(self, "provider", None) == _title_provider
+                        ),
                     )
                 except Exception:
                     pass

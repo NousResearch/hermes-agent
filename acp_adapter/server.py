@@ -1012,12 +1012,30 @@ class HermesACPAgent(acp.Agent):
             try:
                 from agent.title_generator import maybe_auto_title
 
+                _title_failure_cb = getattr(
+                    agent, "_emit_auxiliary_failure", None
+                ) if agent else None
+                _title_model = getattr(agent, "model", None) if agent else None
+                _title_provider = getattr(agent, "provider", None) if agent else None
+
                 maybe_auto_title(
                     self.session_manager._get_db(),
                     session_id,
                     user_text,
                     final_response,
                     state.history,
+                    failure_callback=_title_failure_cb,
+                    main_runtime={
+                        "model": _title_model,
+                        "provider": _title_provider,
+                        "base_url": getattr(agent, "base_url", None),
+                        "api_key": getattr(agent, "api_key", None),
+                        "api_mode": getattr(agent, "api_mode", None),
+                    } if agent else None,
+                    runtime_validator=lambda: (
+                        getattr(agent, "model", None) == _title_model
+                        and getattr(agent, "provider", None) == _title_provider
+                    ) if agent else None,
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)

@@ -114,6 +114,59 @@ class TestGenerateTitle:
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
 
+    def test_runtime_validator_skips_when_returns_false(self):
+        """Should return None without calling LLM when validator returns False."""
+        with patch("agent.title_generator.call_llm") as mock_llm:
+            title = generate_title(
+                "question", "answer",
+                runtime_validator=lambda: False,
+            )
+            assert title is None
+            mock_llm.assert_not_called()
+
+    def test_runtime_validator_allows_when_returns_true(self):
+        """Should proceed normally when validator returns True."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Validated Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
+            title = generate_title(
+                "question", "answer",
+                runtime_validator=lambda: True,
+            )
+            assert title == "Validated Title"
+            mock_llm.assert_called_once()
+
+    def test_runtime_validator_swallows_exceptions(self):
+        """A broken validator must not crash — should proceed (fail-open)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Resilient Title"
+
+        def _bad_validator():
+            raise RuntimeError("validator gone")
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
+            title = generate_title(
+                "question", "answer",
+                runtime_validator=_bad_validator,
+            )
+            assert title == "Resilient Title"
+            mock_llm.assert_called_once()
+
+    def test_no_validator_preserves_legacy_behavior(self):
+        """Omitting runtime_validator must work exactly as before."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Legacy Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
+            title = generate_title("question", "answer")
+            assert title == "Legacy Title"
+            mock_llm.assert_called_once()
+
+
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
 
@@ -197,6 +250,7 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
+            mock_auto.assert_called_once_with(
                 db,
                 "sess-1",
                 "hello",
@@ -204,6 +258,8 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                runtime_validator=None,
+            )
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -230,11 +286,31 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                runtime_validator=None,
             )
-
     def test_skips_if_no_response(self):
         db = MagicMock()
         maybe_auto_title(db, "sess-1", "hello", "", [])  # empty response
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+    def test_forwards_runtime_validator_to_worker(self):
+        """maybe_auto_title must forward runtime_validator into the thread."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        _v = lambda: True
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history, runtime_validator=_v)
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                db, "sess-1", "hello", "hi there",
+                failure_callback=None, main_runtime=None, runtime_validator=_v,
+            )

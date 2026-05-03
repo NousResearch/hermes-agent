@@ -132,16 +132,18 @@ Use `npx hyperframes add <transition-name>` to install shader transitions (`flas
 - **Marker-style highlighting:** highlight, circle, burst, scribble, sketchout effects for text emphasis are deterministic CSS+GSAP — see `references/features.md#marker-highlighting`. Fully seekable, no animated SVG filters.
 - **Scene transitions:** every multi-scene composition MUST use transitions (no jump cuts). Pick from CSS primitives (push slide, blur crossfade, zoom through, staggered blocks) or shader transitions (`flash-through-white`, `liquid-wipe`, `cross-warp-morph`, `chromatic-split`, etc.) via `npx hyperframes add`. Mood and energy tables live in `references/features.md#transitions`. Do not mix CSS and shader transitions in the same composition.
 
-### 7. Lint, preview, render
+### 7. Lint, validate, inspect, preview, render
 
 ```bash
 npx hyperframes lint              # catches missing data-composition-id, overlapping tracks, unregistered timelines
+npx hyperframes validate          # WCAG contrast audit at 5 timestamps
+npx hyperframes inspect           # visual layout audit — overflow, off-frame elements, occluded text
 npx hyperframes preview           # live browser preview
 npx hyperframes render --quality draft --output draft.mp4    # fast iteration
 npx hyperframes render --quality high --output final.mp4     # final delivery
 ```
 
-`hyperframes validate` runs a WCAG contrast audit — screenshots at 5 timestamps, samples pixels behind every text element, warns on <4.5:1 ratios.
+`hyperframes validate` samples background pixels behind every text element and warns on contrast ratios below 4.5:1 (or 3:1 for large text). `hyperframes inspect` is the layout-side companion — runs the page at multiple timestamps and flags issues that a static lint can't see (a caption that wraps past the safe area only at 4.5s, a card that overflows when its title is the longest variant, an element that ends up behind a transition shader). Run `inspect` especially on compositions with speech bubbles, cards, captions, or tight typography.
 
 ### 8. Website-to-video (if the user gives a URL)
 
@@ -164,7 +166,7 @@ Use the 7-step capture-to-video workflow in [references/website-to-video.md](ref
 
 Before and after rendering:
 
-1. **Lint + validate pass:** `npx hyperframes lint --strict && npx hyperframes validate` (WCAG contrast audit at 5 timestamps — see troubleshooting.md if warnings appear).
+1. **Lint + validate + inspect pass:** `npx hyperframes lint --strict && npx hyperframes validate && npx hyperframes inspect` (lint catches structural issues, validate catches contrast, inspect catches visual layout / overflow issues — see troubleshooting.md if warnings appear).
 2. **Animation choreography** — for new compositions or significant animation changes, run the animation map. `npx hyperframes init` copies the skill scripts into the project, so the path is project-local:
    ```bash
    node skills/hyperframes/scripts/animation-map.mjs <composition-dir> \
@@ -181,7 +183,7 @@ If `hyperframes render` fails, run `npx hyperframes doctor` and attach its outpu
 ## References
 
 - [composition.md](references/composition.md) — data attributes, timeline contract, non-negotiable rules, typography/asset rules
-- [cli.md](references/cli.md) — every CLI command (init, capture, lint, validate, preview, render, transcribe, tts, doctor, browser, info, upgrade, benchmark)
+- [cli.md](references/cli.md) — every CLI command (init, capture, lint, validate, inspect, preview, render, transcribe, tts, doctor, browser, info, upgrade, benchmark)
 - [gsap.md](references/gsap.md) — GSAP core API for HyperFrames (tweens, eases, stagger, timelines, matchMedia)
 - [features.md](references/features.md) — captions, TTS, audio-reactive, marker highlighting, transitions (load on demand)
 - [website-to-video.md](references/website-to-video.md) — 7-step capture-to-video workflow

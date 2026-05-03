@@ -109,6 +109,21 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
+    def test_auto_uses_text_for_text_only_modalities_even_with_attachment_flag(self):
+        registry = {
+            "xiaomi": {
+                "models": {
+                    "mimo-v2.5-pro": {
+                        "attachment": True,
+                        "modalities": {"input": ["text"]},
+                        "tool_call": True,
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
+
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
 

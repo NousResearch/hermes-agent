@@ -484,6 +484,12 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        logger.error("[%s] Max reconnect attempts reached (rate limit 4008)", self._log_tag)
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            "Max reconnect attempts reached while rate limited (4008)",
+                            retryable=True,
+                        )
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
@@ -537,6 +543,11 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            f"Max reconnect attempts reached after WebSocket close (code={code})",
+                            retryable=True,
+                        )
                         return
 
             except Exception as exc:
@@ -548,6 +559,11 @@ class QQAdapter(BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
+                    self._set_fatal_error(
+                        "qq_reconnect_exhausted",
+                        "Max reconnect attempts reached after repeated WebSocket errors",
+                        retryable=True,
+                    )
                     return
 
                 if await self._reconnect(backoff_idx):
@@ -567,16 +583,18 @@ class QQAdapter(BasePlatformAdapter):
         )
         await asyncio.sleep(delay)
 
-        self._heartbeat_interval = 30.0  # reset until Hello
         try:
             await self._ensure_token()
             gateway_url = await self._get_gateway_url()
             await self._open_ws(gateway_url)
+            self._heartbeat_interval = 30.0  # reset after successful connection
             self._mark_connected()
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            # Give the server time to clean up the old session before next attempt
+            await asyncio.sleep(15)
             return False
 
     async def _read_events(self) -> None:
@@ -596,7 +614,8 @@ class QQAdapter(BasePlatformAdapter):
             elif msg.type == aiohttp.WSMsgType.CLOSE:
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                raise RuntimeError("WebSocket closed")
+                # Preserve close code/reason for proper error classification
+                raise QQCloseError(msg.data, msg.extra)
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).

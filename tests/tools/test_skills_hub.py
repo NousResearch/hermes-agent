@@ -901,6 +901,22 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_handles_bytes_values(self):
+        """bundle_content_hash must not crash when files contain bytes (not str)."""
+        bundle = SkillBundle(
+            name="binary-skill",
+            files={
+                "SKILL.md": "text content",
+                "assets/icon.png": b"\x89PNG\r\n\x1a\n",
+            },
+            source="github",
+            identifier="owner/repo/binary-skill",
+            trust_level="community",
+        )
+        # Must not raise AttributeError
+        result = bundle_content_hash(bundle)
+        assert result.startswith("sha256:")
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

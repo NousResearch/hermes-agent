@@ -116,15 +116,15 @@ def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
     assert 'download the .litertlm artifact instead' in proxy
 
 
-def test_litert_proxy_uses_async_generation_with_timeout_and_cancel():
+def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
     proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
-    assert 'sendMessageAsync(' in proxy
-    assert 'MessageCallback' in proxy
-    assert 'CountDownLatch' in proxy
+    assert 'Executors.newSingleThreadExecutor()' in proxy
+    assert 'conversation.sendMessage(promptMessage, emptyMap())' in proxy
+    assert 'future.get(timeoutMs, TimeUnit.MILLISECONDS)' in proxy
     assert 'generationTimeoutMs(requestJson)' in proxy
     assert 'conversation.cancelProcess()' in proxy
-    assert 'finishReasonOverride = "length"' in proxy
+    assert 'executor.shutdownNow()' in proxy
     assert 'LiteRT-LM generation timed out after' in proxy
 
 

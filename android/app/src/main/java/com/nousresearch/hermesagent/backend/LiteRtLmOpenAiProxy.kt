@@ -10,7 +10,6 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
-import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolCall
@@ -21,9 +20,9 @@ import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.TimeoutException
 
 object LiteRtLmOpenAiProxy {
     @Volatile private var server: LiteRtLmServer? = null
@@ -336,42 +335,26 @@ object LiteRtLmOpenAiProxy {
             promptMessage: Message,
             timeoutMs: Long,
         ): JSONObject {
-            val done = CountDownLatch(1)
-            val latestMessage = AtomicReference<Message?>(null)
-            val failure = AtomicReference<Throwable?>(null)
-            conversation.sendMessageAsync(
-                promptMessage,
-                object : MessageCallback {
-                    override fun onMessage(message: Message) {
-                        latestMessage.set(message)
-                    }
-
-                    override fun onDone() {
-                        done.countDown()
-                    }
-
-                    override fun onError(throwable: Throwable) {
-                        failure.set(throwable)
-                        done.countDown()
-                    }
-                },
-                emptyMap(),
-            )
-            val completed = done.await(timeoutMs, TimeUnit.MILLISECONDS)
-            failure.get()?.let { throw it }
-            val responseMessage = latestMessage.get()
-            if (!completed) {
-                kotlin.runCatching { conversation.cancelProcess() }
-                if (responseMessage != null) {
-                    return completionPayload(responseMessage, finishReasonOverride = "length")
+            val executor = Executors.newSingleThreadExecutor()
+            return try {
+                val future = executor.submit<Message> {
+                    conversation.sendMessage(promptMessage, emptyMap())
                 }
+                val responseMessage = try {
+                    future.get(timeoutMs, TimeUnit.MILLISECONDS)
+                } catch (timeout: TimeoutException) {
+                    future.cancel(true)
+                    throw timeout
+                }
+                completionPayload(responseMessage)
+            } catch (_: TimeoutException) {
+                kotlin.runCatching { conversation.cancelProcess() }
                 throw IllegalStateException(
                     "LiteRT-LM generation timed out after ${timeoutMs / 1000} seconds before producing a response"
                 )
+            } finally {
+                executor.shutdownNow()
             }
-            return completionPayload(
-                responseMessage ?: throw IllegalStateException("LiteRT-LM completed without a response message")
-            )
         }
 
         private fun generationTimeoutMs(requestJson: JSONObject): Long {

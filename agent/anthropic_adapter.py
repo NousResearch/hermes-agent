@@ -1012,10 +1012,19 @@ def run_oauth_setup_token() -> Optional[str]:
 # Mirrors the flow used by Claude Code, pi-ai, and OpenCode.
 # Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
 
+# OAuth flow constants — match Claude Code v2.1.x prod config (binary symbol v_q).
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
-_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+_OAUTH_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
+_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+_OAUTH_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+_OAUTH_SCOPES = (
+    "org:create_api_key "
+    "user:profile "
+    "user:inference "
+    "user:sessions:claude_code "
+    "user:mcp_servers "
+    "user:file_upload"
+)
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
 
 
@@ -1051,7 +1060,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     }
     from urllib.parse import urlencode
 
-    auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
+    auth_url = f"{_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
 
     print()
     print("Authorize Hermes with your Claude Pro/Max subscription.")

@@ -31,7 +31,7 @@ COPY web/package.json web/package-lock.json web/
 COPY --chown=hermes:hermes . .
 
 # Build web dashboard
-RUN cd web && npm run build
+RUN cd web && npm install --prefer-offline --no-audit && npm run build
 
 # ---------- Permissions ----------
 COPY --chmod=0755 docker/entrypoint.sh docker/entrypoint.sh

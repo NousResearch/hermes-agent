@@ -492,27 +492,26 @@ app.post('/send-media', async (req, res) => {
       return res.status(404).json({ error: `File not found: ${filePath}` });
     }
 
-    const buffer = readFileSync(filePath);
     const ext = filePath.toLowerCase().split('.').pop();
     const type = mediaType || inferMediaType(ext);
     let msgPayload;
 
     switch (type) {
       case 'image':
-        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        msgPayload = { image: { url: filePath }, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
         break;
       case 'video':
-        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        msgPayload = { video: { url: filePath }, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
       case 'audio': {
         const audioMime = (ext === 'ogg' || ext === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
-        msgPayload = { audio: buffer, mimetype: audioMime, ptt: ext === 'ogg' || ext === 'opus' };
+        msgPayload = { audio: { url: filePath }, mimetype: audioMime, ptt: ext === 'ogg' || ext === 'opus' };
         break;
       }
       case 'document':
       default:
         msgPayload = {
-          document: buffer,
+          document: readFileSync(filePath),
           fileName: fileName || path.basename(filePath),
           caption: caption || undefined,
           mimetype: MIME_MAP[ext] || 'application/octet-stream',

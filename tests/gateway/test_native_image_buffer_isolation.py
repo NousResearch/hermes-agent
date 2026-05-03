@@ -37,6 +37,16 @@ def _image_event(source: SessionSource, path: str) -> MessageEvent:
     )
 
 
+def _video_event(source: SessionSource, path: str) -> MessageEvent:
+    return MessageEvent(
+        text="please process this",
+        message_type=MessageType.VIDEO,
+        source=source,
+        media_urls=[path],
+        media_types=["video/mp4"],
+    )
+
+
 @pytest.mark.asyncio
 async def test_native_image_buffer_isolated_per_session():
     runner = _make_runner()
@@ -77,3 +87,20 @@ async def test_native_image_buffer_not_cleared_by_other_sessions_without_images(
 
     assert runner._consume_pending_native_image_paths(build_session_key(source_a)) == ["/tmp/a.png"]
     assert runner._consume_pending_native_image_paths(build_session_key(source_b)) == []
+
+
+@pytest.mark.asyncio
+async def test_video_attachment_path_is_added_to_inbound_text():
+    runner = _make_runner()
+    source = _source("chat-video")
+
+    result = await runner._prepare_inbound_message_text(
+        event=_video_event(source, "/tmp/clip.mp4"),
+        source=source,
+        history=[],
+    )
+
+    assert "The user sent a video" in result
+    assert "clip.mp4" in result
+    assert "/tmp/clip.mp4" in result
+    assert "please process this" in result

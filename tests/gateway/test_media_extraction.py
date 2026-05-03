@@ -9,6 +9,7 @@ times per reply. (Regression test for #160)
 
 import pytest
 import re
+import json
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -178,6 +179,95 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+    def test_image_generate_json_becomes_media_tag(self):
+        """Successful image_generate JSON should be delivered as native MEDIA."""
+        from gateway.run import _collect_current_turn_media_tags
+
+        image_path = "/Users/example/.hermes/cache/images/openai_codex_test.png"
+        messages = [
+            {"role": "user", "content": "Generate an image"},
+            {
+                "role": "tool",
+                "tool_call_id": "img1",
+                "content": json.dumps({
+                    "success": True,
+                    "image": image_path,
+                    "provider": "openai-codex",
+                }),
+            },
+            {"role": "assistant", "content": "Here is the image."},
+        ]
+
+        tags, voice_directive = _collect_current_turn_media_tags(
+            "Here is the image.",
+            messages,
+            set(),
+        )
+
+        assert tags == [f"MEDIA:{image_path}"]
+        assert voice_directive is False
+
+    def test_image_generate_json_dedupes_existing_response_media(self):
+        """Do not append the image path twice if the model already emitted MEDIA."""
+        from gateway.run import _collect_current_turn_media_tags
+
+        image_path = "/Users/example/.hermes/cache/images/openai_codex_test.png"
+        messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "img1",
+                "content": json.dumps({"success": True, "image": image_path}),
+            },
+        ]
+
+        tags, _ = _collect_current_turn_media_tags(
+            f"Done\nMEDIA:{image_path}",
+            messages,
+            set(),
+        )
+
+        assert tags == []
+
+    def test_old_image_generate_json_is_not_resent_from_history(self):
+        """Prior image_generate JSON paths should be treated as already delivered."""
+        from gateway.run import (
+            _collect_current_turn_media_tags,
+            _extract_media_paths_from_tool_content,
+        )
+
+        old_image = "/Users/example/.hermes/cache/images/old.png"
+        new_image = "/Users/example/.hermes/cache/images/new.png"
+        history_tool_content = json.dumps({
+            "success": True,
+            "image": old_image,
+            "provider": "openai-codex",
+        })
+        history_paths = set(_extract_media_paths_from_tool_content(history_tool_content))
+        messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "old",
+                "content": history_tool_content,
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "new",
+                "content": json.dumps({
+                    "success": True,
+                    "image": new_image,
+                    "provider": "openai-codex",
+                }),
+            },
+        ]
+
+        tags, _ = _collect_current_turn_media_tags(
+            "Here is the latest image.",
+            messages,
+            history_paths,
+        )
+
+        assert tags == [f"MEDIA:{new_image}"]
 
 
 if __name__ == "__main__":

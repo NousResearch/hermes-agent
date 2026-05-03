@@ -3,9 +3,11 @@ import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
-export function SidebarFooter() {
+export function SidebarFooter({ collapsed = false }: { collapsed?: boolean }) {
   const status = useSidebarStatus();
   const { t } = useI18n();
+
+  if (collapsed) return null;
 
   return (
     <div

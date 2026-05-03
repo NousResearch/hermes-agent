@@ -1,16 +1,45 @@
 import { Link } from "react-router-dom";
+import type { CSSProperties } from "react";
 import type { StatusResponse } from "@/lib/api";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
+/**
+ * Inline-style map for the status dot — avoids the bg-* class generation
+ * pitfall with color-mix values (semi-transparent muted-foreground is
+ * invisible on a dark sidebar), and guarantees correct colors regardless
+ * of JIT scanning.
+ */
+const DOT_STYLE: Record<string, CSSProperties> = {
+  "text-success": { background: "var(--color-success)" },
+  "text-warning": { background: "var(--color-warning)" },
+  "text-destructive": { background: "var(--color-destructive)" },
+  "text-muted-foreground": {
+    background: "color-mix(in srgb, var(--midground-base) 45%, transparent)",
+    outline: "1px solid color-mix(in srgb, var(--midground-base) 25%, transparent)",
+  },
+};
+
+const DOT_FALLBACK: CSSProperties = {
+  background: "color-mix(in srgb, var(--midground-base) 45%, transparent)",
+  outline: "1px solid color-mix(in srgb, var(--midground-base) 25%, transparent)",
+};
+
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
-export function SidebarStatusStrip() {
+export function SidebarStatusStrip({ collapsed = false }: { collapsed?: boolean }) {
   const status = useSidebarStatus();
   const { t } = useI18n();
 
   if (status === null) {
-    return (
+    return collapsed ? (
+      <div className="flex justify-center px-2 py-2" aria-hidden>
+        <span
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full animate-pulse"
+          style={{ background: "color-mix(in srgb, var(--midground-base) 20%, transparent)" }}
+        />
+      </div>
+    ) : (
       <div className="px-5 py-1.5" aria-hidden>
         <div className="h-2 w-[80%] max-w-full animate-pulse rounded-sm bg-midground/10" />
       </div>
@@ -19,6 +48,28 @@ export function SidebarStatusStrip() {
 
   const gw = gatewayLine(status, t);
   const { activeSessionsLabel, gatewayStatusLabel } = t.app;
+  const dotStyle = DOT_STYLE[gw.tone] ?? DOT_FALLBACK;
+
+  if (collapsed) {
+    return (
+      <Link
+        to="/sessions"
+        title={`${gw.label} · ${status.active_sessions} ${activeSessionsLabel}`}
+        className={cn(
+          "flex justify-center",
+          "px-2 py-2",
+          "transition-opacity hover:opacity-80",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
+          "focus-visible:ring-inset",
+        )}
+      >
+        <span
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+          style={dotStyle}
+        />
+      </Link>
+    );
+  }
 
   return (
     <Link

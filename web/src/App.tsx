@@ -18,6 +18,8 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Code,
   Cpu,
@@ -303,6 +305,24 @@ export default function App() {
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("hermes-sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("hermes-sidebar-collapsed", String(next));
+      } catch {
+        // storage unavailable
+      }
+      return next;
+    });
+  }, []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
@@ -453,9 +473,10 @@ export default function App() {
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
               "border-r border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
-              "transition-transform duration-200 ease-out",
+              "transition-[width,transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
+              sidebarCollapsed ? "lg:w-14" : "lg:w-64",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -467,9 +488,15 @@ export default function App() {
               className={cn(
                 "flex h-14 shrink-0 items-center justify-between gap-2",
                 "border-b border-current/20",
+                "px-3",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div
+                className={cn(
+                  "flex items-center gap-2 min-w-0",
+                  sidebarCollapsed && "lg:hidden",
+                )}
+              >
                 <PluginSlot name="header-left" />
 
                 <Typography
@@ -487,9 +514,25 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-midground/70 hover:text-midground"
+                className="lg:hidden text-midground/70 hover:text-midground shrink-0"
               >
                 <X />
+              </Button>
+
+              <Button
+                ghost
+                size="icon"
+                onClick={toggleSidebar}
+                aria-label={
+                  sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
+                }
+                className="hidden lg:flex text-midground/70 hover:text-midground shrink-0"
+              >
+                {sidebarCollapsed ? (
+                  <ChevronRight className="h-4 w-4" />
+                ) : (
+                  <ChevronLeft className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -501,6 +544,7 @@ export default function App() {
                 {sidebarNav.coreItems.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
+                    collapsed={sidebarCollapsed}
                     item={item}
                     key={item.path}
                     t={t}
@@ -514,20 +558,23 @@ export default function App() {
                   className="flex flex-col border-t border-current/10 pb-2"
                   role="group"
                 >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
-                    {t.app.pluginNavSection}
-                  </span>
+                  {!sidebarCollapsed && (
+                    <span
+                      className={cn(
+                        "px-5 pt-2.5 pb-1",
+                        "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+                      )}
+                      id="hermes-sidebar-plugin-nav-heading"
+                    >
+                      {t.app.pluginNavSection}
+                    </span>
+                  )}
 
                   <ul className="flex flex-col">
                     {sidebarNav.pluginItems.map((item) => (
                       <SidebarNavLink
                         closeMobile={closeMobile}
+                        collapsed={sidebarCollapsed}
                         item={item}
                         key={item.path}
                         t={t}
@@ -538,23 +585,34 @@ export default function App() {
               )}
             </nav>
 
-            <SidebarSystemActions onNavigate={closeMobile} />
+            <SidebarSystemActions
+              collapsed={sidebarCollapsed}
+              onNavigate={closeMobile}
+            />
 
             <div
               className={cn(
-                "flex shrink-0 items-center justify-between gap-2",
+                "flex shrink-0 items-center gap-2",
                 "px-3 py-2",
                 "border-t border-current/20",
+                sidebarCollapsed
+                  ? "lg:flex-col lg:justify-center lg:px-0"
+                  : "justify-between",
               )}
             >
-              <div className="flex min-w-0 items-center gap-2">
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-2",
+                  sidebarCollapsed && "lg:flex-col",
+                )}
+              >
                 <PluginSlot name="header-right" />
-                <ThemeSwitcher dropUp />
-                <LanguageSwitcher />
+                <ThemeSwitcher dropUp hideLabel={sidebarCollapsed} />
+                <LanguageSwitcher hideLabel={sidebarCollapsed} />
               </div>
             </div>
 
-            <SidebarFooter />
+            <SidebarFooter collapsed={sidebarCollapsed} />
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
@@ -625,7 +683,12 @@ export default function App() {
   );
 }
 
-function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+function SidebarNavLink({
+  closeMobile,
+  collapsed,
+  item,
+  t,
+}: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
 
   const navLabel = labelKey
@@ -638,10 +701,12 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
+        title={collapsed ? navLabel : undefined}
         className={({ isActive }) =>
           cn(
             "group relative flex items-center gap-3",
             "px-5 py-2.5",
+            collapsed && "lg:justify-center lg:px-0 lg:py-3",
             "font-mondwest text-[0.8rem] tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
@@ -655,7 +720,7 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         {({ isActive }) => (
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{navLabel}</span>
+            {!collapsed && <span className="truncate">{navLabel}</span>}
 
             <span
               aria-hidden
@@ -676,7 +741,13 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
   );
 }
 
-function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
+function SidebarSystemActions({
+  collapsed,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  onNavigate: () => void;
+}) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
@@ -714,16 +785,18 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
         "py-1",
       )}
     >
-      <span
-        className={cn(
-          "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
-        )}
-      >
-        {t.app.system}
-      </span>
+      {!collapsed && (
+        <span
+          className={cn(
+            "px-5 pt-0.5 pb-0.5",
+            "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+          )}
+        >
+          {t.app.system}
+        </span>
+      )}
 
-      <SidebarStatusStrip />
+      <SidebarStatusStrip collapsed={collapsed} />
 
       <ul className="flex flex-col">
         {items.map(({ action, icon: Icon, label, runningLabel, spin }) => {
@@ -741,8 +814,10 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 disabled={disabled}
                 aria-busy={busy}
                 active={busy}
+                title={collapsed ? (busy ? runningLabel : label) : undefined}
                 className={cn(
                   "gap-3 px-5 py-1.5 whitespace-nowrap",
+                  collapsed && "lg:justify-center lg:px-0 lg:py-2",
                   "font-mondwest text-[0.75rem] tracking-[0.1em]",
                   "transition-opacity",
                   busy
@@ -764,7 +839,9 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                   />
                 )}
 
-                <span className="truncate">{displayLabel}</span>
+                {!collapsed && (
+                  <span className="truncate">{displayLabel}</span>
+                )}
 
                 <span
                   aria-hidden
@@ -796,6 +873,7 @@ interface NavItem {
 
 interface SidebarNavLinkProps {
   closeMobile: () => void;
+  collapsed: boolean;
   item: NavItem;
   t: Translations;
 }

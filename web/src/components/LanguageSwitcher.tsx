@@ -1,12 +1,13 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { useI18n } from "@/i18n/context";
+import { cn } from "@/lib/utils";
 
 /**
  * Compact language toggle — shows a clickable flag that switches between
  * English and Chinese.  Persists choice to localStorage.
  */
-export function LanguageSwitcher() {
+export function LanguageSwitcher({ hideLabel = false }: { hideLabel?: boolean }) {
   const { locale, setLocale, t } = useI18n();
 
   const toggle = () => setLocale(locale === "en" ? "zh" : "en");
@@ -26,7 +27,10 @@ export function LanguageSwitcher() {
 
         <Typography
           mondwest
-          className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+          className={cn(
+            "hidden sm:inline tracking-wide uppercase text-[0.65rem]",
+            hideLabel && "lg:hidden",
+          )}
         >
           {locale === "en" ? "EN" : "中文"}
         </Typography>

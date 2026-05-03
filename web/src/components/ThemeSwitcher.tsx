@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
  * `dropUp` so the menu opens above the trigger instead of clipping below
  * the viewport.
  */
-export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
+export function ThemeSwitcher({ dropUp = false, hideLabel = false }: ThemeSwitcherProps) {
   const { themeName, availableThemes, setTheme } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -66,7 +66,10 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
 
           <Typography
             mondwest
-            className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+            className={cn(
+              "hidden sm:inline tracking-wide uppercase text-[0.65rem]",
+              hideLabel && "lg:hidden",
+            )}
           >
             {label}
           </Typography>
@@ -171,4 +174,5 @@ function PlaceholderSwatch() {
 
 interface ThemeSwitcherProps {
   dropUp?: boolean;
+  hideLabel?: boolean;
 }

@@ -68,6 +68,16 @@ export function usePlugins() {
       script.setAttribute("data-hermes-plugin", manifest.name);
       script.src = scriptSrc;
       script.async = true;
+      // SRI integrity verification — defense against compromised plugin
+      // delivery. Plugin manifests can declare an integrity hash
+      // (e.g. "sha384-...") which the browser verifies before executing.
+      // Without this, a man-in-the-middle or compromised plugin server
+      // can substitute the JS bundle silently. Opt-in: when no integrity
+      // is declared in the manifest, behavior is unchanged.
+      if (manifest.integrity && typeof manifest.integrity === "string") {
+        script.integrity = manifest.integrity;
+        script.crossOrigin = "anonymous";
+      }
       script.onerror = () => {
         setPluginLoadError(manifest.name, "LOAD_FAILED");
         console.warn(

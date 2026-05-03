@@ -19,21 +19,41 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+from core.task_outcome import TaskOutcome, TaskOutcomeStore, OutcomeTaxonomy, TaskComplexity
+from core.error_detector import ErrorPatternDetector
+
+# Global outcome store instance
+_outcome_store: Optional[TaskOutcomeStore] = None
+
+# Global error pattern detector instance
+_error_detector = ErrorPatternDetector(threshold=2)
+
+
+def _get_outcome_store() -> TaskOutcomeStore:
+    """Get or create the global outcome store instance."""
+    global _outcome_store
+    if _outcome_store is None:
+        _outcome_store = TaskOutcomeStore()
+    return _outcome_store
 
 
 # Tools that children must never have access to
@@ -132,14 +152,14 @@ _MIN_SPAWN_DEPTH = 1
 _MAX_SPAWN_DEPTH_CAP = 3
 
 
-# ---------------------------------------------------------------------------
-# Runtime state: pause flag + active subagent registry
+# --------------------------------------------------------------------------
+# Runtime state: pause flag + active subagent registry + team registry
 #
 # Consumed by the TUI observability layer (overlay/control surface) and the
 # gateway RPCs `delegation.pause`, `delegation.status`, `subagent.interrupt`.
 # Kept module-level so they span every delegate_task invocation in the
 # process, including nested orchestrator -> worker chains.
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False
@@ -148,6 +168,20 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
+
+# Team registry for grouping related subagents (OpenHarness-inspired)
+_teams_lock = threading.Lock()
+_active_teams: Dict[str, Dict[str, Any]] = {}  # team_name -> TeamRecord
+
+
+@dataclass
+class TeamRecord:
+    """A lightweight team for grouping related subagents."""
+    name: str
+    description: str = ""
+    members: List[str] = field(default_factory=list)  # subagent_ids
+    messages: List[str] = field(default_factory=list)
+    created_at: float = field(default_factory=lambda: time.time())
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -214,6 +248,102 @@ def list_active_subagents() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "agent"}
             for r in _active_subagents.values()
         ]
+
+
+# --------------------------------------------------------------------------
+# Team management (OpenHarness-inspired)
+# --------------------------------------------------------------------------
+
+
+def create_team(name: str, description: str = "") -> Dict[str, Any]:
+    """Create a new team for grouping related subagents.
+
+    Returns the team record dict with keys: name, description, members,
+    messages, created_at. Raises ValueError if team already exists.
+    """
+    with _teams_lock:
+        if name in _active_teams:
+            raise ValueError(f"Team '{name}' already exists")
+        team = TeamRecord(name=name, description=description)
+        _active_teams[name] = team
+        return {
+            "name": team.name,
+            "description": team.description,
+            "members": list(team.members),
+            "messages": list(team.messages),
+            "created_at": team.created_at,
+        }
+
+
+def delete_team(name: str) -> bool:
+    """Delete a team by name. Returns True if it existed."""
+    with _teams_lock:
+        if name not in _active_teams:
+            return False
+        del _active_teams[name]
+        return True
+
+
+def add_to_team(team_name: str, subagent_id: str) -> bool:
+    """Add a subagent to a team. Returns True if successful."""
+    with _teams_lock:
+        if team_name not in _active_teams:
+            return False
+        team = _active_teams[team_name]
+        if subagent_id not in team.members:
+            team.members.append(subagent_id)
+        return True
+
+
+def remove_from_team(team_name: str, subagent_id: str) -> bool:
+    """Remove a subagent from a team. Returns True if found."""
+    with _teams_lock:
+        if team_name not in _active_teams:
+            return False
+        team = _active_teams[team_name]
+        if subagent_id in team.members:
+            team.members.remove(subagent_id)
+            return True
+        return False
+
+
+def send_to_team(team_name: str, message: str) -> bool:
+    """Send a message to a team's message log. Returns True if successful."""
+    with _teams_lock:
+        if team_name not in _active_teams:
+            return False
+        _active_teams[team_name].messages.append(message)
+        return True
+
+
+def list_teams() -> List[Dict[str, Any]]:
+    """List all active teams with their members and messages."""
+    with _teams_lock:
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "members": list(t.members),
+                "message_count": len(t.messages),
+                "created_at": t.created_at,
+            }
+            for t in _active_teams.values()
+        ]
+
+
+def get_team(name: str) -> Optional[Dict[str, Any]]:
+    """Get a team by name. Returns None if not found."""
+    with _teams_lock:
+        if name not in _active_teams:
+            return None
+        t = _active_teams[name]
+        return {
+            "name": t.name,
+            "description": t.description,
+            "members": list(t.members),
+            "messages": list(t.messages),
+            "created_at": t.created_at,
+        }
 
 
 def _extract_output_tail(
@@ -1734,6 +1864,68 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        # Record task outcome
+        error_patterns = []
+        try:
+            _outcome_store = _get_outcome_store()
+            error_type = None
+            error_message = None
+            if entry.get("error"):
+                error_type = "timeout" if status == "timeout" else "execution_error"
+                error_message = entry.get("error")
+            elif status == "failed":
+                error_type = "task_failed"
+                error_message = entry.get("error", "Subagent did not produce a response.")
+
+            # Detect error patterns from tool output tails
+            try:
+                errors_from_output = [
+                    item.get("preview", "")
+                    for item in _output_tail
+                    if item.get("is_error") and item.get("preview")
+                ]
+                if errors_from_output:
+                    error_patterns = _error_detector.detect(errors_from_output)
+            except Exception as ep_exc:
+                logger.debug("Error pattern detection failed: %s", ep_exc)
+
+            # Determine taxonomy from status
+            if status == "completed":
+                taxonomy = OutcomeTaxonomy.SUCCESS
+            elif status in ("timeout", "error", "failed"):
+                taxonomy = OutcomeTaxonomy.FAILURE
+            else:
+                taxonomy = OutcomeTaxonomy.PARTIAL
+
+            # Determine complexity based on duration and file count
+            complexity = TaskComplexity.SIMPLE
+            if duration > 120 or len(_files_written) > 10:
+                complexity = TaskComplexity.COMPLEX
+            elif duration > 30 or len(_files_written) > 3:
+                complexity = TaskComplexity.MODERATE
+
+            outcome = TaskOutcome(
+                outcome_id=str(uuid.uuid4()),
+                task_description=goal[:500] if goal else "subagent task",
+                approach_used="delegate_task",
+                taxonomy=taxonomy,
+                files_modified=_files_written,
+                duration_seconds=duration,
+                task_complexity=complexity,
+                task_type="code",
+                error_type=error_type,
+                error_message=error_message,
+                session_id=getattr(parent_agent, "session_id", None) if parent_agent else None,
+                completed_at=datetime.utcnow(),
+            )
+            _outcome_store.record(outcome)
+        except Exception as outcome_exc:
+            logger.debug("Failed to record task outcome: %s", outcome_exc)
+
+        # Store detected error patterns for later retrieval
+        if error_patterns:
+            entry["error_patterns"] = error_patterns
+
         return entry
 
     except Exception as exc:
@@ -1818,19 +2010,25 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    team: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, team)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, team}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'team' parameter allows grouping related subagents together:
+    - Create a team first with create_team(name)
+    - Assign subagents to teams via the team parameter
+    - List teams with list_teams()
 
     Returns JSON with results array, one entry per task.
     """
@@ -1909,6 +2107,19 @@ def delegate_task(
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
+
+    # Determine the effective team for each task
+    # Per-task team beats top-level team
+    for i, t in enumerate(task_list):
+        t["_effective_team"] = t.get("team") or team
+
+    # Auto-create teams that don't exist yet
+    teams_to_create = set(t["_effective_team"] for t in task_list if t["_effective_team"])
+    for team_name in teams_to_create:
+        try:
+            create_team(team_name)
+        except ValueError:
+            pass  # Team already exists
 
     if not task_list:
         return tool_error("No tasks provided.")
@@ -2184,10 +2395,28 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
+    # Build team summary from results
+    team_summary = {}
+    for entry in results:
+        team_name = (
+            task_list[entry["task_index"]]["_effective_team"]
+            if entry["task_index"] < len(task_list)
+            else None
+        )
+        if team_name:
+            if team_name not in team_summary:
+                team_summary[team_name] = {"completed": 0, "failed": 0, "total": 0}
+            team_summary[team_name]["total"] += 1
+            if entry["status"] == "completed":
+                team_summary[team_name]["completed"] += 1
+            else:
+                team_summary[team_name]["failed"] += 1
+
     return json.dumps(
         {
             "results": results,
             "total_duration_seconds": total_duration,
+            "team_summary": team_summary if team_summary else None,
         },
         ensure_ascii=False,
     )
@@ -2460,6 +2689,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "team": {
+                            "type": "string",
+                            "description": "Optional team name to assign this subagent to. Create teams with create_team(), list teams with list_teams(). Subagents in the same team can be coordinated together.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2483,6 +2716,15 @@ DELEGATE_TASK_SCHEMA = {
                     "(treated as 'leaf') when the child would exceed "
                     "max_spawn_depth or when "
                     "delegation.orchestrator_enabled=false."
+                ),
+            },
+            "team": {
+                "type": "string",
+                "description": (
+                    "Optional team name to assign all subagents to. "
+                    "Create teams with create_team(), list teams with list_teams(). "
+                    "Subagents in the same team can be coordinated together. "
+                    "Individual tasks can override this with their own team parameter."
                 ),
             },
             "acp_command": {
@@ -2524,6 +2766,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        team=args.get("team"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

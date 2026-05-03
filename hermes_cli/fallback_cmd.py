@@ -260,7 +260,7 @@ def cmd_fallback_remove(args) -> None:  # noqa: ARG001
     choices.append("Cancel")
 
     try:
-        from hermes_cli.setup import _curses_prompt_choice
+        from hermes_cli.setup_wizard import _curses_prompt_choice
         idx = _curses_prompt_choice("Select a fallback to remove:", choices, 0)
     except Exception:
         idx = _numbered_pick("Select a fallback to remove:", choices)

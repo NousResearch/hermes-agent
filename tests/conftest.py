@@ -427,6 +427,20 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- hermes_cli.web_server — websocket/subprocess/global request state ---
+    try:
+        import hermes_cli.web_server as _ws_mod
+        _ws_mod._reveal_timestamps.clear()
+        _ws_mod._ACTION_PROCS.clear()
+        _ws_mod._oauth_sessions.clear()
+        _ws_mod._event_channels.clear()
+        if hasattr(_ws_mod.app, "state"):
+            for _attr in ("bound_host", "bound_port"):
+                if hasattr(_ws_mod.app.state, _attr):
+                    delattr(_ws_mod.app.state, _attr)
+    except Exception:
+        pass
+
     # --- tools.file_tools — per-task read history + file-ops cache ---
     # _read_tracker accumulates per-task_id read history for loop detection,
     # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the

@@ -1240,7 +1240,7 @@ def cmd_chat(args):
         print("  Run:  hermes setup")
         print()
 
-        from hermes_cli.setup import (
+        from hermes_cli.setup_wizard import (
             is_interactive_stdin,
             print_noninteractive_setup_guidance,
         )
@@ -1554,7 +1554,7 @@ def cmd_whatsapp(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
-    from hermes_cli.setup import run_setup_wizard
+    from hermes_cli.setup_wizard import run_setup_wizard
 
     run_setup_wizard(args)
 
@@ -1569,7 +1569,7 @@ def select_provider_and_model(args=None):
     """Core provider selection + model picking logic.
 
     Shared by ``cmd_model`` (``hermes model``) and the setup wizard
-    (``setup_model_provider`` in setup.py).  Handles the full flow:
+    (``setup_model_provider`` in setup_wizard.py).  Handles the full flow:
     provider picker, credential prompting, model selection, and config
     persistence.
     """
@@ -2240,7 +2240,7 @@ def _prompt_provider_choice(choices, *, default=0):
     if the user cancels.
     """
     try:
-        from hermes_cli.setup import _curses_prompt_choice
+        from hermes_cli.setup_wizard import _curses_prompt_choice
 
         idx = _curses_prompt_choice("Select provider:", choices, default)
         if idx >= 0:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from hermes_cli.config import load_config, save_config, save_env_value
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
-from hermes_cli.setup import _print_setup_summary, setup_model_provider
+from hermes_cli.setup_wizard import _print_setup_summary, setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -38,11 +38,11 @@ def _clear_provider_env(monkeypatch):
 
 
 def _stub_tts(monkeypatch):
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda q, c, d=0: (
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", lambda q, c, d=0: (
         _maybe_keep_current_tts(q, c) if _maybe_keep_current_tts(q, c) is not None
         else d
     ))
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_yes_no", lambda *a, **kw: False)
 
 
 def _write_model_config(provider, base_url="", model_name="test-model"):
@@ -148,7 +148,7 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
 
     # Patch directly on the module objects to ensure local imports pick them up.
     import hermes_cli.main as _main_mod
-    import hermes_cli.setup as _setup_mod
+    import hermes_cli.setup_wizard as _setup_mod
     import agent.credential_pool as _pool_mod
     import agent.auxiliary_client as _aux_mod
 
@@ -217,9 +217,9 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
     _stub_tts(monkeypatch)
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
     monkeypatch.setattr("hermes_cli.auth_commands.auth_add_command", fake_auth_add_command)
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
@@ -254,7 +254,7 @@ def test_setup_same_provider_single_credential_keeps_existing_rotation_strategy(
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
     _stub_tts(monkeypatch)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
@@ -299,9 +299,9 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
     _stub_tts(monkeypatch)
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
@@ -334,9 +334,9 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
             raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
         return False
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr("hermes_cli.setup_wizard.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
@@ -458,7 +458,7 @@ def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, m
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
     monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
+        "hermes_cli.setup_wizard.get_nous_subscription_features",
         lambda config: NousSubscriptionFeatures(
             subscribed=False,
             nous_auth_present=False,
@@ -485,7 +485,7 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
     monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
+        "hermes_cli.setup_wizard.get_nous_subscription_features",
         lambda config: NousSubscriptionFeatures(
             subscribed=False,
             nous_auth_present=False,

@@ -32,7 +32,7 @@ from hermes_cli.config import (
 )
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
-from hermes_cli.setup import (
+from hermes_cli.setup_wizard import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
 )
@@ -3124,7 +3124,7 @@ def _setup_sms():
 
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
-    from hermes_cli.setup import (
+    from hermes_cli.setup_wizard import (
         prompt_choice, prompt_yes_no, print_success, print_warning,
     )
 
@@ -3884,7 +3884,7 @@ def _setup_signal():
 def _builtin_setup_fn(key: str):
     """Resolve the interactive setup function for a built-in platform key.
 
-    Late-bound to avoid a circular import with ``hermes_cli.setup`` (which
+    Late-bound to avoid a circular import with ``hermes_cli.setup_wizard`` (which
     imports from this module for the remaining bespoke flows).
     """
     from hermes_cli import setup as _s

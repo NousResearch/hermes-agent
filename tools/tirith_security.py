@@ -353,7 +353,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                     if ".." in member.name:
                         continue
                     member.name = "tirith"
-                    tar.extract(member, tmpdir)
+                    tar.extract(member, tmpdir, filter="data")
                     break
             else:
                 log("tirith binary not found in archive")

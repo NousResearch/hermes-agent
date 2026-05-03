@@ -206,6 +206,24 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_status_bar_preserves_alias_style_model_names(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="@preset/hermes"),
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            api_calls=1,
+            context_tokens=120,
+            context_length=1000,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_name"] == "@preset/hermes"
+        assert snapshot["model_short"] == "@preset/hermes"
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "@preset/hermes" in text
+
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()
 

@@ -696,7 +696,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
         return set()
 
     try:
-        from hermes_cli.setup import prompt_choice
+        from hermes_cli.setup_wizard import prompt_choice
     except Exception:
         return set()
 

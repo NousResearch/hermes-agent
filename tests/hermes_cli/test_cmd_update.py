@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import UpdateReplayResult, cmd_update, PROJECT_ROOT
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -55,8 +55,8 @@ class TestCmdUpdateBranchFallback:
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
-        # rev-list should use origin/main, not origin/fix/stoicneko
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        # The update-count check should use origin/main, not origin/fix/stoicneko.
+        rev_list_cmds = [c for c in commands if "HEAD..origin/main --count" in c]
         assert len(rev_list_cmds) == 1
         assert "origin/main" in rev_list_cmds[0]
         assert "origin/fix/stoicneko" not in rev_list_cmds[0]
@@ -79,7 +79,7 @@ class TestCmdUpdateBranchFallback:
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        rev_list_cmds = [c for c in commands if "HEAD..origin/main --count" in c]
         assert len(rev_list_cmds) == 1
         assert "origin/main" in rev_list_cmds[0]
 
@@ -127,7 +127,7 @@ class TestCmdUpdateBranchFallback:
         # cmd_update runs npm commands in three locations:
         #   1. repo root  — slash-command / TUI bridge deps
         #   2. ui-tui/    — Ink TUI deps
-        #   3. web/       — install + "npm run build" for the web frontend
+        #   3. web/       — web UI frontend deps + build
         full_flags = [
             "/usr/bin/npm",
             "ci",
@@ -163,3 +163,94 @@ class TestCmdUpdateBranchFallback:
             mock_input.assert_not_called()
             captured = capsys.readouterr()
             assert "Non-interactive session" in captured.out
+
+
+@patch("hermes_cli.main.replay_missing_update_commits")
+@patch("hermes_cli.main.create_update_rescue_ref", return_value="refs/hermes/update-rescue/test")
+@patch("hermes_cli.main.collect_update_snapshot")
+@patch("hermes_cli.main._stash_local_changes_if_needed", return_value=None)
+@patch("hermes_cli.main._invalidate_update_cache")
+@patch("hermes_cli.main._clear_bytecode_cache", return_value=0)
+@patch("hermes_cli.main._install_python_dependencies_with_optional_fallback")
+@patch("hermes_cli.main._update_node_dependencies")
+@patch("hermes_cli.main._build_web_ui")
+@patch("hermes_cli.main._sync_with_upstream_if_needed")
+@patch("hermes_cli.main._finalize_update_output")
+@patch("hermes_cli.main._print_update_final_report")
+@patch("hermes_cli.main._install_hangup_protection", return_value={})
+@patch("hermes_cli.main._get_origin_url", return_value="git@github.com:NousResearch/hermes-agent.git")
+@patch("hermes_cli.main._is_fork", return_value=False)
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_replay_failure_stops_before_post_update_side_effects(
+    mock_run,
+    mock_which,
+    mock_is_fork,
+    mock_get_origin_url,
+    mock_install_hangup,
+    mock_print_report,
+    mock_finalize_output,
+    mock_sync_upstream,
+    mock_build_web,
+    mock_update_node_deps,
+    mock_install_python_deps,
+    mock_clear_bytecode,
+    mock_invalidate_cache,
+    mock_stash,
+    mock_collect_snapshot,
+    mock_create_rescue_ref,
+    mock_replay_commits,
+    mock_args,
+):
+    mock_collect_snapshot.return_value = SimpleNamespace(
+        head_before="abc123deadbeef",
+        branch_before="main",
+        upstream_ref="origin/main",
+        upstream_head_before="def456deadbeef",
+        status_short="",
+        ahead_commits=["c1"],
+        ahead_count=1,
+        dirty_tree=False,
+    )
+    mock_replay_commits.return_value = UpdateReplayResult(
+        skipped_commits=[],
+        replayed_commits=[],
+        conflicted_commit="c1",
+        succeeded=False,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "origin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="def456deadbeef\n", stderr="")
+        if cmd == ["git", "status", "--short", "--branch"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="## main...origin/main [ahead 1]\n", stderr=""
+            )
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    mock_run.side_effect = fake_run
+
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_update(mock_args)
+
+    assert excinfo.value.code == 1
+    mock_replay_commits.assert_called_once()
+    mock_invalidate_cache.assert_not_called()
+    mock_clear_bytecode.assert_not_called()
+    mock_sync_upstream.assert_not_called()
+    mock_install_python_deps.assert_not_called()
+    mock_update_node_deps.assert_not_called()
+    mock_build_web.assert_not_called()
+    mock_print_report.assert_called_once()
+    report = mock_print_report.call_args.args[0]
+    assert report["gateway_service_health"] == "not reached"
+    assert report["replay_conflict_commit"] == "c1"
+    mock_finalize_output.assert_called_once()

@@ -220,7 +220,10 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         def get_tool_schemas(self):
             return []
 
-        def on_session_start(self, *args, **kwargs):
+        def init(self, config_args, *args, **kwargs):
+            return None
+
+        def on_session_start(self, config_args, *args, **kwargs):
             return None
 
     cfg = {
@@ -259,6 +262,106 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         config_context_length=1_000_000,
         provider="",
     )
+
+
+def _init_agent_with_context(config, context_length):
+    class _StubCompressor:
+        def __init__(self, *args, **kwargs):
+            self.context_length = context_length
+            self.threshold_tokens = max(1, context_length // 2)
+            self.threshold_percent = 0.50
+
+        def get_tool_schemas(self):
+            return []
+
+        def init(self, config_args, *args, **kwargs):
+            return None
+
+        def on_session_start(self, config_args, *args, **kwargs):
+            return None
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.ContextCompressor", new=_StubCompressor),
+    ):
+        return AIAgent(
+            api_key="[REDACTED]",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+
+def test_default_still_rejects_context_below_64k():
+    with pytest.raises(ValueError) as exc_info:
+        _init_agent_with_context({}, 32_768)
+
+    err = str(exc_info.value)
+    assert "32,768" in err
+    assert "64,000" in err
+
+
+def test_low_context_mode_accepts_context_at_configured_minimum_when_compression_disabled():
+    agent = _init_agent_with_context(
+        {
+            "agent": {"low_context_mode": True, "low_context_minimum": 4096},
+            "compression": {"enabled": False},
+        },
+        4096,
+    )
+
+    assert agent.low_context_mode is True
+    assert agent.low_context_minimum == 4096
+    assert agent.compression_enabled is False
+
+
+def test_low_context_mode_rejects_context_below_configured_minimum():
+    with pytest.raises(ValueError) as exc_info:
+        _init_agent_with_context(
+            {
+                "agent": {"low_context_mode": True, "low_context_minimum": 4096},
+                "compression": {"enabled": False},
+            },
+            4095,
+        )
+
+    err = str(exc_info.value)
+    assert "4,095" in err
+    assert "4,096" in err
+
+
+def test_low_context_mode_requires_compression_disabled():
+    with pytest.raises(ValueError) as exc_info:
+        _init_agent_with_context(
+            {
+                "agent": {"low_context_mode": True, "low_context_minimum": 4096},
+                "compression": {"enabled": True},
+            },
+            4096,
+        )
+
+    err = str(exc_info.value)
+    assert "agent.low_context_mode" in err
+    assert "compression.enabled=false" in err
+
+
+def test_low_context_mode_rejects_invalid_minimum():
+    with pytest.raises(ValueError) as exc_info:
+        _init_agent_with_context(
+            {
+                "agent": {"low_context_mode": True, "low_context_minimum": "4K"},
+                "compression": {"enabled": False},
+            },
+            4096,
+        )
+
+    err = str(exc_info.value)
+    assert "agent.low_context_minimum" in err
+    assert "4K" in err
 
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")

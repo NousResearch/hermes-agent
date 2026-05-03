@@ -342,4 +342,3 @@ def pytest_configure(config):
             + "\n\n"
             + _GUARD_HINT
         )
-

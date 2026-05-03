@@ -32,6 +32,14 @@ class TestDoctorPlatformHints:
         assert doctor._python_install_cmd() == "uv pip install"
         assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
 
+    def test_update_behind_notice_formats_and_suppresses_zero(self, monkeypatch):
+        monkeypatch.setattr(doctor_mod, "recommended_update_command", lambda: "hermes update")
+
+        assert doctor_mod._format_update_behind_notice(1) == "⚠ 1 commit behind — run hermes update to update"
+        assert doctor_mod._format_update_behind_notice(27) == "⚠ 27 commits behind — run hermes update to update"
+        assert doctor_mod._format_update_behind_notice(0) is None
+        assert doctor_mod._format_update_behind_notice(None) is None
+
 
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
@@ -176,6 +184,43 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
         doctor_mod.run_doctor(Namespace(fix=False))
 
     assert seen["interactive"] == "1"
+
+
+def test_run_doctor_shows_update_notice_before_checks(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (hermes_home / ".env").write_text("OPENROUTER_API_KEY=test-token\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home))
+    monkeypatch.setattr(doctor_mod, "check_for_updates", lambda: 27)
+    monkeypatch.setattr(doctor_mod, "recommended_update_command", lambda: "hermes update")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "27 commits behind — run hermes update to update" in out
+    assert out.index("27 commits behind") < out.index("◆ Python Environment")
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):

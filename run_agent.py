@@ -1841,6 +1841,27 @@ class AIAgent:
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
+        self.low_context_mode = str(_agent_section.get("low_context_mode", False)).lower() in ("true", "1", "yes")
+        self.low_context_minimum = 4096
+        if self.low_context_mode:
+            _raw_low_context_minimum = _agent_section.get("low_context_minimum", 4096)
+            try:
+                if isinstance(_raw_low_context_minimum, bool):
+                    raise ValueError
+                self.low_context_minimum = int(_raw_low_context_minimum)
+                if self.low_context_minimum <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "Invalid agent.low_context_minimum in config.yaml: "
+                    f"{_raw_low_context_minimum!r}. It must be a positive integer."
+                )
+            if compression_enabled:
+                raise ValueError(
+                    "agent.low_context_mode requires compression.enabled=false. "
+                    "Disable compression before using low-context local models."
+                )
+
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
@@ -2027,15 +2048,20 @@ class AIAgent:
         self.compression_enabled = compression_enabled
 
         # Reject models whose context window is below the minimum required
-        # for reliable tool-calling workflows (64K tokens).
+        # for reliable tool-calling workflows (64K tokens by default).  The
+        # opt-in low-context mode is profile-local and only allowed with
+        # automatic compression disabled.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        _minimum_context_length = (
+            self.low_context_minimum if self.low_context_mode else MINIMUM_CONTEXT_LENGTH
+        )
         _ctx = getattr(self.context_compressor, "context_length", 0)
-        if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+        if _ctx and _ctx < _minimum_context_length:
             raise ValueError(
                 f"Model {self.model} has a context window of {_ctx:,} tokens, "
-                f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+                f"which is below the minimum {_minimum_context_length:,} required "
                 f"by Hermes Agent.  Choose a model with at least "
-                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
+                f"{_minimum_context_length // 1000}K context, or set "
                 f"model.context_length in config.yaml to override."
             )
 

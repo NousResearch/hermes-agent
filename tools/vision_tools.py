@@ -918,6 +918,63 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     raise last_error
 
 
+def _check_video_model_capability(model: Optional[str]) -> Optional[str]:
+    """Pre-check whether the resolved model supports video input.
+
+    Uses models.dev metadata to look up input modalities. If the model
+    is on an aggregator (OpenRouter), we strip the provider prefix and
+    check modalities.input for "video".
+
+    Returns None if the model is capable (or unknown — benefit of the doubt).
+    Returns an error message string if the model is definitively incapable.
+    """
+    if not model:
+        return None  # auto-resolved; can't pre-check, let the API decide
+
+    try:
+        from agent.models_dev import _get_provider_models, _find_model_entry
+
+        # For OpenRouter-prefixed models (e.g. "google/gemini-2.5-flash"),
+        # look them up under the "openrouter" provider.
+        if "/" in model:
+            models = _get_provider_models("openrouter")
+            if models:
+                entry = _find_model_entry(models, model)
+                if entry:
+                    mods = entry.get("modalities", {})
+                    inp = mods.get("input", []) if isinstance(mods, dict) else []
+                    if inp and "video" not in inp:
+                        return (
+                            f"Model '{model}' does not support video input "
+                            f"(modalities: {inp}). Use a video-capable model — "
+                            f"e.g. google/gemini-2.5-flash, google/gemini-3.1-pro-preview, "
+                            f"or xiaomi/mimo-v2.5-pro."
+                        )
+                    # Either supports video, or modalities not listed — proceed
+                    return None
+
+        # Direct provider models (non-prefixed) — try known providers
+        for provider in ("xiaomi", "google", "anthropic", "openai"):
+            models = _get_provider_models(provider)
+            if models:
+                entry = _find_model_entry(models, model)
+                if entry:
+                    mods = entry.get("modalities", {})
+                    inp = mods.get("input", []) if isinstance(mods, dict) else []
+                    if inp and "video" not in inp:
+                        return (
+                            f"Model '{model}' does not support video input "
+                            f"(modalities: {inp}). Use a video-capable model — "
+                            f"e.g. google/gemini-2.5-flash, mimo-v2.5-pro."
+                        )
+                    return None
+
+    except Exception as exc:
+        logger.debug("Video capability pre-check failed (non-fatal): %s", exc)
+
+    return None  # Unknown model or lookup failed — proceed optimistically
+
+
 async def video_analyze_tool(
     video_url: str,
     user_prompt: str,
@@ -960,6 +1017,12 @@ async def video_analyze_tool(
 
         logger.info("Analyzing video: %s", video_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
+
+        # Pre-check model video capability via models.dev metadata.
+        # Fails early with a helpful message before expensive base64 encoding.
+        capability_error = _check_video_model_capability(model)
+        if capability_error:
+            raise ValueError(capability_error)
 
         # Resolve local path vs remote URL
         resolved_url = video_url

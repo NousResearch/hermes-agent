@@ -13,6 +13,7 @@ from tools.vision_tools import (
     _detect_video_mime_type,
     _video_to_base64_data_url,
     _handle_video_analyze,
+    _check_video_model_capability,
     _MAX_VIDEO_BASE64_BYTES,
     _VIDEO_MIME_TYPES,
     _VIDEO_SIZE_WARN_BYTES,
@@ -335,3 +336,82 @@ class TestVideoToolsetRegistration:
         from toolsets import TOOLSETS
         assert "video" in TOOLSETS
         assert "video_analyze" in TOOLSETS["video"]["tools"]
+
+
+# ---------------------------------------------------------------------------
+# Model capability pre-check
+# ---------------------------------------------------------------------------
+
+
+class TestVideoModelCapabilityCheck:
+    """Tests for _check_video_model_capability models.dev pre-check."""
+
+    def test_none_model_passes(self):
+        """No model specified = auto-resolve, skip check."""
+        assert _check_video_model_capability(None) is None
+
+    def test_empty_model_passes(self):
+        assert _check_video_model_capability("") is None
+
+    def test_video_capable_model_passes(self):
+        """Known video-capable model should pass."""
+        mock_models = {
+            "google/gemini-2.5-flash": {
+                "modalities": {"input": ["text", "image", "audio", "video", "pdf"]},
+            }
+        }
+        with patch("agent.models_dev._get_provider_models", return_value=mock_models):
+            with patch("agent.models_dev._find_model_entry", return_value=mock_models["google/gemini-2.5-flash"]):
+                result = _check_video_model_capability("google/gemini-2.5-flash")
+        assert result is None
+
+    def test_image_only_model_rejected(self):
+        """Model with image but no video in modalities should fail."""
+        mock_entry = {
+            "modalities": {"input": ["text", "image", "pdf"]},
+        }
+        with patch("agent.models_dev._get_provider_models", return_value={"anthropic/claude-sonnet-4": mock_entry}):
+            with patch("agent.models_dev._find_model_entry", return_value=mock_entry):
+                result = _check_video_model_capability("anthropic/claude-sonnet-4")
+        assert result is not None
+        assert "does not support video" in result
+        assert "anthropic/claude-sonnet-4" in result
+
+    def test_unknown_model_passes_optimistically(self):
+        """Model not in models.dev should pass (benefit of the doubt)."""
+        with patch("agent.models_dev._get_provider_models", return_value={}):
+            with patch("agent.models_dev._find_model_entry", return_value=None):
+                result = _check_video_model_capability("some/unknown-model")
+        assert result is None
+
+    def test_lookup_exception_passes(self):
+        """If models.dev lookup crashes, don't block the request."""
+        with patch("agent.models_dev._get_provider_models", side_effect=RuntimeError("network down")):
+            result = _check_video_model_capability("google/gemini-2.5-flash")
+        assert result is None
+
+    def test_incapable_model_gives_suggestions(self):
+        """Error message should suggest video-capable alternatives."""
+        mock_entry = {
+            "modalities": {"input": ["text", "image"]},
+        }
+        with patch("agent.models_dev._get_provider_models", return_value={"anthropic/claude-opus-4": mock_entry}):
+            with patch("agent.models_dev._find_model_entry", return_value=mock_entry):
+                result = _check_video_model_capability("anthropic/claude-opus-4")
+        assert "gemini" in result.lower()
+
+    def test_integration_rejects_before_encoding(self, tmp_path):
+        """Pre-check fires before expensive base64 encoding."""
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"\x00" * 100)
+
+        mock_entry = {"modalities": {"input": ["text", "image"]}}
+        with patch("agent.models_dev._get_provider_models", return_value={"anthropic/claude-sonnet-4": mock_entry}):
+            with patch("agent.models_dev._find_model_entry", return_value=mock_entry):
+                result = asyncio.get_event_loop().run_until_complete(
+                    video_analyze_tool(str(video), "What?", model="anthropic/claude-sonnet-4")
+                )
+
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "does not support video" in data["analysis"]

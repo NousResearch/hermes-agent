@@ -396,6 +396,106 @@ For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded wh
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
 :::
 
+## Multi-session DM mode (`/topic`)
+
+A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlike the operator-curated `extra.dm_topics` above, this mode is **user-driven**: no config, no pre-declared topic names. The end user flips it on with `/topic`, then taps the Telegram **+** button to create as many topics as they want, each one a fully independent Hermes session.
+
+### DM Topics vs Multi-session DM mode
+
+| | `extra.dm_topics` (config-driven) | `/topic` (user-driven) |
+|---|---|---|
+| Who activates it | Operator, in `config.yaml` | End user, by sending `/topic` |
+| Topic list | Fixed set declared in config | User creates/deletes topics freely |
+| Topic names | Chosen by operator | Chosen by user; auto-renamed to match Hermes session title |
+| Root DM behavior | Unchanged — normal chat | Becomes a system lobby (non-command messages are rejected) |
+| Primary use case | Permanent workspaces with optional skill binding | Ad-hoc parallel sessions |
+| Persistence | `extra.dm_topics` in config | `telegram_dm_topic_mode` + `telegram_dm_topic_bindings` SQLite tables |
+
+Both features can coexist on the same bot — you'd run `/topic` from a user's DM, and `extra.dm_topics` continues to manage operator-declared topics for other chats.
+
+### Prerequisites
+
+In **@BotFather**, open your bot → **Bot Settings → Threads Settings**:
+
+1. Turn on **Threaded Mode** (enables `has_topics_enabled`)
+2. Do **not** disable users creating topics (keeps `allows_users_to_create_topics` on)
+
+When the user first runs `/topic`, Hermes calls `getMe` to verify both flags. If either is off, Hermes sends a screenshot of the BotFather Threads Settings page and explains what to toggle — no activation happens until prerequisites are met.
+
+### Activation flow
+
+From the root DM, send:
+
+```
+/topic
+```
+
+Hermes will:
+
+1. Check `getMe().has_topics_enabled` and `allows_users_to_create_topics`
+2. If both are true, enable multi-session topic mode for this DM
+3. Create and pin a **System** topic for status/commands (best-effort)
+4. Reply with a list of previous unlinked Telegram sessions the user can restore
+
+After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.
+
+### Creating a new topic (end-user flow)
+
+1. Open the bot DM in Telegram
+2. Tap **All Messages** at the top of the bot interface, then send any message
+3. Telegram creates a new topic for that message
+4. Hermes responds inside that topic — the topic is now a standalone session
+
+Every topic gets its own conversation history, model state, tool execution, and session ID. The isolation key is `agent:main:telegram:dm:{chat_id}:{thread_id}` — identical to the config-driven DM topics isolation.
+
+### Auto-renamed topics
+
+When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
+
+### `/new` inside a topic
+
+Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
+
+### Restoring a previous session
+
+Inside a topic, send:
+
+```
+/topic <session-id>
+```
+
+This binds the current topic to an existing Hermes session instead of starting fresh. Useful for continuing a conversation that started before topic mode was enabled. Restrictions:
+
+- The target session must belong to the same Telegram user
+- The target session must not already be bound to another topic
+
+Hermes confirms with the session title and replays the last assistant message for context.
+
+To discover session IDs, send `/topic` (no argument) in the root DM — Hermes lists the user's unlinked Telegram sessions.
+
+### `/topic` inside a topic (no argument)
+
+Shows the current topic's binding: session title, session ID, and hints for `/new` vs creating another topic.
+
+### Under the hood
+
+- Activation persists to `telegram_dm_topic_mode(chat_id, user_id, enabled, ...)` in `state.db`
+- Each topic binding persists to `telegram_dm_topic_bindings(chat_id, thread_id, session_id, ...)`
+- The topic-mode SQLite migration is **opt-in**: it runs on the first `/topic` call, never on gateway startup. Until a user runs `/topic` in this profile, `state.db` is unchanged
+- Each inbound DM message looks up its `(chat_id, thread_id)` binding. If present, the lookup routes the message to the bound session via `SessionStore.switch_session()` so the session-key-to-session-id mapping stays consistent on disk
+- `/new` inside a topic rewrites the binding row to point at the new session ID, so the next message stays on the fresh session
+
+### Disabling multi-session mode
+
+There is no slash command to exit multi-session mode. If you need to turn it off, remove the row manually:
+
+```bash
+sqlite3 ~/.hermes/state.db \
+  "DELETE FROM telegram_dm_topic_mode WHERE chat_id = '<your_chat_id>'"
+```
+
+Existing topics in Telegram won't disappear — they'll just stop being gated as independent sessions on the Hermes side. The binding rows can also be cleared with `DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>'`.
+
 ## Group Forum Topic Skill Binding
 
 Supergroups with **Topics mode** enabled (also called "forum topics") already get session isolation per topic — each `thread_id` maps to its own conversation. But you may want to **auto-load a skill** when messages arrive in a specific group topic, just like DM topic skill binding works.
@@ -463,7 +563,7 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 
 ## Recent Bot API Features
 
-- **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.
+- **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
 

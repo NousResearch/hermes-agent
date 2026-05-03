@@ -329,6 +329,37 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_as_document_directive_stripped_from_cleaned_text(self):
+        """[[as_document]] is a routing directive — strip it from
+        user-visible text just like [[audio_as_voice]]. Callers detect the
+        directive on the original content (before extract_media)."""
+        content = "Here is your infographic:\n[[as_document]]\nMEDIA:/tmp/x.jpg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/x.jpg", False)]
+        assert "[[as_document]]" not in cleaned
+        assert "Here is your infographic" in cleaned
+
+    def test_as_document_directive_alone_does_not_attach_voice_flag(self):
+        """[[as_document]] is independent of [[audio_as_voice]] — combining
+        them in the same response should not entangle the flags."""
+        content = "[[as_document]]\nMEDIA:/tmp/x.jpg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/x.jpg", False)]  # voice flag stays False
+        assert "[[as_document]]" not in cleaned
+
+    def test_both_directives_can_coexist(self):
+        """A response could (rarely) contain both [[audio_as_voice]] for an
+        ogg file AND [[as_document]] for an attached image. The voice flag
+        propagates per-tuple; [[as_document]] is detected at dispatch."""
+        content = "[[audio_as_voice]]\n[[as_document]]\nMEDIA:/tmp/x.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        # Voice flag is propagated to every media tuple (this matches the
+        # existing extract_media contract)
+        assert media == [("/tmp/x.ogg", True)]
+        # Both directives stripped from cleaned text
+        assert "[[audio_as_voice]]" not in cleaned
+        assert "[[as_document]]" not in cleaned
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

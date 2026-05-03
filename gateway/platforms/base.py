@@ -1874,23 +1874,38 @@ class BasePlatformAdapter(ABC):
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
-        
+
         The TTS tool returns responses like:
             [[audio_as_voice]]
             MEDIA:/path/to/audio.ogg
-        
+
+        Skills that produce large/lossless images (e.g. info-graph, where a
+        rendered JPG is 1-2 MB but Telegram's sendPhoto recompresses to
+        ~200 KB at 1280px) can use ``[[as_document]]`` to request unmodified
+        delivery via sendDocument instead of sendPhoto/sendMediaGroup. The
+        directive is detected at the dispatch sites (which have access to the
+        original response); this method just strips it so it never leaks into
+        user-visible text. Per-file granularity is intentionally not exposed —
+        when an agent emits ``[[as_document]]`` once, every image path in the
+        same response is delivered as a document, mirroring the all-or-nothing
+        scope of ``[[audio_as_voice]]``.
+
         Args:
             content: The response text to scan.
-        
+
         Returns:
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
         media = []
         cleaned = content
-        
+
         # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        # Strip [[as_document]] directive — callers inspect the original
+        # ``content`` for it (so they can still react to it); here we just
+        # keep it out of the user-visible cleaned text.
+        cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
@@ -2815,13 +2830,21 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
+                # Capture [[as_document]] before extract_media strips it, so the
+                # dispatch partition below can route image-extension files
+                # through send_document instead of send_multiple_images. Used
+                # by skills that produce large/lossless images (e.g. info-graph)
+                # where Telegram's sendPhoto recompression destroys legibility.
+                force_document_attachments = "[[as_document]]" in response
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = text_content.replace("[[as_document]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
@@ -2923,19 +2946,26 @@ class BasePlatformAdapter(ABC):
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 # Partition images out of media_files + local_files so they
-                # can be sent as a single batch (Signal RPC)
+                # can be sent as a single batch (Signal RPC). When
+                # ``[[as_document]]`` was set on the original response, image
+                # files skip the photo path and route to send_document below
+                # so they're delivered with original bytes (no Telegram
+                # sendPhoto recompression).
                 from urllib.parse import quote as _quote
                 _image_paths: list = []
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
                     _ext = Path(media_path).suffix.lower()
-                    if _ext in _IMAGE_EXTS and not is_voice:
+                    if (_ext in _IMAGE_EXTS
+                            and not is_voice
+                            and not force_document_attachments):
                         _image_paths.append(media_path)
                     else:
                         _non_image_media.append((media_path, is_voice))
                 _non_image_local: list = []
                 for file_path in local_files:
-                    if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                    if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                            and not force_document_attachments):
                         _image_paths.append(file_path)
                     else:
                         _non_image_local.append(file_path)

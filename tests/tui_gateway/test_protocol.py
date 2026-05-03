@@ -391,6 +391,36 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
+    """Plugin slash commands return normal slash.exec output without using the worker."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-slash",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "plugin:hello"}
+    assert worker.calls == []
+
+
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
 def test_slash_exec_rejects_pending_input_commands(server, cmd):
     """slash.exec must reject commands that use _pending_input in the CLI."""

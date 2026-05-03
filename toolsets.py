@@ -89,6 +89,12 @@ TOOLSETS = {
         "tools": ["vision_analyze"],
         "includes": []
     },
+
+    "video": {
+        "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
+        "tools": ["video_analyze"],
+        "includes": []
+    },
     
     "image_gen": {
         "description": "Creative generation tools (images)",

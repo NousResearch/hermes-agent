@@ -2820,21 +2820,21 @@ class AIAgent:
         """Generate a suggestion when a tool keeps failing.
         
         Strategy (in order):
-        1. Try compression model (if configured) — gives fresh perspective
+        1. Try auxiliary model (if configured) — gives fresh perspective
         2. Fall back to a simple generic prompt — works zero-config
         
         Returns a short suggestion string, or None if no suggestion available.
         """
-        # 1. Try compression model first
-        suggestion = self._try_compression_model_suggestion(tool_name, last_result)
+        # 1. Try auxiliary model first
+        suggestion = self._try_auxiliary_model_suggestion(tool_name, last_result)
         if suggestion:
             return suggestion
         
         # 2. Simple generic fallback — no pattern matching needed
         return "Repeatedly failing. Try a completely different approach instead of tweaking parameters."
     
-    def _try_compression_model_suggestion(self, tool_name: str, last_result: str) -> str | None:
-        """Try to get a suggestion from the compression model."""
+    def _try_auxiliary_model_suggestion(self, tool_name: str, last_result: str) -> str | None:
+        """Try to get a suggestion from the auxiliary model."""
         try:
             from agent.auxiliary_client import call_llm
             
@@ -2848,7 +2848,7 @@ class AIAgent:
             )
             
             response = call_llm(
-                task="compression",
+                task=None,
                 messages=[
                     {"role": "system", "content": "You are a debugging assistant. Give concise, specific suggestions."},
                     {"role": "user", "content": prompt},
@@ -2863,26 +2863,26 @@ class AIAgent:
                 suggestion = suggestion[:97] + "..."
             return suggestion
         except Exception as e:
-            logger.debug("Compression model suggestion failed: %s", e)
+            logger.debug("Auxiliary model suggestion failed: %s", e)
             return None
     
     def _get_consecutive_suggestion(self, tool_name: str) -> str | None:
         """Get a suggestion when consecutive identical calls trigger the circuit breaker.
         
         Strategy (in order):
-        1. Try compression model (if configured)
+        1. Try auxiliary model (if configured)
         2. Fall back to a simple generic prompt
         """
-        # 1. Try compression model first
-        suggestion = self._try_compression_model_consecutive(tool_name)
+        # 1. Try auxiliary model first
+        suggestion = self._try_auxiliary_model_consecutive(tool_name)
         if suggestion:
             return suggestion
         
         # 2. Simple generic fallback
         return "Called the exact same thing N times in a row. It's not working — stop and try something else."
     
-    def _try_compression_model_consecutive(self, tool_name: str) -> str | None:
-        """Try to get a suggestion from the compression model for consecutive-call loop."""
+    def _try_auxiliary_model_consecutive(self, tool_name: str) -> str | None:
+        """Try to get a suggestion from the auxiliary model for consecutive-call loop."""
         try:
             from agent.auxiliary_client import call_llm
             
@@ -2895,7 +2895,7 @@ class AIAgent:
             )
             
             response = call_llm(
-                task="compression",
+                task=None,
                 messages=[
                     {"role": "system", "content": "You are a debugging assistant. Give concise, specific suggestions."},
                     {"role": "user", "content": prompt},
@@ -2910,7 +2910,7 @@ class AIAgent:
                 suggestion = suggestion[:97] + "..."
             return suggestion
         except Exception as e:
-            logger.debug("Compression model suggestion failed: %s", e)
+            logger.debug("Auxiliary model suggestion failed: %s", e)
             return None
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context

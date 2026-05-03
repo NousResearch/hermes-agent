@@ -133,6 +133,9 @@ def _read_hub_installed_names() -> Set[str]:
     """Return the set of skill names installed via the Skills Hub.
 
     Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
+    Returns both the lock-file slug keys (e.g. ``"getnote"``) and the SKILL.md
+    ``name:`` display values (e.g. ``"Get笔记"``) so that hub-installed skills
+    with non-ASCII display names are correctly protected from curator pruning.
     """
     lock_path = _skills_dir() / ".hub" / "lock.json"
     if not lock_path.exists():
@@ -142,7 +145,20 @@ def _read_hub_installed_names() -> Set[str]:
         if isinstance(data, dict):
             installed = data.get("installed") or {}
             if isinstance(installed, dict):
-                return {str(k) for k in installed.keys()}
+                names: Set[str] = {str(k) for k in installed.keys()}
+                skills_base = _skills_dir()
+                for slug, entry in installed.items():
+                    install_path = (
+                        entry.get("install_path")
+                        if isinstance(entry, dict)
+                        else None
+                    )
+                    skill_dir = install_path or str(slug)
+                    skill_md = skills_base / skill_dir / "SKILL.md"
+                    if skill_md.exists():
+                        display_name = _read_skill_name(skill_md, fallback=str(slug))
+                        names.add(display_name)
+                return names
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
     return set()

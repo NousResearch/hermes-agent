@@ -237,6 +237,87 @@ def test_is_agent_created(skills_home):
     assert is_agent_created("hubbed") is False
 
 
+def test_hub_installed_non_ascii_display_name_excluded_from_list(skills_home):
+    """Hub skill whose SKILL.md name: is non-ASCII must not appear in curator list.
+
+    Regression for #19293: lock.json key is the URL slug (e.g. "getnote") but
+    _read_skill_name() returns the display name (e.g. "Get笔记"). Before the fix,
+    the display name was not in the off_limits set so the skill was wrongly
+    classified as agent-created and eligible for archiving.
+    """
+    from tools.skill_usage import list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+
+    # Hub-installed skill: directory slug "getnote", SKILL.md name "Get笔记"
+    hub_skill_dir = skills_dir / "getnote"
+    hub_skill_dir.mkdir(parents=True)
+    (hub_skill_dir / "SKILL.md").write_text(
+        "---\nname: Get笔记\ndescription: get note\n---\n",
+        encoding="utf-8",
+    )
+
+    # Unrelated agent-created skill that must still appear
+    _write_skill(skills_dir, "my-agent-skill")
+
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps({
+            "version": 1,
+            "installed": {
+                "getnote": {
+                    "source": "well-known",
+                    "install_path": "getnote",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    names = list_agent_created_skill_names()
+    assert "Get笔记" not in names, "hub-installed skill with non-ASCII name must be excluded"
+    assert "getnote" not in names, "hub slug must also be excluded"
+    assert "my-agent-skill" in names, "unrelated agent skill must still appear"
+
+
+def test_is_agent_created_non_ascii_display_name(skills_home):
+    """is_agent_created() must return False for the non-ASCII display name of a
+    hub-installed skill, not just for its slug.
+
+    Regression for #19293: archive_skill("Get笔记") would proceed when it should
+    be blocked, because is_agent_created("Get笔记") returned True even though the
+    skill was recorded in lock.json under slug "getnote".
+    """
+    from tools.skill_usage import is_agent_created
+    skills_dir = skills_home / "skills"
+
+    hub_skill_dir = skills_dir / "getnote"
+    hub_skill_dir.mkdir(parents=True)
+    (hub_skill_dir / "SKILL.md").write_text(
+        "---\nname: Get笔记\ndescription: get note\n---\n",
+        encoding="utf-8",
+    )
+
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps({
+            "version": 1,
+            "installed": {
+                "getnote": {
+                    "source": "well-known",
+                    "install_path": "getnote",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    assert is_agent_created("Get笔记") is False, "display name must be recognised as hub-installed"
+    assert is_agent_created("getnote") is False, "slug must still be recognised as hub-installed"
+    assert is_agent_created("other-skill") is True, "unrelated skill must still be agent-created"
+
+
 def test_agent_created_skips_archive_and_hub_dirs(skills_home):
     from tools.skill_usage import list_agent_created_skill_names
     skills_dir = skills_home / "skills"

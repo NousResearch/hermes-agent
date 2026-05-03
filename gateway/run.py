@@ -8961,6 +8961,12 @@ class GatewayRunner:
         from urllib.parse import quote as _quote
 
         try:
+            # Capture [[as_document]] before extract_media strips it, so the
+            # dispatch partition below can route image-extension files
+            # through send_document (preserving bytes) instead of
+            # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
+            force_document_attachments = "[[as_document]]" in response
+
             media_files, _ = adapter.extract_media(response)
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
@@ -8973,19 +8979,24 @@ class GatewayRunner:
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
             # Partition out images so they can be sent as a single batch
-            # (e.g. Signal's multi-attachment RPC)
+            # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
+            # set, image-extension files skip the photo path and route to
+            # send_document below — preserving original bytes.
             image_paths: list = []
             non_image_media: list = []
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
-                if ext in _IMAGE_EXTS and not is_voice:
+                if (ext in _IMAGE_EXTS
+                        and not is_voice
+                        and not force_document_attachments):
                     image_paths.append(media_path)
                 else:
                     non_image_media.append((media_path, is_voice))
 
             non_image_local: list = []
             for file_path in local_files:
-                if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                        and not force_document_attachments):
                     image_paths.append(file_path)
                 else:
                     non_image_local.append(file_path)

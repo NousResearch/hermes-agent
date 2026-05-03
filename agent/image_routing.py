@@ -190,9 +190,18 @@ def build_native_content_parts(
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
-      [{"type": "text", "text": "..."},
+      [{"type": "text", "text": "...\\n\\n[Image attached at: /local/path]"},
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
        ...]
+
+    The local path of each successfully attached image is appended to the
+    text part as ``[Image attached at: <path>]``. The model still sees the
+    pixels via the ``image_url`` part (full native vision); the path note
+    just gives it a string handle so MCP/skill tools that take an image
+    path or URL argument can be invoked on the same image without an
+    extra round-trip. This parallels the text-mode hint produced by
+    ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
+    <path>``) so behaviour is consistent across both image input modes.
 
     Images are attached at their native size. If a provider rejects the
     request because an image is too large (e.g. Anthropic's 5 MB per-image
@@ -200,14 +209,11 @@ def build_native_content_parts(
     once — see ``run_agent._try_shrink_image_parts_in_messages``.
 
     Returns (content_parts, skipped_paths). Skipped paths are files that
-    couldn't be read from disk.
+    couldn't be read from disk and are NOT advertised in the path hints.
     """
-    parts: List[Dict[str, Any]] = []
     skipped: List[str] = []
-
-    text = (user_text or "").strip()
-    if text:
-        parts.append({"type": "text", "text": text})
+    image_parts: List[Dict[str, Any]] = []
+    attached_paths: List[str] = []
 
     for raw_path in image_paths:
         p = Path(raw_path)
@@ -218,15 +224,30 @@ def build_native_content_parts(
         if not data_url:
             skipped.append(str(raw_path))
             continue
-        parts.append({
+        image_parts.append({
             "type": "image_url",
             "image_url": {"url": data_url},
         })
+        attached_paths.append(str(raw_path))
 
-    # If the text was empty, add a neutral prompt so the turn isn't just images.
-    if not text and any(p.get("type") == "image_url" for p in parts):
-        parts.insert(0, {"type": "text", "text": "What do you see in this image?"})
+    text = (user_text or "").strip()
 
+    # If at least one image attached, build a single text part that combines
+    # the user's caption (or a neutral default) with one path hint per image.
+    if attached_paths:
+        base_text = text or "What do you see in this image?"
+        path_hints = "\n".join(
+            f"[Image attached at: {p}]" for p in attached_paths
+        )
+        combined_text = f"{base_text}\n\n{path_hints}"
+        parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
+        parts.extend(image_parts)
+        return parts, skipped
+
+    # No images successfully attached — fall back to plain text-only behaviour.
+    parts = []
+    if text:
+        parts.append({"type": "text", "text": text})
     return parts, skipped
 
 

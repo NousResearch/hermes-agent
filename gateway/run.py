@@ -7887,24 +7887,33 @@ class GatewayRunner:
         msg = decision.get("message") or ""
 
         # Send the status line back to the user so they see the judge's
-        # verdict. Fire-and-forget via the adapter.
+        # verdict. Fire-and-forget via the adapter's ``send()`` method —
+        # adapters expose ``send(chat_id, content, reply_to, metadata)``,
+        # not a ``send_message(source, msg)`` wrapper, so an earlier
+        # ``hasattr(adapter, "send_message")`` gate here was dead code and
+        # users never saw ``✓ Goal achieved`` / ``⏸ budget exhausted``
+        # verdicts.
         if msg and source is not None:
             try:
                 adapter = self.adapters.get(source.platform)
-                if adapter and hasattr(adapter, "send_message"):
+                if adapter is not None and hasattr(adapter, "send"):
                     import asyncio as _asyncio
-                    coro = adapter.send_message(source, msg)
+                    thread_meta = (
+                        {"thread_id": source.thread_id} if source.thread_id else None
+                    )
+                    coro = adapter.send(
+                        chat_id=source.chat_id,
+                        content=msg,
+                        metadata=thread_meta,
+                    )
                     if _asyncio.iscoroutine(coro):
                         try:
-                            loop = _asyncio.get_event_loop()
-                            if loop.is_running():
-                                loop.create_task(coro)
-                            else:
-                                loop.run_until_complete(coro)
+                            loop = _asyncio.get_running_loop()
+                            loop.create_task(coro)
                         except RuntimeError:
-                            # No event loop in this thread — schedule on the main one.
+                            # No running loop in this thread — best effort.
                             try:
-                                _asyncio.run_coroutine_threadsafe(coro, self._loop)
+                                _asyncio.run(coro)
                             except Exception:
                                 pass
             except Exception as exc:

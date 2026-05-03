@@ -2822,6 +2822,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     def run():
         approval_token = None
         session_tokens = []
+        goal_followup = None  # set by the post-turn goal hook below
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -2981,6 +2982,55 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
 
+            # ── /goal continuation (Ralph-style loop) ─────────────────
+            # After every TUI turn, if a /goal is active, ask the judge
+            # whether the goal is done and — if not and we're still under
+            # budget — queue a continuation prompt to run after this
+            # thread releases session["running"]. The verdict message
+            # ("✓ Goal achieved" / "⏸ budget exhausted") is surfaced as
+            # a system line so the user sees progress regardless of
+            # outcome. Mirrors gateway/run._post_turn_goal_continuation.
+            if (
+                status == "complete"
+                and isinstance(raw, str)
+                and raw.strip()
+            ):
+                try:
+                    from hermes_cli.goals import GoalManager
+
+                    sid_key = session.get("session_key") or ""
+                    if sid_key:
+                        try:
+                            goals_cfg = (_load_cfg().get("goals") or {})
+                            goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                        except Exception:
+                            goal_max_turns = 20
+                        goal_mgr = GoalManager(
+                            session_id=sid_key,
+                            default_max_turns=goal_max_turns,
+                        )
+                        if goal_mgr.is_active():
+                            decision = goal_mgr.evaluate_after_turn(
+                                raw, user_initiated=True,
+                            )
+                            verdict_msg = decision.get("message") or ""
+                            if verdict_msg:
+                                _emit(
+                                    "status.update",
+                                    sid,
+                                    {"kind": "goal", "text": verdict_msg},
+                                )
+                            if decision.get("should_continue"):
+                                cont_prompt = decision.get("continuation_prompt") or ""
+                                if cont_prompt:
+                                    goal_followup = cont_prompt
+                except Exception as _goal_exc:
+                    print(
+                        f"[tui_gateway] goal continuation hook failed: "
+                        f"{type(_goal_exc).__name__}: {_goal_exc}",
+                        file=sys.stderr,
+                    )
+
             # Apply pending_title now that the DB row exists.
             _pending = session.get("pending_title")
             if _pending and status == "complete":
@@ -3060,6 +3110,31 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
+
+        # Chain a goal-continuation turn if the judge said so. We do
+        # this AFTER the finally releases session["running"], so the
+        # nested _run_prompt_submit doesn't deadlock on the busy
+        # guard. A real user prompt that races us wins because
+        # prompt.submit sets running=True under the history_lock and
+        # we check that guard before re-firing.
+        if goal_followup:
+            with session["history_lock"]:
+                if session.get("running"):
+                    # User already sent something — their turn wins,
+                    # the judge will re-run on the next turn anyway.
+                    return
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, goal_followup)
+            except Exception as _cont_exc:
+                print(
+                    f"[tui_gateway] goal continuation dispatch failed: "
+                    f"{type(_cont_exc).__name__}: {_cont_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -3928,6 +4003,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "q",
         "steer",
         "plan",
+        "goal",
     }
 )
 
@@ -4239,6 +4315,77 @@ def _(rid, params: dict) -> dict:
                 pass
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "goal":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            return _err(rid, 5030, f"goals unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        try:
+            goals_cfg = (_load_cfg().get("goals") or {})
+            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+        except Exception:
+            max_turns = 20
+        mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
+
+        lower = arg.strip().lower()
+        if not arg.strip() or lower == "status":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
+            return _ok(rid, {"type": "exec", "output": out})
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        f"▶ Goal resumed: {state.goal}\n"
+                        "Send any message to continue, or wait — I'll take the next step on the next turn."
+                    ),
+                },
+            )
+        if lower in ("clear", "stop", "done"):
+            had = mgr.has_goal()
+            mgr.clear()
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": "✓ Goal cleared." if had else "No active goal.",
+                },
+            )
+
+        # Otherwise — treat the remaining text as the new goal.
+        try:
+            state = mgr.set(arg)
+        except ValueError as exc:
+            return _err(rid, 4004, f"invalid goal: {exc}")
+
+        notice = (
+            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
+            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            "Controls: /goal status · /goal pause · /goal resume · /goal clear"
+        )
+        # Send the goal text as the kickoff prompt. The TUI client sees
+        # {type: send, notice, message} → renders `notice` as a sys line,
+        # then submits `message` as a user turn. The post-turn judge
+        # wired in _run_prompt_submit takes over from there.
+        return _ok(
+            rid,
+            {"type": "send", "notice": notice, "message": state.goal},
+        )
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 

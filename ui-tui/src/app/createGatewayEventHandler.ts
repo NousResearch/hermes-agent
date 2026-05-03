@@ -287,6 +287,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        if (p.kind === 'goal') {
+          sys(p.text)
+          return
+        }
+
         if (!p.kind || p.kind === 'status') {
           return
         }

@@ -807,8 +807,7 @@ registry.register(
 # Video Analysis Tool
 # ---------------------------------------------------------------------------
 
-# Supported video MIME types (extension → MIME).
-# avi/mkv fall back to video/mp4 since most providers handle it.
+# Extension → MIME. avi/mkv fall back to mp4.
 _VIDEO_MIME_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
@@ -819,11 +818,7 @@ _VIDEO_MIME_TYPES = {
     ".mpg": "video/mpeg",
 }
 
-# Hard cap for video base64 payloads (50 MB).
-# Gemini supports up to ~50 MB inline; other providers may be less.
-_MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024
-
-# Warn threshold for large video files (20 MB).
+_MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
 _VIDEO_SIZE_WARN_BYTES = 20 * 1024 * 1024
 
 
@@ -842,10 +837,7 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
 
 
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
-    """Download a video from a URL to a local destination (async) with retry logic.
-
-    Mirrors _download_image but with video-appropriate size limits.
-    """
+    """Download video from URL with SSRF protection and retry."""
     import asyncio
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -867,7 +859,7 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
                 raise PermissionError(blocked["message"])
 
             async with httpx.AsyncClient(
-                timeout=_VISION_DOWNLOAD_TIMEOUT * 2,  # Videos may be larger
+                timeout=60.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
@@ -923,20 +915,7 @@ async def video_analyze_tool(
     user_prompt: str,
     model: str = None,
 ) -> str:
-    """Analyze a video from a URL or local file path using a multimodal LLM.
-
-    Sends the entire video file base64-encoded to a video-capable model
-    (e.g. Gemini) via the OpenRouter-compatible chat completions API using
-    the ``video_url`` content type.
-
-    Args:
-        video_url: URL (http/https) or local file path to the video.
-        user_prompt: Pre-formatted prompt for the model.
-        model: Override model (default: resolved from auxiliary vision config).
-
-    Returns:
-        JSON string: {"success": bool, "analysis": str}
-    """
+    """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     debug_call_data = {
         "parameters": {
             "video_url": video_url,
@@ -971,11 +950,10 @@ async def video_analyze_tool(
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False
-        elif _validate_image_url(video_url):  # Reuse URL validator (checks HTTP + SSRF)
+        elif _validate_image_url(video_url):
             blocked = check_website_access(video_url)
             if blocked:
                 raise PermissionError(blocked["message"])
-            logger.info("Downloading video from URL...")
             temp_dir = get_hermes_dir("cache/video", "temp_video_files")
             temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
             await _download_video(video_url, temp_video_path)
@@ -985,7 +963,6 @@ async def video_analyze_tool(
                 "Invalid video source. Provide an HTTP/HTTPS URL or a valid local file path."
             )
 
-        # Validate video format
         video_size_bytes = temp_video_path.stat().st_size
         video_size_mb = video_size_bytes / (1024 * 1024)
         logger.info("Video ready (%.1f MB)", video_size_mb)
@@ -998,16 +975,10 @@ async def video_analyze_tool(
             )
 
         if video_size_bytes > _VIDEO_SIZE_WARN_BYTES:
-            logger.warning(
-                "Video file is %.1f MB — large files may be slow or rejected by the provider.",
-                video_size_mb,
-            )
+            logger.warning("Video is %.1f MB — may be slow or rejected", video_size_mb)
 
-        # Encode to base64 data URL
-        logger.info("Converting video to base64...")
         video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
         data_size_mb = len(video_data_url) / (1024 * 1024)
-        logger.info("Video converted to base64 (%.1f MB)", data_size_mb)
 
         if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
             raise ValueError(
@@ -1018,8 +989,6 @@ async def video_analyze_tool(
 
         debug_call_data["video_size_bytes"] = video_size_bytes
 
-        # Build multipart message with video_url content type
-        # This is the OpenRouter standard format for video input.
         messages = [
             {
                 "role": "user",
@@ -1038,10 +1007,7 @@ async def video_analyze_tool(
             }
         ]
 
-        logger.info("Processing video with vision model...")
-
-        # Read timeout/temperature from config (same path as vision)
-        vision_timeout = 180.0  # Videos need more time than images
+        vision_timeout = 180.0
         vision_temperature = 0.1
         try:
             from hermes_cli.config import cfg_get, load_config
@@ -1049,7 +1015,7 @@ async def video_analyze_tool(
             _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
-                vision_timeout = max(float(_vt), 180.0)  # Floor at 180s for video
+                vision_timeout = max(float(_vt), 180.0)
             _vtemp = _vision_cfg.get("temperature")
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
@@ -1060,20 +1026,17 @@ async def video_analyze_tool(
             "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
-            "max_tokens": 4000,  # Videos typically produce longer analysis
+            "max_tokens": 4000,
             "timeout": vision_timeout,
         }
         if model:
             call_kwargs["model"] = model
 
         response = await async_call_llm(**call_kwargs)
-
-        # Extract analysis
         analysis = extract_content_or_reasoning(response)
 
-        # Retry once on empty content
         if not analysis:
-            logger.warning("Vision LLM returned empty content for video, retrying once")
+            logger.warning("Empty video response, retrying once")
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
 

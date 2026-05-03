@@ -5145,7 +5145,7 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
-def _clear_bytecode_cache(root: Path) -> int:
+def _clear_bytecode_cache(root: Path, extra_skip: set[str] | None = None) -> int:
     """Remove all __pycache__ directories under *root*.
 
     Stale .pyc files can cause ImportError after code updates when Python
@@ -5153,16 +5153,19 @@ def _clear_bytecode_cache(root: Path) -> int:
     (or don't yet exist) in the updated source.  Clearing them forces Python
     to recompile from the .py source on next import.
 
+    *extra_skip* adds directory names to the default skip set so callers can
+    exclude subtrees already cleaned by a previous call (avoids redundant
+    traversal).
+
     Returns the number of directories removed.
     """
     removed = 0
+    skip = {"venv", ".venv", "node_modules", ".git", ".worktrees"}
+    if extra_skip:
+        skip |= extra_skip
     for dirpath, dirnames, _ in os.walk(root):
         # Skip venv / node_modules / .git entirely
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in ("venv", ".venv", "node_modules", ".git", ".worktrees")
-        ]
+        dirnames[:] = [d for d in dirnames if d not in skip]
         if os.path.basename(dirpath) == "__pycache__":
             try:
                 shutil.rmtree(dirpath)
@@ -5648,6 +5651,13 @@ def _update_via_zip(args):
 
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
+    # Also clear user data dirs outside the hermes-agent source tree.
+    from hermes_constants import get_default_hermes_root as _get_hermes_root
+    _hermes_root = _get_hermes_root()
+    _source_skip: set[str] = set()
+    if _hermes_root.resolve() == PROJECT_ROOT.parent.resolve():
+        _source_skip = {PROJECT_ROOT.name}
+    removed += _clear_bytecode_cache(_hermes_root, extra_skip=_source_skip)
     if removed:
         print(
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
@@ -6949,6 +6959,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).
         removed = _clear_bytecode_cache(PROJECT_ROOT)
+        # Also clear user data dirs (skills, plugins, per-profile dirs) which
+        # accumulate stale .pyc files outside the hermes-agent source tree.
+        # Skips PROJECT_ROOT.name if it's a direct child of hermes_root to
+        # avoid re-traversing what we just cleaned above.
+        from hermes_constants import get_default_hermes_root as _get_hermes_root
+        hermes_root = _get_hermes_root()
+        _source_skip: set[str] = set()
+        if hermes_root.resolve() == PROJECT_ROOT.parent.resolve():
+            _source_skip = {PROJECT_ROOT.name}
+        removed += _clear_bytecode_cache(hermes_root, extra_skip=_source_skip)
         if removed:
             print(
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"

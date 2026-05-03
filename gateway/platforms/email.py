@@ -276,16 +276,17 @@ class EmailAdapter(BasePlatformAdapter):
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
-            # Mark all existing messages as seen so we only process new ones
+            # Only mark READ messages as seen so unread emails from allowed
+            # users (e.g. received while the machine was off) get processed.
             imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
+            status, data = imap.uid("search", None, "SEEN")
             if status == "OK" and data and data[0]:
                 for uid in data[0].split():
                     self._seen_uids.add(uid)
             # Keep only the most recent UIDs to prevent unbounded growth
             self._trim_seen_uids()
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            logger.info("[Email] IMAP connection test passed. %d already-read messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -357,6 +358,10 @@ class EmailAdapter(BasePlatformAdapter):
                     # Trim periodically to prevent unbounded memory growth
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
+
+                    # Mark as read on the server so it won't reappear
+                    # as UNSEEN on the next poll or after a restart.
+                    imap.uid("store", uid, "+FLAGS", "\\Seen")
 
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":

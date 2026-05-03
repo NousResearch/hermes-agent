@@ -633,6 +633,8 @@ AUTHOR_MAP = {
     "cirwel@The-CIRWEL-Group.local": "CIRWEL",
     "molvikar8@gmail.com": "molvikar",
     "nftpoetrist@gmail.com": "nftpoetrist",
+    "dodofun@126.com": "colorcross",
+    "1615063567@qq.com": "zhao0112",
     "leozeli@qq.com": "leozeli",
     "linlehao@cuhk.edu.cn": "LehaoLin",
     "liutong@isacas.ac.cn": "I3eg1nner",

@@ -35,9 +35,10 @@ If you'd rather edit the YAML directly, add a `fallback_model` section to `~/.he
 fallback_model:
   provider: openrouter
   model: anthropic/claude-sonnet-4
+  # reasoning_effort: high   # optional per-fallback override
 ```
 
-Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+Both `provider` and `model` are **required**. If either is missing, the fallback is disabled. `reasoning_effort` is optional and overrides `agent.reasoning_effort` only while that fallback is active (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`; `max` is accepted for direct DeepSeek V4 fallbacks and sent as `reasoning_effort=max`).
 
 :::note `fallback_model` vs `fallback_providers`
 `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
@@ -149,6 +150,17 @@ fallback_model:
   model: llama-3.1-70b
   base_url: http://localhost:8000/v1
   key_env: LOCAL_API_KEY
+```
+
+**DeepSeek V4 Pro as max-reasoning fallback for a high-reasoning primary:**
+```yaml
+agent:
+  reasoning_effort: high
+
+fallback_providers:
+  - provider: deepseek
+    model: deepseek-v4-pro
+    reasoning_effort: max
 ```
 
 **Codex OAuth as fallback:**

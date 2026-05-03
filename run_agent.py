@@ -1493,6 +1493,7 @@ class AIAgent:
                             if _fb_client is not None:
                                 self.provider = _fb["provider"]
                                 self.model = _fb_model or _fb["model"]
+                                self.reasoning_config = self._resolve_fallback_reasoning_config(_fb)
                                 self._fallback_activated = True
                                 client_kwargs = {
                                     "api_key": _fb_client.api_key,
@@ -2166,6 +2167,7 @@ class AIAgent:
             "api_mode": self.api_mode,
             "api_key": getattr(self, "api_key", ""),
             "client_kwargs": dict(self._client_kwargs),
+            "reasoning_config": copy.deepcopy(self.reasoning_config),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
             # Context engine state that _try_activate_fallback() overwrites.
@@ -7488,6 +7490,53 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
+    def _resolve_fallback_reasoning_config(self, fallback_entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Return reasoning config for a fallback entry.
+
+        Fallback entries inherit the primary ``reasoning_config`` unless they
+        declare ``reasoning_config`` or ``reasoning_effort``. This lets a
+        primary GPT/Codex route use high reasoning while a direct DeepSeek V4
+        fallback requests max thinking without changing the global setting.
+        """
+        if not isinstance(fallback_entry, dict):
+            return copy.deepcopy(self.reasoning_config)
+
+        explicit_config = fallback_entry.get("reasoning_config")
+        if isinstance(explicit_config, dict):
+            return copy.deepcopy(explicit_config)
+
+        raw_effort = str(
+            fallback_entry.get("reasoning_effort")
+            or fallback_entry.get("thinking_effort")
+            or ""
+        ).strip().lower()
+        if not raw_effort:
+            return copy.deepcopy(self.reasoning_config)
+
+        provider = str(fallback_entry.get("provider") or "").strip().lower()
+        model = str(fallback_entry.get("model") or "").strip().lower()
+        if raw_effort == "max":
+            # DeepSeek V4's direct API accepts top-level reasoning_effort=max.
+            # Other OpenAI-compatible backends commonly don't, so treat max as
+            # Hermes' strongest portable level (xhigh) outside direct DeepSeek.
+            effort = "max" if provider == "deepseek" and model.startswith("deepseek-v4") else "xhigh"
+            return {"enabled": True, "effort": effort}
+
+        try:
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(raw_effort)
+        except Exception:
+            parsed = None
+        if parsed is None:
+            logging.warning(
+                "Ignoring unknown fallback reasoning_effort '%s' for %s/%s; inheriting primary reasoning config",
+                raw_effort,
+                provider or "unknown",
+                model or "unknown",
+            )
+            return copy.deepcopy(self.reasoning_config)
+        return copy.deepcopy(parsed)
+
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
@@ -7587,6 +7636,7 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            self.reasoning_config = self._resolve_fallback_reasoning_config(fb)
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
@@ -7714,6 +7764,7 @@ class AIAgent:
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
+            self.reasoning_config = copy.deepcopy(rt.get("reasoning_config"))
             self._use_prompt_caching = rt["use_prompt_caching"]
             # Default to native layout when the restored snapshot predates the
             # native-vs-proxy split (older sessions saved before this PR).
@@ -7821,6 +7872,7 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
+            self.reasoning_config = copy.deepcopy(rt.get("reasoning_config"))
 
             if self.api_mode == "anthropic_messages":
                 from agent.anthropic_adapter import build_anthropic_client

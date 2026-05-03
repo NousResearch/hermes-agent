@@ -1235,7 +1235,10 @@ fallback_model:
   model: anthropic/claude-sonnet-4        # required
   # base_url: http://localhost:8000/v1    # optional, for custom endpoints
   # key_env: MY_CUSTOM_KEY               # optional, env var name for custom endpoint API key
+  # reasoning_effort: high               # optional, overrides agent.reasoning_effort while active
 ```
+
+Per-fallback `reasoning_effort` accepts the normal Hermes levels (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`). Direct DeepSeek V4 fallbacks can also use `max`, which Hermes sends to DeepSeek as top-level `reasoning_effort=max`.
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 

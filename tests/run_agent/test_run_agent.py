@@ -3980,6 +3980,67 @@ class TestFallbackAnthropicProvider:
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
 
+    def test_fallback_entry_can_override_reasoning_effort_to_deepseek_max(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        fb = {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "reasoning_effort": "max",
+        }
+
+        assert agent._resolve_fallback_reasoning_config(fb) == {
+            "enabled": True,
+            "effort": "max",
+        }
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
+    def test_fallback_activation_applies_entry_reasoning_effort(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent._fallback_activated = False
+        agent._fallback_model = {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "reasoning_effort": "max",
+        }
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.deepseek.com"
+        mock_client.api_key = "sk-ds-test"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.provider == "deepseek"
+        assert agent.model == "deepseek-v4-pro"
+        assert agent.reasoning_config == {"enabled": True, "effort": "max"}
+
+    def test_direct_deepseek_v4_max_reasoning_payload(self, agent):
+        agent.provider = "deepseek"
+        agent.base_url = "https://api.deepseek.com"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "deepseek-v4-pro"
+        agent.reasoning_config = {"enabled": True, "effort": "max"}
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["reasoning_effort"] == "max"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning" not in kwargs["extra_body"]
+
+    def test_restore_primary_runtime_restores_reasoning_config(self, agent):
+        agent._fallback_activated = True
+        agent._rate_limited_until = 0
+        agent.reasoning_config = {"enabled": True, "effort": "max"}
+        agent._primary_runtime["reasoning_config"] = {"enabled": True, "effort": "high"}
+
+        with patch.object(agent, "_create_openai_client", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
 
 def test_aiagent_uses_copilot_acp_client():
     with (

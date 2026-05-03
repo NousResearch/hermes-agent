@@ -524,6 +524,44 @@ class TestPrompt:
         state.agent.run_conversation.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_prompt_bridges_interim_assistant_messages(self, agent):
+        """Mid-turn assistant commentary should be emitted as ACP message chunks."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def run_conversation(**kwargs):
+            assert state.agent.interim_assistant_callback is not None
+            state.agent.interim_assistant_callback(
+                "Phase 1 complete. Continuing research.",
+                already_streamed=False,
+            )
+            return {
+                "final_response": "Done.",
+                "messages": [
+                    {"role": "user", "content": "research this"},
+                    {"role": "assistant", "content": "Done."},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=run_conversation)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="research this")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+        message_updates = [
+            (call.kwargs.get("update") or call.args[1])
+            for call in mock_conn.session_update.call_args_list
+            if (call.kwargs.get("update") or call.args[1]).session_update == "agent_message_chunk"
+        ]
+        assert len(message_updates) >= 2
+        assert message_updates[0].content.text == "Phase 1 complete. Continuing research."
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")

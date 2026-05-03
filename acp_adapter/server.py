@@ -762,6 +762,7 @@ class HermesACPAgent(acp.Agent):
         agent.thinking_callback = thinking_cb
         agent.step_callback = step_cb
         agent.message_callback = message_cb
+        agent.interim_assistant_callback = message_cb
 
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
         # Set it INSIDE _run_agent so the TLS write happens in the executor

@@ -315,6 +315,21 @@ class TestMessageCallback:
 
         mock_rcts.assert_called_once()
 
+    def test_accepts_interim_callback_metadata(self, mock_conn, event_loop_fixture):
+        """AIAgent interim callbacks pass already_streamed as keyword metadata."""
+        loop = event_loop_fixture
+
+        cb = make_message_cb(mock_conn, "session-1", loop)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb("Phase 1 complete.", already_streamed=False)
+
+        mock_rcts.assert_called_once()
+
     def test_ignores_empty_message(self, mock_conn, event_loop_fixture):
         """Empty text should not emit any update."""
         loop = event_loop_fixture

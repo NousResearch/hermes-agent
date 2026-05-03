@@ -185,7 +185,10 @@ def make_message_cb(
 ) -> Callable:
     """Create a callback that streams agent response text to the editor."""
 
-    def _message(text: str) -> None:
+    def _message(text: str, *args: Any, **kwargs: Any) -> None:
+        # AIAgent's interim_assistant_callback passes keyword-only metadata
+        # such as already_streamed; ACP only needs the visible text chunk.
+        del args, kwargs
         if not text:
             return
         update = acp.update_agent_message_text(text)

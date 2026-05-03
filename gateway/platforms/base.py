@@ -3146,7 +3146,9 @@ class BasePlatformAdapter(ABC):
                 _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
                 try:
-                    _post_cb()
+                    _post_result = _post_cb()
+                    if inspect.isawaitable(_post_result):
+                        await _post_result
                 except Exception:
                     pass
             # Stop typing indicator

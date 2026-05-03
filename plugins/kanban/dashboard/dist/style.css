@@ -422,15 +422,22 @@
   color: var(--color-foreground);
   min-width: 6rem;
 }
-.hermes-kanban-event-payload {
+/* Shared chip styling for code/JSON snippets in the drawer (event
+   payloads, run metadata). Layout-specific props (padding, max-width,
+   white-space, …) stay on each individual class. */
+.hermes-kanban-event-payload,
+.hermes-kanban-run-meta {
   color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 8%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.hermes-kanban-event-payload {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 280px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  border-radius: var(--radius-sm, 0.25rem);
-  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 8%);
   padding: 0.05rem 0.25rem;
 }
 
@@ -770,10 +777,6 @@
   font-size: 0.65rem;
   margin-top: 0.2rem;
   padding: 0.2rem 0.3rem;
-  color: var(--color-foreground);
-  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 8%);
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  border-radius: var(--radius-sm, 0.25rem);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);

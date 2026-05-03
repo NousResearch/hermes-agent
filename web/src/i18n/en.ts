@@ -419,7 +419,7 @@ export const en: Translations = {
   },
 
   language: {
-    switchTo: "Switch to Chinese",
+    switchTo: "Switch language",
   },
 
   theme: {

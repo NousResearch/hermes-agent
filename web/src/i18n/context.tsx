@@ -1,15 +1,20 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-import type { Locale, Translations } from "./types";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { type Locale, type Translations, LOCALE_DIR } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
+import { he } from "./he";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = { en, zh, he };
 const STORAGE_KEY = "hermes-locale";
+
+function isLocale(value: string | null): value is Locale {
+  return value === "en" || value === "zh" || value === "he";
+}
 
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    if (isLocale(stored)) return stored;
   } catch {
     // SSR or privacy mode
   }
@@ -39,6 +44,14 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       // ignore
     }
   }, []);
+
+  // Reflect locale + direction on the root element so CSS, screen readers,
+  // and browser features (e.g. text selection direction) all behave correctly.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.lang = locale;
+    root.dir = LOCALE_DIR[locale];
+  }, [locale]);
 
   const value: I18nContextValue = {
     locale,

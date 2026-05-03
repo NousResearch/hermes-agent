@@ -1,4 +1,10 @@
-export type Locale = "en" | "zh";
+export type Locale = "en" | "zh" | "he";
+
+export const LOCALE_DIR: Record<Locale, "ltr" | "rtl"> = {
+  en: "ltr",
+  zh: "ltr",
+  he: "rtl",
+};
 
 export interface Translations {
   // ── Common ──

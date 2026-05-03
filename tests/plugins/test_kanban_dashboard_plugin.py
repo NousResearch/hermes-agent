@@ -629,6 +629,17 @@ def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
     assert data["render_markdown"] is False
 
 
+def test_markdown_code_uses_theme_foreground_for_contrast():
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert ".hermes-kanban-md code" in css
+    assert "color: var(--color-foreground);" in css
+    assert ".hermes-kanban-md-code code" in css
+    assert "color: inherit;" in css
+    assert "text-shadow: none;" in css
+
+
 # ---------------------------------------------------------------------------
 # Runs surfacing (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------

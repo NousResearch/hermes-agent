@@ -376,6 +376,7 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.72rem;
   color: var(--color-foreground);
+  text-shadow: none;
 }
 
 .hermes-kanban-comment {
@@ -636,6 +637,8 @@
   padding: 0.05rem 0.3rem;
   background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
   border-radius: 3px;
+  color: var(--color-foreground);
+  text-shadow: none;
 }
 .hermes-kanban-md-code {
   margin: 0.35rem 0;
@@ -644,12 +647,15 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   overflow-x: auto;
+  color: var(--color-foreground);
+  text-shadow: none;
 }
 .hermes-kanban-md-code code {
   background: transparent;
   padding: 0;
   font-size: 0.75rem;
   white-space: pre;
+  color: inherit;
 }
 .hermes-kanban-md strong { font-weight: 600; }
 

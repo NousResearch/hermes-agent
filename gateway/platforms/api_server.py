@@ -34,6 +34,7 @@ import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -2260,6 +2261,306 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     # ------------------------------------------------------------------
+    # Memory endpoints — index-based CRUD over MEMORY.md + USER.md
+    #
+    # Mirrors the surface the Hermes Desktop renderer's local IPC handlers
+    # (read-memory, add-memory-entry, update-memory-entry, remove-memory-entry,
+    # write-user-profile) expect, so remote-mode connections can fork the
+    # desktop handlers on isRemoteMode() and call these endpoints. File paths
+    # and the ``\n§\n`` entry delimiter match ``tools/memory_tool.py`` —
+    # writes go through the same atomic-rename pattern used by MemoryStore so
+    # the agent's in-process tool reads see consistent state.
+    #
+    # Auth: bearer token via ``_check_auth`` (same gate as ``/api/jobs/*``).
+    # Validation: content runs through ``_scan_memory_content`` (the existing
+    # injection/exfiltration heuristic) on add/update so HTTP-driven writes
+    # get the same scrub the agent tool does.
+    # Reload: writes hit disk atomically; the next agent boot loads the new
+    # state into MemoryStore. In-flight conversations don't see mid-session
+    # changes (matches the existing system-prompt-snapshot contract).
+    # ------------------------------------------------------------------
+
+    _MEMORY_CHAR_LIMIT = 2200
+    _USER_CHAR_LIMIT = 1375
+
+    @staticmethod
+    def _memory_paths() -> "tuple[Path, Path]":
+        from hermes_constants import get_hermes_home
+        from pathlib import Path as _P
+        mem_dir = get_hermes_home() / "memories"
+        return mem_dir / "MEMORY.md", mem_dir / "USER.md"
+
+    @staticmethod
+    def _read_memory_entries(path: "Path") -> "list[str]":
+        from tools.memory_tool import ENTRY_DELIMITER
+        if not path.exists():
+            return []
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return []
+        if not raw.strip():
+            return []
+        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
+        return [e for e in entries if e]
+
+    @staticmethod
+    def _write_memory_atomic(path: "Path", text: str) -> None:
+        """Atomic write — temp file in same dir then os.replace, matching
+        MemoryStore._write_file so concurrent readers never see a partial."""
+        import tempfile, os
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+        tmp_path = Path(tmp_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(str(tmp_path), str(path))
+        except Exception:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+
+    @staticmethod
+    def _serialize_entries(entries: "list[str]") -> str:
+        from tools.memory_tool import ENTRY_DELIMITER
+        return ENTRY_DELIMITER.join(entries) if entries else ""
+
+    @staticmethod
+    def _read_user_blob(path: "Path") -> str:
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return ""
+
+    @staticmethod
+    def _file_stat(path: "Path") -> "tuple[bool, int | None]":
+        if not path.exists():
+            return False, None
+        try:
+            return True, int(path.stat().st_mtime)
+        except OSError:
+            return False, None
+
+    @staticmethod
+    def _session_stats() -> "dict[str, int]":
+        """Read session/message counts from state.db. Best-effort: returns
+        zeros if the DB or tables don't exist yet (fresh installs)."""
+        import sqlite3
+        from hermes_constants import get_hermes_home
+        db_path = get_hermes_home() / "state.db"
+        if not db_path.exists():
+            return {"total_sessions": 0, "total_messages": 0}
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                try:
+                    s = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                except sqlite3.OperationalError:
+                    s = 0
+                try:
+                    m = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                except sqlite3.OperationalError:
+                    m = 0
+                return {"total_sessions": int(s or 0), "total_messages": int(m or 0)}
+        except sqlite3.Error:
+            return {"total_sessions": 0, "total_messages": 0}
+
+    async def _handle_get_memory(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory — return memory entries + user profile + session stats.
+
+        Auth: bearer token via ``_check_auth``. Response shape matches the
+        desktop's ``MemoryInfo`` interface so the renderer can use the body
+        directly without a transform.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            mem_path, user_path = self._memory_paths()
+            mem_entries = self._read_memory_entries(mem_path)
+            mem_content = self._serialize_entries(mem_entries)
+            mem_exists, mem_mtime = self._file_stat(mem_path)
+            user_content = self._read_user_blob(user_path)
+            user_exists, user_mtime = self._file_stat(user_path)
+            return web.json_response({
+                "memory": {
+                    "content": mem_content,
+                    "exists": mem_exists,
+                    "last_modified": mem_mtime,
+                    "entries": [
+                        {"index": i, "content": e}
+                        for i, e in enumerate(mem_entries)
+                    ],
+                    "char_count": len(mem_content),
+                    "char_limit": self._MEMORY_CHAR_LIMIT,
+                },
+                "user": {
+                    "content": user_content,
+                    "exists": user_exists,
+                    "last_modified": user_mtime,
+                    "char_count": len(user_content),
+                    "char_limit": self._USER_CHAR_LIMIT,
+                },
+                "stats": self._session_stats(),
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_add_memory_entry(self, request: "web.Request") -> "web.Response":
+        """POST /api/memory/entries — append a new entry to MEMORY.md.
+
+        Body: ``{"content": "..."}``. Same injection-scan as the agent
+        tool. Returns 400 if adding would exceed the 2200-char limit, with
+        the current usage in the error.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+            content = (body.get("content") or "").strip()
+            if not content:
+                return web.json_response(
+                    {"error": "content cannot be empty"}, status=400,
+                )
+            from tools.memory_tool import _scan_memory_content
+            scan_err = _scan_memory_content(content)
+            if scan_err:
+                return web.json_response(
+                    {"error": f"content rejected: {scan_err}"}, status=400,
+                )
+            mem_path, _ = self._memory_paths()
+            entries = self._read_memory_entries(mem_path)
+            if content in entries:
+                return web.json_response(
+                    {"ok": True, "duplicate": True, "entry": {"index": entries.index(content), "content": content}},
+                )
+            new_entries = entries + [content]
+            new_text = self._serialize_entries(new_entries)
+            if len(new_text) > self._MEMORY_CHAR_LIMIT:
+                return web.json_response({
+                    "error": (
+                        f"would exceed memory limit "
+                        f"({len(new_text)}/{self._MEMORY_CHAR_LIMIT} chars); "
+                        f"remove or replace existing entries first"
+                    ),
+                    "current_chars": len(self._serialize_entries(entries)),
+                    "limit": self._MEMORY_CHAR_LIMIT,
+                }, status=400)
+            self._write_memory_atomic(mem_path, new_text)
+            return web.json_response({
+                "ok": True,
+                "entry": {"index": len(new_entries) - 1, "content": content},
+            })
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_update_memory_entry(self, request: "web.Request") -> "web.Response":
+        """PUT /api/memory/entries/{index} — replace the entry at the given index."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            try:
+                index = int(request.match_info["index"])
+            except (ValueError, KeyError):
+                return web.json_response({"error": "index must be an integer"}, status=400)
+            body = await request.json()
+            content = (body.get("content") or "").strip()
+            if not content:
+                return web.json_response({"error": "content cannot be empty"}, status=400)
+            from tools.memory_tool import _scan_memory_content
+            scan_err = _scan_memory_content(content)
+            if scan_err:
+                return web.json_response({"error": f"content rejected: {scan_err}"}, status=400)
+            mem_path, _ = self._memory_paths()
+            entries = self._read_memory_entries(mem_path)
+            if index < 0 or index >= len(entries):
+                return web.json_response({"error": "Entry not found"}, status=404)
+            new_entries = list(entries)
+            new_entries[index] = content
+            new_text = self._serialize_entries(new_entries)
+            if len(new_text) > self._MEMORY_CHAR_LIMIT:
+                return web.json_response({
+                    "error": (
+                        f"would exceed memory limit "
+                        f"({len(new_text)}/{self._MEMORY_CHAR_LIMIT} chars)"
+                    ),
+                }, status=400)
+            self._write_memory_atomic(mem_path, new_text)
+            return web.json_response({
+                "ok": True,
+                "entry": {"index": index, "content": content},
+            })
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_remove_memory_entry(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/memory/entries/{index} — drop the entry at the given index."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            try:
+                index = int(request.match_info["index"])
+            except (ValueError, KeyError):
+                return web.json_response({"error": "index must be an integer"}, status=400)
+            mem_path, _ = self._memory_paths()
+            entries = self._read_memory_entries(mem_path)
+            if index < 0 or index >= len(entries):
+                return web.json_response({"error": "Entry not found"}, status=404)
+            new_entries = entries[:index] + entries[index + 1:]
+            self._write_memory_atomic(mem_path, self._serialize_entries(new_entries))
+            return web.json_response({"ok": True, "removed_index": index})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_set_user_profile(self, request: "web.Request") -> "web.Response":
+        """PUT /api/memory/user — overwrite USER.md with the provided text.
+
+        Body: ``{"content": "..."}``. Treats USER.md as a single text blob
+        (matching the desktop's ``writeUserProfile`` contract). Char-limited
+        at 1375; same injection scan as memory entries.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+            content = body.get("content", "")
+            if not isinstance(content, str):
+                return web.json_response(
+                    {"error": "content must be a string"}, status=400,
+                )
+            if len(content) > self._USER_CHAR_LIMIT:
+                return web.json_response({
+                    "error": (
+                        f"user profile must be ≤ {self._USER_CHAR_LIMIT} chars "
+                        f"(got {len(content)})"
+                    ),
+                }, status=400)
+            if content.strip():
+                from tools.memory_tool import _scan_memory_content
+                scan_err = _scan_memory_content(content)
+                if scan_err:
+                    return web.json_response({"error": f"content rejected: {scan_err}"}, status=400)
+            _, user_path = self._memory_paths()
+            self._write_memory_atomic(user_path, content)
+            return web.json_response({"ok": True, "content": content})
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ------------------------------------------------------------------
     # Output extraction helper
     # ------------------------------------------------------------------
 
@@ -2795,6 +3096,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Memory CRUD — MEMORY.md entries (indexed) + USER.md (blob) + stats
+            self._app.router.add_get("/api/memory", self._handle_get_memory)
+            self._app.router.add_post("/api/memory/entries", self._handle_add_memory_entry)
+            self._app.router.add_put("/api/memory/entries/{index}", self._handle_update_memory_entry)
+            self._app.router.add_delete("/api/memory/entries/{index}", self._handle_remove_memory_entry)
+            self._app.router.add_put("/api/memory/user", self._handle_set_user_profile)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)

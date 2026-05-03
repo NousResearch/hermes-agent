@@ -6,6 +6,7 @@ import com.nousresearch.hermesagent.api.ChatMessage
 import com.nousresearch.hermesagent.api.HermesApiClient
 import com.nousresearch.hermesagent.api.toJsonObject
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
+import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.NativeAndroidShellTool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -13,6 +14,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -132,6 +134,7 @@ class NativeToolCallingChatClient(
     private fun executeToolCall(toolCall: ToolCall): String {
         return when (toolCall.name) {
             "terminal_tool", "terminal", "shell" -> executeTerminalTool(toolCall)
+            "file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)
             "android_system_tool", "android_system_action", "system_tool", "settings_tool", "phone_tool" ->
                 executeAndroidSystemTool(toolCall)
             else -> JSONObject()
@@ -162,6 +165,64 @@ class NativeToolCallingChatClient(
             .toString()
     }
 
+    private fun executeFileWriteTool(toolCall: ToolCall): String {
+        val rawPath = listOf("path", "file_path", "filename", "name")
+            .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
+            ?.trim()
+            ?: return JSONObject()
+                .put("exit_code", 2)
+                .put("error", "file_write_tool requires a path argument")
+                .toString()
+        if (rawPath.indexOf('\u0000') >= 0) {
+            return JSONObject()
+                .put("exit_code", 2)
+                .put("error", "file_write_tool path must not contain NUL bytes")
+                .toString()
+        }
+
+        val content = listOf("content", "text", "data")
+            .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotEmpty() } }
+            ?: return JSONObject()
+                .put("exit_code", 2)
+                .put("error", "file_write_tool requires a content argument")
+                .toString()
+        val append = toolCall.arguments.optBoolean("append", false)
+
+        val state = HermesLinuxSubsystemBridge.ensureInstalled(appContext)
+        val homeDir = File(state.getString("home_path")).apply { mkdirs() }.canonicalFile
+        val appFilesDir = appContext.filesDir.canonicalFile
+        val target = if (File(rawPath).isAbsolute) {
+            File(rawPath)
+        } else {
+            File(homeDir, rawPath)
+        }.canonicalFile
+
+        val allowedRoots = listOf(homeDir, appFilesDir)
+        if (allowedRoots.none { root -> target == root || target.path.startsWith(root.path + File.separator) }) {
+            return JSONObject()
+                .put("exit_code", 13)
+                .put("error", "file_write_tool can only write inside the Hermes app workspace")
+                .put("path", target.absolutePath)
+                .put("cwd", homeDir.absolutePath)
+                .toString()
+        }
+
+        target.parentFile?.mkdirs()
+        if (append) {
+            target.appendText(content, Charsets.UTF_8)
+        } else {
+            target.writeText(content, Charsets.UTF_8)
+        }
+
+        return JSONObject()
+            .put("exit_code", 0)
+            .put("path", target.absolutePath)
+            .put("bytes", target.length())
+            .put("append", append)
+            .put("cwd", homeDir.absolutePath)
+            .toString()
+    }
+
     private fun executeAndroidSystemTool(toolCall: ToolCall): String {
         val action = listOf("action", "operation", "name")
             .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
@@ -180,9 +241,11 @@ class NativeToolCallingChatClient(
             .put(
                 "content",
                 "You are Hermes running inside the native Android app. " +
-                    "You have functions named terminal_tool and android_system_tool. " +
-                    "When the user asks to run a command, inspect the filesystem, write a file, read a file, or use a device command, call terminal_tool instead of simulating the result. " +
+                    "You have functions named terminal_tool, file_write_tool, and android_system_tool. " +
+                    "When the user asks to write or replace a text file, prefer file_write_tool so multiline content is written exactly. " +
+                    "When the user asks to run a command, inspect the filesystem, read a file, or use a device command, call terminal_tool instead of simulating the result. " +
                     "terminal_tool runs through /system/bin/sh in the Hermes app workspace. " +
+                    "file_write_tool writes UTF-8 text files in the Hermes app workspace. " +
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
                     "Protected Android settings require user-granted permissions or an opened settings panel.",
             )
@@ -216,6 +279,47 @@ class NativeToolCallingChatClient(
                                             ),
                                     )
                                     .put("required", JSONArray().put("command")),
+                            ),
+                    ),
+            )
+            .put(
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject()
+                            .put("name", "file_write_tool")
+                            .put(
+                                "description",
+                                "Write or replace a UTF-8 text file inside the Hermes app workspace without shell quoting.",
+                            )
+                            .put(
+                                "parameters",
+                                JSONObject()
+                                    .put("type", "object")
+                                    .put(
+                                        "properties",
+                                        JSONObject()
+                                            .put(
+                                                "path",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Relative workspace path or app-workspace absolute path to write."),
+                                            )
+                                            .put(
+                                                "content",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Exact UTF-8 text content to write."),
+                                            )
+                                            .put(
+                                                "append",
+                                                JSONObject()
+                                                    .put("type", "boolean")
+                                                    .put("description", "Append instead of replacing the file."),
+                                            ),
+                                    )
+                                    .put("required", JSONArray().put("path").put("content")),
                             ),
                     ),
             )

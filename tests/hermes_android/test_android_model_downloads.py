@@ -156,6 +156,16 @@ def test_native_tool_loop_allows_long_file_generation_prompts():
     assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
 
 
+def test_native_tool_loop_has_structured_file_write_tool():
+    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+
+    assert '"file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)' in native_client
+    assert '.put("name", "file_write_tool")' in native_client
+    assert 'prefer file_write_tool so multiline content is written exactly' in native_client
+    assert 'file_write_tool can only write inside the Hermes app workspace' in native_client
+    assert 'target.writeText(content, Charsets.UTF_8)' in native_client
+
+
 def test_release_build_recovers_existing_model_files_without_run_as_access():
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
     backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")

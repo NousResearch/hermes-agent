@@ -983,3 +983,133 @@ def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
         "SELECT value FROM state_meta WHERE key = 'telegram_dm_topic_schema_version'"
     ).fetchone()
     assert version is not None and version[0] == "2"
+
+
+@pytest.mark.asyncio
+async def test_topic_help_subcommand_returns_usage(tmp_path):
+    """/topic help surfaces usage without activating anything."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+
+    result = await runner._handle_topic_command(_make_event("/topic help"))
+
+    assert "/topic help" in result
+    assert "/topic off" in result
+    assert "/topic <id>" in result
+    # No side effects — topic mode tables should not even exist yet.
+    tables = {
+        row[0]
+        for row in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
+        ).fetchall()
+    }
+    assert tables == set()
+
+
+@pytest.mark.asyncio
+async def test_topic_off_disables_mode_and_clears_bindings(tmp_path, monkeypatch):
+    """/topic off flips the row off AND deletes bindings for this chat."""
+    import gateway.run as gateway_run
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="topic-sess", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key="k",
+        session_id="topic-sess",
+    )
+    runner = _make_runner(session_db=db)
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_topic_command(_make_event("/topic off"))
+
+    assert "OFF" in result or "off" in result
+    assert db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    ) is False
+    # Bindings cleared.
+    assert db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585"
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_topic_off_is_idempotent_when_never_enabled(tmp_path):
+    """/topic off against a chat that never ran /topic is a no-op message."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+
+    result = await runner._handle_topic_command(_make_event("/topic off"))
+
+    assert "not currently enabled" in result
+
+
+@pytest.mark.asyncio
+async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
+    """Unauthorized DMs cannot flip multi-session mode on."""
+    import gateway.run as gateway_run
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    runner._is_user_authorized = lambda _source: False  # Deny
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_topic_command(_make_event("/topic"))
+
+    assert "not authorized" in result.lower()
+    # Tables must not be created for an unauthorized caller.
+    tables = {
+        row[0]
+        for row in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
+        ).fetchall()
+    }
+    assert tables == set()
+
+
+def test_capability_hint_is_debounced_per_chat(tmp_path):
+    """BotFather screenshot is sent once per cooldown window per chat."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+
+    source = _make_source()
+    assert runner._should_send_telegram_capability_hint(source) is True
+    assert runner._should_send_telegram_capability_hint(source) is False
+    assert runner._should_send_telegram_capability_hint(source) is False
+
+    from dataclasses import replace
+    other = replace(source, chat_id="999999999")
+    assert runner._should_send_telegram_capability_hint(other) is True
+
+
+def test_topic_off_resets_debounce_counters(tmp_path):
+    """Disabling topic mode clears per-chat debounce state."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    source = _make_source()
+    # Prime the debounce counters.
+    assert runner._should_send_telegram_lobby_reminder(source) is True
+    assert runner._should_send_telegram_capability_hint(source) is True
+    assert runner._should_send_telegram_lobby_reminder(source) is False
+    assert runner._should_send_telegram_capability_hint(source) is False
+
+    # /topic off resets them.
+    result = runner._disable_telegram_topic_mode_for_chat(source)
+    assert "OFF" in result or "off" in result
+
+    # Re-enable and verify counters reset (so the first reminder/hint
+    # after re-enabling can land immediately).
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    assert runner._should_send_telegram_lobby_reminder(source) is True
+    assert runner._should_send_telegram_capability_hint(source) is True

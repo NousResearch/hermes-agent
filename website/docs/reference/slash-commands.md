@@ -145,7 +145,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/undo` | Remove the last exchange. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
 | `/compress [focus topic]` | Manually compress conversation context. Optional focus topic narrows what the summary preserves. |
-| `/topic [session-id]` | **Telegram DM only.** Enable or inspect user-managed multi-session topic mode. See [Multi-session DM mode](/docs/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
+| `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/docs/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |

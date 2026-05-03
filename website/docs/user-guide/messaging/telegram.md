@@ -400,6 +400,19 @@ Topics created outside of the config (e.g., by manually calling the Telegram API
 
 A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlike the operator-curated `extra.dm_topics` above, this mode is **user-driven**: no config, no pre-declared topic names. The end user flips it on with `/topic`, then taps the Telegram **+** button to create as many topics as they want, each one a fully independent Hermes session.
 
+### `/topic` subcommands
+
+| Form | Context | Effect |
+|------|---------|--------|
+| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode, create pinned System topic |
+| `/topic` | Root DM, already enabled | Show status: unlinked sessions available for restore |
+| `/topic` | Inside a topic | Show the current topic's session binding |
+| `/topic help` | Any | Inline usage |
+| `/topic off` | Root DM | Disable multi-session mode and clear all topic bindings for this chat |
+| `/topic <session-id>` | Inside a topic | Restore a previous Telegram session into the current topic |
+
+Only authorized users (allowlist via `TELEGRAM_ALLOWED_USERS` / platform auth config) can run `/topic`. An unauthorized sender gets a refusal instead of activation.
+
 ### DM Topics vs Multi-session DM mode
 
 | | `extra.dm_topics` (config-driven) | `/topic` (user-driven) |
@@ -487,18 +500,21 @@ Shows the current topic's binding: session title, session ID, and hints for `/ne
 - Topics declared in `extra.dm_topics` are **never auto-renamed** — the operator-chosen name is preserved even when multi-session mode is enabled
 - The General (pinned top) topic in a forum-enabled DM is treated as the root lobby, regardless of whether Telegram delivers its messages with `message_thread_id=1` or with no thread_id
 - Root-lobby reminders are rate-limited to one message per 30 seconds per chat — a user who forgets topic mode is on and types ten prompts in the root won't get ten replies
+- BotFather setup screenshots are rate-limited to one send per 5 minutes per chat — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
 - `/background <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
+- `/topic` itself is gated by the bot's user authorization check — unauthorized DMs get a refusal instead of activation
 
 ### Disabling multi-session mode
 
-There is no slash command to exit multi-session mode. If you need to turn it off, remove the row manually:
+Send `/topic off` in the root DM. Hermes flips the row off, clears the chat's `(thread_id → session_id)` bindings, and the root DM reverts to a normal Hermes chat. Existing topics in Telegram aren't deleted — they just stop being gated as independent sessions. Re-run `/topic` later to turn it back on.
+
+If you need to clean up by hand (e.g. a bulk reset across many chats), remove the rows directly:
 
 ```bash
 sqlite3 ~/.hermes/state.db \
-  "DELETE FROM telegram_dm_topic_mode WHERE chat_id = '<your_chat_id>'"
+  "UPDATE telegram_dm_topic_mode SET enabled = 0 WHERE chat_id = '<your_chat_id>'; \
+   DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>';"
 ```
-
-Existing topics in Telegram won't disappear — they'll just stop being gated as independent sessions on the Hermes side. The binding rows can also be cleared with `DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>'`.
 
 ### Downgrading Hermes
 

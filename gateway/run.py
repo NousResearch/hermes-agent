@@ -9838,6 +9838,84 @@ class GatewayRunner:
 
         future.add_done_callback(_log_rename_failure)
 
+    _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
+
+    def _should_send_telegram_capability_hint(self, source: SessionSource) -> bool:
+        """Rate-limit the BotFather Threads Settings screenshot.
+
+        If a user sends /topic repeatedly while Threads Settings are still
+        off, we shouldn't keep re-uploading the screenshot every time.
+        """
+        if not hasattr(self, "_telegram_capability_hint_ts"):
+            self._telegram_capability_hint_ts = {}
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return True
+        import time as _time
+        now = _time.monotonic()
+        last = self._telegram_capability_hint_ts.get(chat_id, 0.0)
+        if now - last < self._TELEGRAM_CAPABILITY_HINT_COOLDOWN_S:
+            return False
+        self._telegram_capability_hint_ts[chat_id] = now
+        return True
+
+    def _telegram_topic_help_text(self) -> str:
+        return (
+            "/topic — enable multi-session DM mode (one bot, many parallel chats)\n"
+            "\n"
+            "Usage:\n"
+            "  /topic             Enable topic mode, or show status if already on\n"
+            "  /topic help        Show this message\n"
+            "  /topic off         Disable topic mode and clear topic bindings\n"
+            "  /topic <id>        Inside a topic: restore a previous session by ID\n"
+            "\n"
+            "How it works:\n"
+            "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
+            "   Settings are enabled and flips on multi-session mode.\n"
+            "2. Tap All Messages at the top of the bot and send any message.\n"
+            "   Telegram creates a new topic for that message; each topic is\n"
+            "   an independent Hermes session (fresh history, fresh context).\n"
+            "3. The root DM becomes a system lobby — send /topic, /status,\n"
+            "   /help, /usage there. Normal prompts go in a topic.\n"
+            "4. /new inside a topic resets just that topic's session.\n"
+            "5. /topic <id> inside a topic restores an old session into it."
+        )
+
+    def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
+        """Cleanly disable topic mode for a chat via /topic off."""
+        if not self._session_db:
+            return "Session database not available."
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return "Could not determine chat ID."
+        # No-op if never enabled.
+        try:
+            currently_enabled = self._session_db.is_telegram_topic_mode_enabled(
+                chat_id=chat_id,
+                user_id=str(source.user_id or ""),
+            )
+        except Exception:
+            currently_enabled = False
+        if not currently_enabled:
+            return "Multi-session topic mode is not currently enabled for this chat."
+        try:
+            self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
+        except Exception as exc:
+            logger.exception("Failed to disable Telegram topic mode")
+            return f"Failed to disable topic mode: {exc}"
+        # Reset per-chat debounce state so the user doesn't see a stale
+        # cooldown on the next activation.
+        for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
+            store = getattr(self, attr, None)
+            if isinstance(store, dict):
+                store.pop(chat_id, None)
+        return (
+            "Multi-session topic mode is now OFF for this chat.\n\n"
+            "Existing topics in Telegram aren't removed — they'll just stop "
+            "being gated as independent sessions. The root DM works as a "
+            "normal Hermes chat again. Run /topic to re-enable later."
+        )
+
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""
         source = event.source
@@ -9846,7 +9924,28 @@ class GatewayRunner:
         if not self._session_db:
             return "Session database not available."
 
+        # Authorization: /topic activates multi-session mode and mutates
+        # SQLite side tables. Unauthorized senders (not in allowlist) must
+        # not be able to do that. Gateway routes already authorize the
+        # message before reaching here, but defense in depth.
+        auth_fn = getattr(self, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                if not auth_fn(source):
+                    return "You are not authorized to use /topic on this bot."
+            except Exception:
+                logger.debug("Topic auth check failed", exc_info=True)
+
         args = event.get_command_args().strip()
+
+        # /topic help — inline usage without leaving the bot.
+        if args.lower() in {"help", "?", "-h", "--help"}:
+            return self._telegram_topic_help_text()
+
+        # /topic off — clean disable path so users don't have to edit the DB.
+        if args.lower() in {"off", "disable", "stop"}:
+            return self._disable_telegram_topic_mode_for_chat(source)
+
         if args:
             if not source.thread_id:
                 return (
@@ -9859,7 +9958,10 @@ class GatewayRunner:
         capabilities = await self._get_telegram_topic_capabilities(source)
         if capabilities.get("checked"):
             if capabilities.get("has_topics_enabled") is False:
-                await self._send_telegram_topic_setup_image(source)
+                # Debounce the BotFather screenshot: don't re-send on every
+                # /topic while threads are still disabled.
+                if self._should_send_telegram_capability_hint(source):
+                    await self._send_telegram_topic_setup_image(source)
                 return (
                     "Telegram topics are not enabled for this bot yet.\n\n"
                     "How to enable them:\n"
@@ -9870,7 +9972,8 @@ class GatewayRunner:
                     "Then send /topic again."
                 )
             if capabilities.get("allows_users_to_create_topics") is False:
-                await self._send_telegram_topic_setup_image(source)
+                if self._should_send_telegram_capability_hint(source):
+                    await self._send_telegram_topic_setup_image(source)
                 return (
                     "Telegram topics are enabled, but users are not allowed to create topics.\n\n"
                     "Open @BotFather → choose your bot → Bot Settings → Threads Settings, "

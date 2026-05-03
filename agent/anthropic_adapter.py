@@ -1657,8 +1657,11 @@ def convert_messages_to_anthropic(
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
-                if b.get("signature") or b.get("data"):
-                    # Anthropic-signed block — upstream can't validate, strip
+                if b.get("type") == "redacted_thinking" and b.get("data"):
+                    # Anthropic redacted_thinking payload — upstream can't validate, strip
+                    continue
+                if b.get("signature") and b.get("type") != "thinking":
+                    # Signed block that isn't a normal thinking block — strip
                     continue
                 # Unsigned thinking (synthesised from reasoning_content) —
                 # keep it: the upstream needs it for message-history validation.

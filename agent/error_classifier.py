@@ -439,6 +439,19 @@ def classify_api_error(
             should_compress=False,
         )
 
+    # DeepSeek V4 /anthropic: missing thinking blocks on replay.
+    # Error: "The `content[].thinking` in the thinking mode must be passed back to the API."
+    if (
+        status_code == 400
+        and "thinking" in error_msg
+        and "must be passed back" in error_msg
+    ):
+        return _result(
+            FailoverReason.thinking_signature,
+            retryable=True,
+            should_compress=False,
+        )
+
     # Anthropic long-context tier gate (429 "extra usage" + "long context")
     if (
         status_code == 429

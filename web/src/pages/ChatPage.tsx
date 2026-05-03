@@ -260,11 +260,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       fontWeight: "400",
       fontWeightBold: "700",
       macOptionIsMeta: true,
-      // Keep a reasonable terminal history in the browser so users can
-      // scroll back through earlier conversation/tool output. A zero
-      // scrollback makes wheel scrolling feel broken once the visible
-      // viewport fills.
-      scrollback: 5000,
+      // Single-scroll-system experiment:
+      // let the inner Hermes TUI own transcript history/scroll behavior.
+      // The outer browser xterm should act as a display/input bridge only.
+      scrollback: 0,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -366,25 +365,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
-
-    // Force a browser-native-feeling wheel path for the embedded chat.
-    // The default xterm.js / terminal-app interaction can be ambiguous in
-    // our PTY setup: wheel events may be interpreted as terminal mouse
-    // input, ignored by the app, or otherwise fail to move the browser-side
-    // scrollback even when history exists. Intercept the wheel gesture at
-    // the terminal boundary and map it directly onto xterm's own scrollback.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 40));
-      term.scrollLines(delta > 0 ? step : -step);
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -492,7 +472,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
     window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("scroll", scheduleSyncTerminalMetrics);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -602,10 +581,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
-        scheduleSyncTerminalMetrics,
-      );
-      window.visualViewport?.removeEventListener(
-        "scroll",
         scheduleSyncTerminalMetrics,
       );
       ro.disconnect();

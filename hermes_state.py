@@ -2297,6 +2297,39 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def disable_telegram_topic_mode(
+        self,
+        *,
+        chat_id: str,
+        clear_bindings: bool = True,
+    ) -> None:
+        """Disable Telegram DM topic mode for one private chat.
+
+        When ``clear_bindings`` is True (default) the (chat_id, thread_id)
+        bindings for this chat are also cleared so re-enabling later
+        starts from a clean slate. Set to False if the operator wants to
+        preserve bindings for a later re-enable.
+
+        Never creates the topic-mode tables from scratch; if they don't
+        exist there is nothing to disable and the call is a no-op.
+        """
+        def _do(conn):
+            try:
+                conn.execute(
+                    "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
+                    "WHERE chat_id = ?",
+                    (time.time(), str(chat_id)),
+                )
+                if clear_bindings:
+                    conn.execute(
+                        "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ?",
+                        (str(chat_id),),
+                    )
+            except sqlite3.OperationalError:
+                # Tables don't exist yet — nothing to disable.
+                return
+        self._execute_write(_do)
+
     def is_telegram_topic_mode_enabled(self, *, chat_id: str, user_id: str) -> bool:
         """Return whether Telegram DM topic mode is enabled for this chat/user."""
         with self._lock:

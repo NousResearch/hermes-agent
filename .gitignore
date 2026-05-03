@@ -70,3 +70,37 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# TheAuditor SAST artifacts
+.auditor_venv/
+.pf/
+
+# Claude Code project state
+.claude/
+
+# SQLite databases
+*.db
+
+# Temp / scratch files
+diff.txt
+output.txt
+final_report.txt
+briefing.txt
+compass-artifact.md
+property-report.md
+roth_ira_fidelity.md
+find_tasks.py
+fix_tasks.py
+get_tasks.py
+gws_drive.py
+temp.py
+task_envs.txt
+cron_health.py
+gather_data.sh
+send_briefing2.sh
+send_briefing_final.sh
+
+# Pre-patch backups
+*.pre-MOL-*
+*.pre-P*
+*.pre-A*

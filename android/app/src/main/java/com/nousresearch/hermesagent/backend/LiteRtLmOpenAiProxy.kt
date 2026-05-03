@@ -256,17 +256,18 @@ object LiteRtLmOpenAiProxy {
                 else -> "cpu"
             }
             for ((backend, label) in backends) {
-                val candidate = Engine(
-                    EngineConfig(
-                        modelPath = modelPath,
-                        backend = backend,
-                        visionBackend = visionBackend,
-                        audioBackend = if (supportAudio) Backend.CPU() else null,
-                        maxNumImages = if (supportImage) 1 else null,
-                        cacheDir = context.cacheDir.absolutePath,
-                    )
-                )
+                var candidate: Engine? = null
                 try {
+                    candidate = Engine(
+                        EngineConfig(
+                            modelPath = modelPath,
+                            backend = backend,
+                            visionBackend = visionBackend,
+                            audioBackend = if (supportAudio) Backend.CPU() else null,
+                            maxNumImages = if (supportImage) 1 else null,
+                            cacheDir = context.cacheDir.absolutePath,
+                        )
+                    )
                     candidate.initialize()
                     return EngineInitResult(
                         engine = candidate,
@@ -276,7 +277,7 @@ object LiteRtLmOpenAiProxy {
                     )
                 } catch (error: Throwable) {
                     lastError = error
-                    kotlin.runCatching { candidate.close() }
+                    kotlin.runCatching { candidate?.close() }
                 }
             }
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
@@ -291,6 +292,9 @@ object LiteRtLmOpenAiProxy {
         }
 
         private fun hasLoadableOpenClLibrary(): Boolean {
+            if (runCatching { System.loadLibrary("OpenCL") }.isSuccess) {
+                return true
+            }
             return listOf(
                 "/vendor/lib64/libOpenCL.so",
                 "/system/vendor/lib64/libOpenCL.so",

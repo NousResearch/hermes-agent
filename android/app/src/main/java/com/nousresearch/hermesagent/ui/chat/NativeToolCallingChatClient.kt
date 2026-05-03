@@ -105,6 +105,7 @@ class NativeToolCallingChatClient(
         val payload = JSONObject()
             .put("model", modelName)
             .put("stream", false)
+            .put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)
             .put("messages", messages)
         if (includeTools) {
             payload.put("tools", toolSpecs())
@@ -326,6 +327,7 @@ class NativeToolCallingChatClient(
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val MAX_TOOL_ROUNDS = 2
         private const val TOOL_TIMEOUT_SECONDS = 60
+        private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
         private const val MAX_TOOL_RESULT_CHARS = 12_000
     }
 }

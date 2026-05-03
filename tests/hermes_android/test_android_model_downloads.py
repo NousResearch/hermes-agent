@@ -133,11 +133,27 @@ def test_litert_proxy_skips_gpu_when_opencl_is_missing():
 
     assert 'val openClAvailable = hasLoadableOpenClLibrary()' in proxy
     assert 'isTranslatedArm64OnX86(context) || !openClAvailable' in proxy
+    assert 'System.loadLibrary("OpenCL")' in proxy
     assert '"/vendor/lib64/libOpenCL.so"' in proxy
     assert '"/system/vendor/lib64/libOpenCL.so"' in proxy
     assert 'System.load(file.absolutePath)' in proxy
     assert 'visionBackend = visionBackend' in proxy
     assert 'else -> "cpu"' in proxy
+
+
+def test_litert_proxy_requests_optional_opencl_native_library_for_adreno():
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+
+    assert '<uses-native-library' in manifest
+    assert 'android:name="libOpenCL.so"' in manifest
+    assert 'android:required="false"' in manifest
+
+
+def test_native_tool_loop_allows_long_file_generation_prompts():
+    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+
+    assert '.put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)' in native_client
+    assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
 
 
 def test_release_build_recovers_existing_model_files_without_run_as_access():

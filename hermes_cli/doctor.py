@@ -549,7 +549,6 @@ def run_doctor(args):
         from hermes_cli.auth import (
             get_nous_auth_status,
             get_codex_auth_status,
-            get_gemini_oauth_auth_status,
             get_minimax_oauth_auth_status,
         )
 
@@ -567,26 +566,27 @@ def run_doctor(args):
             if codex_status.get("error"):
                 check_info(codex_status["error"])
 
-        gemini_status = get_gemini_oauth_auth_status()
-        if gemini_status.get("logged_in"):
-            email = gemini_status.get("email") or ""
-            project = gemini_status.get("project_id") or ""
-            pieces = []
-            if email:
-                pieces.append(email)
-            if project:
-                pieces.append(f"project={project}")
-            suffix = f" ({', '.join(pieces)})" if pieces else ""
-            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
-        else:
-            check_warn("Google Gemini OAuth", "(not logged in)")
-
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):
             region = minimax_status.get("region", "global")
             check_ok("MiniMax OAuth", f"(logged in, region={region})")
         else:
             check_warn("MiniMax OAuth", "(not logged in)")
+
+        legacy_google_oauth = get_hermes_home() / "auth" / "google_oauth.json"
+        legacy_google_env = any(
+            os.getenv(name, "").strip()
+            for name in (
+                "HERMES_GEMINI_CLIENT_ID",
+                "HERMES_GEMINI_CLIENT_SECRET",
+                "HERMES_GEMINI_PROJECT_ID",
+            )
+        )
+        if legacy_google_oauth.exists() or legacy_google_env:
+            check_warn(
+                "Legacy Google Gemini OAuth settings",
+                "(removed; switch to the gemini provider with GOOGLE_API_KEY or GEMINI_API_KEY)",
+            )
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 

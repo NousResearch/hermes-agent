@@ -61,6 +61,10 @@ class TestGeminiAliases:
     def test_alias_google_ai_studio(self):
         assert resolve_provider("google-ai-studio") == "gemini"
 
+    def test_legacy_google_gemini_cli_alias(self):
+        assert "google-gemini-cli" not in PROVIDER_REGISTRY
+        assert resolve_provider("google-gemini-cli") == "gemini"
+
     def test_models_py_aliases(self):
         assert _PROVIDER_ALIASES.get("google") == "gemini"
         assert _PROVIDER_ALIASES.get("google-gemini") == "gemini"
@@ -119,6 +123,15 @@ class TestGeminiCredentials:
         assert result["provider"] == "gemini"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "google-key"
+        assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
+
+    def test_legacy_google_gemini_cli_runtime_uses_gemini(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "legacy-google-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="google-gemini-cli")
+        assert result["provider"] == "gemini"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "legacy-google-key"
         assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -270,6 +283,13 @@ class TestGeminiAgentInit:
             from agent.auxiliary_client import resolve_provider_client
             resolve_provider_client("gemini")
         mock_openai.assert_called_once()
+
+
+class TestLegacyGeminiRemoval:
+    def test_gquota_command_removed(self):
+        from hermes_cli.commands import COMMANDS
+
+        assert "/gquota" not in COMMANDS
 
 
 # ── models.dev Integration ──

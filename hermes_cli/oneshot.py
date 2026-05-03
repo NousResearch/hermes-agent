@@ -199,6 +199,22 @@ def run_oneshot(
     return 0
 
 
+def _create_session_db_for_oneshot():
+    """Best-effort SessionDB for ``hermes -z`` / oneshot mode.
+
+    Oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the SQLite
+    session store itself. Without this, the ``session_search``/recall tool is
+    advertised but every call returns "Session database not available.".
+    """
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB()
+    except Exception as exc:
+        logging.debug("SQLite session store not available for oneshot mode: %s", exc)
+        return None
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -284,6 +300,8 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    session_db = _create_session_db_for_oneshot()
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -293,6 +311,7 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:

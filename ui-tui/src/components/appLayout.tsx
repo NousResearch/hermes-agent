@@ -237,7 +237,7 @@ const ComposerPane = memo(function ComposerPane({
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
-          completions={composer.completions}
+          completions={isBlocked ? [] : composer.completions}
           onModelSelect={actions.onModelSelect}
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}

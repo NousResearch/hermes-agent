@@ -552,7 +552,21 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
+            # If a title was queued before the row exists, a ValueError means
+            # it is permanently invalid (duplicate); clear it now so the stuck
+            # value is never surfaced by a later /title read.
             current["agent"] = agent
+            _pending = current.get("pending_title")
+            if _pending:
+                _pdb = _get_db()
+                if _pdb:
+                    try:
+                        if _pdb.set_session_title(key, _pending):
+                            current["pending_title"] = None
+                    except ValueError:
+                        current["pending_title"] = None
+                    except Exception:
+                        pass
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -4677,7 +4691,7 @@ def _(rid, params: dict) -> dict:
         items = [
             {
                 "text": c.text,
-                "display": c.display or c.text,
+                "display": to_plain_text(c.display) if c.display else c.text,
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
             for c in completer.get_completions(doc, None)

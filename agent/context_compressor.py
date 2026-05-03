@@ -344,6 +344,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._summary_failure_cooldown_until = 0.0
 
     def update_model(
         self,

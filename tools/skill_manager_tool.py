@@ -786,8 +786,10 @@ def skill_manage(
         # that mutate an existing skill's guidance), drop the record on delete.
         # Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget
-            if action in ("patch", "edit", "write_file", "remove_file"):
+            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            if action == "create":
+                mark_agent_created(name)
+            elif action in ("patch", "edit", "write_file", "remove_file"):
                 bump_patch(name)
             elif action == "delete":
                 forget(name)

@@ -533,8 +533,11 @@ class TestSkillManageDispatcher:
     def test_full_create_via_dispatcher(self, tmp_path):
         with _skill_dir(tmp_path):
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            from tools.skill_usage import load_usage
+            usage = load_usage()
         result = json.loads(raw)
         assert result["success"] is True
+        assert usage["test-skill"]["created_by"] == "agent"
 
     def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
         # Dispatcher must plumb absorbed_into through to _delete_skill so the

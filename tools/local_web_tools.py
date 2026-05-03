@@ -14,7 +14,9 @@ Search backend chain (auto-detected, falls through):
 
 Extraction backend:
     - lynx -dump (must be installed: `apt install lynx` or `brew install lynx`)
-    - Optional Ollama-based summarization (zero API cost) when $OLLAMA_URL is set
+    - Optional local-LLM summarization via any OpenAI-compatible endpoint at
+      $LLM_BASE_URL (Ollama default; works with llama.cpp's llama-server, vLLM,
+      LM Studio — anywhere that exposes /v1/chat/completions). Zero API cost.
 
 Designed to be a drop-in alternative to web_tools.py for users who don't have
 Firecrawl / Parallel / Exa keys. The tools dispatch to the same JSON schema, so
@@ -48,7 +50,16 @@ logger = logging.getLogger(__name__)
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
+# Local LLM endpoint (OpenAI-compatible chat-completions API).
+# Supports any backend that exposes /v1/chat/completions:
+#   - Ollama:        http://localhost:11434       (default)
+#   - llama.cpp:     http://localhost:8080        (set LLM_BASE_URL=http://localhost:8080)
+#   - vLLM:          http://localhost:8000        (set LLM_BASE_URL=http://localhost:8000)
+#   - LM Studio:     http://localhost:1234        (set LLM_BASE_URL=http://localhost:1234)
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", os.getenv("OLLAMA_URL", "http://localhost:11434"))
+LLM_DEFAULT_MODEL = os.getenv("LLM_DEFAULT_MODEL", "qwen3:8b")
+
 LOCAL_WEB_USER_AGENT = os.getenv("LOCAL_WEB_USER_AGENT", "hermes-agent/local-web-tools")
 
 LYNX_TIMEOUT = 25
@@ -266,25 +277,42 @@ def _fetch_lynx(url: str) -> tuple[Optional[str], Optional[str]]:
 # ============================================================
 # Optional Ollama-based summarization (zero-cost LLM processing)
 # ============================================================
-def _summarize_ollama(content: str, model: str = "qwen3:8b",
-                      target_chars: int = 2000) -> Optional[str]:
-    """Summarize content via local Ollama. Returns None if Ollama unreachable or fails."""
+def _is_qwen35_or_36(model_name: str) -> bool:
+    """Detect Qwen3.5/3.6 models by tag. Used to set chat_template_kwargs.enable_thinking=false
+    automatically — Qwen3.5/3.6 default to thinking mode and do NOT honor /no_think the way
+    Qwen3 did."""
+    n = (model_name or "").lower().replace("_", ".")
+    return "qwen3.5" in n or "qwen3.6" in n
+
+
+def _summarize_via_local_llm(content: str, model: Optional[str] = None,
+                              target_chars: int = 2000) -> Optional[str]:
+    """Summarize content via a local OpenAI-compatible LLM endpoint
+    (Ollama, llama.cpp's llama-server, vLLM, LM Studio — auto via LLM_BASE_URL).
+    Returns None if endpoint unreachable or fails.
+
+    For Qwen3.5/3.6 models, automatically passes chat_template_kwargs.enable_thinking=false
+    so the summary doesn't include <think> reasoning blocks."""
+    model = model or LLM_DEFAULT_MODEL
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system",
+             "content": ("Summarize the user's web page text in concise plain prose. "
+                         "Preserve specific names, numbers, dates, and URLs verbatim. "
+                         f"Target length: ~{target_chars} characters. "
+                         "Do not add commentary or reasoning preamble.")},
+            {"role": "user", "content": content[:20000]},  # cap input
+        ],
+        "temperature": 0.2,
+        "max_tokens": int(target_chars / 3),  # approx tokens
+    }
+    if _is_qwen35_or_36(model):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     try:
         r = requests.post(
-            f"{OLLAMA_URL}/v1/chat/completions",
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system",
-                     "content": ("Summarize the user's web page text in concise plain prose. "
-                                 "Preserve specific names, numbers, dates, and URLs verbatim. "
-                                 f"Target length: ~{target_chars} characters. "
-                                 "Do not add commentary or reasoning preamble.")},
-                    {"role": "user", "content": content[:20000]},  # cap input
-                ],
-                "temperature": 0.2,
-                "max_tokens": int(target_chars / 3),  # approx tokens
-            },
+            f"{LLM_BASE_URL}/v1/chat/completions",
+            json=payload,
             timeout=120,
         )
         r.raise_for_status()
@@ -388,8 +416,10 @@ def local_web_extract_tool(
     Fetches via lynx (text-mode browser; install: apt install lynx / brew install lynx).
     Strips boilerplate (nav menus, button labels, cookie notices, etc.) before returning.
 
-    With use_llm_processing=True and Ollama running locally, summarizes pages longer than
-    `min_length` chars using a local LLM (default qwen3:8b). Otherwise returns full cleaned text.
+    With use_llm_processing=True and a local OpenAI-compat LLM endpoint reachable at
+    $LLM_BASE_URL (Ollama / llama.cpp / vLLM / LM Studio), summarizes pages longer
+    than `min_length` chars. Otherwise returns full cleaned text. Default model: qwen3:8b
+    (override via $LLM_DEFAULT_MODEL or the `model` argument).
 
     Args:
         urls (List[str]): URLs to extract
@@ -430,7 +460,7 @@ def local_web_extract_tool(
         summarized = False
 
         if use_llm_processing and len(text) >= min_length:
-            summary = _summarize_ollama(text, model=summarizer_model,
+            summary = _summarize_via_local_llm(text, model=summarizer_model,
                                          target_chars=2000)
             if summary:
                 content = summary

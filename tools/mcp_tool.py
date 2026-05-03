@@ -1674,14 +1674,20 @@ _SESSION_EXPIRED_MARKERS: tuple = (
 _SESSION_EXPIRED_RECONNECT_TIMEOUT = 15
 
 
-def _stale_transport_error(server_name: str, op_description: str) -> str:
-    """Return a structured operator-facing stale MCP transport error."""
+def _stale_transport_error(server_name: str) -> str:
+    """Return a structured operator-facing stale MCP transport error.
+
+    The op_description (tools/call name, resources/list, …) is omitted
+    from the operator-visible message because the auth-error sibling
+    keeps its message scoped to the server, and the failing op is
+    already captured in the surrounding log lines.
+    """
     return json.dumps({
         "error": _sanitize_error(
             f"MCP server '{server_name}' transport session was terminated "
-            f"and could not be re-established for {op_description}. "
-            "This is a stale Streamable HTTP session, not a server-down "
-            f"condition. Run `hermes mcp test {server_name}` if it persists."
+            "and could not be re-established. This is a stale Streamable "
+            "HTTP session, not a server-down condition. "
+            f"Run `hermes mcp test {server_name}` if it persists."
         ),
         "stale_transport": True,
         "server": server_name,
@@ -1740,9 +1746,11 @@ def _handle_session_expired_and_retry(
     Returns:
         A JSON string if reconnect + retry was attempted and produced
         a response, a structured stale-transport error if recovery was
-        attempted but failed, or ``None`` to fall through to the caller's
-        generic error path before any reconnect attempt (not a
-        session-expired error, no server record, or no running loop).
+        attempted but failed (also bumps the circuit breaker so the
+        model backs off a permanently broken transport), or ``None``
+        to fall through to the caller's generic error path before any
+        reconnect attempt (not a session-expired error, no server
+        record, or no running loop).
     """
     if not _is_session_expired_error(exc):
         return None
@@ -1790,29 +1798,32 @@ def _handle_session_expired_and_retry(
             server_name,
             _SESSION_EXPIRED_RECONNECT_TIMEOUT,
         )
-        return _stale_transport_error(server_name, op_description)
+        _bump_server_error(server_name)
+        return _stale_transport_error(server_name)
 
     try:
         result = retry_call()
         try:
             parsed = json.loads(result)
             if "error" not in parsed:
-                _server_error_counts[server_name] = 0
+                _reset_server_error(server_name)
                 return result
             logger.warning(
                 "MCP %s/%s retry after session reconnect returned error: %s",
                 server_name, op_description, parsed.get("error"),
             )
-            return _stale_transport_error(server_name, op_description)
+            _bump_server_error(server_name)
+            return _stale_transport_error(server_name)
         except (json.JSONDecodeError, TypeError):
-            _server_error_counts[server_name] = 0
+            _reset_server_error(server_name)
             return result
     except Exception as retry_exc:
         logger.warning(
             "MCP %s/%s retry after session reconnect failed: %s",
             server_name, op_description, retry_exc,
         )
-    return _stale_transport_error(server_name, op_description)
+    _bump_server_error(server_name)
+    return _stale_transport_error(server_name)
 
 
 # Dedicated event loop running in a background daemon thread.

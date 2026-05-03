@@ -116,6 +116,14 @@ def _install_stub_server(name: str = "wpcom"):
     ``session`` only after the transport has been rebuilt. The stub mirrors
     that lifecycle: signalling ``_reconnect_event`` records the signal and
     swaps in a new session object, so tests catch retry-before-rebuild bugs.
+
+    Tests must override session methods via direct attribute assignment
+    (``server.session.call_tool = my_async``) — the ``__dict__`` check below
+    only copies attributes that landed in the instance dict, which is how
+    ``=`` works but not how MagicMock auto-attribute access (``getattr``)
+    works. This filter is what keeps the swap behaviour-equivalent across
+    initial vs reconnected sessions; sidestepping it (e.g. via ``spec=``
+    auto-attrs) will silently drop the override on the rebuilt session.
     """
     from tools import mcp_tool
 
@@ -337,7 +345,7 @@ def test_session_expired_handler_returns_none_without_server_record():
     assert out is None
 
 
-def test_session_expired_handler_returns_none_when_retry_also_fails(
+def test_session_expired_handler_returns_structured_error_when_retry_raises(
     monkeypatch, tmp_path
 ):
     """If the retry after reconnect also raises, return a structured
@@ -349,6 +357,7 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
 
     server, _ = _install_stub_server("srv-retry-fail")
     mcp_tool._servers["srv-retry-fail"] = server
+    mcp_tool._server_error_counts.pop("srv-retry-fail", None)
 
     def _retry_raises():
         raise RuntimeError("retry blew up too")
@@ -363,6 +372,93 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
         _assert_stale_transport_payload(out, "srv-retry-fail")
     finally:
         mcp_tool._servers.pop("srv-retry-fail", None)
+        mcp_tool._server_error_counts.pop("srv-retry-fail", None)
+
+
+@pytest.mark.parametrize("mode", ["timeout", "raise", "error-json"])
+def test_session_expired_handler_bumps_breaker_when_recovery_fails(
+    monkeypatch, tmp_path, mode
+):
+    """A failed stale-session recovery must trip the circuit-breaker
+    counter so the model stops hammering a permanently broken transport.
+
+    Before this regression guard, the structured stale-transport return
+    bypassed the caller's ``_bump_server_error()`` (which used to run on
+    the fall-through path), letting the model retry the tool indefinitely.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server_name = f"srv-bump-{mode}"
+    server, _ = _install_stub_server(server_name)
+    mcp_tool._servers[server_name] = server
+    mcp_tool._server_error_counts.pop(server_name, None)
+
+    if mode == "timeout":
+        # Force the readiness wait to time out by keeping ``_ready`` clear.
+        server._ready.is_set = MagicMock(return_value=False)
+        monkeypatch.setattr(mcp_tool, "_SESSION_EXPIRED_RECONNECT_TIMEOUT", 0.01)
+        retry_call = lambda: '{"ok": true}'  # noqa: E731 — never invoked
+    elif mode == "raise":
+        def retry_call():
+            raise RuntimeError("retry blew up too")
+    else:  # error-json
+        retry_call = lambda: '{"error": "still stale"}'  # noqa: E731
+
+    try:
+        out = _handle_session_expired_and_retry(
+            server_name,
+            RuntimeError("Session terminated"),
+            retry_call,
+            "tools/call",
+        )
+        _assert_stale_transport_payload(out, server_name)
+        assert mcp_tool._server_error_counts.get(server_name, 0) == 1, (
+            f"{mode}: expected breaker count to be bumped to 1, "
+            f"got {mcp_tool._server_error_counts.get(server_name, 0)}"
+        )
+    finally:
+        mcp_tool._servers.pop(server_name, None)
+        mcp_tool._server_error_counts.pop(server_name, None)
+
+
+def test_session_expired_handler_resets_breaker_on_retry_success(
+    monkeypatch, tmp_path
+):
+    """A successful stale-session retry must fully close the breaker —
+    both the count and the opened-at timestamp — so prior failures do
+    not leave behind a half-open state that misfires next time."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, _ = _install_stub_server("srv-reset")
+    mcp_tool._servers["srv-reset"] = server
+    # Pre-existing failure state, as if prior calls had already bumped.
+    mcp_tool._server_error_counts["srv-reset"] = 2
+    mcp_tool._server_breaker_opened_at["srv-reset"] = 12345.0
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-reset",
+            RuntimeError("Session terminated"),
+            lambda: '{"ok": true}',
+            "tools/call",
+        )
+        assert json.loads(out) == {"ok": True}
+        assert mcp_tool._server_error_counts.get("srv-reset", 0) == 0
+        assert "srv-reset" not in mcp_tool._server_breaker_opened_at, (
+            "Successful recovery must clear the opened-at timestamp; "
+            "leaving it set means the next breaker trip would compute "
+            "cooldown against a stale (long-past) opened-at."
+        )
+    finally:
+        mcp_tool._servers.pop("srv-reset", None)
+        mcp_tool._server_error_counts.pop("srv-reset", None)
+        mcp_tool._server_breaker_opened_at.pop("srv-reset", None)
 
 
 def test_session_expired_handler_returns_structured_error_when_reconnect_times_out(

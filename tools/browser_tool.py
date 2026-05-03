@@ -2757,17 +2757,40 @@ def _chromium_search_roots() -> List[str]:
 def _chromium_installed() -> bool:
     """Return True when a usable Chromium (or headless-shell) build is on disk.
 
+    Checks, in order:
+
+    1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
+       agent-browser at a pre-installed Chrome/Chromium.
+    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium-browser``,
+       ``chrome``).
+    3. Playwright's browser cache (current logic) — directories containing
+       ``chromium-*`` or ``chromium_headless_shell-*``.
+
     agent-browser (0.26+) downloads Playwright's chromium / headless-shell
-    builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without them.
-    When the CLI is present but no browser build is, the first browser tool
-    call hangs for the full command timeout (often ~30s each) before
-    surfacing a useless error. Guarding the tool behind this check prevents
-    advertising a capability that will fail at runtime.
+    builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without at least
+    one of the three above being present.  Without a browser binary the CLI
+    hangs on first use until the command timeout fires (often ~30s).  Guarding
+    the tool behind this check prevents advertising a capability that will
+    fail at runtime.
     """
     global _cached_chromium_installed
     if _cached_chromium_installed is not None:
         return _cached_chromium_installed
 
+    # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
+    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if ab_path:
+        if os.path.isfile(ab_path) or shutil.which(ab_path):
+            _cached_chromium_installed = True
+            return True
+
+    # 2. System Chrome/Chromium in PATH (common names)
+    system_chrome = shutil.which("google-chrome") or shutil.which("chromium-browser") or shutil.which("chrome")
+    if system_chrome:
+        _cached_chromium_installed = True
+        return True
+
+    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
     for root in _chromium_search_roots():
         if not root or not os.path.isdir(root):
             continue

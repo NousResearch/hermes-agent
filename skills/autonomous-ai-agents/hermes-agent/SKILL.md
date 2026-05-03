@@ -839,6 +839,7 @@ adb shell am instrument -w -r -e class com.nousresearch.hermesagent.DeepAppUiVis
 - Use Tasker terminology when comparing Android automation capabilities, and pair it with Shizuku for privileged shell/system actions. Cover Tasker-style profiles, tasks, variables, scenes, plugins, widgets, and app triggers honestly against the Hermes APK's current native Android tools.
 - If a phone shows `Unable to open zip archive` for a file like `gemma-4-e2b-it-web.task`, inspect the first bytes with `adb shell od -An -tx1 -N16 <path>`. A header containing `TFL3` means it is a web/browser Task FlatBuffer, not an Android LiteRT-LM bundle; remove it and use the `.litertlm` artifact such as `gemma-4-E2B-it.litertlm`.
 - A release-installed phone may reject local debug APKs with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; publish a signed patch release instead of uninstalling the user's existing app data.
+- If a signed release APK fails on a physical arm64 phone with `INSTALL_FAILED_NO_MATCHING_ABIS`, inspect the APK `lib/` entries and the phone's `ro.product.cpu.abilist`. The published `universal.apk` must come from `app-universal-release.apk`; do not rename the newest split APK such as `app-x86_64-release.apk` to `universal`.
 
 ### Debugging Notes
 

@@ -8190,34 +8190,27 @@ class AIAgent:
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.
-        Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
-        MiniMax keeps dots (e.g. MiniMax-M2.7).
-        OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
-        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1).
-        AWS Bedrock uses dotted inference-profile IDs
-        (e.g. ``global.anthropic.claude-opus-4-7``,
-        ``us.anthropic.claude-sonnet-4-5-20250929-v1:0``) and rejects
-        the hyphenated form with
-        ``HTTP 400 The provided model identifier is invalid``.
-        Regression for #11976; mirrors the opencode-go fix for #5211
-        (commit f77be22c), which extended this same allowlist."""
-        if (getattr(self, "provider", "") or "").lower() in {
-            "alibaba", "minimax", "minimax-cn",
-            "opencode-go", "opencode-zen",
-            "zai", "bedrock",
-        }:
-            return True
+
+        Only the native Anthropic API (provider="anthropic" or base_url pointing at
+        api.anthropic.com) needs dots converted to hyphens — OpenRouter-style aliases
+        like ``claude-sonnet-4.6`` must become ``claude-sonnet-4-6`` for the official
+        SDK.  Every other provider (custom proxies, MiniMax, ZAI, Bedrock, etc.)
+        receives the model name exactly as configured by the user.
+
+        This reverses the earlier allowlist approach: instead of enumerating every
+        third-party provider that needs preservation, we default to *preserving* and
+        only normalize for the one provider that explicitly requires it.
+        """
+        provider = (getattr(self, "provider", "") or "").lower()
         base = (getattr(self, "base_url", "") or "").lower()
-        return (
-            "dashscope" in base
-            or "aliyuncs" in base
-            or "minimax" in base
-            or "opencode.ai/zen/" in base
-            or "bigmodel.cn" in base
-            # AWS Bedrock runtime endpoints — defense-in-depth when
-            # ``provider`` is unset but ``base_url`` still names Bedrock.
-            or "bedrock-runtime." in base
-        )
+
+        # Native Anthropic is the only case that needs dot→hyphen normalization.
+        if provider == "anthropic" or base_url_host_matches(base, "api.anthropic.com"):
+            return False
+
+        # Everything else (custom, minimax, zai, bedrock, dashscope, etc.) preserves
+        # the user's model name verbatim.
+        return True
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""

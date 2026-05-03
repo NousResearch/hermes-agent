@@ -276,6 +276,18 @@ class TestMinimaxPreserveDots:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
+    def test_custom_provider_with_proxy_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://coding.onlyservice.io/")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_custom_provider_with_anthropic_does_not_preserve_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://api.anthropic.com")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is False
+
     def test_opencode_zen_provider_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="opencode-zen", base_url="")

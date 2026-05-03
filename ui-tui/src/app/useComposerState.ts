@@ -16,11 +16,11 @@ import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
-import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
 
 import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
+import { $terminalEnvironment } from './terminalEnvironmentStore.js'
 import { getUiState } from './uiStore.js'
 
 const PASTE_SNIP_MAX_COUNT = 32
@@ -108,6 +108,7 @@ export function useComposerState({
   const [inputBuf, setInputBuf] = useState<string[]>([])
   const [pasteSnips, setPasteSnips] = useState<PasteSnippet[]>([])
   const isBlocked = useStore($isBlocked)
+  const { capabilities } = useStore($terminalEnvironment)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
 
   const {
@@ -230,23 +231,17 @@ export function useComposerState({
       value
     }: PasteEvent): MaybePromise<null | { cursor: number; value: string }> => {
       if (hotkey) {
-        const preferOsc52 = isRemoteShellSession(process.env)
-
-        const readPreferredText = preferOsc52
-          ? readOsc52Clipboard(querier).then(async osc52Text => {
-              if (isUsableClipboardText(osc52Text)) {
-                return osc52Text
-              }
-
+        const readPreferredText = (() => {
+          switch (capabilities.copy.readPath) {
+            case 'native':
               return readClipboardText()
-            })
-          : readClipboardText().then(async clipText => {
-              if (isUsableClipboardText(clipText)) {
-                return clipText
-              }
-
+            case 'osc52-query':
               return readOsc52Clipboard(querier)
-            })
+            case 'none':
+            default:
+              return Promise.resolve<null | string>(null)
+          }
+        })()
 
         return readPreferredText.then(async preferredText => {
           if (isUsableClipboardText(preferredText)) {
@@ -261,7 +256,7 @@ export function useComposerState({
 
       return handleResolvedPaste({ bracketed: !!bracketed, cursor, text, value })
     },
-    [handleResolvedPaste, onClipboardPaste, querier]
+    [capabilities.copy.readPath, handleResolvedPaste, onClipboardPaste, querier]
   )
 
   const openEditor = useCallback(async () => {

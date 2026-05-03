@@ -10,6 +10,9 @@ import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
+import { $terminalEnvironment } from './app/terminalEnvironmentStore.js'
+
+void $terminalEnvironment
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')

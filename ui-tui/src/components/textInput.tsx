@@ -1,9 +1,12 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
+import { $terminalEnvironment } from '../app/terminalEnvironmentStore.js'
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { writeOsc52Clipboard } from '../lib/osc52.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
@@ -13,6 +16,7 @@ import {
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
+import { classifyKeyEvent } from '../lib/terminalShortcuts.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -254,6 +258,7 @@ export function TextInput({
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
+  const { capabilities } = useStore($terminalEnvironment)
   const { stdout } = useStdout()
 
   const curRef = useRef(cur)
@@ -705,23 +710,21 @@ export function TextInput({
 
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
-      const eventRaw = event.keypress.raw
+      const shortcut = classifyKeyEvent({
+        input: inp,
+        raw: event.keypress.raw ?? '',
+        key: k,
+        caps: capabilities,
+        state: { hasSelection: !!selected, busy: false }
+      })
 
-      // Configured voice shortcut wins over composer-level defaults like
-      // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
-      // actually get voice toggled instead of a paste (Copilot round-7
-      // follow-up on #19835). The pass-through predicate is a no-op for
-      // ordinary typing and plain paste when voice is unbound to 'v'.
+      // Voice shortcut wins over paste/copy so users who bind voice to
+      // ctrl+v / alt+v / cmd+v get voice toggled instead of a paste.
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
         return
       }
 
-      if (
-        eventRaw === '\x1bv' ||
-        eventRaw === '\x1bV' ||
-        eventRaw === '\x16' ||
-        (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
-      ) {
+      if (shortcut.type === 'paste' && shortcut.source === 'hotkey') {
         if (cbPaste.current) {
           return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
         }
@@ -737,15 +740,23 @@ export function TextInput({
         return
       }
 
-      if (isMac && isActionMod(k) && inp.toLowerCase() === 'c') {
+      if (shortcut.type === 'copy') {
         const range = selRange()
 
         if (range) {
           const text = vRef.current.slice(range.start, range.end)
 
-          void writeClipboardText(text)
+          if (capabilities.copy.writePath === 'osc52') {
+            writeOsc52Clipboard(text)
+          } else if (capabilities.copy.writePath === 'native') {
+            void writeClipboardText(text)
+          }
         }
 
+        return
+      }
+
+      if (shortcut.type === 'interrupt' || (shortcut.type === 'noop' && inp.length > 0 && (k.ctrl || k.meta || k.super))) {
         return
       }
 

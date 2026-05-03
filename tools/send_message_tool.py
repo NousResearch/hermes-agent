@@ -588,19 +588,39 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQ: media files via msg_type=7 ---
+    if platform == Platform.QQBOT and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot; "
                 f"target {platform.value} had only media attachments"
-            )
+            ),
+            "warning": (
+                f"MEDIA attachments were omitted for {platform.value}; "
+                "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot"
+            ),
         }
     warning = None
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot"
         )
 
     last_result = None
@@ -1648,12 +1668,19 @@ def _check_send_message():
         return False
 
 
-async def _send_qqbot(pconfig, chat_id, message):
+async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
     and post a message. Works for guild channels without requiring
     a running gateway adapter.
+
+    Args:
+        pconfig: Platform config with app_id / token (client_secret).
+        chat_id: Channel ID (for channel messages) or user OpenID (for DMs).
+        message: Text message content.
+        media_files: Optional list of file paths to upload and send as
+            media attachments (msg_type=7).
     """
     try:
         import httpx
@@ -1668,7 +1695,7 @@ async def _send_qqbot(pconfig, chat_id, message):
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             # Step 1: Get access token
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
@@ -1681,11 +1708,66 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            # Step 2: Send message via REST
-            headers = {
+            headers_base = {
                 "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
+                "X-Union-Appid": str(appid),
             }
+
+            # Step 2a: Handle media files (msg_type=7)
+            if media_files:
+                import mimetypes
+                for file_path in media_files:
+                    if not os.path.isfile(file_path):
+                        logger.warning("[QQBot] Skipping non-existent file: %s", file_path)
+                        continue
+
+                    file_name = os.path.basename(file_path)
+                    content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+                    with open(file_path, "rb") as f:
+                        file_data = f.read()
+
+                    # Determine file_type: 1=image, 2=video, 3=audio, 4=file
+                    if content_type.startswith("image/"):
+                        file_type = 1
+                    elif content_type.startswith("video/"):
+                        file_type = 2
+                    elif content_type.startswith("audio/"):
+                        file_type = 3
+                    else:
+                        file_type = 4
+
+                    # Check if this is a user DM (OpenID format: 32 hex chars)
+                    is_user_dm = len(chat_id) == 32 and all(c in "0123456789abcdefABCDEF" for c in chat_id)
+                    if is_user_dm:
+                        upload_url = "https://api.sgroup.qq.com/v2/users/{openid}/messages"
+                        upload_url = upload_url.format(openid=chat_id)
+                    else:
+                        upload_url = f"https://api.sgroup.qq.com/v2/channels/{chat_id}/messages"
+
+                    files_payload = {
+                        "file": (file_name, file_data, content_type),
+                    }
+                    media_payload = {
+                        "msg_type": 7,
+                        "content": f'{{"file_name":"{file_name}"}}',
+                        "file_type": file_type,
+                    }
+                    media_headers = dict(headers_base)
+                    media_headers["Content-Type"] = "multipart/form-data"
+
+                    resp = await client.post(upload_url, data=media_payload, files=files_payload, headers=media_headers)
+                    if resp.status_code not in (200, 201):
+                        return _error(f"QQBot media upload failed: {resp.status_code} {resp.text}")
+
+                # If there's also text content, send it as a follow-up text message
+                if message:
+                    pass  # fall through to text send below
+                else:
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id}
+
+            # Step 2b: Send text message (msg_type=0) via channel endpoint
+            headers = dict(headers_base)
+            headers["Content-Type"] = "application/json"
             url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
             payload = {"content": message[:4000], "msg_type": 0}
 

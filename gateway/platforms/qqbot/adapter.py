@@ -243,14 +243,10 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
-            # faster behind proxies like Cloudflare Warp (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
-                limits=platform_httpx_limits(),
             )
 
             # 1. Get access token
@@ -1202,7 +1198,7 @@ class QQAdapter(BasePlatformAdapter):
             elif ct.startswith("image/"):
                 # Image: download and cache locally.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path and os.path.isfile(cached_path):
                         image_urls.append(cached_path)
                         image_media_types.append(ct or "image/jpeg")
@@ -1217,7 +1213,7 @@ class QQAdapter(BasePlatformAdapter):
             else:
                 # Other attachments (video, file, etc.): record as text.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path:
                         other_attachments.append(f"[Attachment: {filename or ct}]")
                 except Exception as exc:
@@ -1231,8 +1227,17 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
-        """Download a URL and cache it locally."""
+    async def _download_and_cache(
+        self, url: str, content_type: str, filename: str = ""
+    ) -> Optional[str]:
+        """Download a URL and cache it locally.
+
+        Args:
+            url: The URL to download.
+            content_type: MIME type hint for the content.
+            filename: Original filename from the message (used for cache naming
+                when available, falling back to URL basename for non-image types).
+        """
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
@@ -1263,8 +1268,11 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = Path(urlparse(url).path).name or "qq_attachment"
-            return cache_document_from_bytes(data, filename)
+            # Use the original filename from the QQ message content when
+            # available; fall back to the URL basename to preserve user-provided
+            # names (e.g. "report.pdf") instead of generic UUID-based names.
+            cache_name = filename or Path(urlparse(url).path).name or "qq_attachment"
+            return cache_document_from_bytes(data, cache_name)
 
     @staticmethod
     def _is_voice_content_type(content_type: str, filename: str) -> bool:

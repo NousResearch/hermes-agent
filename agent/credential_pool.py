@@ -305,14 +305,29 @@ def _iter_custom_providers(config: Optional[dict] = None):
         yield _normalize_custom_pool_name(name), entry
 
 
-def get_custom_provider_pool_key(base_url: str) -> Optional[str]:
+def get_custom_provider_pool_key(base_url: str, provider_name: Optional[str] = None) -> Optional[str]:
     """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching base_url.
+
+    When provider_name is given, prefer matching by name first (solving the case where
+    multiple custom providers share the same base_url but have different API keys).
+    Falls back to base_url matching when no name match is found.
 
     Returns None if no match is found.
     """
     if not base_url:
         return None
     normalized_url = base_url.strip().rstrip("/")
+
+    # When a provider name is given, try to match by name first.
+    # This fixes the P1 bug where two custom providers sharing the same
+    # base_url always resolve to the first one's credentials.
+    if provider_name:
+        normalized_name = _normalize_custom_pool_name(provider_name)
+        for norm_name, entry in _iter_custom_providers():
+            if norm_name == normalized_name:
+                return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+
+    # Fall back to base_url matching (original behavior)
     for norm_name, entry in _iter_custom_providers():
         entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
         if entry_url and entry_url == normalized_url:

@@ -623,6 +623,7 @@ AUTHOR_MAP = {
     "cine.dreamer.one@gmail.com": "LeonSGP43",
     "zyprothh@gmail.com": "Zyproth",
     "amitgaur@gmail.com": "amitgaur",
+    "albuquerque.abner@gmail.com": "mrbob-git",
     "leozeli@qq.com": "leozeli",
     "linlehao@cuhk.edu.cn": "LehaoLin",
     "liutong@isacas.ac.cn": "I3eg1nner",

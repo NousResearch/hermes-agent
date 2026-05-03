@@ -234,6 +234,38 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["category"] == "mlops"
 
+    def test_source_marks_bundled_when_in_manifest(self, tmp_path):
+        """Skills listed in .bundled_manifest are tagged source='bundled'."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "from-bundle")
+            _make_skill(tmp_path, "user-authored")
+            (tmp_path / ".bundled_manifest").write_text(
+                "from-bundle:abc123\n",
+                encoding="utf-8",
+            )
+            skills = {s["name"]: s for s in _find_all_skills()}
+        assert skills["from-bundle"]["source"] == "bundled"
+        assert skills["user-authored"]["source"] == "custom"
+
+    def test_source_defaults_to_custom_without_manifest(self, tmp_path):
+        """When the manifest is missing, every skill is source='custom'."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "lone")
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["source"] == "custom"
+
+    def test_source_handles_v1_manifest_format(self, tmp_path):
+        """Pre-v2 manifest entries (no hash) still mark skills as bundled."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "legacy")
+            (tmp_path / ".bundled_manifest").write_text(
+                "legacy\n",  # v1 format: name only, no colon
+                encoding="utf-8",
+            )
+            skills = _find_all_skills()
+        assert skills[0]["source"] == "bundled"
+
     def test_description_from_body_when_missing(self, tmp_path):
         """If no description in frontmatter, first non-header line is used."""
         skill_dir = tmp_path / "no-desc"

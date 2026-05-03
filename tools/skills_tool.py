@@ -546,6 +546,36 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
+def _read_bundled_skill_names() -> Set[str]:
+    """Return the set of skill names tracked in the bundled manifest.
+
+    The manifest at ``~/.hermes/skills/.bundled_manifest`` is written by
+    ``tools/skills_sync.py`` and lists every skill that originated from
+    the framework's bundled ``skills/`` directory. Names listed here are
+    surfaced as ``source: "bundled"`` in :func:`_find_all_skills`; anything
+    else is ``source: "custom"``.
+
+    Format: one entry per line, either ``name`` (v1) or ``name:hash`` (v2).
+    Returns an empty set if the manifest is missing or unreadable so that
+    older agents (no sync ever run) gracefully degrade to all-custom.
+    """
+    manifest_path = SKILLS_DIR / ".bundled_manifest"
+    if not manifest_path.exists():
+        return set()
+    try:
+        names: Set[str] = set()
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            name = line.split(":", 1)[0].strip()
+            if name:
+                names.add(name)
+        return names
+    except (OSError, IOError):
+        return set()
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
@@ -555,7 +585,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, description, category, source).
+        ``source`` is ``"bundled"`` for skills present in the framework's
+        bundled manifest (i.e. shipped with the upstream Hermes Agent) and
+        ``"custom"`` for everything else (user-authored or hub-installed).
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
@@ -564,6 +597,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
+    bundled_names = _read_bundled_skill_names()
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
@@ -609,6 +643,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "source": "bundled" if name in bundled_names else "custom",
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

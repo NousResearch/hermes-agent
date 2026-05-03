@@ -109,13 +109,39 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    On Linux, reads /proc/<pid>/stat (field 22, clock ticks since boot).
+    On macOS and other POSIX platforms, falls back to ``ps -p <pid> -o lstart=``
+    and converts the human-readable date to a Unix timestamp. Returns None when
+    the time cannot be determined (Windows, ps unavailable, process gone).
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+
+    # macOS / non-Linux POSIX: use ps to get the process start time.
+    if sys.platform != "win32":
+        try:
+            from email.utils import parsedate
+            import time as _time
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "lstart="],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0:
+                lstart = result.stdout.strip()
+                if lstart:
+                    parsed = parsedate(lstart)
+                    if parsed:
+                        return int(_time.mktime(parsed))
+        except Exception:
+            pass
+
+    return None
 
 
 def get_process_start_time(pid: int) -> Optional[int]:
@@ -124,16 +150,33 @@ def get_process_start_time(pid: int) -> Optional[int]:
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Return the process command line as a space-separated string."""
+    """Return the process command line as a space-separated string.
+
+    On Linux, reads /proc/<pid>/cmdline. On macOS / other POSIX platforms,
+    falls back to ``ps -p <pid> -o command=``. Returns None on Windows or when
+    the command line cannot be read.
+    """
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
+        if raw:
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
+        pass
 
-    if not raw:
-        return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+    # macOS / non-Linux POSIX: use ps to get the command line.
+    if sys.platform != "win32":
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip() or None
+        except Exception:
+            pass
+
+    return None
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
@@ -530,6 +573,19 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                                         stale = True
                                     break
                     except (OSError, PermissionError):
+                        pass
+                # Fallback for platforms where start_time is unavailable (e.g.
+                # macOS lock files written before this fix, or systems without ps).
+                # If the live PID's cmdline doesn't look like a gateway, the PID
+                # was reused by an unrelated process — the lock is stale.
+                if not stale and (
+                    existing.get("start_time") is None or current_start is None
+                ):
+                    try:
+                        live_cmdline = _read_process_cmdline(existing_pid)
+                        if live_cmdline is not None and not _looks_like_gateway_process(existing_pid):
+                            stale = True
+                    except Exception:
                         pass
         if stale:
             try:

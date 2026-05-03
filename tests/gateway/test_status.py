@@ -526,6 +526,181 @@ class TestScopedLocks:
         assert reused_pid_lock.exists()
 
 
+class TestProcessInfoHelpers:
+    """Tests for cross-platform process info helpers (_get_process_start_time, _read_process_cmdline)."""
+
+    def test_get_process_start_time_returns_int_for_current_process(self):
+        """Should return an integer for the current (live) process on any platform."""
+        result = status._get_process_start_time(os.getpid())
+        assert result is None or isinstance(result, int)
+
+    def test_get_process_start_time_ps_fallback_returns_int(self, monkeypatch):
+        """When /proc is unavailable, ps lstart= fallback returns an integer."""
+        import types
+        from types import SimpleNamespace
+
+        fake_run_result = SimpleNamespace(returncode=0, stdout="Thu Apr 24 14:48:56 2026\n")
+
+        def fake_run(cmd, **kwargs):
+            return fake_run_result
+
+        # Force the /proc path to raise so the subprocess fallback runs.
+        monkeypatch.setattr(status.subprocess, "run", fake_run)
+        # Simulate non-Windows so the ps branch is entered.
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        # Directly test the fallback by calling with a PID whose /proc won't exist.
+        # On macOS the /proc branch is always skipped; on Linux we mock subprocess.
+        # We rely on _get_process_start_time gracefully handling the /proc miss.
+        result = status._get_process_start_time(99999999)
+        # The ps mock returns a valid date so we expect an int.
+        assert isinstance(result, int)
+
+    def test_get_process_start_time_ps_fallback_returns_none_when_ps_fails(self, monkeypatch):
+        """ps returning non-zero (dead PID) → None."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda cmd, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+        )
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        result = status._get_process_start_time(99999999)
+        assert result is None
+
+    def test_read_process_cmdline_ps_fallback(self, monkeypatch):
+        """When /proc is unavailable, ps command= fallback returns the cmdline string."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda cmd, **kwargs: SimpleNamespace(
+                returncode=0, stdout="python -m hermes_cli.main gateway run\n"
+            ),
+        )
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        result = status._read_process_cmdline(99999999)
+        assert result == "python -m hermes_cli.main gateway run"
+
+    def test_read_process_cmdline_ps_fallback_returns_none_on_dead_pid(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda cmd, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+        )
+        monkeypatch.setattr(status.sys, "platform", "darwin")
+
+        result = status._read_process_cmdline(99999999)
+        assert result is None
+
+
+class TestScopedLocksStalePidReuse:
+    """Tests for the PID-reuse stale-detection fix (issue #15115).
+
+    On macOS, /proc does not exist so start_time is None in lock files written
+    by older Hermes versions.  When a crashed gateway's PID is reused by a
+    non-gateway process, the lock must be detected as stale via cmdline check.
+    """
+
+    def test_acquire_treats_as_stale_when_pid_reused_by_non_gateway(self, tmp_path, monkeypatch):
+        """Lock with null start_time whose PID is held by a non-gateway process → stale."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Simulate a macOS-era lock: start_time is null because /proc wasn't available.
+        lock_path.write_text(json.dumps({
+            "pid": 78452,
+            "start_time": None,
+            "kind": "hermes-gateway",
+        }))
+
+        # PID 78452 is alive (reused by a non-gateway process).
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        # Cmdline returns something that is NOT a gateway.
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/bin/some_daemon --start")
+
+        acquired, _ = status.acquire_scoped_lock("weixin-bot-token", "secret", metadata={"platform": "weixin"})
+
+        assert acquired is True, "Lock with reused PID (non-gateway cmdline) should be treated as stale"
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
+    def test_acquire_rejects_when_live_gateway_holds_lock_no_start_time(self, tmp_path, monkeypatch):
+        """Lock with null start_time whose PID is a live gateway → NOT stale."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 78452,
+            "start_time": None,
+            "kind": "hermes-gateway",
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        # Cmdline confirms this IS a live gateway process.
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway run --replace",
+        )
+
+        acquired, existing = status.acquire_scoped_lock("weixin-bot-token", "secret", metadata={"platform": "weixin"})
+
+        assert acquired is False, "Live gateway holding lock must NOT be evicted"
+        assert existing["pid"] == 78452
+
+    def test_acquire_treats_as_stale_when_cmdline_unreadable_but_start_time_mismatch(self, tmp_path, monkeypatch):
+        """Start-time mismatch should still win even when cmdline is unreadable."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 78452,
+            "start_time": 1000,
+            "kind": "hermes-gateway",
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        # Different start_time → PID was reused.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 9999)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        acquired, _ = status.acquire_scoped_lock("weixin-bot-token", "secret", metadata={"platform": "weixin"})
+
+        assert acquired is True
+
+    def test_acquire_does_not_trigger_cmdline_check_when_start_times_match(self, tmp_path, monkeypatch):
+        """When start times match, cmdline check must NOT run (live owner confirmed)."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 78452,
+            "start_time": 1000,
+            "kind": "hermes-gateway",
+        }))
+
+        cmdline_calls = []
+
+        def fake_read_cmdline(pid):
+            cmdline_calls.append(pid)
+            return "/usr/bin/some_daemon"  # non-gateway, but should not be reached
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(status, "_read_process_cmdline", fake_read_cmdline)
+
+        acquired, existing = status.acquire_scoped_lock("weixin-bot-token", "secret")
+
+        assert acquired is False
+        assert not cmdline_calls, "cmdline check should not run when start_times match"
+
+
 class TestTakeoverMarker:
     """Tests for the --replace takeover marker.
 

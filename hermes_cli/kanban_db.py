@@ -1,8 +1,16 @@
 """SQLite-backed Kanban board for multi-profile collaboration.
 
-The board lives at ``$HERMES_HOME/kanban.db`` (profile-agnostic on purpose:
-multiple profiles on the same machine all see the same board, which IS the
-coordination primitive).
+The board lives at ``<root>/kanban.db`` where ``<root>`` is the **shared
+Hermes root** (the parent of any active profile). Profiles intentionally
+collapse onto a single board: it IS the cross-profile coordination
+primitive. A worker spawned with ``hermes -p <profile>`` joins the same
+board as the dispatcher that claimed the task. The same applies to
+``<root>/kanban/workspaces/`` and ``<root>/kanban/logs/``.
+
+In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
+deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
+``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Set ``HERMES_KANBAN_HOME``
+to override the resolution explicitly (tests, unusual deployments).
 
 Schema is intentionally small: tasks, task_links, task_comments,
 task_events.  The ``workspace_kind`` field decouples coordination from git
@@ -61,16 +69,46 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # Paths
 # ---------------------------------------------------------------------------
 
+def kanban_home() -> Path:
+    """Return the shared Hermes root that anchors the kanban board.
+
+    Resolution order:
+
+    1. ``HERMES_KANBAN_HOME`` env var when set and non-empty (explicit
+       override for tests and unusual deployments).
+    2. ``get_default_hermes_root()``, which already returns ``<root>``
+       when ``HERMES_HOME`` is ``<root>/profiles/<name>``, and returns
+       ``HERMES_HOME`` directly for Docker / custom deployments.
+
+    The kanban board is shared across profiles **by design** (see the
+    module docstring). Resolving the kanban paths through the active
+    profile's ``HERMES_HOME`` would silently fork the board per profile,
+    which breaks the dispatcher / worker handoff.
+    """
+    override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    if override:
+        return Path(override)
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
+
+
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+    """Return the path to the shared ``kanban.db``.
+
+    Anchored at :func:`kanban_home`, not the active profile's
+    ``HERMES_HOME``, so profile workers and the dispatcher converge on
+    the same board.
+    """
+    return kanban_home() / "kanban.db"
 
 
 def workspaces_root() -> Path:
-    """Return the directory under which ``scratch`` workspaces are created."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "workspaces"
+    """Return the directory under which ``scratch`` workspaces are created.
+
+    Anchored at :func:`kanban_home` so workspace paths are stable across
+    profile workers spawned by the dispatcher.
+    """
+    return kanban_home() / "kanban" / "workspaces"
 
 
 # ---------------------------------------------------------------------------
@@ -1516,12 +1554,15 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
 def resolve_workspace(task: Task) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
-    - ``scratch``: a fresh dir under ``$HERMES_HOME/kanban/workspaces/<id>/``.
+    - ``scratch``: a fresh dir under ``<kanban-root>/kanban/workspaces/<id>/``,
+      where ``<kanban-root>`` is the shared Hermes root (see
+      :func:`kanban_home`). The path is the same for the dispatcher and
+      every profile worker, so handoff is path-stable.
     - ``dir:<path>``: the path stored in ``workspace_path``.  Created
       if missing.  MUST be absolute — relative paths are rejected to
       prevent confused-deputy traversal where ``../../../tmp/attacker``
       resolves against the dispatcher's CWD instead of a meaningful
-      root.  Users who want a HERMES_HOME-relative workspace should
+      root.  Users who want a kanban-root-relative workspace should
       compute the absolute path themselves.
     - ``worktree``: a git worktree at ``workspace_path``.  Not created
       automatically in v1 -- the kanban-worker skill documents
@@ -2104,9 +2145,10 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         "chat",
         "-q", prompt,
     ])
-    # Redirect output to a per-task log under HERMES_HOME/kanban/logs/.
-    from hermes_constants import get_hermes_home
-    log_dir = get_hermes_home() / "kanban" / "logs"
+    # Redirect output to a per-task log under <kanban-root>/kanban/logs/.
+    # Anchored at the shared kanban root, not the worker's profile home,
+    # so `hermes kanban tail` reads the same file the worker writes to.
+    log_dir = kanban_home() / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
@@ -2591,8 +2633,7 @@ def gc_worker_logs(
     """Delete worker log files older than ``older_than_seconds``. Returns
     the number of files removed. Kept separate from ``gc_events`` because
     log files live on disk, not in SQLite."""
-    from hermes_constants import get_hermes_home
-    log_dir = get_hermes_home() / "kanban" / "logs"
+    log_dir = kanban_home() / "kanban" / "logs"
     if not log_dir.exists():
         return 0
     cutoff = time.time() - older_than_seconds
@@ -2614,8 +2655,7 @@ def gc_worker_logs(
 def worker_log_path(task_id: str) -> Path:
     """Return the path to a worker's log file. The file may not exist
     (task never spawned, or log already GC'd)."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "logs" / f"{task_id}.log"
+    return kanban_home() / "kanban" / "logs" / f"{task_id}.log"
 
 
 def read_worker_log(

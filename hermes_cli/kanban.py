@@ -366,7 +366,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- log ---
     p_log = sub.add_parser(
         "log",
-        help="Print the worker log for a task (from $HERMES_HOME/kanban/logs/)",
+        help="Print the worker log for a task (from <kanban-root>/kanban/logs/)",
     )
     p_log.add_argument("task_id")
     p_log.add_argument("--tail", type=int, default=None,

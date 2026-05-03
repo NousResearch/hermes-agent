@@ -7,6 +7,7 @@ Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 import json
 import logging
 import threading
+from importlib.util import find_spec
 
 from tools.registry import registry, tool_error, tool_result
 
@@ -52,11 +53,7 @@ FEISHU_DOC_READ_SCHEMA = {
 
 
 def _check_feishu():
-    try:
-        import lark_oapi  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return find_spec("lark_oapi") is not None
 
 
 def _handle_feishu_doc_read(args: dict, **kwargs) -> str:

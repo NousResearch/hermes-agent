@@ -172,6 +172,42 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_agent_prewarm_initializes_default_route(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "nous",
+            "api_mode": "chat_completions",
+            "base_url": "https://inference.nousresearch.com/v1",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="moonshotai/kimi-k2.6", compact=True, max_turns=1)
+    shell._should_exit = False
+
+    assert shell._prewarm_agent_once() is True
+    assert shell.agent is not None
+    assert shell.agent.kwargs["model"] == "moonshotai/kimi-k2.6"
+    assert shell._active_agent_route_signature == (
+        "moonshotai/kimi-k2.6",
+        "nous",
+        "https://inference.nousresearch.com/v1",
+        "chat_completions",
+        None,
+        (),
+    )
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

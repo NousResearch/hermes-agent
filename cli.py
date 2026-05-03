@@ -2197,6 +2197,8 @@ class HermesCLI:
         # rebuild the agent when provider / model / base_url changes across
         # turns (e.g. after /model or credential rotation).
         self._active_agent_route_signature = None
+        self._agent_init_lock = threading.RLock()
+        self._agent_prewarm_started = False
 
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
@@ -3306,7 +3308,7 @@ class HermesCLI:
             _cprint(f"{_DIM}Failed to open external editor: {exc}{_RST}")
             return False
 
-    def _ensure_runtime_credentials(self) -> bool:
+    def _ensure_runtime_credentials(self, *, quiet: bool = False) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
         Re-resolves provider credentials so key rotation and token refresh
@@ -3345,7 +3347,8 @@ class HermesCLI:
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
                         )
-                        _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                        if not quiet:
+                            _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
                         self.requested_provider = _fb_provider
                         self.model = _fb_model
                         _primary_exc = None
@@ -3355,7 +3358,8 @@ class HermesCLI:
 
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
-            ChatConsole().print(f"[bold red]{message}[/]")
+            if not quiet:
+                ChatConsole().print(f"[bold red]{message}[/]")
             return False
 
         api_key = runtime.get("api_key")
@@ -3380,12 +3384,14 @@ class HermesCLI:
                     base_url, _source,
                 )
             else:
-                print("\n⚠️  Provider resolver returned an empty API key. "
-                      "Set OPENROUTER_API_KEY or run: hermes setup")
+                if not quiet:
+                    print("\n⚠️  Provider resolver returned an empty API key. "
+                          "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
         if not isinstance(base_url, str) or not base_url:
-            print("\n⚠️  Provider resolver returned an empty base URL. "
-                  "Check your provider config or run: hermes setup")
+            if not quiet:
+                print("\n⚠️  Provider resolver returned an empty base URL. "
+                      "Check your provider config or run: hermes setup")
             return False
 
         credentials_changed = api_key != self.api_key or base_url != self.base_url
@@ -3492,7 +3498,69 @@ class HermesCLI:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _prewarm_agent_once(self) -> bool:
+        """Best-effort interactive idle prewarm for the first real turn."""
+        try:
+            if self.agent is not None or getattr(self, "_should_exit", False):
+                return bool(self.agent)
+            if not self._ensure_runtime_credentials(quiet=True):
+                return False
+            turn_route = self._resolve_turn_agent_config("")
+            if turn_route["signature"] != self._active_agent_route_signature:
+                self.agent = None
+            return self._init_agent(
+                model_override=turn_route["model"],
+                runtime_override=turn_route["runtime"],
+                request_overrides=turn_route.get("request_overrides"),
+                quiet_credentials=True,
+            )
+        except Exception:
+            logger.debug("agent prewarm failed", exc_info=True)
+            return False
+
+    def _start_agent_prewarm(self) -> None:
+        """Start AIAgent creation while the interactive prompt is idle."""
+        if getattr(self, "_agent_prewarm_started", False) or self.agent is not None:
+            return
+        self._agent_prewarm_started = True
+        threading.Thread(
+            target=self._prewarm_agent_once,
+            daemon=True,
+            name="hermes-agent-prewarm",
+        ).start()
+
+    def _init_agent(
+        self,
+        *,
+        model_override: str = None,
+        runtime_override: dict = None,
+        request_overrides: dict | None = None,
+        quiet_credentials: bool = False,
+    ) -> bool:
+        lock = getattr(self, "_agent_init_lock", None)
+        if lock is None:
+            return self._init_agent_unlocked(
+                model_override=model_override,
+                runtime_override=runtime_override,
+                request_overrides=request_overrides,
+                quiet_credentials=quiet_credentials,
+            )
+        with lock:
+            return self._init_agent_unlocked(
+                model_override=model_override,
+                runtime_override=runtime_override,
+                request_overrides=request_overrides,
+                quiet_credentials=quiet_credentials,
+            )
+
+    def _init_agent_unlocked(
+        self,
+        *,
+        model_override: str = None,
+        runtime_override: dict = None,
+        request_overrides: dict | None = None,
+        quiet_credentials: bool = False,
+    ) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -3503,7 +3571,7 @@ class HermesCLI:
         if self.agent is not None:
             return True
 
-        if not self._ensure_runtime_credentials():
+        if not self._ensure_runtime_credentials(quiet=quiet_credentials):
             return False
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
@@ -11596,6 +11664,7 @@ class HermesCLI:
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
+        self._start_agent_prewarm()
         
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)

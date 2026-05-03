@@ -58,5 +58,30 @@ class TestFeishuToolRegistration(unittest.TestCase):
             self.assertIn("file_type", props, f"{tool_name} missing file_type param")
 
 
+def test_feishu_availability_checks_do_not_import_sdk(monkeypatch):
+    """Availability checks should not import the heavy lark_oapi package."""
+    doc_mod = importlib.import_module("tools.feishu_doc_tool")
+    drive_mod = importlib.import_module("tools.feishu_drive_tool")
+    sentinel = object()
+
+    doc_calls = []
+    drive_calls = []
+    monkeypatch.setattr(
+        doc_mod,
+        "find_spec",
+        lambda name: doc_calls.append(name) or sentinel,
+    )
+    monkeypatch.setattr(
+        drive_mod,
+        "find_spec",
+        lambda name: drive_calls.append(name) or sentinel,
+    )
+
+    assert doc_mod._check_feishu() is True
+    assert drive_mod._check_feishu() is True
+    assert doc_calls == ["lark_oapi"]
+    assert drive_calls == ["lark_oapi"]
+
+
 if __name__ == "__main__":
     unittest.main()

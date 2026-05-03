@@ -1561,6 +1561,10 @@ def cmd_setup(args):
 
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
+    if getattr(args, "refresh", False):
+        from hermes_cli.model_refresh import cli_main
+
+        raise SystemExit(cli_main(json_output=getattr(args, "json", False)))
     _require_tty("model")
     select_provider_and_model(args=args)
 
@@ -8178,6 +8182,16 @@ def main():
         "--insecure",
         action="store_true",
         help="Disable TLS verification for Nous login (testing only)",
+    )
+    model_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh model catalogs and exit without opening the interactive picker",
+    )
+    model_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With --refresh, print the refresh status as JSON",
     )
     model_parser.set_defaults(func=cmd_model)
 

@@ -20,10 +20,13 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from pathlib import Path
+from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -500,8 +503,8 @@ def get_authenticated_provider_slugs(
 ) -> list[str]:
     """Return slugs of providers that have credentials.
 
-    Uses ``list_authenticated_providers()`` which is backed by the models.dev
-    in-memory cache (1 hr TTL) — no extra network cost.
+    Uses ``list_authenticated_providers()`` which is backed by the authenticated
+    picker cache when available — no extra provider endpoint cost.
     """
     try:
         providers = list_authenticated_providers(
@@ -985,6 +988,232 @@ def switch_model(
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
+def _env_value(key: str) -> str:
+    try:
+        from hermes_cli.config import get_env_value
+
+        return (get_env_value(key) or "").strip()
+    except Exception:
+        return ""
+
+
+def _merge_model_lists(primary: list[str] | None, fallback: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for model in list(primary or []) + list(fallback or []):
+        model_id = str(model or "").strip()
+        if not model_id:
+            continue
+        key = model_id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(model_id)
+    return out
+
+
+def _picker_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "authenticated_provider_models.json"
+
+
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _read_authenticated_provider_cache() -> list[dict[str, Any]]:
+    try:
+        with open(_picker_cache_path(), encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return []
+    rows = payload.get("providers")
+    if not isinstance(rows, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        models = [str(m).strip() for m in row.get("models") or [] if str(m).strip()]
+        out.append({
+            "slug": slug,
+            "name": str(row.get("name") or slug),
+            "source": str(row.get("source") or "cache"),
+            "is_user_defined": bool(row.get("is_user_defined")),
+            "api_url": str(row.get("api_url") or ""),
+            "models": models,
+            "total_models": _safe_int(row.get("total_models"), len(models)),
+        })
+    return out
+
+
+def _write_authenticated_provider_cache(rows: list[dict[str, Any]]) -> None:
+    clean_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        models = [str(m).strip() for m in row.get("models") or [] if str(m).strip()]
+        clean_rows.append({
+            "slug": slug,
+            "name": str(row.get("name") or slug),
+            "source": str(row.get("source") or ""),
+            "is_user_defined": bool(row.get("is_user_defined")),
+            "api_url": str(row.get("api_url") or ""),
+            "models": models,
+            "total_models": _safe_int(row.get("total_models"), len(models)),
+        })
+
+    path = _picker_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    payload = {
+        "version": 1,
+        "updated_at": int(time.time()),
+        "providers": clean_rows,
+    }
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    tmp_path.replace(path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _shape_provider_rows(
+    rows: list[dict[str, Any]],
+    *,
+    current_provider: str = "",
+    max_models: int = 8,
+) -> list[dict[str, Any]]:
+    shaped: list[dict[str, Any]] = []
+    current = (current_provider or "").strip().lower()
+    limit = max(0, int(max_models))
+    for row in rows:
+        models = [str(m).strip() for m in row.get("models") or [] if str(m).strip()]
+        slug = str(row.get("slug") or "").strip()
+        total = _safe_int(row.get("total_models"), len(models))
+        out = dict(row)
+        out["slug"] = slug
+        out["name"] = str(row.get("name") or slug)
+        out["models"] = models[:limit]
+        out["total_models"] = total
+        out["is_current"] = bool(slug and slug.lower() == current)
+        shaped.append(out)
+    shaped.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+    return shaped
+
+
+def _live_catalog_for_provider(
+    provider_id: str,
+    *,
+    fallback: list[str],
+    pdata: dict[str, Any] | None = None,
+    pconfig: Any = None,
+    overlay: Any = None,
+    live_refresh: bool = False,
+) -> list[str]:
+    """Return the fullest available model list for a configured provider."""
+
+    from hermes_cli.models import fetch_api_models, provider_model_ids
+
+    normalized = provider_id.strip().lower()
+    if not live_refresh:
+        return list(fallback)
+
+    # Providers with bespoke live discovery.
+    if normalized in {
+        "anthropic",
+        "copilot",
+        "copilot-acp",
+        "gemini",
+        "google-gemini-cli",
+        "ollama-cloud",
+        "openai",
+        "openai-codex",
+    }:
+        try:
+            return _merge_model_lists(
+                provider_model_ids(normalized, force_refresh=True),
+                fallback,
+            )
+        except Exception:
+            return list(fallback)
+
+    api_key = ""
+    base_url = ""
+
+    if normalized == "nous":
+        api_key = _env_value("NOUS_API_KEY")
+        base_url = _env_value("NOUS_INFERENCE_BASE_URL")
+
+    if not api_key and pconfig is not None and getattr(pconfig, "auth_type", "") == "api_key":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials(normalized)
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+        except Exception:
+            api_key = ""
+            base_url = ""
+
+    if not api_key:
+        env_vars: list[str] = []
+        if pconfig is not None and getattr(pconfig, "api_key_env_vars", None):
+            env_vars.extend(str(v) for v in pconfig.api_key_env_vars)
+        if pdata and isinstance(pdata.get("env"), list):
+            env_vars.extend(str(v) for v in pdata.get("env", []))
+        if overlay is not None and getattr(overlay, "extra_env_vars", None):
+            env_vars.extend(str(v) for v in overlay.extra_env_vars)
+        for env_var in env_vars:
+            candidate = _env_value(env_var)
+            if candidate:
+                api_key = candidate
+                break
+
+    if not base_url:
+        if pconfig is not None and getattr(pconfig, "base_url_env_var", ""):
+            base_url = _env_value(pconfig.base_url_env_var)
+        if not base_url and overlay is not None and getattr(overlay, "base_url_env_var", ""):
+            base_url = _env_value(overlay.base_url_env_var)
+        if not base_url and pconfig is not None:
+            base_url = str(getattr(pconfig, "inference_base_url", "") or "").strip()
+        if not base_url and overlay is not None:
+            base_url = str(getattr(overlay, "base_url_override", "") or "").strip()
+        if not base_url and pdata:
+            base_url = str(pdata.get("api") or "").strip()
+
+    if not api_key or not base_url:
+        return list(fallback)
+
+    api_mode = None
+    if overlay is not None and getattr(overlay, "transport", "") == "anthropic_messages":
+        api_mode = "anthropic_messages"
+
+    try:
+        live = fetch_api_models(api_key, base_url, timeout=4.0, api_mode=api_mode)
+    except Exception:
+        live = None
+    if live:
+        return _merge_model_lists(live, [])
+    return list(fallback)
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -992,20 +1221,24 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    live_refresh: bool = False,
+    cache_result: bool = False,
 ) -> List[dict]:
-    """Detect which providers have credentials and list their curated models.
+    """Detect configured providers and list the fullest available model catalogs.
 
-    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
+    The default path is startup-safe: it uses the authenticated picker cache
+    written by ``hermes model --refresh`` and otherwise falls back to static
+    catalogs without probing provider endpoints.  Pass ``live_refresh=True`` to
+    query provider ``/models`` endpoints and ``cache_result=True`` to publish
+    those live rows for later fast startup.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
       - name: str — display name
       - is_current: bool
       - is_user_defined: bool
-      - models: list[str] — curated model IDs (up to max_models)
-      - total_models: int — total curated count
+      - models: list[str] — model IDs (up to max_models)
+      - total_models: int — total available count
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
@@ -1021,6 +1254,16 @@ def list_authenticated_providers(
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
     )
+    from hermes_cli.providers import HERMES_OVERLAYS
+
+    if not live_refresh:
+        cached_rows = _read_authenticated_provider_cache()
+        if cached_rows:
+            return _shape_provider_rows(
+                cached_rows,
+                current_provider=current_provider,
+                max_models=max_models,
+            )
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -1048,14 +1291,14 @@ def list_authenticated_providers(
         pcfg = _reg.get(slug)
         if not pcfg:
             return
-        url = ""
+        urls: list[str] = []
         if getattr(pcfg, "base_url_env_var", ""):
-            url = os.environ.get(pcfg.base_url_env_var, "") or ""
-        if not url:
-            url = getattr(pcfg, "inference_base_url", "") or ""
-        normed = _norm_url(url)
-        if normed:
-            _builtin_endpoints.add(normed)
+            urls.append(_env_value(pcfg.base_url_env_var) or "")
+        urls.append(getattr(pcfg, "inference_base_url", "") or "")
+        for url in urls:
+            normed = _norm_url(url)
+            if normed:
+                _builtin_endpoints.add(normed)
 
     data = fetch_models_dev()
 
@@ -1125,7 +1368,7 @@ def list_authenticated_providers(
                 continue
 
         # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        has_creds = any(_env_value(ev) for ev in env_vars)
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -1141,9 +1384,17 @@ def list_authenticated_providers(
         # For preferred providers, merge models.dev entries into the curated
         # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
         # show up in the picker without requiring a Hermes release.
-        model_ids = curated.get(hermes_id, [])
+        fallback_model_ids = curated.get(hermes_id, [])
         if hermes_id in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(hermes_id, model_ids)
+            fallback_model_ids = _merge_with_models_dev(hermes_id, fallback_model_ids)
+        model_ids = _live_catalog_for_provider(
+            hermes_id,
+            fallback=fallback_model_ids,
+            pdata=pdata,
+            pconfig=pconfig,
+            overlay=HERMES_OVERLAYS.get(hermes_id) or HERMES_OVERLAYS.get(mdev_id),
+            live_refresh=live_refresh,
+        )
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1165,7 +1416,6 @@ def list_authenticated_providers(
         _record_builtin_endpoint(slug)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
-    from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
 
     # Build reverse mapping: models.dev ID → Hermes provider ID.
@@ -1185,13 +1435,15 @@ def list_authenticated_providers(
         # Check if credentials exist
         has_creds = False
         if overlay.extra_env_vars:
-            has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+            has_creds = any(_env_value(ev) for ev in overlay.extra_env_vars)
+        if not has_creds and hermes_slug == "nous":
+            has_creds = bool(_env_value("NOUS_API_KEY"))
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
                 if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                    if any(_env_value(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
@@ -1247,22 +1499,36 @@ def list_authenticated_providers(
             continue
 
         if hermes_slug in {"copilot", "copilot-acp"}:
-            model_ids = provider_model_ids(hermes_slug)
+            model_ids = _live_catalog_for_provider(
+                hermes_slug,
+                fallback=provider_model_ids(hermes_slug),
+                pconfig=_auth_registry.get(hermes_slug) or _auth_registry.get(pid),
+                overlay=overlay,
+                live_refresh=live_refresh,
+            )
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
         elif overlay.auth_type == "aws_sdk":
             try:
                 from agent.bedrock_adapter import bedrock_model_ids_or_none
                 _ids = bedrock_model_ids_or_none()
-                model_ids = _ids if _ids is not None else (curated.get(hermes_slug, []) or curated.get(pid, []))
+                fallback_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+                model_ids = _ids if _ids is not None else fallback_ids
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key
-            model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+            fallback_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
             # Merge with models.dev for preferred providers (same rationale as above).
             if hermes_slug in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+                fallback_ids = _merge_with_models_dev(hermes_slug, fallback_ids)
+            model_ids = _live_catalog_for_provider(
+                hermes_slug,
+                fallback=fallback_ids,
+                pconfig=_auth_registry.get(hermes_slug) or _auth_registry.get(pid),
+                overlay=overlay,
+                live_refresh=live_refresh,
+            )
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1296,7 +1562,7 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_has_creds = any(_env_value(ev) for ev in _cp_config.api_key_env_vars)
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:
@@ -1343,7 +1609,13 @@ def list_authenticated_providers(
             except Exception:
                 _cp_model_ids = curated.get(_cp.slug, [])
         else:
-            _cp_model_ids = curated.get(_cp.slug, [])
+            _cp_model_ids = _live_catalog_for_provider(
+                _cp.slug,
+                fallback=curated.get(_cp.slug, []),
+                pconfig=_cp_config,
+                overlay=HERMES_OVERLAYS.get(_cp.slug),
+                live_refresh=live_refresh,
+            )
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
@@ -1423,11 +1695,11 @@ def list_authenticated_providers(
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+                api_key = _env_value(key_env) if key_env else ""
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in ("false", "no", "0")
-            if api_url and api_key and discover:
+            if live_refresh and api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1601,5 +1873,11 @@ def list_authenticated_providers(
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+
+    if cache_result:
+        try:
+            _write_authenticated_provider_cache(results)
+        except Exception:
+            logger.debug("authenticated provider cache write failed", exc_info=True)
 
     return results

@@ -5,6 +5,8 @@ are properly resolved for model switching and that their full ``models:`` lists
 are exposed in the model picker.
 """
 
+import json
+
 import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli import runtime_provider as rp
@@ -13,6 +15,58 @@ from hermes_cli import runtime_provider as rp
 # =============================================================================
 # Tests for list_authenticated_providers including full models list
 # =============================================================================
+
+def test_list_authenticated_providers_uses_cached_picker_without_live_fetch(monkeypatch, tmp_path):
+    """Default picker listing should be cache-only so opening Hermes stays fast."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "authenticated_provider_models.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": 123,
+                "providers": [
+                    {
+                        "slug": "mistral",
+                        "name": "Mistral",
+                        "source": "built-in",
+                        "is_user_defined": False,
+                        "models": [
+                            "mistral-vibe-cli-with-tools",
+                            "mistral-medium-latest",
+                        ],
+                        "total_models": 2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: (_ for _ in ()).throw(AssertionError("models.dev should not be read")),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("live fetch should not run")),
+    )
+
+    rows = list_authenticated_providers(current_provider="mistral", max_models=1)
+
+    assert rows == [
+        {
+            "slug": "mistral",
+            "name": "Mistral",
+            "source": "built-in",
+            "is_user_defined": False,
+            "api_url": "",
+            "models": ["mistral-vibe-cli-with-tools"],
+            "total_models": 2,
+            "is_current": True,
+        }
+    ]
+
 
 def test_list_authenticated_providers_includes_full_models_list_from_user_providers(monkeypatch):
     """User-defined providers should expose both default_model and full models list.
@@ -167,6 +221,7 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
         user_providers=user_providers,
         custom_providers=[],
         max_models=50,
+        live_refresh=True,
     )
 
     user_prov = next(
@@ -262,6 +317,7 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
         lambda: {"openai": {"env": ["OPENAI_API_KEY"]}},
     )
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_args, **_kwargs: ["live-openai-model"])
 
     providers = list_authenticated_providers(
         current_provider="",
@@ -269,10 +325,53 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
         user_providers={},
         custom_providers=[],
         max_models=50,
+        live_refresh=True,
     )
     row = next((p for p in providers if p.get("slug") == "openai"), None)
     assert row is not None
     assert row["total_models"] > 0
+
+
+def test_list_authenticated_providers_prefers_full_live_catalog_for_zshenv_provider(monkeypatch):
+    """Built-in provider rows should use the live /models list, not append fallbacks."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "openrouter": {
+                "name": "OpenRouter",
+                "env": ["OPENROUTER_API_KEY"],
+                "api": "https://openrouter.ai/api/v1",
+                "models": {},
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["live-a", "live-b", "moonshotai/kimi-k2.6"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+        live_refresh=True,
+    )
+
+    row = next((p for p in providers if p.get("slug") == "openrouter"), None)
+    assert row is not None
+    assert calls == [("sk-test", "https://openrouter.ai/api/v1", {"timeout": 4.0, "api_mode": None})]
+    assert row["models"][:3] == ["live-a", "live-b", "moonshotai/kimi-k2.6"]
+    assert row["models"] == ["live-a", "live-b", "moonshotai/kimi-k2.6"]
+    assert row["total_models"] == 3
 
 
 def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):
@@ -587,6 +686,74 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
         f"Custom entry matching env-overridden built-in endpoint should be "
         f"dedup'd, got: {slugs}"
     )
+
+
+def test_list_authenticated_providers_mistral_uses_overlay_and_hides_shadow(monkeypatch):
+    """Mistral's models.dev entry has no API URL, so Hermes must use its registry URL.
+
+    Without the real provider endpoint and built-in endpoint dedup, the picker shows a
+    second ``custom:mistral`` row from config.yaml; that stale row can contain
+    short aliases like ``vibe-tools`` that the Mistral API rejects.
+    """
+    monkeypatch.setenv("MISTRAL_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "mistral": {
+                "name": "Mistral",
+                "env": ["MISTRAL_API_KEY"],
+                "api": "",
+            }
+        },
+    )
+    monkeypatch.setattr("agent.models_dev.list_agentic_models", lambda provider: [])
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return [
+            "mistral-medium-latest",
+            "mistral-vibe-cli-with-tools",
+        ]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="mistral",
+        user_providers={
+            "mistral": {
+                "name": "Mistral",
+                "api": "https://api.mistral.ai/v1",
+                "api_key": "${MISTRAL_API_KEY}",
+                "default_model": "mistral-medium-latest",
+                "models": ["mistral-medium-latest", "vibe-tools"],
+            }
+        },
+        custom_providers=[
+            {
+                "name": "Mistral",
+                "base_url": "https://api.mistral.ai/v1",
+                "api_key": "sk-test",
+                "model": "vibe-tools",
+            }
+        ],
+        max_models=50,
+        live_refresh=True,
+    )
+
+    assert calls == [
+        (
+            "sk-test",
+            "https://api.mistral.ai/v1",
+            {"timeout": 4.0, "api_mode": None},
+        )
+    ]
+    assert [p["slug"] for p in providers].count("mistral") == 1
+    assert not any(p["slug"] == "custom:mistral" for p in providers)
+    mistral = next(p for p in providers if p["slug"] == "mistral")
+    assert "mistral-vibe-cli-with-tools" in mistral["models"]
+    assert "vibe-tools" not in mistral["models"]
 
 
 # =============================================================================

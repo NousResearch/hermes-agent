@@ -43,6 +43,7 @@ class TestProviderRegistry:
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
+        ("mistral", "Mistral", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -67,6 +68,17 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
         assert pconfig.base_url_env_var == "NVIDIA_BASE_URL"
         assert pconfig.inference_base_url == "https://integrate.api.nvidia.com/v1"
+
+    def test_mistral_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["mistral"]
+        assert pconfig.api_key_env_vars == (
+            "MISTRAL_API_KEY",
+            "MISTRAL_VIBE_API_KEY",
+            "VIBE_API_KEY",
+            "CODESTRAL_API_KEY",
+        )
+        assert pconfig.base_url_env_var == "MISTRAL_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.mistral.ai/v1"
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
@@ -129,6 +141,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["mistral"].inference_base_url == "https://api.mistral.ai/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""

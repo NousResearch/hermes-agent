@@ -1,5 +1,7 @@
 """Tests for the hermes_cli models module."""
 
+import json
+import time
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.models import (
@@ -418,6 +420,7 @@ class TestCheckNousFreeTierCache:
 
             cached_result, cached_at = _models_mod._free_tier_cache
             _models_mod._free_tier_cache = (cached_result, cached_at - _FREE_TIER_CACHE_TTL - 1)
+            _models_mod._free_tier_disk_cache_path().unlink(missing_ok=True)
 
             result2 = check_nous_free_tier()
             assert mock_fetch.call_count == 2
@@ -428,6 +431,70 @@ class TestCheckNousFreeTierCache:
     def test_cache_ttl_is_short(self):
         """TTL should be short enough to catch upgrades quickly (<=5 min)."""
         assert _FREE_TIER_CACHE_TTL <= 300
+
+    def test_disk_cache_avoids_portal_call(self, tmp_path, monkeypatch):
+        """Fresh disk cache avoids a startup-time account-tier network call."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache_path = tmp_path / "cache" / "nous_free_tier_status.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "portal_base_url": "https://portal.nousresearch.com",
+                    "free_tier": True,
+                    "checked_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "hermes_cli.auth.get_provider_auth_state",
+            return_value={
+                "access_token": "tok",
+                "portal_base_url": "https://portal.nousresearch.com/",
+            },
+        ), patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials"
+        ) as mock_resolve, patch(
+            "hermes_cli.models.fetch_nous_account_tier"
+        ) as mock_fetch:
+            result = check_nous_free_tier()
+
+        assert result is True
+        mock_resolve.assert_not_called()
+        mock_fetch.assert_not_called()
+
+    def test_result_is_cached_on_disk_without_credentials(self, tmp_path, monkeypatch):
+        """Persist only non-secret tier status for the next short-lived CLI process."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch(
+            "hermes_cli.auth.get_provider_auth_state",
+            return_value={
+                "access_token": "tok",
+                "portal_base_url": "https://portal.nousresearch.com",
+            },
+        ), patch("hermes_cli.auth.resolve_nous_runtime_credentials"), patch(
+            "hermes_cli.models.fetch_nous_account_tier",
+            return_value={"subscription": {"monthly_charge": 20}},
+        ):
+            result = check_nous_free_tier()
+
+        payload = json.loads(
+            (tmp_path / "cache" / "nous_free_tier_status.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        assert result is False
+        assert payload == {
+            "version": 1,
+            "portal_base_url": "https://portal.nousresearch.com",
+            "free_tier": False,
+            "checked_at": payload["checked_at"],
+        }
+        assert "access_token" not in payload
 
 
 class TestNousRecommendedModels:

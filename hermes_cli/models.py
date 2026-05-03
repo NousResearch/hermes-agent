@@ -11,6 +11,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 import time
 from difflib import get_close_matches
 from pathlib import Path
@@ -560,6 +561,64 @@ def partition_nous_models_by_tier(
 # ---------------------------------------------------------------------------
 _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
 _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+_FREE_TIER_DISK_CACHE_VERSION: int = 1
+
+
+def _normalize_nous_portal_url(portal_url: object | None) -> str:
+    value = str(portal_url or "").strip().rstrip("/")
+    return value or "https://portal.nousresearch.com"
+
+
+def _free_tier_disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "nous_free_tier_status.json"
+
+
+def _read_free_tier_disk_cache(portal_url: str, wall_now: float) -> bool | None:
+    try:
+        path = _free_tier_disk_cache_path()
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != _FREE_TIER_DISK_CACHE_VERSION:
+            return None
+        if payload.get("portal_base_url") != portal_url:
+            return None
+        checked_at = float(payload.get("checked_at", 0))
+        age = wall_now - checked_at
+        if age < 0 or age >= _FREE_TIER_CACHE_TTL:
+            return None
+        free_tier = payload.get("free_tier")
+        return free_tier if isinstance(free_tier, bool) else None
+    except Exception:
+        return None
+
+
+def _write_free_tier_disk_cache(
+    result: bool,
+    portal_url: str,
+    wall_now: float,
+) -> None:
+    try:
+        from utils import atomic_json_write
+
+        cache_path = _free_tier_disk_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(
+            cache_path,
+            {
+                "version": _FREE_TIER_DISK_CACHE_VERSION,
+                "portal_base_url": portal_url,
+                "free_tier": bool(result),
+                "checked_at": wall_now,
+            },
+            indent=None,
+            separators=(",", ":"),
+        )
+    except Exception:
+        pass
 
 
 def check_nous_free_tier() -> bool:
@@ -573,6 +632,7 @@ def check_nous_free_tier() -> bool:
     """
     global _free_tier_cache
     now = time.monotonic()
+    wall_now = time.time()
     if _free_tier_cache is not None:
         cached_result, cached_at = _free_tier_cache
         if now - cached_at < _FREE_TIER_CACHE_TTL:
@@ -581,22 +641,36 @@ def check_nous_free_tier() -> bool:
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
 
+        state = get_provider_auth_state("nous") or {}
+        if not state or not state.get("access_token"):
+            _free_tier_cache = (False, now)
+            return False
+        portal_url = _normalize_nous_portal_url(state.get("portal_base_url"))
+        disk_result = _read_free_tier_disk_cache(portal_url, wall_now)
+        if disk_result is not None:
+            _free_tier_cache = (disk_result, now)
+            return disk_result
+
         # Ensure we have a fresh token (triggers refresh if needed)
         resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
 
         state = get_provider_auth_state("nous")
         if not state:
             _free_tier_cache = (False, now)
+            _write_free_tier_disk_cache(False, portal_url, wall_now)
             return False
         access_token = state.get("access_token", "")
-        portal_url = state.get("portal_base_url", "")
+        portal_url = _normalize_nous_portal_url(state.get("portal_base_url"))
         if not access_token:
             _free_tier_cache = (False, now)
+            _write_free_tier_disk_cache(False, portal_url, wall_now)
             return False
 
         account_info = fetch_nous_account_tier(access_token, portal_url)
         result = is_nous_free_tier(account_info)
         _free_tier_cache = (result, now)
+        if account_info:
+            _write_free_tier_disk_cache(result, portal_url, wall_now)
         return result
     except Exception:
         _free_tier_cache = (False, now)
@@ -1113,6 +1187,82 @@ def fetch_ai_gateway_models(
 def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the AI Gateway model-id strings."""
     return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
+
+
+def fetch_google_generative_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch Google Gemini model IDs from the Generative Language models API."""
+    if not api_key:
+        try:
+            from hermes_cli.config import get_env_value
+
+            api_key = (
+                get_env_value("GOOGLE_API_KEY")
+                or get_env_value("GEMINI_API_KEY")
+                or ""
+            )
+        except Exception:
+            api_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        return None
+
+    if not base_url:
+        try:
+            from hermes_cli.config import get_env_value
+
+            base_url = get_env_value("GEMINI_BASE_URL") or ""
+        except Exception:
+            base_url = os.getenv("GEMINI_BASE_URL", "")
+    base = str(base_url or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    if not base:
+        return None
+
+    out: list[str] = []
+    seen: set[str] = set()
+    page_token = ""
+    for _ in range(10):
+        params = {"key": api_key}
+        if page_token:
+            params["pageToken"] = page_token
+        url = f"{base}/models?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode())
+        except Exception:
+            return out or None
+
+        items = payload.get("models")
+        if not isinstance(items, list):
+            return out or None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            methods = item.get("supportedGenerationMethods")
+            if isinstance(methods, list) and not {
+                "generateContent",
+                "streamGenerateContent",
+            }.intersection(str(method) for method in methods):
+                continue
+            raw_name = str(item.get("name") or item.get("id") or "").strip()
+            if raw_name.startswith("models/"):
+                raw_name = raw_name.split("/", 1)[1]
+            if raw_name and raw_name not in seen:
+                seen.add(raw_name)
+                out.append(raw_name)
+
+        page_token = str(payload.get("nextPageToken") or "").strip()
+        if not page_token:
+            break
+
+    return out or None
 
 
 
@@ -1930,6 +2080,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "nous":
+        try:
+            from hermes_cli.config import get_env_value
+
+            api_key = (get_env_value("NOUS_API_KEY") or "").strip()
+            base_url = (
+                get_env_value("NOUS_INFERENCE_BASE_URL")
+                or "https://inference-api.nousresearch.com/v1"
+            ).strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
         # Try live Nous Portal /models endpoint
         try:
             from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
@@ -1965,10 +2129,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
+    if normalized == "gemini":
+        live = fetch_google_generative_models()
+        if live:
+            return live
     if normalized == "openai":
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        try:
+            from hermes_cli.config import get_env_value
+            api_key = (get_env_value("OPENAI_API_KEY") or "").strip()
+        except Exception:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
-            base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+            try:
+                from hermes_cli.config import get_env_value
+                base_raw = (get_env_value("OPENAI_BASE_URL") or "").strip().rstrip("/")
+            except Exception:
+                base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
             try:
                 live = fetch_api_models(api_key, base)
@@ -2964,9 +3140,20 @@ def fetch_ollama_cloud_models(
 
     # 2. Live API probe
     if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY", "")
+        try:
+            from hermes_cli.config import get_env_value
+
+            api_key = get_env_value("OLLAMA_API_KEY") or ""
+        except Exception:
+            api_key = os.getenv("OLLAMA_API_KEY", "")
     if not base_url:
-        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+        try:
+            from hermes_cli.config import get_env_value
+
+            base_url = get_env_value("OLLAMA_BASE_URL") or ""
+        except Exception:
+            base_url = os.getenv("OLLAMA_BASE_URL", "")
+        base_url = base_url or "https://ollama.com/v1"
 
     live_models: list[str] = []
     if api_key:

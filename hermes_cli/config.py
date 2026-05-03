@@ -17,6 +17,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -4368,14 +4369,62 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
+    """Get a value from the process env, ~/.hermes/.env, or simple ~/.zshenv exports."""
     # Check environment first
     if key in os.environ:
         return os.environ[key]
     
     # Then check .env file
     env_vars = load_env()
-    return env_vars.get(key)
+    if key in env_vars:
+        return env_vars.get(key)
+
+    # Finally check the user's shell source-of-truth when Hermes was launched
+    # outside an interactive zsh.  Parse only simple `export KEY=value` lines:
+    # no shell execution, no command substitution, no test-time leakage from
+    # the real user's dotfiles into hermetic fixtures.
+    return _load_zshenv_exports().get(key)
+
+
+_ZSHENV_EXPORTS_CACHE: Optional[Dict[str, str]] = None
+
+
+def _load_zshenv_exports() -> Dict[str, str]:
+    global _ZSHENV_EXPORTS_CACHE
+    if _ZSHENV_EXPORTS_CACHE is not None:
+        return dict(_ZSHENV_EXPORTS_CACHE)
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        _ZSHENV_EXPORTS_CACHE = {}
+        return {}
+
+    path = Path.home() / ".zshenv"
+    exports: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        _ZSHENV_EXPORTS_CACHE = {}
+        return {}
+
+    for raw in lines:
+        line = raw.strip()
+        if not line.startswith("export ") or "=" not in line:
+            continue
+        assignment = line[len("export "):].strip()
+        try:
+            parts = shlex.split(assignment, comments=True, posix=True)
+        except ValueError:
+            continue
+        for part in parts:
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            key = key.strip()
+            if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                continue
+            exports[key] = value
+
+    _ZSHENV_EXPORTS_CACHE = exports
+    return dict(exports)
 
 
 # =============================================================================

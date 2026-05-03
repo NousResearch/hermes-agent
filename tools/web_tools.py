@@ -220,24 +220,18 @@ def _firecrawl_backend_help_suffix() -> str:
 
 
 def _web_requires_env() -> list[str]:
-    """Return tool metadata env vars for the currently enabled web backends."""
-    requires = [
+    """Return metadata env vars without probing subscription state at import."""
+    return [
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
     ]
-    if managed_nous_tools_enabled():
-        requires.extend(
-            [
-                "FIRECRAWL_GATEWAY_URL",
-                "TOOL_GATEWAY_DOMAIN",
-                "TOOL_GATEWAY_SCHEME",
-                "TOOL_GATEWAY_USER_TOKEN",
-            ]
-        )
-    return requires
 
 
 def _get_firecrawl_client():

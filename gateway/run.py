@@ -1475,23 +1475,52 @@ class GatewayRunner:
         # opt into topic mode) means topic mode is off for this chat.
         return raw is True
 
+    # Telegram's General (pinned top) topic in forum-enabled private chats.
+    # Bot API behavior varies: some clients omit message_thread_id for
+    # General, others send "1". Treat both as "root" for lobby/lane purposes.
+    _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
+
     def _is_telegram_topic_root_lobby(self, source: SessionSource) -> bool:
-        """True for the main Telegram DM when topic mode has made it a lobby."""
-        return (
-            source.platform == Platform.TELEGRAM
-            and source.chat_type == "dm"
-            and not source.thread_id
-            and self._telegram_topic_mode_enabled(source)
-        )
+        """True for the main Telegram DM (or General topic) when topic mode has made it a lobby."""
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        if not self._telegram_topic_mode_enabled(source):
+            return False
+        tid = str(source.thread_id or "")
+        return tid in self._TELEGRAM_GENERAL_TOPIC_IDS
 
     def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
         """True for a user-created Telegram private-chat topic lane."""
-        return (
-            source.platform == Platform.TELEGRAM
-            and source.chat_type == "dm"
-            and bool(source.thread_id)
-            and self._telegram_topic_mode_enabled(source)
-        )
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        if not self._telegram_topic_mode_enabled(source):
+            return False
+        tid = str(source.thread_id or "")
+        if not tid or tid in self._TELEGRAM_GENERAL_TOPIC_IDS:
+            return False
+        return True
+
+    _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
+
+    def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
+        """Rate-limit root-DM lobby reminders to one message per cooldown window.
+
+        A user who forgets multi-session mode is enabled and types several
+        prompts in the root DM would otherwise get a reminder for every
+        message. Cap it so the first one lands and the rest stay quiet.
+        """
+        if not hasattr(self, "_telegram_lobby_reminder_ts"):
+            self._telegram_lobby_reminder_ts = {}
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return True
+        import time as _time
+        now = _time.monotonic()
+        last = self._telegram_lobby_reminder_ts.get(chat_id, 0.0)
+        if now - last < self._TELEGRAM_LOBBY_REMINDER_COOLDOWN_S:
+            return False
+        self._telegram_lobby_reminder_ts[chat_id] = now
+        return True
 
     def _telegram_topic_root_lobby_message(self) -> str:
         return (
@@ -5617,7 +5646,11 @@ class GatewayRunner:
         # execution of a dangerous command.
 
         if self._is_telegram_topic_root_lobby(source):
-            return self._telegram_topic_root_lobby_message()
+            # Debounce the lobby reminder so a user who forgets about
+            # topic mode and fires ten prompts doesn't get ten copies.
+            if self._should_send_telegram_lobby_reminder(source):
+                return self._telegram_topic_root_lobby_message()
+            return None
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -9705,6 +9738,28 @@ class GatewayRunner:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
         if not self._is_telegram_topic_lane(source) or not source.chat_id or not source.thread_id:
             return
+
+        # Skip rename when the topic is operator-declared via
+        # extra.dm_topics. Those topics have fixed names chosen by the
+        # operator (plus optional skill binding); auto-renaming would
+        # silently mutate operator config.
+        #
+        # Check the class, not the instance — getattr() on MagicMock
+        # auto-creates attributes, so `hasattr(adapter, "_get_dm_topic_info")`
+        # would return True for every test double.
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is not None:
+            get_info = getattr(type(adapter), "_get_dm_topic_info", None)
+            if callable(get_info):
+                try:
+                    operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
+                except Exception:
+                    operator_topic = None
+                # Only treat dict-shaped returns as operator-declared; a
+                # bare MagicMock or other sentinel shouldn't count.
+                if isinstance(operator_topic, dict):
+                    return
+
         session_db = getattr(self, "_session_db", None)
         if session_db is not None:
             try:
@@ -9718,7 +9773,6 @@ class GatewayRunner:
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
                 return
 
-        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)

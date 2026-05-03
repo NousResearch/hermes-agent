@@ -461,7 +461,7 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 
     assert "Telegram multi-session topics are enabled" in result
     assert "All Messages" in result
-    assert session_db.get_meta("telegram_dm_topic_schema_version") == "1"
+    assert session_db.get_meta("telegram_dm_topic_schema_version") == "2"
     assert session_db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988")
     assert runner._telegram_topic_mode_enabled(_make_source()) is True
     runner._run_agent.assert_not_called()
@@ -825,3 +825,161 @@ async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session
     )
 
     runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
+    """Topics registered in extra.dm_topics keep their operator-chosen name."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=build_session_key(_make_source(thread_id="17585")),
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    # Give the adapter a concrete class with _get_dm_topic_info so the
+    # class-based lookup in _rename_telegram_topic_for_session_title
+    # actually finds it (a MagicMock auto-attr would be skipped).
+    class _FakeAdapter:
+        def _get_dm_topic_info(self, chat_id, thread_id):
+            return {"name": "Research", "skill": "arxiv"}
+
+        async def rename_dm_topic(self, **kwargs):
+            return None
+
+    fake = _FakeAdapter()
+    fake.rename_dm_topic = AsyncMock()
+    runner.adapters[Platform.TELEGRAM] = fake
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="17585"),
+        "sess-topic",
+        "Auto-generated title",
+    )
+
+    fake.rename_dm_topic.assert_not_called()
+
+
+def test_general_topic_is_treated_as_root_lobby(tmp_path):
+    """Messages in the Telegram General topic (thread_id=1) route to the lobby, not a lane."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    general_source = _make_source(thread_id="1")
+    assert runner._is_telegram_topic_root_lobby(general_source) is True
+    assert runner._is_telegram_topic_lane(general_source) is False
+
+    no_thread_source = _make_source(thread_id=None)
+    assert runner._is_telegram_topic_root_lobby(no_thread_source) is True
+    assert runner._is_telegram_topic_lane(no_thread_source) is False
+
+    real_topic = _make_source(thread_id="17585")
+    assert runner._is_telegram_topic_root_lobby(real_topic) is False
+    assert runner._is_telegram_topic_lane(real_topic) is True
+
+
+def test_lobby_reminder_is_debounced_per_chat(tmp_path):
+    """Consecutive root-DM prompts should only surface one lobby reminder per cooldown."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    source = _make_source(thread_id=None)
+    assert runner._should_send_telegram_lobby_reminder(source) is True
+    # Next call inside the cooldown window must return False.
+    assert runner._should_send_telegram_lobby_reminder(source) is False
+    assert runner._should_send_telegram_lobby_reminder(source) is False
+
+    # A different chat gets its own window.
+    other = _make_source(thread_id=None)
+    # Swap chat_id so the debounce key is different.
+    from dataclasses import replace
+    other = replace(other, chat_id="999999999")
+    assert runner._should_send_telegram_lobby_reminder(other) is True
+
+
+def test_binding_survives_session_deletion_via_cascade(tmp_path):
+    """Deleting a session with a topic binding must not raise FK errors."""
+    import sqlite3
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-to-delete", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:17585",
+        session_id="sess-to-delete",
+    )
+
+    # Before: binding exists.
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+    assert binding is not None
+
+    # Delete the session. Without ON DELETE CASCADE this would raise
+    # sqlite3.IntegrityError: FOREIGN KEY constraint failed.
+    db._conn.execute("DELETE FROM sessions WHERE id = ?", ("sess-to-delete",))
+    db._conn.commit()
+
+    # After: binding row automatically cleared.
+    binding_after = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+    assert binding_after is None
+
+
+def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
+    """v1 → v2 migration rebuilds the bindings table when FK lacks ON DELETE CASCADE."""
+    import sqlite3
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+
+    # Simulate a v1-shaped DB: migration ran without ON DELETE CASCADE.
+    db.apply_telegram_topic_migration()  # Creates v2 (our new shape)
+    # Drop the v2 bindings table and recreate it in the old v1 shape.
+    with db._lock:
+        db._conn.execute("DROP TABLE telegram_dm_topic_bindings")
+        db._conn.execute(
+            """
+            CREATE TABLE telegram_dm_topic_bindings (
+                chat_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                managed_mode TEXT NOT NULL DEFAULT 'auto',
+                linked_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (chat_id, thread_id)
+            )
+            """
+        )
+        # Also rewind the version marker so migration treats this as v1.
+        db._conn.execute(
+            "UPDATE state_meta SET value = '1' WHERE key = 'telegram_dm_topic_schema_version'"
+        )
+        db._conn.commit()
+
+    # Sanity check: FK has no CASCADE action yet.
+    fk_rows = db._conn.execute(
+        "PRAGMA foreign_key_list('telegram_dm_topic_bindings')"
+    ).fetchall()
+    assert any(row[2] == "sessions" and (row[6] or "") != "CASCADE" for row in fk_rows)
+
+    # Re-run migration — should upgrade to v2 shape.
+    db.apply_telegram_topic_migration()
+
+    fk_rows_after = db._conn.execute(
+        "PRAGMA foreign_key_list('telegram_dm_topic_bindings')"
+    ).fetchall()
+    assert any(row[2] == "sessions" and row[6] == "CASCADE" for row in fk_rows_after)
+
+    version = db._conn.execute(
+        "SELECT value FROM state_meta WHERE key = 'telegram_dm_topic_schema_version'"
+    ).fetchone()
+    assert version is not None and version[0] == "2"

@@ -103,15 +103,43 @@ _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, preserving any extra routing metadata."""
+    """Extract origin info from a job, preserving any extra routing metadata.
+
+    Post-S-0429-01 G1, origin should carry ``user_id`` for cron-spawned
+    sessions to bind ``HERMES_SESSION_USER_ID`` correctly. Legacy jobs
+    persisted before the schema change won't have it; reverse-resolve via
+    each artemis user's ``slack_channel.txt`` sidecar so they keep working
+    without a one-shot migration.
+    """
     origin = job.get("origin")
     if not origin:
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")
-    if platform and chat_id:
-        return origin
-    return None
+    if not (platform and chat_id):
+        return None
+
+    if not origin.get("user_id"):
+        # Re-read HERMES_HOME at call time rather than relying on the
+        # module-level ``_hermes_home`` snapshot — tests override it via
+        # monkeypatch, and dev rigs may legitimately move the data dir
+        # between process starts.
+        hermes_home_dyn = get_hermes_home()
+        artemis_root = hermes_home_dyn / "artemis"
+        if artemis_root.exists():
+            chat_id_str = str(chat_id)
+            for user_dir in artemis_root.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                ch_file = user_dir / "slack_channel.txt"
+                try:
+                    if ch_file.exists() and ch_file.read_text().strip() == chat_id_str:
+                        # Build a copy so we don't mutate the on-disk job dict.
+                        origin = {**origin, "user_id": user_dir.name}
+                        break
+                except OSError:
+                    continue
+    return origin
 
 
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
@@ -609,6 +637,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
             if origin.get("chat_name"):
                 os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+            if origin.get("user_id"):
+                os.environ["HERMES_SESSION_USER_ID"] = origin["user_id"]
+            # G1 (S-0429-01): also seed the asyncio-task ContextVars so
+            # any MCP subprocess spawn downstream of this job (via
+            # ``_run_stdio``) materializes ``HERMES_SESSION_USER_ID``
+            # from the ContextVar — keeping the env-injection contract
+            # consistent across gateway-driven and cron-driven sessions.
+            from tools.session_context import set_session as _ctx_set_session
+            _ctx_set_session(
+                platform=origin["platform"],
+                chat_id=str(origin["chat_id"]),
+                chat_name=origin.get("chat_name"),
+                user_id=origin.get("user_id"),
+            )
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -850,11 +892,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_USER_ID",
             "HERMES_CRON_AUTO_DELIVER_PLATFORM",
             "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
             "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
         ):
             os.environ.pop(key, None)
+        # Clear session ContextVars (G1) — same reason as env cleanup.
+        try:
+            from tools.session_context import clear_session as _ctx_clear_session
+            _ctx_clear_session()
+        except Exception:
+            pass
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

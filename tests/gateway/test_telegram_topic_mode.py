@@ -100,6 +100,21 @@ def _make_runner(session_db=None):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store.reset_session = MagicMock(return_value=None)
+
+    # Default switch_session impl: returns a SessionEntry carrying the target
+    # session_id. Mirrors SessionStore.switch_session semantics for tests that
+    # exercise Telegram topic binding rebinds without a real store.
+    def _switch_session(session_key, target_session_id):
+        return SessionEntry(
+            session_key=session_key,
+            session_id=target_session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=None,
+        )
+    runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
@@ -364,6 +379,68 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
     assert "parallel work" in result
     assert "All Messages" in result
     runner.session_store.reset_session.assert_called_once_with(topic_key)
+
+
+@pytest.mark.asyncio
+async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_path, monkeypatch):
+    """Regression: /new inside a topic must rewrite the binding table.
+
+    Previously /new reset the SessionStore entry but the
+    telegram_dm_topic_bindings row still pointed at the old session_id;
+    the next inbound message would look up the stale binding and switch
+    back to the old session, making /new a no-op.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="old-topic-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    new_entry = SessionEntry(
+        session_key=topic_key,
+        session_id="new-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+    )
+    # Mirror SessionStore.reset_session: in production it calls
+    # SessionDB.create_session() for the new id before returning, so the
+    # bindings FK can reference it.
+    session_db.create_session(
+        session_id="new-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    runner.session_store.reset_session.return_value = new_entry
+    runner._agent_cache_lock = None
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    await runner._handle_message(_make_event("/new", thread_id="17585"))
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "new-topic-session"
 
 
 @pytest.mark.asyncio

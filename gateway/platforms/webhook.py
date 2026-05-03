@@ -204,9 +204,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Rose Command Centre callback — POST the agent's response back to a
         # Rose-controlled callback URL with HMAC-SHA256 signing using the same
-        # secret as the inbound dispatch.  See _deliver_rose_callback() below.
+        # secret as the inbound dispatch.  metadata is threaded through so
+        # the callback can mark the job failed when the agent runtime signals
+        # failure explicitly.  See _deliver_rose_callback() below.
         if deliver_type == "rose_callback":
-            return await self._deliver_rose_callback(content, delivery)
+            return await self._deliver_rose_callback(content, delivery, metadata)
 
         # Cross-platform delivery — any platform with a gateway adapter
         if self.gateway_runner and deliver_type in (
@@ -516,13 +518,21 @@ class WebhookAdapter(BasePlatformAdapter):
             # ── rose_callback support (Rose Command Centre integration) ──
             # When deliver == "rose_callback" the agent's response is POSTed
             # back to Rose's callback endpoint with the same HMAC secret used
-            # for inbound dispatch.  We capture the inbound request's secret
-            # and X-Rose-Request-Id here so send() can sign and route the
-            # callback without re-reading the route config.
+            # for inbound dispatch.  We capture the inbound request's secret,
+            # X-Rose-Request-Id, AND callback_url at receive time so send()
+            # can sign and route the callback without spelunking through the
+            # nested payload structure later (Rose's dispatch envelope is
+            # {job_type, payload: {callback_url, ...}, context} and we don't
+            # want to bake that shape into the delivery path).
             "secret": secret,
             "rose_request_id": request.headers.get("X-Rose-Request-Id", ""),
             "delivery_id": delivery_id,
             "started_at": now,
+            "callback_url": (
+                payload.get("payload", {}).get("callback_url", "")
+                if isinstance(payload, dict)
+                else ""
+            ),
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -692,7 +702,10 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
     async def _deliver_rose_callback(
-        self, content: str, delivery: dict
+        self,
+        content: str,
+        delivery: dict,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """POST agent response back to Rose's /api/hermes-callback endpoint.
 
@@ -719,15 +732,30 @@ class WebhookAdapter(BasePlatformAdapter):
             X-Hermes-Signature: sha256=<hex HMAC of raw body>
             X-Rose-Timestamp:    unix-seconds (replay protection, 5 min window)
             Content-Type:        application/json
+
+        Status detection — the load-bearing change in this method:
+            Rose's polling loop in subTaskExecutor.executeHermesTask treats
+            ``status == "completed"`` as terminal-success and feeds ``summary``
+            straight into packageAssembler.  Reporting ``completed`` for a
+            failed agent run causes Rose to surface Hermes errors as if they
+            were research output (the "⏳ Retrying in 2.6s..." regression on
+            30 Apr 2026).  We must split success vs failure correctly here.
+
+            Detection order, most-trusted first:
+              1. metadata["agent_status"] == "failed" or metadata["error"] set
+                 → failure (explicit signal from agent runtime, when available)
+              2. content head matches a known Hermes failure marker
+                 → failure (heuristic, bounded to first 1000 chars so a
+                  legitimate research summary that mentions "error" deep
+                  inside isn't misclassified)
+              3. otherwise → success
         """
-        extra = delivery.get("deliver_extra", {})
-        callback_url = extra.get("callback_url", "") or delivery.get(
-            "payload", {}
-        ).get("payload", {}).get("callback_url", "")
+        # Direct field reads — populated at receive time in _handle_webhook.
+        callback_url = delivery.get("callback_url", "") or delivery.get(
+            "deliver_extra", {}
+        ).get("callback_url", "")
         secret = delivery.get("secret", "")
-        rose_request_id = delivery.get("rose_request_id", "") or delivery.get(
-            "payload", {}
-        ).get("context", {}).get("rose_request_id", "")
+        rose_request_id = delivery.get("rose_request_id", "")
         delivery_id = delivery.get("delivery_id", "")
         started_at = delivery.get("started_at")
 
@@ -749,20 +777,95 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="Missing rose_request_id"
             )
 
+        # ── Detect agent success vs failure ──
+        metadata = metadata or {}
+        agent_status = str(metadata.get("agent_status") or "").lower()
+        metadata_error = metadata.get("error")
+
+        is_failure = False
+        error_message: Optional[str] = None
+
+        if agent_status == "failed" or metadata_error:
+            is_failure = True
+            error_message = (
+                str(metadata_error)
+                if metadata_error
+                else "Agent reported failure via metadata"
+            )
+        else:
+            # Heuristic content sniff. Bound to first 1000 chars so a
+            # legitimate research summary that happens to mention "error"
+            # later isn't misclassified.
+            content_head = (content or "")[:1000]
+            FAILURE_MARKERS = (
+                "API call failed",
+                "Final error:",
+                "Max retries (3) exhausted",
+                "Max retries exhausted",
+                "⏳ Retrying in",
+                "Retrying in ",  # without emoji prefix, defensive
+                "❌",
+                "☠",
+                "Traceback (most recent call last):",
+            )
+            matched_marker: Optional[str] = None
+            for marker in FAILURE_MARKERS:
+                if marker in content_head:
+                    matched_marker = marker
+                    break
+            if matched_marker:
+                is_failure = True
+                # Pull the most informative line for the error field —
+                # prefer the "Final error:" line if present, else the line
+                # containing the matched marker, else the marker itself.
+                lines = [
+                    ln.strip()
+                    for ln in (content or "").splitlines()
+                    if ln.strip()
+                ]
+                error_message = next(
+                    (ln for ln in lines if "Final error:" in ln),
+                    next(
+                        (ln for ln in lines if matched_marker in ln),
+                        matched_marker,
+                    ),
+                )[:500]
+
         duration_ms = (
             int((time.time() - started_at) * 1000) if started_at else None
         )
 
-        body_obj = {
-            "job_id": delivery_id or rose_request_id,
-            "rose_request_id": rose_request_id,
-            "status": "completed",
-            "summary": content,
-            "artifacts": [],
-            "duration_ms": duration_ms,
-            "token_cost_usd": None,
-            "error": None,
-        }
+        if is_failure:
+            body_obj = {
+                "job_id": delivery_id or rose_request_id,
+                "rose_request_id": rose_request_id,
+                "status": "failed",
+                # Keep a truncated summary for debugging visibility — Rose
+                # logs this when surfacing the failed sub-task to the user.
+                "summary": (content or "")[:2000],
+                "artifacts": [],
+                "duration_ms": duration_ms,
+                "token_cost_usd": None,
+                "error": error_message
+                or "Agent failed without an error message",
+            }
+            logger.warning(
+                "[webhook] rose_callback marking job %s FAILED: %s",
+                rose_request_id,
+                (error_message or "no detail")[:200],
+            )
+        else:
+            body_obj = {
+                "job_id": delivery_id or rose_request_id,
+                "rose_request_id": rose_request_id,
+                "status": "completed",
+                "summary": content,
+                "artifacts": [],
+                "duration_ms": duration_ms,
+                "token_cost_usd": None,
+                "error": None,
+            }
+
         body_bytes = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
         signature = "sha256=" + hmac.new(
             secret.encode(), body_bytes, hashlib.sha256
@@ -794,9 +897,10 @@ class WebhookAdapter(BasePlatformAdapter):
                             error=f"HTTP {resp.status}: {response_text[:200]}",
                         )
                     logger.info(
-                        "[webhook] rose_callback delivered to %s (HTTP %d)",
+                        "[webhook] rose_callback delivered to %s (HTTP %d, status=%s)",
                         callback_url,
                         resp.status,
+                        body_obj["status"],
                     )
                     return SendResult(success=True)
         except Exception as e:

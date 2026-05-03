@@ -105,6 +105,81 @@ class TestWriteFileHandler:
         assert any("write_file error" in r.getMessage() for r in caplog.records)
 
 
+class TestWriteFileHandlerRequiredArgGuard:
+    """Regression tests for the dropped-argument guard.
+
+    Some frontier models, deep into a long working context, emit tool calls
+    that retain the small `path` argument but drop the large `content`
+    payload entirely. Before this guard, the handler defaulted the missing
+    field to ``""`` and the underlying write reported a cheerful
+    ``{"bytes_written": 0, "dirs_created": true}`` success — producing a
+    zero-byte file the model then assumed it had populated. The guard
+    converts that silent-success into a loud error, while still allowing an
+    explicit empty string for legitimate file-truncation calls.
+    """
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_missing_content_key_returns_error_and_does_not_write(self, mock_get):
+        from tools.file_tools import _handle_write_file
+        result = json.loads(_handle_write_file({"path": "/tmp/should-not-exist.md"}))
+        assert "error" in result
+        assert "missing required field 'content'" in result["error"]
+        # Underlying file_ops must never have been touched.
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_missing_path_key_returns_error_and_does_not_write(self, mock_get):
+        from tools.file_tools import _handle_write_file
+        result = json.loads(_handle_write_file({"content": "hello"}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_empty_path_string_returns_error(self, mock_get):
+        from tools.file_tools import _handle_write_file
+        result = json.loads(_handle_write_file({"path": "", "content": "x"}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_explicit_empty_content_string_is_allowed(self, mock_get):
+        # Truncate-to-empty must still work — only a *missing* key is rejected.
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"bytes_written": 0, "dirs_created": False}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_write_file
+        result = json.loads(_handle_write_file({"path": "/tmp/truncate.txt", "content": ""}))
+        assert "error" not in result
+        mock_ops.write_file.assert_called_once_with("/tmp/truncate.txt", "")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_normal_write_still_works(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"bytes_written": 12, "dirs_created": False}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_write_file
+        result = json.loads(_handle_write_file({"path": "/tmp/out.txt", "content": "hello world\n"}))
+        assert "error" not in result
+        assert result["bytes_written"] == 12
+        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world\n")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_non_string_content_returns_error(self, mock_get):
+        from tools.file_tools import _handle_write_file
+        result = json.loads(_handle_write_file({"path": "/tmp/x", "content": {"oops": "dict"}}))
+        assert "error" in result
+        assert "must be a string" in result["error"]
+        mock_get.assert_not_called()
+
+
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_calls_patch_replace(self, mock_get):

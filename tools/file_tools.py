@@ -1097,7 +1097,32 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    # Required-field guard: refuse silently-malformed tool calls that omit
+    # `content` or `path` entirely. Under context pressure some models drop
+    # large args while keeping small ones, which previously produced a
+    # cheerful {"bytes_written": 0, "dirs_created": true} success and a
+    # zero-byte file. Distinguish "key missing" from "explicitly empty
+    # string" — the latter is a legitimate way to truncate a file.
+    if "path" not in args or not isinstance(args.get("path"), str) or not args.get("path"):
+        return tool_error(
+            "write_file: missing required field 'path'. The tool call did "
+            "not include a path argument. Re-emit the tool call with both "
+            "'path' and 'content' set."
+        )
+    if "content" not in args:
+        return tool_error(
+            "write_file: missing required field 'content'. The tool call "
+            "included a path but no content argument — this is almost "
+            "always a dropped-arg bug under context pressure. Re-emit the "
+            "tool call with the full content payload, or use execute_code "
+            "with hermes_tools.write_file() for very large files."
+        )
+    if not isinstance(args.get("content"), str):
+        return tool_error(
+            "write_file: 'content' must be a string. Got "
+            f"{type(args.get('content')).__name__}."
+        )
+    return write_file_tool(path=args["path"], content=args["content"], task_id=tid)
 
 
 def _handle_patch(args, **kw):

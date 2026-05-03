@@ -2047,6 +2047,16 @@ def _setup_slack():
         print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
 
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: open the channel in Slack, then right-click")
+    print_info("   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).")
+    print_info("   You can also set this later by typing /set-home in a Slack channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("SLACK_HOME_CHANNEL", home_channel.strip())
+
 
 def _write_slack_manifest_and_instruct():
     """Generate the Slack manifest, write it under HERMES_HOME, and print

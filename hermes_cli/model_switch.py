@@ -904,6 +904,26 @@ def switch_model(
                         if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
                             override = True
                             break
+        # Also check custom_providers list — models declared there should be accepted
+        # even if the remote /v1/models endpoint doesn't list them.
+        if not override and custom_providers and isinstance(custom_providers, list):
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                # Match by provider slug (custom:<name>) or by base_url
+                entry_name = entry.get("name", "")
+                entry_slug = f"custom:{entry_name}" if entry_name else ""
+                entry_url = entry.get("base_url", "")
+                if entry_slug == target_provider or entry_url == base_url:
+                    # Check if the requested model matches the entry's model
+                    entry_model = entry.get("model", "")
+                    entry_models = entry.get("models", {})
+                    if new_model == entry_model:
+                        override = True
+                        break
+                    if isinstance(entry_models, dict) and new_model in entry_models:
+                        override = True
+                        break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:

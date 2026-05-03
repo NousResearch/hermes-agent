@@ -60,6 +60,7 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+from collections import deque
 
 from agent.usage_pricing import (
     CanonicalUsage,
@@ -1244,6 +1245,23 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     return Markdown(plain)
 
 
+# ---------------------------------------------------------------------------
+# Persistent output history — re-emitted on Ctrl+L / redraw when enabled.
+# ---------------------------------------------------------------------------
+_output_history: deque = deque()
+_output_history_enabled: bool = False
+_output_history_max: int = 200
+
+
+def _init_output_history(enabled: bool, max_lines: int = 200) -> None:
+    global _output_history, _output_history_enabled, _output_history_max
+    _output_history_enabled = enabled
+    _output_history_max = max(10, max_lines)
+    _output_history = deque(maxlen=_output_history_max)
+
+
+_ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[[\?]?[0-9;]*[hl]")
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1251,6 +1269,9 @@ def _cprint(text: str):
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
     """
+    if _output_history_enabled:
+        _output_history.append(_ANSI_STRIP_RE.sub("", text))
+
     _pt_print(_PT_ANSI(text))
 
 
@@ -2104,6 +2125,13 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+        # Persistent output history — re-emit on Ctrl+L / resize.
+        _disp = CLI_CONFIG.get("display", {}) or {}
+        _init_output_history(
+            enabled=bool(_disp.get("persistent_output", False)),
+            max_lines=int(_disp.get("persistent_output_max_lines", 200)),
+        )
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -5918,6 +5946,14 @@ class HermesCLI:
                 out.erase_screen()
                 out.cursor_goto(0, 0)
                 out.flush()
+                # Re-emit buffered output history so recent output survives
+                # full redraws (Ctrl+L / resize).
+                if _output_history_enabled and _output_history:
+                    try:
+                        for line in _output_history:
+                            _pt_print(_PT_ANSI(line))
+                    except Exception:
+                        pass
             else:
                 self.console.clear()
             # Show fresh banner.  Inside the TUI we must route Rich output
@@ -10477,6 +10513,14 @@ class HermesCLI:
                         )
             except Exception:
                 pass  # never break resize handling
+            # Re-emit buffered output history so recent output
+            # survives resize-triggered full redraws.
+            if _output_history_enabled and _output_history:
+                try:
+                    for _line in _output_history:
+                        _pt_print(_PT_ANSI(_line))
+                except Exception:
+                    pass
             _original_on_resize()
 
         app._on_resize = _resize_clear_ghosts

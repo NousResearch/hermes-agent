@@ -3479,13 +3479,13 @@ class GatewayRunner:
                         pass
 
         def _ready_nonempty() -> bool:
-            """Cheap probe: is there at least one ready+assigned+unclaimed task?"""
+            """Cheap probe: is there at least one dispatchable assigned task?"""
             conn = None
             try:
                 conn = _kb.connect()
                 row = conn.execute(
                     "SELECT 1 FROM tasks "
-                    "WHERE status = 'ready' AND assignee IS NOT NULL "
+                    "WHERE status IN ('ready', 'code_review') AND assignee IS NOT NULL "
                     "    AND claim_lock IS NULL LIMIT 1"
                 ).fetchone()
                 return row is not None

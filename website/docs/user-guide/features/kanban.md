@@ -45,7 +45,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 
 ## Core concepts
 
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | in_review | code_review | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation). `in_review` and `code_review` are used by PR-backed coding tasks: waiting on CI/review vs. actionable PR feedback.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -124,6 +124,23 @@ hermes kanban archive  t_abc t_def t_hij
 hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
+
+For coding tasks that open a GitHub PR, include PR metadata in the
+completion handoff:
+
+```bash
+hermes kanban complete t_abc \
+  --summary "implementation ready for review; local tests pass" \
+  --metadata '{"pr_url":"https://github.com/OWNER/REPO/pull/123","pr_number":123}'
+```
+
+That closes the current worker run but moves the task to `in_review`
+instead of `done`, clears the active claim, and preserves the summary and
+metadata on the run. `github.pr_url` / `github.pr_number` are accepted too.
+Run `hermes kanban pr-review-poll t_abc` from cron or an operator loop to
+poll GitHub with `gh`: green checks and no open feedback transition to
+`done`; pending checks stay `in_review`; failures, requested changes, or
+unseen unresolved review comments transition to `code_review`.
 
 ## How workers interact with the board
 
@@ -220,7 +237,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 
 ### What the plugin gives you
 
-- A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
+- A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `in_review`, `code_review`, `blocked`, `done` (plus `archived` when the toggle is on).
   - `triage` is the parking column for rough ideas a specifier is expected to flesh out. Tasks created with `hermes kanban create --triage` (or via the Triage column's inline create) land here and the dispatcher leaves them alone until a human or specifier promotes them to `todo` / `ready`.
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.

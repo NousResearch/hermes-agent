@@ -25,12 +25,14 @@
   const { cn, timeAgo } = SDK.utils;
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "in_review", "code_review", "blocked", "done"];
   const COLUMN_LABEL = {
     triage: "Triage",
     todo: "Todo",
     ready: "Ready",
     running: "In Progress",
+    in_review: "In Review",
+    code_review: "Code Review",
     blocked: "Blocked",
     done: "Done",
     archived: "Archived",
@@ -40,6 +42,8 @@
     todo: "Waiting on dependencies or unassigned",
     ready: "Assigned and waiting for a dispatcher tick",
     running: "Claimed by a worker — in-flight",
+    in_review: "PR is waiting on CI or human review",
+    code_review: "PR has actionable feedback or failing checks",
     blocked: "Worker asked for human input",
     done: "Completed",
     archived: "Archived",
@@ -49,6 +53,8 @@
     todo: "hermes-kanban-dot-todo",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
+    in_review: "hermes-kanban-dot-in_review",
+    code_review: "hermes-kanban-dot-code_review",
     blocked: "hermes-kanban-dot-blocked",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",

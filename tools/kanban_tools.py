@@ -177,7 +177,12 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+            )
         finally:
             conn.close()
     except Exception as e:
@@ -388,12 +393,14 @@ KANBAN_SHOW_SCHEMA = {
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
-        "Mark your current task done with a structured handoff for "
+        "Finish your current run with a structured handoff for "
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required."
+        "tests_run, decisions, findings, etc). If metadata contains "
+        "pr_url/pr_number or github.pr_url/github.pr_number, the task "
+        "moves to in_review instead of done. At least one of ``summary`` "
+        "or ``result`` is required."
     ),
     "parameters": {
         "type": "object",
@@ -415,8 +422,8 @@ KANBAN_COMPLETE_SCHEMA = {
                 "description": (
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "\"findings\": [...], \"pr_url\": \"...\"}. Surfaced "
+                    "to downstream workers alongside ``summary``."
                 ),
             },
             "result": {

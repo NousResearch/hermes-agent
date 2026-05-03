@@ -34,6 +34,8 @@ _STATUS_ICONS = {
     "todo":     "◻",
     "ready":    "▶",
     "running":  "●",
+    "in_review": "◌",
+    "code_review": "✎",
     "blocked":  "⊘",
     "done":     "✓",
     "archived": "—",
@@ -50,7 +52,7 @@ def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    return f"{icon} {t.id}  {t.status:11s}  {assignee:20s}{tenant}  {t.title}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -390,6 +392,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_hb.add_argument("--note", default=None,
                       help="Optional short note attached to the heartbeat event")
 
+    # --- pr-review-poll ---
+    p_pr = sub.add_parser(
+        "pr-review-poll",
+        help="Poll GitHub review/CI state for a PR-bearing task once",
+    )
+    p_pr.add_argument("task_id")
+    p_pr.add_argument("--json", action="store_true")
+
     # --- assignees ---
     p_asg = sub.add_parser(
         "assignees",
@@ -478,6 +488,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "log":      _cmd_log,
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
+        "pr-review-poll": _cmd_pr_review_poll,
         "assignees": _cmd_assignees,
         "notify-subscribe":   _cmd_notify_subscribe,
         "notify-list":        _cmd_notify_list,
@@ -578,6 +589,27 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
         return 1
     print(f"Heartbeat recorded for {args.task_id}")
+    return 0
+
+
+def _cmd_pr_review_poll(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_pr_review
+
+    with kb.connect() as conn:
+        try:
+            result = kanban_pr_review.poll_task(conn, args.task_id)
+        except kanban_pr_review.PRReviewError as exc:
+            print(f"kanban: pr-review-poll: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    print(
+        f"{args.task_id}: {result['state']} -> {result['task_status']} "
+        f"({result.get('reason') or 'no reason'})"
+    )
+    if result.get("actionable_ids"):
+        print("actionable: " + ", ".join(result["actionable_ids"]))
     return 0
 
 
@@ -875,7 +907,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
-                print(f"Completed {tid}")
+                task = kb.get_task(conn, tid)
+                if task and task.status == "in_review":
+                    print(f"Submitted {tid} for PR review")
+                else:
+                    print(f"Completed {tid}")
     return 0 if not failed else 1
 
 
@@ -1096,14 +1132,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             )
 
     def _ready_queue_nonempty() -> bool:
-        """Cheap SELECT — just asks whether there's at least one ready
-        task with an assignee that the dispatcher could have picked up."""
+        """Cheap SELECT — just asks whether there's at least one ready or
+        code_review task left assigned to a profile."""
         try:
             with kb.connect() as conn:
                 row = conn.execute(
                     "SELECT 1 FROM tasks "
-                    "WHERE status = 'ready' AND assignee IS NOT NULL "
-                    "    AND claim_lock IS NULL LIMIT 1"
+                    "WHERE status IN ('ready', 'code_review') AND assignee IS NOT NULL "
+                    "AND claim_lock IS NULL LIMIT 1"
                 ).fetchone()
                 return row is not None
         except Exception:
@@ -1182,8 +1218,11 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "ready", "running", "blocked", "done"):
-        print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
+    for k in (
+        "triage", "todo", "ready", "running",
+        "in_review", "code_review", "blocked", "done",
+    ):
+        print(f"  {k:11s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
         for who, counts in sorted(stats["by_assignee"].items()):

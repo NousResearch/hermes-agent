@@ -111,6 +111,8 @@
 .hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
+.hermes-kanban-dot-in_review { background: #8f7ad8; } /* violet */
+.hermes-kanban-dot-code_review { background: #d07a3f; } /* orange */
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }

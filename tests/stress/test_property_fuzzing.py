@@ -75,7 +75,7 @@ def assert_invariants(conn, kb, ops_log):
         failures.append(f"I2: open run {row['id']} on task {row['task_id']} has no pointer")
 
     # I3: valid statuses
-    valid = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+    valid = {"triage", "todo", "ready", "running", "in_review", "code_review", "blocked", "done", "archived"}
     bad_status = conn.execute("SELECT id, status FROM tasks").fetchall()
     for row in bad_status:
         if row["status"] not in valid:

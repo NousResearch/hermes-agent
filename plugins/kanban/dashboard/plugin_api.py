@@ -94,7 +94,8 @@ def _conn():
 # Columns shown by the dashboard, in left-to-right order. "archived" is
 # available via a filter toggle rather than a visible column.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "ready", "running", "blocked", "done",
+    "triage", "todo", "ready", "running",
+    "in_review", "code_review", "blocked", "done",
 ]
 
 
@@ -414,6 +415,8 @@ def update_task(task_id: str, payload: UpdateTaskBody):
                     ok = _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
+            elif s in ("in_review", "code_review"):
+                ok = kanban_db.transition_review_task(conn, task_id, s)
             elif s in ("todo", "running", "triage"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
@@ -621,6 +624,8 @@ def bulk_update(payload: BulkTaskBody):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
+                    elif s in ("in_review", "code_review"):
+                        ok = kanban_db.transition_review_task(conn, tid, s)
                     elif s in ("todo", "running", "triage"):
                         ok = _set_status_direct(conn, tid, s)
                     else:

@@ -42,6 +42,11 @@ def kanban_home(tmp_path, monkeypatch):
 # Idempotency key
 # ---------------------------------------------------------------------------
 
+def test_review_statuses_are_valid(kanban_home):
+    assert "in_review" in kb.VALID_STATUSES
+    assert "code_review" in kb.VALID_STATUSES
+
+
 def test_idempotency_key_returns_existing_task(kanban_home):
     conn = kb.connect()
     try:
@@ -1354,6 +1359,119 @@ def test_cli_complete_with_summary_and_metadata(kanban_home):
         conn.close()
     assert r.summary == "done it"
     assert r.metadata == {"files": 3}
+
+
+def test_complete_with_pr_metadata_moves_to_in_review(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="implement", assignee="worker")
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn,
+            tid,
+            result="opened PR",
+            summary="implementation ready for review",
+            metadata={"pr_url": "https://github.com/acme/app/pull/42"},
+        )
+        assert ok is True
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "in_review"
+        assert task.assignee == "worker"
+        assert task.claim_lock is None
+        assert task.completed_at is None
+
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "completed"
+        assert run.status == "review"
+        assert run.summary == "implementation ready for review"
+        assert run.metadata == {"pr_url": "https://github.com/acme/app/pull/42"}
+
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "review_started" in kinds
+        assert "completed" not in kinds
+    finally:
+        conn.close()
+
+
+def test_complete_with_nested_github_pr_metadata_moves_to_in_review(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="implement", assignee="worker")
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="manual PR",
+            metadata={"github": {"pr_number": 42, "pr_url": "https://github.com/acme/app/pull/42"}},
+        )
+        assert kb.get_task(conn, tid).status == "in_review"
+    finally:
+        conn.close()
+
+
+def test_review_transition_to_done_unblocks_children(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="impl", assignee="worker")
+        child = kb.create_task(conn, title="deploy", parents=[parent])
+        kb.complete_task(
+            conn,
+            parent,
+            summary="PR ready",
+            metadata={"pr_number": 42},
+        )
+        assert kb.get_task(conn, parent).status == "in_review"
+        assert kb.get_task(conn, child).status == "todo"
+
+        assert kb.transition_review_task(
+            conn,
+            parent,
+            "done",
+            summary="PR approved and checks green",
+            metadata={"github_review": {"seen_ids": ["check:ci"]}},
+        )
+        assert kb.get_task(conn, parent).status == "done"
+        assert kb.get_task(conn, child).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_code_review_tasks_are_dispatchable(kanban_home):
+    conn = kb.connect()
+    spawned = []
+    try:
+        tid = kb.create_task(conn, title="fix review", assignee="worker")
+        kb.complete_task(conn, tid, summary="PR", metadata={"pr_number": 42})
+        kb.transition_review_task(conn, tid, "code_review", summary="CI failed")
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append((task.id, task.status)) or 1234,
+        )
+
+        assert res.spawned and res.spawned[0][0] == tid
+        assert spawned == [(tid, "running")]
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_cli_accepts_review_status_filters(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.complete_task(conn, tid, summary="PR", metadata={"pr_number": 7})
+    finally:
+        conn.close()
+    out = run_slash("list --status in_review")
+    assert tid in out
+    assert "in_review" in out
+
+
+def test_cli_stats_prints_review_statuses(kanban_home):
+    out = run_slash("stats")
+    assert "in_review" in out
+    assert "code_review" in out
 
 
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):

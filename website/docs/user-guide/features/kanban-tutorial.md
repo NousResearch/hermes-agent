@@ -247,6 +247,24 @@ This replaces the "dig through comments and the work output" dance that plagues 
 
 The bulk-close guard exists because this data is per-run. `hermes kanban complete a b c --summary X` is refused — copy-pasting the same summary to three tasks is almost always wrong. Bulk close without the handoff flags still works for the common "I finished a pile of admin tasks" case.
 
+For coding tasks that open GitHub PRs, include `pr_url` or `pr_number` in
+that same metadata (or under `github.pr_url` / `github.pr_number`). Kanban
+closes the implementation run, preserves the handoff, and moves the task
+to `in_review` rather than `done`:
+
+```bash
+hermes kanban complete $IMPL \
+  --summary "implementation is in PR; local tests pass" \
+  --metadata '{"pr_url":"https://github.com/OWNER/REPO/pull/123","pr_number":123}'
+
+hermes kanban pr-review-poll $IMPL
+```
+
+The one-shot PR poll uses `gh` to classify checks and reviews. Green/no
+open feedback moves the task to `done`; pending checks keep it
+`in_review`; failing checks, requested changes, or unseen unresolved
+review comments move it to `code_review` for follow-up.
+
 ## Inspecting a task currently running
 
 For completeness — here's the drawer of a task still in flight (the API implementation from Story 1, claimed by `backend-dev` but not yet complete):

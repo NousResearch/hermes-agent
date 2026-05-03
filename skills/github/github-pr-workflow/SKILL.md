@@ -150,6 +150,32 @@ To create as a draft, add `"draft": true` to the JSON body.
 
 ## 4. Monitoring CI Status
 
+### Kanban PR Review Loop
+
+When a Kanban coding task opens a PR, complete the task with PR metadata
+instead of treating it as fully done:
+
+```python
+kanban_complete(
+    summary="implementation is in PR; local targeted tests pass",
+    metadata={
+        "pr_url": "https://github.com/OWNER/REPO/pull/123",
+        "pr_number": 123,
+        "changed_files": ["..."],
+        "tests_run": ["scripts/run_tests.sh tests/path/test_file.py"],
+    },
+)
+```
+
+`github.pr_url` and `github.pr_number` are also accepted. Kanban moves
+the task to `in_review` and clears the active claim. A single poll with
+`hermes kanban pr-review-poll <task_id>` uses `gh` to read checks,
+review decision, and unresolved review threads. Green checks with no open
+feedback move the task to `done`; pending checks keep it `in_review`;
+failing checks, requested changes, or unseen unresolved review comments
+move it to `code_review`. The poller records seen check/comment IDs so
+the same review comment is not processed repeatedly.
+
 ### Check CI Status
 
 **With gh:**

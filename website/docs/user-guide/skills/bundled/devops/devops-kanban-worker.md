@@ -64,6 +64,21 @@ kanban_complete(
 )
 ```
 
+**Coding task with a PR:**
+```python
+kanban_complete(
+    summary="implemented rate limiter; PR opened and local tests pass",
+    metadata={
+        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "tests_run": ["scripts/run_tests.sh tests/test_rate_limiter.py"],
+        "pr_url": "https://github.com/acme/app/pull/123",
+        "pr_number": 123,
+    },
+)
+```
+
+If `metadata` contains `pr_url` or `pr_number` (also accepted under `github.pr_url` / `github.pr_number`), Kanban does **not** mark the task `done`. It releases your claim and moves the task to `in_review` so CI/review polling can decide the next state. Clean PRs move to `done`; failing checks, requested changes, or unseen unresolved review comments move to `code_review`.
+
 **Research task:**
 ```python
 kanban_complete(

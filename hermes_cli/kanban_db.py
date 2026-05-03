@@ -35,7 +35,19 @@ from typing import Any, Iterable, Optional
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+VALID_STATUSES = {
+    "triage",
+    "todo",
+    "ready",
+    "running",
+    "in_review",
+    "code_review",
+    "blocked",
+    "done",
+    "archived",
+}
+REVIEW_STATUSES = {"in_review", "code_review"}
+REVIEW_TRANSITION_STATUSES = {"in_review", "code_review", "done", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 # A running task's claim is valid for 15 minutes; after that the next
@@ -1097,6 +1109,7 @@ def _synthesize_ended_run(
     task_id: str,
     *,
     outcome: str,
+    status: Optional[str] = None,
     summary: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
@@ -1134,13 +1147,154 @@ def _synthesize_ended_run(
         """,
         (
             task_id, profile, step_key,
-            outcome, outcome,
+            status or outcome, outcome,
             summary, error,
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
             now, now,
         ),
     )
     return int(cur.lastrowid or 0)
+
+
+def extract_pr_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    """Return normalized PR metadata if ``metadata`` carries a PR reference.
+
+    Accepted shapes:
+
+    - ``{"pr_url": "...", "pr_number": 123}``
+    - ``{"github": {"pr_url": "...", "pr_number": 123}}``
+
+    The returned dict preserves both the top-level and nested GitHub
+    fields that were present so review polling can run without reparsing
+    arbitrary worker prose.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    github = metadata.get("github")
+    if not isinstance(github, dict):
+        github = {}
+    pr_url = metadata.get("pr_url") or github.get("pr_url")
+    pr_number = metadata.get("pr_number") or github.get("pr_number")
+    if pr_url is None and pr_number is None:
+        return None
+    out: dict[str, Any] = {}
+    if pr_url is not None:
+        out["pr_url"] = str(pr_url)
+    if pr_number is not None:
+        try:
+            out["pr_number"] = int(pr_number)
+        except (TypeError, ValueError):
+            out["pr_number"] = str(pr_number)
+    if github:
+        out["github"] = dict(github)
+    return out
+
+
+def _review_event_payload(
+    *,
+    old_status: Optional[str],
+    new_status: str,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> dict:
+    payload: dict[str, Any] = {
+        "from": old_status,
+        "to": new_status,
+    }
+    if summary:
+        payload["summary"] = summary.strip().splitlines()[0][:400]
+    if metadata:
+        payload["metadata"] = metadata
+        pr_meta = extract_pr_metadata(metadata)
+        if pr_meta:
+            payload["pr"] = pr_meta
+    return payload
+
+
+def transition_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    status: str,
+    *,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    result: Optional[str] = None,
+) -> bool:
+    """Move a PR review task among review lifecycle states.
+
+    Valid targets are ``in_review``, ``code_review``, ``done``, and
+    ``blocked``. The helper always clears active claim state because
+    review polling/feedback is an external lifecycle, not an active
+    worker claim. ``done`` is still the only status that unblocks child
+    dependencies.
+    """
+    if status not in REVIEW_TRANSITION_STATUSES:
+        raise ValueError(
+            f"review status must be one of {sorted(REVIEW_TRANSITION_STATUSES)}"
+        )
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        old_status = row["status"]
+        completed_at = now if status == "done" else None
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status        = ?,
+                   result        = COALESCE(?, result),
+                   completed_at  = ?,
+                   claim_lock    = NULL,
+                   claim_expires = NULL,
+                   worker_pid    = NULL
+             WHERE id = ?
+               AND status IN ('in_review', 'code_review', 'blocked', 'done', 'ready', 'running')
+            """,
+            (status, result, completed_at, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome=("blocked" if status == "blocked" else "completed"),
+            status=status,
+            summary=summary,
+            metadata=metadata,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_transitioned",
+            _review_event_payload(
+                old_status=old_status,
+                new_status=status,
+                summary=summary,
+                metadata=metadata,
+            ),
+            run_id=run_id,
+        )
+        if status == "done":
+            _append_event(
+                conn,
+                task_id,
+                "completed",
+                {"summary": summary.strip().splitlines()[0][:400] if summary else None},
+                run_id=run_id,
+            )
+        elif status == "blocked":
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {"reason": summary},
+                run_id=run_id,
+            )
+    if status == "done":
+        recompute_ready(conn)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1187,10 +1341,14 @@ def claim_task(
     ttl_seconds: int = DEFAULT_CLAIM_TTL_SECONDS,
     claimer: Optional[str] = None,
 ) -> Optional[Task]:
-    """Atomically transition ``ready -> running``.
+    """Atomically transition ``ready|code_review -> running``.
+
+    ``code_review`` is dispatchable so PR-bearing implementation tasks can
+    be re-spawned to address failing checks or requested changes, then return
+    to ``in_review`` when the worker completes with PR metadata again.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in a dispatchable status).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -1201,7 +1359,7 @@ def claim_task(
         # it when the CAS resets the pointer below. No-op when the invariant
         # holds (the common case).
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'ready'",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('ready', 'code_review')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -1224,7 +1382,7 @@ def claim_task(
                    claim_expires = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
-               AND status = 'ready'
+               AND status IN ('ready', 'code_review')
                AND claim_lock IS NULL
             """,
             (lock, expires, now, task_id),
@@ -1342,7 +1500,7 @@ def complete_task(
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
 ) -> bool:
-    """Transition ``running|ready -> done`` and record ``result``.
+    """Transition a task after a worker handoff and record ``result``.
 
     Accepts a task that's merely ``ready`` too, so a manual CLI
     completion (``hermes kanban complete <id>``) works without requiring
@@ -1354,28 +1512,41 @@ def complete_task(
     callers don't have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    If metadata contains ``pr_url`` / ``pr_number`` (or
+    ``github.pr_url`` / ``github.pr_number``), the implementation is not
+    dependency-complete yet. The run is closed, the claim is released,
+    and the task moves to ``in_review`` for CI/review follow-up. Only a
+    later clean review transition moves it to ``done``.
     """
     now = int(time.time())
+    pr_meta = extract_pr_metadata(metadata)
+    target_status = "in_review" if pr_meta else "done"
     with write_txn(conn):
         cur = conn.execute(
             """
             UPDATE tasks
-               SET status       = 'done',
+               SET status       = ?,
                    result       = ?,
                    completed_at = ?,
                    claim_lock   = NULL,
                    claim_expires= NULL,
                    worker_pid   = NULL
              WHERE id = ?
-               AND status IN ('running', 'ready', 'blocked')
+               AND status IN ('running', 'ready', 'blocked', 'in_review', 'code_review')
             """,
-            (result, now, task_id),
+            (
+                target_status,
+                result,
+                now if target_status == "done" else None,
+                task_id,
+            ),
         )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
             conn, task_id,
-            outcome="completed", status="done",
+            outcome="completed", status=("review" if pr_meta else "done"),
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
@@ -1387,6 +1558,7 @@ def complete_task(
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
+                status="review" if pr_meta else "completed",
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
@@ -1396,16 +1568,22 @@ def complete_task(
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        payload = {
+            "result_len": len(result) if result else 0,
+            "summary": ev_summary or None,
+        }
+        if pr_meta:
+            payload["pr"] = pr_meta
         _append_event(
-            conn, task_id, "completed",
-            {
-                "result_len": len(result) if result else 0,
-                "summary": ev_summary or None,
-            },
+            conn,
+            task_id,
+            "review_started" if pr_meta else "completed",
+            payload,
             run_id=run_id,
         )
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
+    # Recompute ready status for dependents only after clean completion.
+    if target_status == "done":
+        recompute_ready(conn)
     return True
 
 
@@ -1964,7 +2142,7 @@ def dispatch_once(
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      4. For each ready/code_review task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path) -> Optional[int]``. The return
          value (if any) is recorded as ``worker_pid`` so subsequent ticks
          can detect crashes before the TTL expires.
@@ -1983,7 +2161,7 @@ def dispatch_once(
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
+        "WHERE status IN ('ready', 'code_review') AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     spawned = 0

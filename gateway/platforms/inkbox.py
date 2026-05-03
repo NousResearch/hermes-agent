@@ -231,6 +231,13 @@ class InkboxAdapter(BasePlatformAdapter):
         # `+` or `@` to disambiguate) — without this, send() defaults the
         # mode by chat_id shape and would email an SMS reply.
         self._last_inbound_modality: Dict[str, str] = {}
+        # chat_id → unix timestamp at which the contact's call WS most-recently
+        # closed.  send() consults this to drop replies generated during the
+        # short window after a call ends — when the agent's last in-call turn
+        # finishes generating after the WS is gone, the response would
+        # otherwise fall through to the email/SMS default and leak the
+        # voice-intended text into the user's inbox.
+        self._voice_recently_closed: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -495,6 +502,36 @@ class InkboxAdapter(BasePlatformAdapter):
 
         meta = metadata or {}
         mode = (meta.get("mode") or "").lower().strip()
+
+        # End-of-call grace window: when a voice call ends, the agent's last
+        # in-flight turn often finishes generating *after* the WS has closed.
+        # Without this guard the response falls through to the email/SMS
+        # default and leaks the voice-intended text into the user's inbox.
+        #
+        # Drop when ALL of:
+        #   - call WS just closed for this chat within VOICE_GRACE_SECONDS
+        #   - no active call WS now (so we cannot ride the WS)
+        #   - gateway didn't pass an explicit ``mode``
+        #   - no fresh non-voice inbound has arrived since the close (which
+        #     would have repopulated ``_last_inbound_modality`` and made this
+        #     a legitimate SMS/email reply, not stale voice content).
+        VOICE_GRACE_SECONDS = 60
+        closed_at = self._voice_recently_closed.get(str(chat_id))
+        if (
+            closed_at is not None
+            and (time.time() - closed_at) < VOICE_GRACE_SECONDS
+            and chat_id not in self._active_call_ws
+            and not mode
+            and not self._last_inbound_modality.get(str(chat_id))
+        ):
+            logger.info(
+                "[Inkbox] Suppressed post-call voice-leakage for chat %s: %s…",
+                chat_id, (content or "")[:60].replace("\n", " "),
+            )
+            return SendResult(success=True, message_id="suppressed-post-call-leak")
+        # Garbage-collect stale entries so the dict doesn't grow unbounded.
+        if closed_at is not None and (time.time() - closed_at) > VOICE_GRACE_SECONDS:
+            self._voice_recently_closed.pop(str(chat_id), None)
 
         # Resolve mode if the gateway didn't pass one explicitly.  Order of
         # preference:
@@ -1168,6 +1205,10 @@ class InkboxAdapter(BasePlatformAdapter):
             # doesn't get mis-routed to a closed call socket.
             if self._last_inbound_modality.get(str(contact_id)) == "voice":
                 self._last_inbound_modality.pop(str(contact_id), None)
+            # Stamp the close time so send() can drop in-flight voice replies
+            # that finish generating after the WS is gone, instead of letting
+            # them leak to email/SMS via the default mode heuristic.
+            self._voice_recently_closed[str(contact_id)] = time.time()
             with suppress(Exception):
                 await ws.close()
             logger.info("[Inkbox] Call WS closed: call_id=%s", call_id)

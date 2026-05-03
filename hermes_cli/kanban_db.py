@@ -61,16 +61,32 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # Paths
 # ---------------------------------------------------------------------------
 
+def _base_hermes_home() -> Path:
+    """Return the base HERMES_HOME (``~/.hermes``) ignoring any active profile.
+
+    The Kanban board and workspaces must be shared across all profiles so
+    that an orchestrator (e.g. techlead) can create tasks and workers
+    (e.g. dev, devops, qa) can claim and complete them.
+    """
+    return Path.home() / ".hermes"
+
+
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+    """Return the path to the shared ``kanban.db``.
+
+    Always uses the base HERMES_HOME so the board is profile-agnostic:
+    orchestrators and workers see the same database regardless of which
+    profile they run under.
+    """
+    return _base_hermes_home() / "kanban.db"
 
 
 def workspaces_root() -> Path:
-    """Return the directory under which ``scratch`` workspaces are created."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "workspaces"
+    """Return the directory under which ``scratch`` workspaces are created.
+
+    Shared across all profiles — same rationale as :func:`kanban_db_path`.
+    """
+    return _base_hermes_home() / "kanban" / "workspaces"
 
 
 # ---------------------------------------------------------------------------

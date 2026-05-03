@@ -10,7 +10,7 @@ Resolution order for text tasks (auto mode):
   2. OpenRouter  (OPENROUTER_API_KEY)
   3. Nous Portal (~/.hermes/auth.json active provider)
   4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
+  5. Native Anthropic / configured OAuth providers
   6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
   7. None
 
@@ -159,6 +159,8 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "gemini-cli": "google-gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
 }
 
 
@@ -2077,6 +2079,43 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── Google Gemini OAuth / Code Assist ────────────────────────────
+    if provider == "google-gemini-cli":
+        if async_mode:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli auxiliary async "
+                "mode is not supported yet"
+            )
+            return None, None
+        try:
+            from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient, MARKER_BASE_URL
+            from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+        except ImportError as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested but "
+                "Gemini OAuth support is unavailable: %s",
+                exc,
+            )
+            return None, None
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested but "
+                "OAuth credentials are unavailable (run: hermes auth add "
+                "google-gemini-cli --type oauth): %s",
+                exc,
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or "gemini-3-pro-preview", provider)
+        client = GeminiCloudCodeClient(
+            api_key=str(creds.get("api_key") or "google-oauth"),
+            base_url=str(creds.get("base_url") or MARKER_BASE_URL),
+            project_id=str(creds.get("project_id") or ""),
+        )
+        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        return client, final_model
+
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
     if provider == "openai-codex":
         if not model:
@@ -2417,6 +2456,8 @@ def resolve_provider_client(
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "google-gemini-cli":
+            return resolve_provider_client("google-gemini-cli", model, async_mode)
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

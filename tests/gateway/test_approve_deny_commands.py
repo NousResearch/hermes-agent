@@ -257,6 +257,34 @@ class TestApproveCommand:
         assert session_key not in runner._pending_approvals
 
 
+    @pytest.mark.asyncio
+    async def test_approve_task_args_routes_to_mirip_harness_bridge_when_no_tool_approval(self, monkeypatch):
+        """/approve task=... should invoke MIRIP-HARNESS bridge instead of saying no pending command."""
+        runner = _make_runner()
+        calls = []
+
+        class Completed:
+            returncode = 0
+            stdout = '{"status":"executed","return_code":0,"stdout_tail":"run_id=dry-run-test validation=PASS"}'
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Completed()
+
+        monkeypatch.setenv("MIRIP_HARNESS_ROOT", r"C:\MIRIP-HARNESS")
+        monkeypatch.setattr("gateway.run.Path.exists", lambda self: True)
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = await runner._handle_approve_command(_make_event("/approve task=2026-05-01_claude-worker-smoke-test worker=worker-claude-code-opus reviewer=reviewer-gpt-5-4 mode=dry-run post=false"))
+
+        assert calls
+        assert "telegram_approve_bridge.py" in calls[0][0][1]
+        assert "--execute-text" in calls[0][0]
+        assert "MIRIP-HARNESS approve executed" in result
+        assert "run_id=dry-run-test" in result
+
+
 # ------------------------------------------------------------------
 # /deny command
 # ------------------------------------------------------------------

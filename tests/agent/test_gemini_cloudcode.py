@@ -1124,6 +1124,30 @@ class TestProviderRegistration:
         assert result["project_id"] == "my-proj"
         assert result["email"] == "t@e.com"
 
+    def test_auxiliary_client_uses_google_gemini_cli_oauth(self, monkeypatch):
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_oauth import GoogleCredentials, save_credentials
+        from agent.auxiliary_client import resolve_provider_client
+
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        save_credentials(GoogleCredentials(
+            access_token="live-tok",
+            refresh_token="rt",
+            expires_ms=int((time.time() + 3600) * 1000),
+            project_id="my-proj",
+            email="t@e.com",
+        ))
+
+        client, model = resolve_provider_client(
+            "google-gemini-cli",
+            model="gemini-3-pro-preview",
+        )
+
+        assert isinstance(client, GeminiCloudCodeClient)
+        assert model == "gemini-3-pro-preview"
+        assert str(client.base_url).startswith("cloudcode-pa://")
+
     def test_determine_api_mode(self):
         from hermes_cli.providers import determine_api_mode
 

@@ -8786,6 +8786,59 @@ class GatewayRunner:
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+    def _mirip_harness_approve_bridge_path(self) -> Path:
+        root = Path(os.environ.get("MIRIP_HARNESS_ROOT", r"C:\MIRIP-HARNESS"))
+        return root / "bin" / "telegram_approve_bridge.py"
+
+    def _looks_like_mirip_harness_approve(self, event: MessageEvent) -> bool:
+        args = (event.get_command_args() or "").strip()
+        if not args:
+            return False
+        lowered = args.lower()
+        return "task=" in lowered and ("worker=" in lowered or "reviewer=" in lowered or "mode=" in lowered)
+
+    async def _handle_mirip_harness_approve_command(self, event: MessageEvent) -> str:
+        """Route /approve task=... through the MIRIP-HARNESS approval bridge.
+
+        Hermes gateway already owns Telegram getUpdates for the Core bot, so
+        the external MIRIP poller cannot reliably consume the same update.
+        This fallback preserves normal /approve dangerous-command semantics,
+        but when there is no pending tool approval and the args look like a
+        MIRIP-HARNESS approval packet, it hands the original command text to
+        the HARNESS bridge's non-polling entrypoint.
+        """
+        bridge = self._mirip_harness_approve_bridge_path()
+        if not bridge.exists():
+            return f"MIRIP-HARNESS approve bridge not found: {bridge}"
+
+        cmd = [sys.executable, str(bridge), "--execute-text", event.text or ""]
+        import subprocess as _subprocess
+
+        def _run_bridge():
+            return _subprocess.run(
+                cmd,
+                cwd=str(bridge.parents[1]),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=930,
+            )
+
+        try:
+            proc = await asyncio.to_thread(_run_bridge)
+        except _subprocess.TimeoutExpired:
+            return "MIRIP-HARNESS approve bridge timed out before completing. Check HARNESS run evidence/logs."
+        except Exception as exc:
+            return f"MIRIP-HARNESS approve bridge failed to start: {exc}"
+
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        summary = stdout[-3000:] if stdout else stderr[-1000:]
+        if proc.returncode == 0:
+            return "MIRIP-HARNESS approve executed.\n" + summary
+        return f"MIRIP-HARNESS approve failed with exit code {proc.returncode}.\n{summary}"
+
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
 
@@ -8817,6 +8870,8 @@ class GatewayRunner:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+            if self._looks_like_mirip_harness_approve(event):
+                return await self._handle_mirip_harness_approve_command(event)
             return "No pending command to approve."
 
         # Parse args: support "all", "all session", "all always", "session", "always"

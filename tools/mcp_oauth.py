@@ -61,6 +61,7 @@ try:
     from mcp.shared.auth import (
         OAuthClientInformationFull,
         OAuthClientMetadata,
+        OAuthMetadata,
         OAuthToken,
     )
 
@@ -87,9 +88,12 @@ class OAuthNonInteractiveError(RuntimeError):
 # Module-level state
 # ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
-# tests can verify the callback server and the redirect_uri share a port.
+# Port/host used by the most recent build_oauth_auth() call. Exposed so that
+# tests can verify the callback server and the redirect_uri share the same
+# listener settings.
 _oauth_port: int | None = None
+_oauth_bind_host: str = "127.0.0.1"
+_oauth_result: dict[str, str | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +227,9 @@ class HermesTokenStorage:
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
 
+    def _meta_path(self) -> Path:
+        return _get_token_dir() / f"{self._server_name}.meta.json"
+
     # -- tokens ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
@@ -300,11 +307,30 @@ class HermesTokenStorage:
         _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
+    # -- oauth server metadata --------------------------------------------
+    # The MCP SDK keeps discovered ``OAuthMetadata`` (token endpoint URL
+    # etc.) in memory only. Persisting it here lets a restarted process
+    # refresh tokens without re-running the browser-based discovery.
+
+    def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:
+        _write_json(self._meta_path(), metadata.model_dump(exclude_none=True, mode="json"))
+        logger.debug("OAuth metadata saved for %s", self._server_name)
+
+    def load_oauth_metadata(self) -> "OAuthMetadata | None":
+        data = _read_json(self._meta_path())
+        if data is None:
+            return None
+        try:
+            return OAuthMetadata.model_validate(data)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt OAuth metadata at %s -- ignoring: %s", self._meta_path(), exc)
+            return None
+
     # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (self._tokens_path(), self._client_info_path()):
+        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
 
     def has_cached_tokens(self) -> bool:
@@ -390,9 +416,9 @@ async def _redirect_handler(authorization_url: str) -> None:
 async def _wait_for_callback() -> tuple[str, str | None]:
     """Wait for the OAuth callback to arrive on the local callback server.
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
+    Uses the module-level listener settings prepared by ``build_oauth_auth``.
+    If a callback server is already running on that port, we reuse the shared
+    result container instead of failing on a second bind attempt.
 
     Raises:
         OAuthNonInteractiveError: If the callback times out (no user present
@@ -407,45 +433,189 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "before _wait_for_oauth_callback"
         )
 
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
+    global _oauth_result
+    if _oauth_result is None:
+        handler_cls, result = _make_callback_handler()
+        _oauth_result = result
+    else:
+        handler_cls = None
+        result = _oauth_result
 
-    # Start a temporary server on the known port
+    server = None
+    server_thread = None
+    bind_host = _oauth_bind_host or "127.0.0.1"
+
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
-        )
+        if handler_cls is not None:
+            try:
+                server = HTTPServer((bind_host, _oauth_port), handler_cls)
+                server_thread = threading.Thread(target=server.handle_request, daemon=True)
+                server_thread.start()
+            except OSError:
+                # Another callback listener for this flow is already active.
+                server = None
+                server_thread = None
 
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
-
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
-    try:
+        timeout = 300.0
+        poll_interval = 0.5
+        elapsed = 0.0
         while elapsed < timeout:
             if result["auth_code"] is not None or result["error"] is not None:
                 break
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
+
+        if result["error"]:
+            raise RuntimeError(f"OAuth authorization failed: {result['error']}")
+        if result["auth_code"] is None:
+            raise OAuthNonInteractiveError(
+                "OAuth callback timed out — no authorization code received. "
+                "Ensure you completed the browser authorization flow."
+            )
+
+        return result["auth_code"], result["state"]
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
+        if _oauth_result is result:
+            _oauth_result = None
 
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
 
-    return result["auth_code"], result["state"]
+# ---------------------------------------------------------------------------
+# OAuth provider subclass -- restores & persists OAuth server metadata
+# ---------------------------------------------------------------------------
+
+if _OAUTH_AVAILABLE:
+
+    class _HermesOAuthProvider(OAuthClientProvider):
+        """OAuthClientProvider subclass that restores and persists OAuth
+        server metadata (``token_endpoint`` etc.) across process restarts.
+
+        The MCP SDK keeps ``oauth_metadata`` in memory only. Without disk
+        persistence, a restart causes refresh requests to POST to a guessed
+        ``/token`` path, which returns 404 on most OAuth providers and
+        forces a full browser re-authorization.
+
+        Token expiry persistence is handled separately in
+        ``HermesTokenStorage.get_tokens()`` via ``expires_in`` rewriting.
+        """
+
+        async def _initialize(self) -> None:
+            await super()._initialize()
+            storage = self.context.storage
+            if not isinstance(storage, HermesTokenStorage):
+                return
+
+            # Restore metadata from disk
+            if not self.context.oauth_metadata:
+                meta = storage.load_oauth_metadata()
+                if meta:
+                    self.context.oauth_metadata = meta
+                    logger.debug(
+                        "OAuth[%s] restored metadata from disk (token_endpoint=%s)",
+                        storage._server_name,
+                        meta.token_endpoint,
+                    )
+
+            # Discover via well-known endpoints if we still have no metadata
+            # but have a refresh token we'll need to use
+            if (
+                not self.context.oauth_metadata
+                and self.context.current_tokens
+                and self.context.current_tokens.refresh_token
+            ):
+                import asyncio as _asyncio
+                try:
+                    await _asyncio.wait_for(
+                        self._discover_oauth_metadata(storage._server_name),
+                        timeout=10.0,
+                    )
+                except _asyncio.TimeoutError:
+                    logger.warning(
+                        "OAuth[%s] metadata discovery timed out", storage._server_name
+                    )
+
+        async def _discover_oauth_metadata(self, server_name: str) -> None:
+            """Discover OAuth metadata via well-known endpoints and persist it."""
+            import httpx as _httpx
+            from mcp.client.auth.utils import (
+                build_oauth_authorization_server_metadata_discovery_urls,
+                build_protected_resource_metadata_discovery_urls,
+            )
+            from mcp.shared.auth import OAuthMetadata as _OAuthMeta
+            from mcp.shared.auth import ProtectedResourceMetadata as _PRM
+
+            server_url = self.context.server_url
+            try:
+                async with _httpx.AsyncClient(timeout=5.0) as client:
+                    # Protected Resource Metadata -> auth server URL
+                    auth_server_url = None
+                    for url in build_protected_resource_metadata_discovery_urls(
+                        None, server_url
+                    ):
+                        resp = await client.get(str(url))
+                        if resp.status_code == 200:
+                            try:
+                                prm = _PRM.model_validate_json(resp.content)
+                                self.context.protected_resource_metadata = prm
+                                if prm.authorization_servers:
+                                    auth_server_url = str(prm.authorization_servers[0])
+                                break
+                            except Exception:
+                                continue
+
+                    # Authorization Server Metadata -> token endpoint etc.
+                    for url in build_oauth_authorization_server_metadata_discovery_urls(
+                        auth_server_url, server_url
+                    ):
+                        resp = await client.get(str(url))
+                        if resp.status_code == 200:
+                            try:
+                                meta = _OAuthMeta.model_validate_json(resp.content)
+                                self.context.oauth_metadata = meta
+                                storage = self.context.storage
+                                if isinstance(storage, HermesTokenStorage):
+                                    storage.save_oauth_metadata(meta)
+                                logger.debug(
+                                    "OAuth[%s] discovered metadata (token_endpoint=%s)",
+                                    server_name,
+                                    meta.token_endpoint,
+                                )
+                                break
+                            except Exception:
+                                continue
+            except Exception as exc:
+                logger.warning(
+                    "OAuth[%s] metadata discovery failed: %s", server_name, exc
+                )
+
+        async def async_auth_flow(self, request):
+            """Wrap parent auth flow to persist metadata after initial discovery.
+
+            The MCP SDK discovers ``oauth_metadata`` during the 401 auth flow
+            but never writes it to disk. After the parent flow exits we
+            snapshot the metadata so a subsequent process can skip discovery.
+            """
+            flow = super().async_auth_flow(request)
+            response = None
+            try:
+                while True:
+                    if response is None:
+                        out_request = await flow.__anext__()
+                    else:
+                        out_request = await flow.asend(response)
+                    response = yield out_request
+            except StopAsyncIteration:
+                pass
+
+            storage = self.context.storage
+            if isinstance(storage, HermesTokenStorage) and self.context.oauth_metadata:
+                existing = storage.load_oauth_metadata()
+                if (
+                    not existing
+                    or existing.token_endpoint != self.context.oauth_metadata.token_endpoint
+                ):
+                    storage.save_oauth_metadata(self.context.oauth_metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -482,11 +652,12 @@ def _configure_callback_port(cfg: dict) -> int:
     flows); replacing it with a ContextVar is out of scope for this
     consolidation PR.
     """
-    global _oauth_port
+    global _oauth_port, _oauth_bind_host
     requested = int(cfg.get("redirect_port", 0))
     port = _find_free_port() if requested == 0 else requested
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
+    _oauth_bind_host = str(cfg.get("redirect_host", "127.0.0.1"))
     return port
 
 
@@ -503,7 +674,8 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_host = cfg.get("redirect_host", "127.0.0.1")
+    redirect_uri = f"http://{redirect_host}:{port}/callback"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -530,7 +702,8 @@ def _maybe_preregister_client(
     if not client_id:
         return
     port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_host = cfg.get("redirect_host", "127.0.0.1")
+    redirect_uri = f"http://{redirect_host}:{port}/callback"
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,
@@ -582,6 +755,9 @@ def build_oauth_auth(
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
     storage = HermesTokenStorage(server_name)
 
+    global _oauth_result
+    _oauth_result = None
+
     if not _is_interactive() and not storage.has_cached_tokens():
         logger.warning(
             "MCP OAuth for '%s': non-interactive environment and no cached tokens "
@@ -595,7 +771,7 @@ def build_oauth_auth(
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
-    return OAuthClientProvider(
+    return _HermesOAuthProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,

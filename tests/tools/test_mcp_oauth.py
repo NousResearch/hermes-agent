@@ -414,6 +414,54 @@ class TestWaitForCallbackNoBlocking:
                 with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
                     asyncio.run(_wait_for_callback())
 
+    def test_clears_shared_callback_result_after_timeout(self):
+        """A completed/failed callback wait must not leak stale code/state."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = {"auth_code": None, "state": None, "error": None}
+
+        async def instant_sleep(_seconds):
+            pass
+
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
+                asyncio.run(_wait_for_callback())
+
+        assert mod._oauth_result is None
+
+    def test_localhost_redirect_host_binds_loopback_not_all_interfaces(self):
+        """redirect_host=localhost must not broaden the listener to 0.0.0.0."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_bind_host = "localhost"
+        mod._oauth_result = None
+        addresses = []
+
+        class FakeServer:
+            def __init__(self, address, _handler_cls):
+                addresses.append(address)
+
+            def handle_request(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        async def instant_sleep(_seconds):
+            pass
+
+        with patch.object(mod, "HTTPServer", FakeServer), \
+             patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
+                asyncio.run(_wait_for_callback())
+
+        assert addresses
+        assert addresses[0][0] == "localhost"
+
 
 class TestBuildOAuthAuthNonInteractive:
     """build_oauth_auth() in non-interactive mode."""
@@ -546,7 +594,7 @@ def test_build_oauth_auth_preserves_server_url_path():
             captured.update(kwargs)
 
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
-         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_HermesOAuthProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
          patch.object(mcp_oauth, "_maybe_preregister_client"), \
          patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
@@ -558,5 +606,4 @@ def test_build_oauth_auth_preserves_server_url_path():
         )
 
     assert captured["server_url"] == "https://mcp.notion.com/mcp"
-
 

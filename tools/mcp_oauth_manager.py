@@ -148,6 +148,22 @@ def _make_hermes_provider_class() -> Optional[type]:
             if tokens is not None and tokens.expires_in is not None:
                 self.context.update_token_expiry(tokens)
 
+            storage = self.context.storage
+            from tools.mcp_oauth import HermesTokenStorage
+            if (
+                isinstance(storage, HermesTokenStorage)
+                and self.context.oauth_metadata is None
+            ):
+                meta = storage.load_oauth_metadata()
+                if meta is not None:
+                    self.context.oauth_metadata = meta
+                    logger.debug(
+                        "MCP OAuth '%s': restored metadata from disk "
+                        "(token_endpoint=%s)",
+                        self._hermes_server_name,
+                        meta.token_endpoint,
+                    )
+
             # Pre-flight OAuth AS discovery so ``_refresh_token`` has a
             # correct ``token_endpoint`` before the first refresh attempt.
             # Only runs when we have tokens on cold-load but no cached
@@ -229,12 +245,32 @@ def _make_hermes_provider_class() -> Optional[type]:
                         break
                     if asm:
                         self.context.oauth_metadata = asm
+                        storage = self.context.storage
+                        from tools.mcp_oauth import HermesTokenStorage
+                        if isinstance(storage, HermesTokenStorage):
+                            storage.save_oauth_metadata(asm)
                         logger.debug(
                             "MCP OAuth '%s': pre-flight ASM discovered "
                             "token_endpoint=%s",
                             self._hermes_server_name, asm.token_endpoint,
                         )
                         break
+
+        def _persist_oauth_metadata_if_changed(self) -> None:
+            """Persist discovered OAuth metadata for future process restarts."""
+            meta = self.context.oauth_metadata
+            if meta is None:
+                return
+            storage = self.context.storage
+            from tools.mcp_oauth import HermesTokenStorage
+            if not isinstance(storage, HermesTokenStorage):
+                return
+            existing = storage.load_oauth_metadata()
+            if (
+                existing is None
+                or str(existing.token_endpoint) != str(meta.token_endpoint)
+            ):
+                storage.save_oauth_metadata(meta)
 
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
@@ -271,6 +307,7 @@ def _make_hermes_provider_class() -> Optional[type]:
                     incoming = yield outgoing
                     outgoing = await inner.asend(incoming)
             except StopAsyncIteration:
+                self._persist_oauth_metadata_if_changed()
                 return
 
     return HermesMCPOAuthProvider

@@ -122,6 +122,18 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# OpenRouter Response Caching (only applies when using OpenRouter)
+# =============================================================================
+# Cache identical API responses at the OpenRouter edge for free instant replays.
+# When enabled, identical requests (same model, messages, parameters) return
+# cached responses with zero billing. Separate from Anthropic prompt caching.
+# See: https://openrouter.ai/docs/guides/features/response-caching
+#
+# openrouter:
+#   response_cache: true         # Enable response caching (default: true)
+#   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

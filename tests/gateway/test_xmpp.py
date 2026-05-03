@@ -298,6 +298,7 @@ class TestXmppSend:
     async def test_send_typing_emits_chat_state_composing(self, monkeypatch):
         adapter = _make_xmpp_adapter(monkeypatch)
         adapter.client = MagicMock()
+        adapter._registered_plugins.add("xep_0085")
         sent = []
         adapter.client.send_message = lambda **kw: sent.append(kw)
 
@@ -305,9 +306,25 @@ class TestXmppSend:
         assert any(kw.get("mchat_state") == "composing" for kw in sent)
 
     @pytest.mark.asyncio
+    async def test_send_typing_noop_when_xep0085_unavailable(self, monkeypatch):
+        # Regression: if XEP-0085 plugin failed to register, send_typing must
+        # silently skip rather than calling send_message with an unknown
+        # mchat_state kwarg (which raises TypeError in slixmpp).
+        adapter = _make_xmpp_adapter(monkeypatch)
+        adapter.client = MagicMock()
+        # Note: xep_0085 NOT added to _registered_plugins
+        sent = []
+        adapter.client.send_message = lambda **kw: sent.append(kw)
+
+        await adapter.send_typing("alice@example.org")
+        await adapter.stop_typing("alice@example.org")
+        assert sent == []
+
+    @pytest.mark.asyncio
     async def test_send_image_file_uploads_via_xep_0363(self, tmp_path, monkeypatch):
         adapter = _make_xmpp_adapter(monkeypatch)
         adapter.client = MagicMock()
+        adapter._registered_plugins.add("xep_0363")
         # XEP-0363 plugin returns a public URL the adapter then sends in the body.
         upload_mock = AsyncMock(return_value="https://files.example.org/abc.jpg")
         adapter.client.__getitem__ = MagicMock(return_value=MagicMock(upload_file=upload_mock))
@@ -320,6 +337,9 @@ class TestXmppSend:
         result = await adapter.send_image_file("alice@example.org", str(path), caption="cap")
         assert result.success is True
         upload_mock.assert_awaited_once()
+        # content_type hint should be passed for known extensions (XEP-0363 §5).
+        upload_kwargs = upload_mock.call_args.kwargs
+        assert upload_kwargs.get("content_type") == "image/jpeg"
         sent_kw = send_capture.call_args.kwargs
         assert "https://files.example.org/abc.jpg" in (sent_kw.get("mbody") or "")
 
@@ -344,6 +364,22 @@ class TestXmppGetChatInfo:
         )
         info = await adapter.get_chat_info("hermes-room@conference.example.org")
         assert info["type"] == "group"
+
+    def test_is_muc_recognizes_common_subdomain_conventions(self, monkeypatch):
+        # Various XMPP servers use different MUC subdomain conventions.
+        # The heuristic should cover the common ones; explicit XMPP_MUC_ROOMS
+        # config still takes precedence for any non-standard prefix.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        for room in (
+            "team@conference.example.org",
+            "team@muc.example.org",
+            "team@rooms.example.org",
+            "team@chat.example.org",
+            "team@groups.example.org",
+        ):
+            assert adapter._is_muc(room), f"expected MUC heuristic to match {room}"
+        # 1:1 chats must not be misclassified as groupchat.
+        assert adapter._is_muc("alice@example.org") is False
 
 
 # ---------------------------------------------------------------------------

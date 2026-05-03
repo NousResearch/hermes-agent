@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,10 +97,16 @@ class XmppAdapter(BasePlatformAdapter):
         # Lazily created in connect()
         self.client: Optional[Any] = None
         self._process_task: Optional[asyncio.Task] = None
+        self._session_ready: Optional[asyncio.Event] = None
         self._self_bare = self._bare(self.jid)
 
         # Set of bare room JIDs we've configured for groupchat send routing.
         self._known_mucs = {r.room for r in self.muc_rooms}
+
+        # Track which optional plugins registered successfully so feature
+        # methods (chat states, HTTP upload) can no-op gracefully if a plugin
+        # is missing instead of raising TypeError on unknown kwargs.
+        self._registered_plugins: set[str] = set()
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -112,6 +119,7 @@ class XmppAdapter(BasePlatformAdapter):
                        "xep_0363"):
             try:
                 client.register_plugin(plugin)
+                self._registered_plugins.add(plugin)
             except Exception:
                 logger.warning("xmpp: failed to register slixmpp plugin %s", plugin)
 
@@ -126,6 +134,7 @@ class XmppAdapter(BasePlatformAdapter):
         client.add_event_handler("failed_auth", self._on_failed_auth)
 
         self.client = client
+        self._session_ready = asyncio.Event()
 
         connect_kwargs: Dict[str, Any] = {}
         if self.host:
@@ -184,6 +193,8 @@ class XmppAdapter(BasePlatformAdapter):
                 self.client.plugin["xep_0045"].join_muc(room.room, room.nick or self.muc_nick)
             except Exception:
                 logger.exception("xmpp: failed to join MUC %s", room.room)
+        if self._session_ready is not None:
+            self._session_ready.set()
 
     async def _on_disconnected(self, _event: Any) -> None:
         self._mark_disconnected()
@@ -319,7 +330,7 @@ class XmppAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc), retryable=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        if self.client is None:
+        if self.client is None or "xep_0085" not in self._registered_plugins:
             return
         mtype = "groupchat" if self._is_muc(chat_id) else "chat"
         try:
@@ -328,7 +339,7 @@ class XmppAdapter(BasePlatformAdapter):
             logger.debug("xmpp: send_typing failed", exc_info=True)
 
     async def stop_typing(self, chat_id: str) -> None:
-        if self.client is None:
+        if self.client is None or "xep_0085" not in self._registered_plugins:
             return
         mtype = "groupchat" if self._is_muc(chat_id) else "chat"
         try:
@@ -383,9 +394,30 @@ class XmppAdapter(BasePlatformAdapter):
         """
         if self.client is None:
             return SendResult(success=False, error="xmpp not connected", retryable=True)
+        if "xep_0363" not in self._registered_plugins:
+            return SendResult(
+                success=False,
+                error="xmpp HTTP File Upload (XEP-0363) not available",
+                retryable=False,
+            )
+        # Pass content-type so the receiving server's slot grant carries an
+        # accurate Content-Type. Some clients render media inline based on it
+        # rather than the URL extension.
+        content_type, _ = mimetypes.guess_type(path)
+        upload_kwargs: Dict[str, Any] = {
+            "filename": Path(path).name,
+            "input_file": path,
+        }
+        if content_type:
+            upload_kwargs["content_type"] = content_type
         try:
             upload = self.client["xep_0363"].upload_file
-            url = await upload(filename=Path(path).name, input_file=path)
+            try:
+                url = await upload(**upload_kwargs)
+            except TypeError:
+                # Older slixmpp signatures don't accept content_type kwarg.
+                upload_kwargs.pop("content_type", None)
+                url = await upload(**upload_kwargs)
         except Exception as exc:
             logger.exception("xmpp: HTTP upload (XEP-0363) failed")
             return SendResult(success=False, error=str(exc), retryable=True)
@@ -411,13 +443,16 @@ class XmppAdapter(BasePlatformAdapter):
         chat_type = "group" if self._is_muc(chat_id) else "dm"
         return {"chat_id": chat_id, "type": chat_type, "name": chat_id}
 
+    # Common MUC subdomain conventions across major XMPP servers. Operators
+    # using a non-standard prefix should set XMPP_MUC_ROOMS, which takes
+    # precedence over the heuristic.
+    _MUC_DOMAIN_PREFIXES = ("conference.", "muc.", "rooms.", "chat.", "groups.")
+
     def _is_muc(self, chat_id: str) -> bool:
         if chat_id in self._known_mucs:
             return True
-        # Heuristic: rooms usually live under a `conference.` subdomain.
-        # Falls back gracefully even if a server uses a different convention,
-        # because explicit muc_rooms are always treated as groupchat first.
-        return chat_id.split("@", 1)[-1].startswith("conference.")
+        domain = chat_id.split("@", 1)[-1]
+        return any(domain.startswith(p) for p in self._MUC_DOMAIN_PREFIXES)
 
     @staticmethod
     def _bare(jid: str) -> str:
@@ -449,8 +484,13 @@ async def send_xmpp_message(
         ok = await adapter.connect()
         if not ok:
             return {"success": False, "error": adapter.fatal_error_message() or "connect failed"}
-        # Wait briefly for session_start to fire so MUC join (if any) is complete.
-        await asyncio.sleep(0.5)
+        # Wait for session_start (and any MUC joins) to complete, with a
+        # bounded timeout so a slow/unresponsive server can't hang cron jobs.
+        if adapter._session_ready is not None:
+            try:
+                await asyncio.wait_for(adapter._session_ready.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("xmpp: session_start did not fire within 10s; sending anyway")
         result = await adapter.send(chat_id=chat_id, content=message)
         return {
             "success": result.success,

@@ -144,7 +144,51 @@ def decide_image_input_mode(
 # it fires, which is cheaper than permanent quality loss.
 
 
-def _guess_mime(path: Path) -> str:
+def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
+    """Detect image MIME from magic bytes. Returns None if unrecognised.
+
+    Filename-based detection (``mimetypes.guess_type``) is unreliable when
+    upstream platforms lie about content-type. Discord, for example, can
+    serve a PNG with ``content_type=image/webp`` for proxied/animated
+    stickers, custom emoji previews, or images uploaded via certain bots.
+    Anthropic strictly validates that declared media_type matches the
+    actual bytes and returns HTTP 400 on mismatch, so we sniff to be safe.
+    """
+    if not raw:
+        return None
+    # PNG: 89 50 4E 47 0D 0A 1A 0A
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    # JPEG: FF D8 FF
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    # GIF87a / GIF89a
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    # WEBP: "RIFF" .... "WEBP"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    # BMP: "BM"
+    if raw.startswith(b"BM"):
+        return "image/bmp"
+    # HEIC/HEIF: ftypheic / ftypheix / ftypmif1 / ftypmsf1 etc.
+    if len(raw) >= 12 and raw[4:8] == b"ftyp" and raw[8:12] in (
+        b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis",
+    ):
+        return "image/heic"
+    return None
+
+
+def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
+    """Return image MIME type for *path*.
+
+    If *raw* bytes are provided, magic-byte sniffing wins (authoritative).
+    Otherwise we fall back to ``mimetypes`` then suffix-based defaults.
+    """
+    if raw is not None:
+        sniffed = _sniff_mime_from_bytes(raw)
+        if sniffed:
+            return sniffed
     mime, _ = mimetypes.guess_type(str(path))
     if mime and mime.startswith("image/"):
         return mime
@@ -178,7 +222,7 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path)
+    mime = _guess_mime(path, raw=raw)
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

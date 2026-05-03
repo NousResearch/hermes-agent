@@ -50,7 +50,7 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)
 
 
-def test_persist_session_keeps_real_terminal_empty_response():
+def test_persist_session_keeps_unmarked_terminal_empty_response():
     agent = _agent_with_stubbed_persistence()
     messages = [
         {"role": "user", "content": "run the task"},
@@ -64,3 +64,21 @@ def test_persist_session_keeps_real_terminal_empty_response():
         {"role": "assistant", "content": "(empty)"},
     ]
     assert agent.saved_session_logs[-1] == messages
+
+
+def test_persist_session_strips_marked_terminal_empty_sentinel():
+    agent = _agent_with_stubbed_persistence()
+    messages = [
+        {"role": "user", "content": "continue"},
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_terminal_sentinel": True,
+        },
+    ]
+
+    AIAgent._persist_session(agent, messages, conversation_history=[])
+
+    assert messages == [{"role": "user", "content": "continue"}]
+    assert agent.saved_session_logs[-1] == messages
+    assert all(not msg.get("_empty_terminal_sentinel") for msg in messages)

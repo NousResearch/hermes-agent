@@ -924,6 +924,43 @@ def test_get_custom_provider_pool_key(tmp_path, monkeypatch):
     assert get_custom_provider_pool_key("") is None
 
 
+def test_get_custom_provider_pool_key_prefers_name_over_base_url(tmp_path, monkeypatch):
+    """When two custom providers share the same base_url, provider_name resolves to the correct one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "provider-a",
+                "base_url": "http://gateway:8080/v1",
+                "api_key": "sk-aaa",
+            },
+            {
+                "name": "provider-b",
+                "base_url": "http://gateway:8080/v1",
+                "api_key": "sk-bbb",
+            },
+        ]
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key
+
+    # Without provider_name, first match wins (backward compatible)
+    assert get_custom_provider_pool_key("http://gateway:8080/v1") == "custom:provider-a"
+
+    # With provider_name, exact name match wins regardless of order
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="provider-b") == "custom:provider-b"
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="provider-a") == "custom:provider-a"
+
+    # Name match with non-matching base_url still works via fallback
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="nonexistent") == "custom:provider-a"
+
+    # Empty provider_name is same as None (backward compatible)
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="") == "custom:provider-a"
+
+
 def test_list_custom_pool_providers(tmp_path, monkeypatch):
     """list_custom_pool_providers returns custom: pool keys from auth.json."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

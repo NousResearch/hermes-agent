@@ -1090,6 +1090,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # silence_allowed: in groups, when the bot wasn't directly
+            # addressed (no @mention, no name match, no reply-to-bot, no
+            # slash command). Mirror of the Slack adapter logic earlier in
+            # this PR. DMs always expect a reply, so silence_allowed stays
+            # False there. (#13248)
+            _raw_body = str(data.get("body") or "").strip()
+            _wa_addressed = (
+                _raw_body.startswith("/")
+                or self._message_is_reply_to_bot(data)
+                or self._message_mentions_bot(data)
+                or self._message_matches_mention_patterns(data)
+            )
+            _wa_silence_allowed = bool(is_group) and not _wa_addressed
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1098,6 +1111,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                silence_allowed=_wa_silence_allowed,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

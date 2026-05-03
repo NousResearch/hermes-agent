@@ -1169,23 +1169,22 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
 
 
-def get_pre_tool_call_block_message(
+def get_pre_tool_call_directives(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
-) -> Optional[str]:
-    """Check ``pre_tool_call`` hooks for a blocking directive.
+) -> tuple:
+    """Fire ``pre_tool_call`` hook ONCE, return (block_message, rewritten_args).
 
-    Plugins that need to enforce policy (rate limiting, security
-    restrictions, approval workflows) can return::
+    Plugins can return either a block or rewrite directive::
 
-        {"action": "block", "message": "Reason the tool was blocked"}
+        {"action": "block", "message": "Reason"}
+        {"action": "rewrite", "args": {<modified tool args>}}
 
-    from their ``pre_tool_call`` callback.  The first valid block
-    directive wins.  Invalid or irrelevant hook return values are
-    silently ignored so existing observer-only hooks are unaffected.
+    Observer-only hooks returning ``None`` are unaffected.
+    The first valid block or rewrite wins (block takes priority).
     """
     hook_results = invoke_hook(
         "pre_tool_call",
@@ -1196,16 +1195,56 @@ def get_pre_tool_call_block_message(
         tool_call_id=tool_call_id,
     )
 
+    block_message: Optional[str] = None
+    rewritten_args: Optional[Dict[str, Any]] = None
+
     for result in hook_results:
         if not isinstance(result, dict):
             continue
-        if result.get("action") != "block":
-            continue
-        message = result.get("message")
-        if isinstance(message, str) and message:
-            return message
+        action = result.get("action")
 
-    return None
+        if action == "block" and block_message is None:
+            message = result.get("message")
+            if isinstance(message, str) and message:
+                block_message = message
+
+        elif action == "rewrite" and rewritten_args is None:
+            new_args = result.get("args")
+            if isinstance(new_args, dict):
+                rewritten_args = new_args
+
+    return block_message, rewritten_args
+
+
+# Backward-compat aliases — keep these so existing callers don't break.
+# New code should use get_pre_tool_call_directives() which fires the
+# hook once instead of twice.
+def get_pre_tool_call_block_message(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[str]:
+    """Backward-compat: returns block message only. Fires hook each call."""
+    block_msg, _ = get_pre_tool_call_directives(
+        tool_name, args, task_id, session_id, tool_call_id,
+    )
+    return block_msg
+
+
+def get_pre_tool_call_rewrite(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Backward-compat: returns rewritten args only. Fires hook each call."""
+    _, rewritten = get_pre_tool_call_directives(
+        tool_name, args, task_id, session_id, tool_call_id,
+    )
+    return rewritten
 
 
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:

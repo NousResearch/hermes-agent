@@ -9270,18 +9270,20 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
-        # Check plugin hooks for a block directive before executing anything.
-        block_message: Optional[str] = None
+        # Check plugin hooks for directives before executing anything.
+        # Fires pre_tool_call hook ONCE, returns (block_message, rewritten_args).
         if not pre_tool_block_checked:
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import get_pre_tool_call_directives
+                _block_msg, _rewritten = get_pre_tool_call_directives(
                     function_name, function_args, task_id=effective_task_id or "",
                 )
+                if _block_msg is not None:
+                    return json.dumps({"error": _block_msg}, ensure_ascii=False)
+                if _rewritten is not None:
+                    function_args = _rewritten
             except Exception:
                 pass
-        if block_message is not None:
-            return json.dumps({"error": block_message}, ensure_ascii=False)
 
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
@@ -9434,16 +9436,23 @@ class AIAgent:
             block_result = None
             blocked_by_guardrail = False
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import get_pre_tool_call_directives
+                _block_msg, _rewritten = get_pre_tool_call_directives(
                     function_name, function_args, task_id=effective_task_id or "",
                 )
+                if _block_msg is not None:
+                    block_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+                elif _rewritten is not None:
+                    function_args = _rewritten
+                    # Re-check guardrails with rewritten args
+                    guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
+                    if not guardrail_decision.allows_execution:
+                        block_result = self._guardrail_block_result(guardrail_decision)
+                        blocked_by_guardrail = True
             except Exception:
-                block_message = None
+                pass
 
-            if block_message is not None:
-                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
-            else:
+            if block_result is None and _block_msg is None:
                 guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
                 if not guardrail_decision.allows_execution:
                     block_result = self._guardrail_block_result(guardrail_decision)
@@ -9783,10 +9792,12 @@ class AIAgent:
             # Check plugin hooks for a block directive before executing.
             _block_msg: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import get_pre_tool_call_directives
+                _block_msg, _rewritten = get_pre_tool_call_directives(
                     function_name, function_args, task_id=effective_task_id or "",
                 )
+                if _block_msg is None and _rewritten is not None:
+                    function_args = _rewritten
             except Exception:
                 pass
 

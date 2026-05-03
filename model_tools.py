@@ -685,21 +685,21 @@ def handle_function_call(
         # pass. When skip=True, the caller already fired it — do nothing
         # here.
         if not skip_pre_tool_call_hook:
-            block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import get_pre_tool_call_directives
+                _block_msg, _rewritten = get_pre_tool_call_directives(
                     function_name,
                     function_args,
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
                 )
+                if _block_msg is not None:
+                    return json.dumps({"error": _block_msg}, ensure_ascii=False)
+                if _rewritten is not None:
+                    function_args = _rewritten
             except Exception:
                 pass
-
-            if block_message is not None:
-                return json.dumps({"error": block_message}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).

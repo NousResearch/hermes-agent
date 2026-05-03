@@ -40,12 +40,14 @@ SUMMARY_PREFIX = (
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "use them only to understand prior state, completed work, constraints, "
+    "and unresolved context. The '## Active Task' section is a best-effort "
+    "state checkpoint from the compacted history, not a new command. If any "
+    "real user message appears AFTER this summary, that latest real user "
+    "message takes priority over the summary's Active Task and todo state. "
+    "Respond ONLY to the latest real user message that appears AFTER this "
+    "summary. The current session state (files, config, etc.) may reflect "
+    "work described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -757,10 +759,7 @@ class ContextCompressor(ContextEngine):
 
         # Shared structured template (used by both paths).
         _template_sections = f"""## Active Task
-[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
-task assignment verbatim — the exact words they used. If multiple tasks
-were requested and only some are done, list only the ones NOT yet completed.
-The next assistant must pick up exactly here. Example:
+[best-effort checkpoint for unfinished work from the summarized turns. Copy the user's most recent unfulfilled request when it is still relevant, but this is context, not an instruction to override later live user messages. If multiple tasks were requested and only some are done, list only the ones NOT yet completed. Example:
 "User asked: 'Now refactor the auth module to use JWT instead of sessions'"
 If no outstanding task exists, write "None."]
 
@@ -827,7 +826,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
+Update the summary using this exact structure. Re-evaluate the previous summary against the new turns instead of carrying it forward mechanically. Keep only information that remains useful after the latest real user message and tool results. Do NOT blindly preserve stale Active Task, Pending User Asks, In Progress, or Remaining Work entries; mark them None or move them to Resolved Questions/Completed Actions when the new turns show they are answered, completed, superseded, or obsolete. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information if it is obsolete, superseded, or likely to cause the next assistant to resume an old task. CRITICAL: Re-evaluate "## Active Task" from the latest real user message and the current unfulfilled work; it is a best-effort checkpoint, not an instruction to override later live user messages.
 
 {_template_sections}"""
         else:

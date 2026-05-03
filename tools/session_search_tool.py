@@ -262,6 +262,36 @@ async def _summarize_session(
 # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
+_RECENT_INTENT_PATTERNS = (
+    r"上次任务",
+    r"最近(?:怎么样|进展|状态|任务)?",
+    r"现在(?:怎么样|呢|状态|进展)?",
+    r"刚才(?:怎么样|进展|任务)?",
+    r"继续(?:上次|刚才|最近)?",
+    r"what were we working on",
+    r"what did we do recently",
+    r"last task",
+    r"recent task",
+)
+
+
+def _is_recent_intent_query(query: str) -> bool:
+    """Return True for short temporal/status follow-ups that need recency ordering.
+
+    These are not topical searches. Running FTS relevance search for queries like
+    "上次任务" or "最近怎么样" can promote old, keyword-dense project sessions over
+    the latest live conversation, which is exactly the wrong default for short
+    WeChat follow-ups.
+    """
+    normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+    if not normalized:
+        return False
+    # Keep this conservative: only short follow-ups should bypass FTS. Longer
+    # queries may contain a concrete topic and should remain searchable.
+    if len(normalized) > 48:
+        return False
+    return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in _RECENT_INTENT_PATTERNS)
+
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
@@ -346,9 +376,12 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
-    # Recent sessions mode: when query is empty, return metadata for recent sessions.
-    # No LLM calls — just DB queries for titles, previews, timestamps.
-    if not query or not query.strip():
+    # Recent sessions mode: when query is empty, or when the user asks a short
+    # temporal/status follow-up ("上次任务", "最近怎么样", "continue"), return
+    # metadata for recent sessions instead of relevance-ranked FTS results.
+    # FTS relevance can otherwise resurrect old high-density project sessions
+    # over the live/recent task the user is asking about.
+    if not query or not query.strip() or _is_recent_intent_query(query):
         return _list_recent_sessions(db, limit, current_session_id)
 
     query = query.strip()

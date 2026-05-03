@@ -487,7 +487,21 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
-            fd = proc.stdout.fileno()
+            try:
+                fd = proc.stdout.fileno()
+                if not isinstance(fd, int):
+                    raise TypeError("stdout.fileno() did not return an integer fd")
+            except (AttributeError, TypeError, ValueError, OSError):
+                # Tests and lightweight backends may provide an iterator-like
+                # stdout rather than a real pipe.  Fall back to the historical
+                # iterator drain path instead of letting the daemon thread emit
+                # PytestUnhandledThreadExceptionWarning.
+                try:
+                    for line in proc.stdout:
+                        output_chunks.append(str(line))
+                except Exception:
+                    logger.debug("stdout iterator drain failed", exc_info=True)
+                return
             idle_after_exit = 0
             try:
                 while True:

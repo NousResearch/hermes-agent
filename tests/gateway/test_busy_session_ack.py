@@ -272,7 +272,7 @@ class TestBusySessionAck:
         assert "Queued for the next turn" in content
 
     @pytest.mark.asyncio
-    async def test_debounce_suppresses_rapid_acks(self):
+    async def test_rapid_followups_each_get_visible_ack(self):
         """Second message within 30s should NOT send another ack."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
@@ -309,13 +309,13 @@ class TestBusySessionAck:
         # Second message within cooldown — should be queued but no ack
         result2 = await runner._handle_active_session_busy_message(event2, sk)
         assert result2 is True
-        assert adapter._send_with_retry.call_count == 1  # still 1, no new ack
+        assert adapter._send_with_retry.call_count == 2
 
         # But interrupt should still be called for both (since we are in interrupt mode)
         assert agent.interrupt.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_ack_after_cooldown_expires(self):
+    async def test_busy_ack_timestamp_updates_but_does_not_debounce(self):
         """After 30s cooldown, a new message should send a fresh ack."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
@@ -552,3 +552,83 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+
+    @pytest.mark.asyncio
+    async def test_rapid_followups_each_get_visible_ack(self):
+        """Rapid foreground follow-ups should each send an ack so users see interruption progress."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event1 = _make_event(text="hello?")
+        # Reuse the same source so platform mock matches
+        event2 = MessageEvent(
+            text="still there?",
+            message_type=MessageType.TEXT,
+            source=event1.source,
+            message_id="msg2",
+        )
+        sk = build_session_key(event1.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 5,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api_call",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event1.source.platform] = adapter
+
+        # First message — should get ack
+        result1 = await runner._handle_active_session_busy_message(event1, sk)
+        assert result1 is True
+        assert adapter._send_with_retry.call_count == 1
+
+        # Second rapid message should also be visibly acknowledged.
+        result2 = await runner._handle_active_session_busy_message(event2, sk)
+        assert result2 is True
+        assert adapter._send_with_retry.call_count == 2
+
+        # Interrupt should be called for both (since we are in interrupt mode)
+        assert agent.interrupt.call_count == 2
+
+
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_timestamp_updates_but_does_not_debounce(self):
+        """Busy acks should remain visible on every foreground follow-up."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="hello?")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 10,
+            "max_iterations": 60,
+            "current_tool": "web_search",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "tool",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 120
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+        first_ts = runner._busy_ack_ts[sk]
+        assert adapter._send_with_retry.call_count == 1
+
+        runner._busy_ack_ts[sk] = time.time()
+        await runner._handle_active_session_busy_message(event, sk)
+
+        assert adapter._send_with_retry.call_count == 2
+        assert runner._busy_ack_ts[sk] >= first_ts
+

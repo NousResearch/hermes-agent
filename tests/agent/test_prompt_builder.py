@@ -50,6 +50,18 @@ class TestGuidanceConstants:
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
 
+    def test_tool_guidance_biases_toward_autonomous_execution_over_clarify(self):
+        assert "When the user asks you to continue autonomously" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "do not call clarify" in OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "make a reasonable default decision" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "confirm scope before executing" not in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_tool_guidance_prioritizes_alerts_before_original_task(self):
+        assert "When a tool, command, service, or runtime emits an alert" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "pause the previous task" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "return to the original task" in OPENAI_MODEL_EXECUTION_GUIDANCE
+
+
 # =========================================================================
 # Context injection scanning
 # =========================================================================
@@ -1026,11 +1038,11 @@ class TestBuildSkillsSystemPromptConditional:
 
 class TestToolUseEnforcementGuidance:
     def test_guidance_mentions_tool_calls(self):
-        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "tool call" in OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
 
     def test_guidance_forbids_description_only(self):
-        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
-        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "describe" in OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "promise" in OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
 
     def test_guidance_requires_action(self):
         assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE

@@ -78,7 +78,9 @@ class FakeAgent:
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
-            time.sleep(0.35)
+            time.sleep(0.1)
+            cb("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+            time.sleep(0.25)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
         return {

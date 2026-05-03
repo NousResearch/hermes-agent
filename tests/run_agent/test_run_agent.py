@@ -2582,6 +2582,26 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
 
+
+    def test_touch_activity_emits_throttled_visible_progress(self, agent):
+        """Long-running activity heartbeats should be visible, not only internal timestamps."""
+        self._setup_agent(agent)
+        emitted = []
+        agent.status_callback = lambda kind, msg: emitted.append((kind, msg))
+        agent._print_fn = lambda msg: None
+
+        with patch("run_agent.time.time", side_effect=[1000.0, 1031.0, 1032.0, 1063.0]):
+            agent._touch_activity("executing tool: terminal")
+            agent._touch_activity("terminal still running")
+            agent._touch_activity("terminal still running again")
+            agent._touch_activity("terminal still running later")
+
+        progress = [(kind, msg) for kind, msg in emitted if kind == "progress"]
+        assert len(progress) == 2
+        assert "Still working" in progress[0][1]
+        assert "terminal still running" in progress[0][1]
+        assert "later" in progress[1][1]
+
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
         self._setup_agent(agent)

@@ -289,75 +289,56 @@ class TestExtractCacheBustingConfig:
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
 
+    def _fake_agent(self, **attrs):
+        """Lightweight stand-in for tests that only need cache object identity."""
+        agent = MagicMock()
+        for key, value in attrs.items():
+            setattr(agent, key, value)
+        return agent
+
     def test_cache_hit_returns_same_agent(self):
         """Second message with same config reuses the cached agent instance."""
-        from run_agent import AIAgent
-
         runner = _make_runner()
         session_key = "telegram:12345"
-        runtime = {"api_key": "test", "base_url": "https://openrouter.ai/api/v1",
+        runtime = {"api_key": "***", "base_url": "https://openrouter.ai/api/v1",
                     "provider": "openrouter", "api_mode": "chat_completions"}
         sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
 
-        # First message — create and cache
-        agent1 = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
-        )
+        agent1 = self._fake_agent(platform="telegram")
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent1, sig)
 
-        # Second message — cache hit
         with runner._agent_cache_lock:
             cached = runner._agent_cache.get(session_key)
         assert cached is not None
         assert cached[1] == sig
-        assert cached[0] is agent1  # same instance
+        assert cached[0] is agent1
 
     def test_cache_miss_on_model_change(self):
         """Model change produces different signature → cache miss."""
-        from run_agent import AIAgent
-
         runner = _make_runner()
         session_key = "telegram:12345"
-        runtime = {"api_key": "test", "base_url": "https://openrouter.ai/api/v1",
+        runtime = {"api_key": "***", "base_url": "https://openrouter.ai/api/v1",
                     "provider": "openrouter", "api_mode": "chat_completions"}
 
         old_sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
-        agent1 = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
-        )
         with runner._agent_cache_lock:
-            runner._agent_cache[session_key] = (agent1, old_sig)
+            runner._agent_cache[session_key] = (self._fake_agent(platform="telegram"), old_sig)
 
-        # New model → different signature
         new_sig = runner._agent_config_signature("anthropic/claude-opus-4.6", runtime, ["hermes-telegram"], "")
         assert new_sig != old_sig
 
         with runner._agent_cache_lock:
             cached = runner._agent_cache.get(session_key)
-        assert cached[1] != new_sig  # signature mismatch → would create new agent
+        assert cached[1] != new_sig
 
     def test_evict_on_session_reset(self):
-        """_evict_cached_agent removes the entry."""
-        from run_agent import AIAgent
-
+        """_evict_cached_agent removes the entry without constructing a full AIAgent."""
         runner = _make_runner()
         session_key = "telegram:12345"
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True,
-        )
         with runner._agent_cache_lock:
-            runner._agent_cache[session_key] = (agent, "sig123")
+            runner._agent_cache[session_key] = (self._fake_agent(), "sig123")
 
         runner._evict_cached_agent(session_key)
 
@@ -385,6 +366,7 @@ class TestAgentCacheLifecycle:
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
+            enabled_toolsets=[],
             skip_memory=True,
             reasoning_config={"enabled": True, "effort": "medium"},
         )
@@ -402,17 +384,13 @@ class TestAgentCacheLifecycle:
 
     def test_system_prompt_frozen_across_cache_reuse(self):
         """The cached agent's system prompt stays identical across turns."""
-        from run_agent import AIAgent
+        agent = self._fake_agent()
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True, platform="telegram",
-        )
-
-        # Build system prompt (simulates first run_conversation)
-        prompt1 = agent._build_system_prompt()
+        # A full _build_system_prompt() call is covered elsewhere and is
+        # expensive because it assembles broad agent context.  This cache
+        # contract only needs to prove the gateway keeps using the already
+        # cached prompt object across turns.
+        prompt1 = "cached prompt sentinel"
         agent._cached_system_prompt = prompt1
 
         # Simulate second turn — prompt should be frozen
@@ -421,14 +399,7 @@ class TestAgentCacheLifecycle:
 
     def test_callbacks_update_without_cache_eviction(self):
         """Per-message callbacks can be set on cached agent."""
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True, skip_context_files=True,
-            skip_memory=True,
-        )
+        agent = self._fake_agent()
 
         # Set callbacks like the gateway does per-message
         cb1 = lambda *a: None
@@ -857,16 +828,21 @@ class TestAgentCacheSpilloverLive:
         runner._running_agents = {}
         return runner
 
+    def _agent_stub(self):
+        agent = MagicMock()
+        agent._last_activity_ts = __import__("time").time()
+        agent.client = MagicMock()
+        agent.release_clients = MagicMock()
+        return agent
+
     def _real_agent(self):
-        """A genuine AIAgent; no API calls are made during these tests."""
-        from run_agent import AIAgent
-        return AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            platform="telegram",
-        )
+        """Lightweight agent stand-in for cache spillover behavior.
+
+        Cache spillover tests only require identity, client lifecycle markers,
+        and close/release hooks.  Constructing full AIAgent instances here
+        makes the gateway suite spend minutes loading unrelated agent context.
+        """
+        return self._agent_stub()
 
     def test_fill_to_cap_then_spillover(self, monkeypatch):
         """Fill to cap with real agents, insert one more, oldest evicted."""
@@ -910,12 +886,12 @@ class TestAgentCacheSpilloverLive:
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
         runner = self._runner()
 
-        agents = [self._real_agent() for _ in range(CAP)]
+        agents = [self._agent_stub() for _ in range(CAP)]
         for i, a in enumerate(agents):
             runner._agent_cache[f"s{i}"] = (a, "sig")
             runner._running_agents[f"s{i}"] = a  # every session mid-turn
 
-        newcomer = self._real_agent()
+        newcomer = self._agent_stub()
         with caplog.at_level(_logging.WARNING, logger="gateway.run"):
             with runner._agent_cache_lock:
                 runner._agent_cache["new"] = (newcomer, "sig")
@@ -947,7 +923,7 @@ class TestAgentCacheSpilloverLive:
 
         def worker(tid: int):
             for j in range(PER_THREAD):
-                a = self._real_agent()
+                a = self._agent_stub()
                 key = f"t{tid}-s{j}"
                 with runner._agent_cache_lock:
                     runner._agent_cache[key] = (a, "sig")
@@ -1041,17 +1017,27 @@ class TestAgentCacheIdleResume:
         runner._running_agents = {}
         return runner
 
-    def test_release_clients_does_not_touch_process_registry(self, monkeypatch):
-        """release_clients must not call process_registry.kill_all for task_id."""
+    def _minimal_agent(self, session_id="idle-resume-test-session"):
+        """Build a minimal AIAgent instance for lifecycle method tests.
+
+        These tests validate release_clients()/close() resource-boundary
+        semantics.  Full AIAgent construction is intentionally avoided because
+        it loads broad agent context unrelated to the method contracts.
+        """
+        import threading
         from run_agent import AIAgent
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id="idle-resume-test-session",
-        )
+        agent = AIAgent.__new__(AIAgent)
+        agent.session_id = session_id
+        agent._active_children_lock = threading.Lock()
+        agent._active_children = []
+        agent.client = MagicMock()
+        agent._close_openai_client = MagicMock(side_effect=lambda client, **kw: None)
+        return agent
+
+    def test_release_clients_does_not_touch_process_registry(self, monkeypatch):
+        """release_clients must not call process_registry.kill_all for task_id."""
+        agent = self._minimal_agent()
 
         # Spy on process_registry.kill_all — it MUST NOT be called.
         from tools import process_registry as _pr
@@ -1074,17 +1060,10 @@ class TestAgentCacheIdleResume:
 
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
-        from run_agent import AIAgent
         from tools import terminal_tool as _tt
         from tools import browser_tool as _bt
 
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id="idle-resume-test-2",
-        )
+        agent = self._minimal_agent("idle-resume-test-2")
 
         vm_calls: list = []
         browser_calls: list = []
@@ -1113,14 +1092,7 @@ class TestAgentCacheIdleResume:
 
     def test_release_clients_closes_llm_client(self):
         """release_clients IS expected to close the OpenAI/httpx client."""
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-        )
+        agent = self._minimal_agent()
         # Clients are lazy-built; force one to exist so we can verify close.
         assert agent.client is not None  # __init__ builds it
 
@@ -1136,25 +1108,12 @@ class TestAgentCacheIdleResume:
         (full teardown — session is done), cache-eviction path uses
         release_clients() (soft — session may resume).
         """
-        from run_agent import AIAgent
         import run_agent as _ra
 
         # Agent A: evicted from cache (soft) — terminal survives.
         # Agent B: session expired (hard) — terminal torn down.
-        agent_a = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id="soft-session",
-        )
-        agent_b = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id="hard-session",
-        )
+        agent_a = self._minimal_agent("soft-session")
+        agent_b = self._minimal_agent("hard-session")
 
         vm_calls: list = []
         # AIAgent.close() calls the ``cleanup_vm`` name bound into
@@ -1182,20 +1141,13 @@ class TestAgentCacheIdleResume:
         that persisted across eviction is reachable via the new agent.
         """
         from gateway import run as gw_run
-        from run_agent import AIAgent
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
         runner = self._runner()
 
         # Build an agent representing a stale (idle) session.
         SESSION_ID = "long-lived-user-session"
-        old = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id=SESSION_ID,
-        )
+        old = self._minimal_agent(SESSION_ID)
         old._last_activity_ts = 0.0  # force idle
         runner._agent_cache["sKey"] = (old, "sig")
 
@@ -1211,13 +1163,7 @@ class TestAgentCacheIdleResume:
         assert old.client is None
 
         # User comes back — new agent built for the SAME session_id.
-        new_agent = AIAgent(
-            model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
-            max_iterations=5, quiet_mode=True,
-            skip_context_files=True, skip_memory=True,
-            session_id=SESSION_ID,
-        )
+        new_agent = self._minimal_agent(SESSION_ID)
 
         # Same session_id means same task_id routed to tools.  The new
         # agent inherits any per-task state (terminal sandbox etc.) that

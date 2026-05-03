@@ -1895,13 +1895,18 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:[^\S\n]*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            # Treat documentation placeholders as literal text, not attachments.
+            # Real generated media should use concrete paths (e.g. /tmp/foo.ogg);
+            # `/path` and `/path/...` are common examples in prompts/docs.
+            if path == "/path" or path.startswith("/path/"):
+                continue
             if path:
                 media.append((os.path.expanduser(path), has_voice_tag))
 
@@ -1911,6 +1916,22 @@ class BasePlatformAdapter(ABC):
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
+
+    @staticmethod
+    def _is_deliverable_local_media(path: str) -> bool:
+        """Return True only for concrete local files that can be sent.
+
+        LLM/tool documentation often includes placeholders like
+        ``MEDIA:/path/to/file.png``. Those must not enter platform upload
+        code, otherwise live gateways emit noisy send failures for example
+        paths. Real media delivery requires an existing regular file.
+        """
+        if not path:
+            return False
+        expanded = os.path.expanduser(str(path).strip())
+        if expanded == "/path" or expanded.startswith("/path/"):
+            return False
+        return os.path.isfile(expanded)
 
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
@@ -2860,6 +2881,13 @@ class BasePlatformAdapter(ABC):
                 _image_paths: list = []
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
+                    if not self._is_deliverable_local_media(media_path):
+                        logger.warning(
+                            "[%s] Skipping missing/non-deliverable media path: %s",
+                            self.name,
+                            media_path,
+                        )
+                        continue
                     _ext = Path(media_path).suffix.lower()
                     if _ext in _IMAGE_EXTS and not is_voice:
                         _image_paths.append(media_path)
@@ -2867,6 +2895,13 @@ class BasePlatformAdapter(ABC):
                         _non_image_media.append((media_path, is_voice))
                 _non_image_local: list = []
                 for file_path in local_files:
+                    if not self._is_deliverable_local_media(file_path):
+                        logger.warning(
+                            "[%s] Skipping missing/non-deliverable local file path: %s",
+                            self.name,
+                            file_path,
+                        )
+                        continue
                     if Path(file_path).suffix.lower() in _IMAGE_EXTS:
                         _image_paths.append(file_path)
                     else:

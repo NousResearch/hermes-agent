@@ -10,6 +10,43 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 
 
+class _DingTalkModel:
+    """Tiny SDK model stand-in that preserves constructor kwargs as attrs."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _FakeDingTalkCardModels:
+    CreateCardRequest = _DingTalkModel
+    CreateCardRequestCardData = _DingTalkModel
+    CreateCardRequestImGroupOpenSpaceModel = _DingTalkModel
+    CreateCardRequestImRobotOpenSpaceModel = _DingTalkModel
+    CreateCardHeaders = _DingTalkModel
+    DeliverCardRequest = _DingTalkModel
+    DeliverCardRequestImGroupOpenDeliverModel = _DingTalkModel
+    DeliverCardRequestImRobotOpenDeliverModel = _DingTalkModel
+    DeliverCardHeaders = _DingTalkModel
+    StreamingUpdateRequest = _DingTalkModel
+    StreamingUpdateHeaders = _DingTalkModel
+
+
+class _FakeTeaUtilModels:
+    RuntimeOptions = _DingTalkModel
+
+
+@pytest.fixture
+def fake_dingtalk_card_sdk_models(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.platforms.dingtalk.dingtalk_card_models",
+        _FakeDingTalkCardModels,
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.dingtalk.tea_util_models",
+        _FakeTeaUtilModels,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
@@ -751,7 +788,7 @@ class TestMessageContextIsolation:
 class TestCardLifecycle:
 
     @pytest.fixture
-    def adapter_with_card(self):
+    def adapter_with_card(self, fake_dingtalk_card_sdk_models):
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -942,7 +979,7 @@ class TestDingTalkAdapterAICards:
         return msg
 
     @pytest.mark.asyncio
-    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message, fake_dingtalk_card_sdk_models):
         from gateway.platforms.dingtalk import DingTalkAdapter
 
         adapter = DingTalkAdapter(config)

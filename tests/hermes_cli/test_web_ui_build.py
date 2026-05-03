@@ -7,12 +7,12 @@ freshness check is a no-op and the OOM rebuild always runs.
 """
 
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
+from hermes_cli import main as main_mod
 from hermes_cli.main import _web_ui_build_needed, _build_web_ui
 
 
@@ -119,3 +119,60 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         assert mock_run.call_count == 2  # npm install + npm run build
+
+
+def test_build_web_ui_ignores_non_executable_preferred_npm(monkeypatch, tmp_path):
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "package.json").write_text("{}", encoding="utf-8")
+
+    preferred_bin = tmp_path / "home" / ".local" / "lib" / "nodejs" / "current" / "bin"
+    preferred_bin.mkdir(parents=True)
+    preferred_npm = preferred_bin / "npm"
+    preferred_npm.write_text("not executable", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(main_mod.shutil, "which", lambda cmd: None)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    assert main_mod._build_web_ui(web_dir, fatal=False) is True
+    assert calls == []
+
+
+def test_build_web_ui_uses_executable_preferred_npm(monkeypatch, tmp_path):
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "package.json").write_text("{}", encoding="utf-8")
+
+    preferred_bin = tmp_path / "home" / ".local" / "lib" / "nodejs" / "current" / "bin"
+    preferred_bin.mkdir(parents=True)
+    preferred_npm = preferred_bin / "npm"
+    preferred_npm.write_text("#!/bin/sh\n", encoding="utf-8")
+    preferred_npm.chmod(preferred_npm.stat().st_mode | 0o111)
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(main_mod.shutil, "which", lambda cmd: None)
+
+    calls = []
+    envs = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        envs.append(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    assert main_mod._build_web_ui(web_dir, fatal=True) is True
+    assert calls == [
+        [str(preferred_npm), "install", "--silent"],
+        [str(preferred_npm), "run", "build"],
+    ]
+    assert envs and all(str(preferred_bin) in env.get("PATH", "") for env in envs)

@@ -1,13 +1,15 @@
 import type { Translations } from "@/i18n/types";
 
-const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
+const BUILTIN_PAGE_TITLES: Record<string, keyof Translations["app"]["nav"]> = {
   "/chat": "chat",
   "/sessions": "sessions",
   "/analytics": "analytics",
+  "/models": "models",
   "/logs": "logs",
   "/cron": "cron",
   "/skills": "skills",
   "/plugins": "plugins",
+  "/profiles": "profiles",
   "/config": "config",
   "/env": "keys",
   "/docs": "documentation",
@@ -26,9 +28,13 @@ export function resolvePageTitle(
   if (plugin) {
     return plugin.label;
   }
-  const key = BUILTIN[normalized];
+  const key = BUILTIN_PAGE_TITLES[normalized];
   if (key) {
     return t.app.nav[key];
   }
-  return t.app.webUi;
+  return BRAND_FALLBACK_TITLE(t);
+}
+
+function BRAND_FALLBACK_TITLE(t: Translations): string {
+  return t.app.brand === "Hermes Agent" ? "小爱交易控制台" : t.app.brand;
 }

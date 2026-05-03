@@ -235,6 +235,33 @@ DEFAULT_CONTEXT_LENGTHS = {
     "zai-org/GLM-5": 202752,
 }
 
+# Broad model families that are safe to apply even when a custom endpoint's
+# /models response is empty. Provider/org-scoped defaults and short ambiguous
+# families (for example "glm" matching ``zai-org/GLM-5-TEE``) are intentionally
+# excluded so unknown custom-gateway models fall back to probe-down instead of
+# inheriting an unrelated context window.
+_CUSTOM_EMPTY_METADATA_DEFAULT_FAMILIES = frozenset({
+    "gpt",
+    "grok",
+    "qwen",
+    "deepseek",
+    "deepseek-ai",
+    "claude",
+    "gemini",
+    "gemma",
+    "llama",
+    "kimi",
+    "moonshot",
+    "moonshotai",
+    "minimax",
+    "minimaxai",
+    "mimo",
+    "xiaomi",
+    "xiaomimimo",
+    "nemotron",
+    "nvidia",
+})
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",
@@ -1324,10 +1351,79 @@ def get_model_context_length(
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+        endpoint_metadata = fetch_endpoint_model_metadata(
+            base_url,
+            api_key=api_key,
+            model=model,
+        )
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
+            if not endpoint_metadata:
+                if is_local_endpoint(base_url):
+                    local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+                    if local_ctx and local_ctx > 0:
+                        save_context_length(model, base_url, local_ctx)
+                        return local_ctx
+
+                model_lower = model.lower()
+                for default_model, length in sorted(
+                    DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+                ):
+                    key_lower = default_model.lower()
+                    if "/" in default_model:
+                        continue
+                    if not any(family in key_lower for family in _CUSTOM_EMPTY_METADATA_DEFAULT_FAMILIES):
+                        continue
+                    if key_lower in model_lower:
+                        if base_url:
+                            save_context_length(model, base_url, length)
+                        return length
+
+                logger.info(
+                    "Could not detect context length for model %r at %s — "
+                    "custom endpoint returned no model metadata; defaulting to %s tokens "
+                    "(probe-down). Set model.context_length in config.yaml to override.",
+                    model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
+                )
+                if base_url:
+                    save_context_length(model, base_url, DEFAULT_FALLBACK_CONTEXT)
+                return DEFAULT_FALLBACK_CONTEXT
+
+            # Local OpenAI-compatible servers can return sparse or non-standard
+            # /models metadata. Always ask the local server before applying public
+            # model-family defaults so a local model named like gpt/qwen/etc. is
+            # not incorrectly pinned to a public cloud context window.
+            if is_local_endpoint(base_url):
+                local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+                if local_ctx and local_ctx > 0:
+                    save_context_length(model, base_url, local_ctx)
+                    return local_ctx
+
+            # Before returning the generic probe-down fallback, allow the thin
+            # hardcoded model-family table to handle known cloud models served
+            # through custom/OpenAI-compatible gateways.  Otherwise a transient
+            # or sparse /models response for gpt-5.4/gpt-5.5 incorrectly pins
+            # the session to 128k and repeats noisy probe-down warnings.
+            model_lower = model.lower()
+            for default_model, length in sorted(
+                DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+            ):
+                # Custom/OpenAI-compatible gateways often front broad public model
+                # families (gpt/grok/qwen/etc.) but may also serve unrelated
+                # provider-specific org/model IDs.  Do not apply org-scoped
+                # hardcoded defaults (keys containing '/') here; if the custom
+                # endpoint's /models response is empty, treating
+                # ``zai-org/GLM-5`` as a fuzzy default for ``zai-org/GLM-5-TEE``
+                # is worse than the generic probe-down fallback.
+                if "/" in default_model:
+                    continue
+                if default_model.lower() in model_lower:
+                    if base_url:
+                        save_context_length(model, base_url, length)
+                    return length
+
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
@@ -1341,6 +1437,8 @@ def get_model_context_length(
                 "in config.yaml to override.",
                 model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
+            if base_url:
+                save_context_length(model, base_url, DEFAULT_FALLBACK_CONTEXT)
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)

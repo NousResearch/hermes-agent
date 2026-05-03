@@ -1545,16 +1545,21 @@ class WeixinAdapter(BasePlatformAdapter):
                             or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
                         )
-                        # Session expired — strip token and retry once
-                        if is_session_expired and not retried_without_token and context_token:
+                        # iLink sometimes returns ret=-2/unknown for a stale
+                        # context_token instead of the documented session-expired
+                        # code. Retry once without the token before treating it as
+                        # a hard send failure.
+                        is_context_retryable = is_session_expired or (ret == -2 and errcode is None)
+                        # Session/context expired — strip token and retry once
+                        if is_context_retryable and not retried_without_token and context_token:
                             retried_without_token = True
                             context_token = None
                             self._token_store._cache.pop(
                                 self._token_store._key(self._account_id, chat_id), None
                             )
                             logger.warning(
-                                "[%s] session expired for %s; retrying without context_token",
-                                self.name, _safe_id(chat_id),
+                                "[%s] context token rejected for %s ret=%s errcode=%s; retrying without context_token",
+                                self.name, _safe_id(chat_id), ret, errcode,
                             )
                             continue
                         # Rate limit (-2) — backoff and retry
@@ -1638,6 +1643,13 @@ class WeixinAdapter(BasePlatformAdapter):
         try:
             # Deliver extracted MEDIA: attachments first.
             for media_path, is_voice in media_files:
+                if not self._is_deliverable_local_media(media_path):
+                    logger.warning(
+                        "[%s] Skipping missing/non-deliverable media path: %s",
+                        self.name,
+                        media_path,
+                    )
+                    continue
                 try:
                     await _deliver_media(media_path, is_voice)
                 except Exception as exc:

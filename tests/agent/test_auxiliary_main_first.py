@@ -162,6 +162,70 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
 
+    def test_auxiliary_provider_main_alias_resolves_to_auto(self):
+        """Config value provider=main must mean live main runtime, not literal provider 'main'."""
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"provider": "main", "model": "", "base_url": "", "api_key": ""},
+        ):
+            from agent.auxiliary_client import _resolve_task_provider_model
+
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                "compression", None, None, None, None
+            )
+
+        assert provider == "auto"
+        assert model is None
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+    def test_explicit_provider_main_alias_resolves_to_auto(self):
+        """Explicit provider=main follows the same main-runtime path as config provider=main."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            "compression", "main", None, None, None
+        )
+
+        assert provider == "auto"
+        assert model is None
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_passes_main_runtime_to_auto_resolution(self):
+        """Async aux calls must also bind auto/main to the live runtime."""
+        runtime = {"provider": "custom", "model": "runtime-model", "base_url": "https://example.invalid/v1/"}
+
+        class DummyCompletions:
+            async def create(self, **kwargs):
+                message = MagicMock(content="ok")
+                choice = MagicMock(message=message)
+                return MagicMock(choices=[choice])
+
+        dummy_client = MagicMock()
+        dummy_client.chat.completions = DummyCompletions()
+        dummy_client.base_url = "https://example.invalid/v1/"
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(dummy_client, "runtime-model"),
+        ) as mock_get:
+            from agent.auxiliary_client import async_call_llm
+
+            await async_call_llm(
+                task="compression",
+                main_runtime=runtime,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert mock_get.call_args.kwargs["main_runtime"] is runtime
+
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
 

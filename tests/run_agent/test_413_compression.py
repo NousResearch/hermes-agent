@@ -412,6 +412,161 @@ class TestHTTP413Compression:
         assert "413" in result["error"]
 
 
+class TestCompressionTodoSnapshotRole:
+    """Todo state preserved during compression must not masquerade as a user turn."""
+
+    def test_compression_does_not_append_todo_snapshot_as_latest_user_message(self, agent):
+        """Regression: auto-preserved todo state was appended as role=user at the tail.
+
+        That made the restored todo snapshot look like the latest real user request
+        after context compaction, causing stale tasks to override the user's actual
+        next message. Compression may preserve todo state, but not as a user turn.
+        """
+        agent._todo_store.write([
+            {
+                "id": "task-contamination",
+                "content": "定位串任务/旧任务恢复/上下文压缩误接管的根因",
+                "status": "in_progress",
+            }
+        ])
+
+        with patch.object(agent.context_compressor, "compress", return_value=[
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrior context"},
+            {"role": "user", "content": "最新真实用户消息"},
+        ]):
+            compressed, _system_prompt = agent._compress_context(
+                [{"role": "user", "content": "old context"}],
+                "You are helpful.",
+                approx_tokens=1000,
+            )
+
+        assert compressed[-1] == {
+            "role": "user",
+            "content": "最新真实用户消息",
+        }
+        assert not any(
+            msg.get("role") == "user"
+            and "CURRENT SESSION TODO STATE" in str(msg.get("content", ""))
+            for msg in compressed
+        )
+
+
+
+    def test_run_conversation_filters_legacy_auto_todo_snapshots_from_history(self, agent):
+        """Resume/history loading must drop auto todo snapshots before API calls.
+
+        Older builds persisted rendered todo snapshots as role=user. Even after
+        gateway filtering, CLI/session resume can replay those messages unless
+        run_conversation sanitizes the provided history.
+        """
+        legacy_snapshot = (
+            "[Your active task list was preserved across context compression]\n"
+            "- [>] stale. stale old task (in_progress)"
+        )
+        new_snapshot = (
+            "[CURRENT SESSION TODO STATE — NOT A USER REQUEST]\n"
+            "- [>] stale. stale old task (in_progress)"
+        )
+        history = [
+            {"role": "user", "content": "real prior question"},
+            {"role": "user", "content": legacy_snapshot},
+            {"role": "assistant", "content": "prior answer"},
+            {"role": "user", "content": new_snapshot},
+        ]
+
+        ok_resp = _mock_response(content="clean", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("latest real ask", conversation_history=history)
+
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_contents = [m.get("content", "") for m in sent_messages if m.get("role") == "user"]
+        assert "real prior question" in user_contents
+        assert "latest real ask" in user_contents
+        assert not any("Your active task list was preserved" in str(c) for c in user_contents)
+        assert not any("CURRENT SESSION TODO STATE" in str(c) for c in user_contents)
+        assert result["completed"] is True
+
+
+    def test_run_conversation_does_not_filter_user_messages_that_quote_todo_marker(self, agent):
+        """Only actual snapshot-shaped messages are filtered; user questions quoting markers remain."""
+        quoted = "Why did Hermes show [CURRENT SESSION TODO STATE — NOT A USER REQUEST] in my chat?"
+        history = [{"role": "user", "content": quoted}]
+
+        ok_resp = _mock_response(content="kept", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("latest real ask", conversation_history=history)
+
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_contents = [m.get("content", "") for m in sent_messages if m.get("role") == "user"]
+        assert quoted in user_contents
+        assert result["completed"] is True
+
+    def test_run_conversation_filters_leading_whitespace_snapshot_from_history(self, agent):
+        """Snapshot filtering should match gateway startswith semantics after lstrip()."""
+        snapshot = "  \n[CURRENT SESSION TODO STATE — NOT A USER REQUEST]\n- [>] stale. stale old task (in_progress)"
+        history = [
+            {"role": "user", "content": "real prior question"},
+            {"role": "user", "content": snapshot},
+        ]
+
+        ok_resp = _mock_response(content="clean", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("latest real ask", conversation_history=history)
+
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_contents = [m.get("content", "") for m in sent_messages if m.get("role") == "user"]
+        assert "real prior question" in user_contents
+        assert not any("CURRENT SESSION TODO STATE" in str(c) for c in user_contents)
+        assert result["completed"] is True
+
+
+    def test_run_conversation_hydrates_todo_store_from_filtered_history(self, agent):
+        """Hydration should use the same sanitized history that is sent to the model."""
+        snapshot = "[Your active task list was preserved across context compression]\n- [>] stale. stale old task (in_progress)"
+        history = [
+            {"role": "user", "content": "real prior question"},
+            {"role": "user", "content": snapshot},
+        ]
+
+        ok_resp = _mock_response(content="clean", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_hydrate_todo_store") as hydrate,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("latest real ask", conversation_history=history)
+
+        hydrated_histories = [call.args[0] for call in hydrate.call_args_list]
+        assert hydrated_histories, "expected run_conversation to hydrate the todo store"
+        assert [{"role": "user", "content": "real prior question"}] in hydrated_histories
+        for hydrated_history in hydrated_histories:
+            assert not any(
+                "active task list was preserved" in str(msg.get("content", ""))
+                for msg in hydrated_history
+            )
+        assert result["completed"] is True
+
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
 

@@ -418,8 +418,12 @@ def cmd_status(args) -> None:
                         required_fields = [f for f in schema if f.get("env_var")]
                         if required_fields:
                             print(f"  Missing:")
+                            seen_env_vars = set()
                             for f in required_fields:
                                 env_var = f.get("env_var", "")
+                                if not env_var or env_var in seen_env_vars:
+                                    continue
+                                seen_env_vars.add(env_var)
                                 url = f.get("url", "")
                                 is_set = bool(os.environ.get(env_var))
                                 mark = "✓" if is_set else "✗"

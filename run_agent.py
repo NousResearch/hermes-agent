@@ -178,6 +178,37 @@ from hermes_cli.config import cfg_get
 
 
 
+_LEGACY_AUTO_TODO_SNAPSHOT_MARKER = "[Your active task list was preserved across context compression]"
+_CURRENT_AUTO_TODO_SNAPSHOT_MARKER = "[CURRENT SESSION TODO STATE — NOT A USER REQUEST]"
+
+def _is_auto_todo_snapshot_message(msg: Any) -> bool:
+    """Return True for synthetic todo snapshots persisted as user messages.
+
+    Older compression/resume paths appended rendered todo state as role=user.
+    These messages are recovery metadata, not user intent, and must never be
+    replayed to the model as live conversation history.
+    """
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return False
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        stripped = content.lstrip()
+        return (
+            stripped.startswith(_LEGACY_AUTO_TODO_SNAPSHOT_MARKER)
+            or stripped.startswith(_CURRENT_AUTO_TODO_SNAPSHOT_MARKER)
+        )
+    return False
+
+def _filter_auto_todo_snapshot_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop synthetic todo snapshots while preserving caller-owned history.
+
+    Returns a new list so run_conversation never mutates the caller's
+    conversation_history object.
+    """
+    return [msg for msg in messages if not _is_auto_todo_snapshot_message(msg)]
+
+
+
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
 
@@ -1251,6 +1282,12 @@ class AIAgent:
         # notifications to show progress.
         self._last_activity_ts: float = time.time()
         self._last_activity_desc: str = "initializing"
+        # User-visible progress heartbeats are throttled separately from the
+        # internal activity timestamp so long-running work is visible without
+        # flooding CLI/gateway output.  ``None`` means no visible heartbeat has
+        # been emitted yet in this agent instance.
+        self._last_visible_activity_emit_ts: float | None = None
+        self._activity_progress_interval_s: float = 30.0
         self._current_tool: str | None = None
         self._api_call_count: int = 0
 
@@ -4553,10 +4590,37 @@ class AIAgent:
             steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
         )
 
+    def _emit_progress(self, message: str) -> None:
+        """Emit a throttled progress heartbeat without interrupting work."""
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback("progress", message)
+            except Exception:
+                logger.debug("status_callback error in _emit_progress", exc_info=True)
+
     def _touch_activity(self, desc: str) -> None:
-        """Update the last-activity timestamp and description (thread-safe)."""
-        self._last_activity_ts = time.time()
+        """Update activity and occasionally surface visible still-working progress."""
+        now = time.time()
+        self._last_activity_ts = now
         self._last_activity_desc = desc
+
+        last_visible = getattr(self, "_last_visible_activity_emit_ts", None)
+        interval = getattr(self, "_activity_progress_interval_s", 30.0)
+        if last_visible is None:
+            self._last_visible_activity_emit_ts = now
+            return
+        if now - last_visible < interval:
+            return
+
+        self._last_visible_activity_emit_ts = now
+        desc = (desc or "working").strip()
+        if len(desc) > 160:
+            desc = desc[:157].rstrip() + "..."
+        self._emit_progress(f"Still working: {desc}")
 
     def _capture_rate_limits(self, http_response: Any) -> None:
         """Parse x-ratelimit-* headers from an HTTP response and cache the state.
@@ -9094,9 +9158,11 @@ class AIAgent:
                         "check auxiliary.compression.model in config.yaml."
                     )
 
-        todo_snapshot = self._todo_store.format_for_injection()
-        if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+        # Todo state is already preserved by tool-call history and restored via
+        # _hydrate_todo_store(). Do NOT append the rendered todo snapshot to the
+        # compressed chat as a user message: after compaction it can become the
+        # latest user turn and cause stale task state to override the next real
+        # user request.
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
@@ -10494,14 +10560,25 @@ class AIAgent:
             _msg_preview,
         )
 
-        # Initialize conversation (copy to avoid mutating the caller's list)
-        messages = list(conversation_history) if conversation_history else []
+        # Initialize conversation (copy to avoid mutating the caller's list).
+        # Also strip synthetic todo snapshots that older builds persisted as
+        # role=user during compression/resume; they are recovery metadata, not
+        # user intent, and must not be replayed to the model.
+        messages = (
+            _filter_auto_todo_snapshot_messages(list(conversation_history))
+            if conversation_history else []
+        )
 
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
         # recover the todo state from the most recent todo tool response in history)
-        if conversation_history and not self._todo_store.has_items():
-            self._hydrate_todo_store(conversation_history)
+        if messages and not self._todo_store.has_items():
+            # Hydrate from a snapshot of the sanitized pre-turn history. Do not
+            # pass the live `messages` list by reference because later appends
+            # (current user turn / assistant reply / tool results) would mutate
+            # the same list object and blur the boundary between recovered todo
+            # state and the current turn.
+            self._hydrate_todo_store(list(messages))
         
         # Prefill messages (few-shot priming) are injected at API-call time only,
         # never stored in the messages list. This keeps them ephemeral: they won't

@@ -886,6 +886,60 @@ class TestCallLlmPaymentFallback:
                     messages=[{"role": "user", "content": "hello"}],
                 )
 
+    def test_auto_provider_auth_error_falls_back(self):
+        """An auto-selected provider returning 401 should not kill auxiliary work."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://bad.example/v1"
+        auth_err = _AuxAuth401("AuthenticationError: stale auto token")
+        primary_client.chat.completions.create.side_effect = auth_err
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://fallback.example/v1"
+        fallback_client.chat.completions.create.return_value = _DummyResponse("fallback-ok")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "bad-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "bad-model", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "fallback-model", "openrouter")) as mock_fb:
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert resp.choices[0].message.content == "fallback-ok"
+        mock_fb.assert_called_once()
+        assert mock_fb.call_args.kwargs["reason"] == "auth error"
+        assert primary_client.chat.completions.create.call_count == 1
+        assert fallback_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_auto_provider_auth_error_falls_back(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://bad.example/v1"
+        primary_client.chat.completions.create = AsyncMock(side_effect=_AuxAuth401("error code: 401"))
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://fallback.example/v1"
+        fallback_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("async-fallback-ok"))
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "bad-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "bad-model", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "fallback-model", "openrouter")) as mock_fb:
+            resp = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert resp.choices[0].message.content == "async-fallback-ok"
+        mock_fb.assert_called_once()
+        assert mock_fb.call_args.kwargs["reason"] == "auth error"
+        assert primary_client.chat.completions.create.await_count == 1
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------

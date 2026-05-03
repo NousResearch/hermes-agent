@@ -40,6 +40,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import inspect
 import json
 import logging
 import os
@@ -1960,6 +1961,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     except ImportError:
         pass
 
+    if hasattr(sync_client, "chat") and hasattr(sync_client.chat, "completions"):
+        create = getattr(sync_client.chat.completions, "create", None)
+        if create is not None and inspect.iscoroutinefunction(create):
+            return sync_client, model
+
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
@@ -3117,6 +3123,22 @@ def _resolve_task_provider_model(
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
+    def _is_main_alias(value: Optional[str]) -> bool:
+        return str(value or "").strip().lower() in {"main", "default", "chat"}
+
+    # ``auxiliary.<task>.provider: main`` is a documented UI/config value that
+    # means "use the live main runtime passed by the agent".  Treat it exactly
+    # like ``auto`` here so _resolve_auto(main_runtime=...) gets a chance to
+    # bind the current provider/model/base_url/API key instead of attempting to
+    # resolve a literal provider named "main" and potentially falling through to
+    # stale credential pools (e.g. old Nous quota).  Keep explicit task model
+    # overrides intact: provider=main + model=foo still uses the main provider
+    # with model override through the auto path.
+    if _is_main_alias(provider):
+        provider = "auto"
+    if _is_main_alias(cfg_provider):
+        cfg_provider = "auto"
+
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
@@ -3609,13 +3631,22 @@ def call_llm(
         # Codex/OAuth tokens that authenticate but whose endpoint is down,
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        should_fallback = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_auth_error(first_err)
+        )
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            if _is_payment_error(first_err):
+                reason = "payment error"
+            elif _is_connection_error(first_err):
+                reason = "connection error"
+            else:
+                reason = "auth error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -3695,6 +3726,7 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -3743,6 +3775,7 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
@@ -3755,7 +3788,7 @@ async def async_call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True)
+                client, final_model = _get_cached_client("auto", async_mode=True, main_runtime=main_runtime)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -3888,10 +3921,19 @@ async def async_call_llm(
                         await retry_client.chat.completions.create(**retry_kwargs), task)
 
         # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        should_fallback = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_auth_error(first_err)
+        )
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            if _is_payment_error(first_err):
+                reason = "payment error"
+            elif _is_connection_error(first_err):
+                reason = "connection error"
+            else:
+                reason = "auth error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(

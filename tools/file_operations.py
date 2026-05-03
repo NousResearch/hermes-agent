@@ -387,10 +387,21 @@ class ShellFileOperations(FileOperations):
         )
     
     def _has_command(self, cmd: str) -> bool:
-        """Check if a command exists in the environment (cached)."""
+        """Check if a command exists in the environment (cached).
+
+        For ``rg`` specifically, verify the executable is actually ripgrep.
+        Some Windows/WSL PATHs expose unrelated shims named ``rg`` (for
+        example pnpm package binaries) that accept the command but do not
+        implement ripgrep semantics.  Treat those as unavailable so search
+        falls back to grep instead of returning silent false negatives.
+        """
         if cmd not in self._command_cache:
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
-            self._command_cache[cmd] = result.stdout.strip() == 'yes'
+            available = result.stdout.strip() == 'yes'
+            if available and cmd == 'rg':
+                version = self._exec("rg --version 2>/dev/null | head -n 1")
+                available = version.exit_code == 0 and version.stdout.lower().startswith('ripgrep ')
+            self._command_cache[cmd] = available
         return self._command_cache[cmd]
     
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:

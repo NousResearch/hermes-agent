@@ -375,6 +375,52 @@ class TestRunAgentViaProxy:
         # assistant with None content should be skipped
         assert all(m.get("content") for m in messages)
 
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_todo_snapshots_in_forwarded_history(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        history = [
+            {"role": "user", "content": "上一条真实用户消息"},
+            {
+                "role": "user",
+                "content": "[Your active task list was preserved across context compression]\n- [>] stale. 旧任务 (in_progress)",
+            },
+            {
+                "role": "user",
+                "content": "[CURRENT SESSION TODO STATE — NOT A USER REQUEST]\n- [>] stale. 旧任务 (in_progress)",
+            },
+            {"role": "assistant", "content": "上一轮回答"},
+        ]
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    await runner._run_agent_via_proxy(
+                        message="当前真实用户消息",
+                        context_prompt="",
+                        history=history,
+                        source=source,
+                        session_id="test",
+                    )
+
+        messages = session.captured_json["messages"]
+        contents = [m["content"] for m in messages]
+        assert "上一条真实用户消息" in contents
+        assert "上一轮回答" in contents
+        assert contents[-1] == "当前真实用户消息"
+        assert not any("Your active task list was preserved" in c for c in contents)
+        assert not any("CURRENT SESSION TODO STATE" in c for c in contents)
+
     @pytest.mark.asyncio
     async def test_result_shape_matches_run_agent(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")

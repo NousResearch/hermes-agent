@@ -416,10 +416,16 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+def resolve_gateway_approval(session_key: str, choice: str = "once",
+                             resolve_all: bool = False, **kwargs) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
+
+    ``session_key`` must be the session's public identifier.  The resolver
+    intentionally does not normalize approval-button ids such as
+    ``{session_key}:{counter}``: without a per-entry id on _ApprovalEntry,
+    doing so would resolve FIFO and could approve/deny the wrong pending
+    command in parallel approval flows.
 
     When *resolve_all* is True every pending approval in the session is
     resolved at once (``/approve all``).  Otherwise only the oldest one
@@ -427,6 +433,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
+    approve_kw = kwargs.pop("approve", None)
+    mode_kw = kwargs.pop("mode", None)
+    if kwargs:
+        raise TypeError(f"unexpected keyword argument(s): {', '.join(kwargs)}")
+    if approve_kw is not None:
+        choice = mode_kw or choice or "once"
+        if not approve_kw:
+            choice = "deny"
+    elif mode_kw is not None:
+        choice = mode_kw
+
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -948,6 +965,22 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
+    # Embedded gateway/tests may not export HERMES_GATEWAY_SESSION; only infer
+    # gateway context when the *current* session has a registered notifier or
+    # pending queue.  Do not infer from unrelated global gateway state.
+    if not is_gateway:
+        current_session = get_current_session_key()
+        try:
+            with _lock:
+                has_gateway_state = (
+                    current_session in _gateway_notify_cbs or
+                    current_session in _gateway_queues
+                )
+        except Exception:
+            has_gateway_state = False
+        if has_gateway_state:
+            is_gateway = "1"
+
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
         if os.getenv("HERMES_CRON_SESSION"):

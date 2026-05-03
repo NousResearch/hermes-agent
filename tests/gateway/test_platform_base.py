@@ -264,17 +264,17 @@ class TestExtractMedia:
         assert cleaned == "Just text."
 
     def test_single_media_tag(self):
-        content = "MEDIA:/path/to/audio.ogg"
+        content = "MEDIA:/tmp/path/to/audio.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/path/to/audio.ogg"
+        assert media[0][0] == "/tmp/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag
 
     def test_media_with_voice_directive(self):
-        content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/path/to/voice.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/path/to/voice.ogg"
+        assert media[0][0] == "/tmp/path/to/voice.ogg"
         assert media[0][1] is True  # voice tag present
 
     def test_multiple_media_tags(self):
@@ -301,18 +301,18 @@ class TestExtractMedia:
         assert "\n\n\n" not in cleaned
 
     def test_media_tag_allows_optional_whitespace_after_colon(self):
-        content = "MEDIA: /path/to/audio.ogg"
+        content = "MEDIA: /tmp/path/to/audio.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/path/to/audio.ogg", False)]
+        assert media == [("/tmp/path/to/audio.ogg", False)]
         assert cleaned == ""
 
     def test_media_tag_strips_wrapping_quotes_and_backticks(self):
-        content = "MEDIA: `/path/to/file.png`\nMEDIA:\"/path/to/file2.png\"\nMEDIA:'/path/to/file3.png'"
+        content = "MEDIA: `/tmp/path/to/file.png`\nMEDIA:\"/tmp/path/to/file2.png\"\nMEDIA:'/tmp/path/to/file3.png'"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [
-            ("/path/to/file.png", False),
-            ("/path/to/file2.png", False),
-            ("/path/to/file3.png", False),
+            ("/tmp/path/to/file.png", False),
+            ("/tmp/path/to/file2.png", False),
+            ("/tmp/path/to/file3.png", False),
         ]
         assert cleaned == ""
 
@@ -328,6 +328,26 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
+
+    def test_media_placeholder_path_is_ignored(self):
+        content = "CLI users see paths directly; do not emit MEDIA:/path tags here."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+
+    def test_media_placeholder_path_prefix_is_ignored(self):
+        content = "Example only: MEDIA:/path/to/audio.ogg should not upload anything."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+
+# ---------------------------------------------------------------------------
+# truncate_message
+# ---------------------------------------------------------------------------
+
+
 
 
 # ---------------------------------------------------------------------------

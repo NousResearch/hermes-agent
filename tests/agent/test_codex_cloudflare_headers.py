@@ -36,6 +36,11 @@ import pytest
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def disable_managed_nous_tools(monkeypatch):
+    monkeypatch.setenv("HERMES_DISABLE_MANAGED_NOUS_TOOLS", "1")
+
+
 def _make_codex_jwt(account_id: str = "acct-test-123") -> str:
     """Build a syntactically valid Codex-style JWT with the account_id claim."""
     def b64url(data: bytes) -> str:
@@ -118,88 +123,59 @@ class TestCodexCloudflareHeaders:
 # ---------------------------------------------------------------------------
 
 class TestPrimaryClientWiring:
-    def test_init_wires_codex_headers_for_chatgpt_base_url(self):
+    def _dummy_agent(self, api_key: str):
+        from types import SimpleNamespace
         from run_agent import AIAgent
+
+        agent = SimpleNamespace(_client_kwargs={"api_key": api_key})
+        agent._apply_client_headers_for_base_url = AIAgent._apply_client_headers_for_base_url.__get__(
+            agent, SimpleNamespace
+        )
+        return agent
+
+    def test_apply_client_headers_wires_codex_headers_for_chatgpt_base_url(self):
         token = _make_codex_jwt("acct-primary-init")
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            AIAgent(
-                api_key=token,
-                base_url="https://chatgpt.com/backend-api/codex",
-                provider="openai-codex",
-                model="gpt-5.4",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            headers = mock_openai.call_args.kwargs.get("default_headers") or {}
-            assert headers.get("originator") == "codex_cli_rs"
-            assert headers.get("ChatGPT-Account-ID") == "acct-primary-init"
-            assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
+        agent = self._dummy_agent(token)
+        agent._apply_client_headers_for_base_url("https://chatgpt.com/backend-api/codex")
+
+        headers = agent._client_kwargs.get("default_headers") or {}
+        assert headers.get("originator") == "codex_cli_rs"
+        assert headers.get("ChatGPT-Account-ID") == "acct-primary-init"
+        assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
 
     def test_apply_client_headers_on_base_url_change(self):
         """Credential-rotation / base-url change path must also emit codex headers."""
-        from run_agent import AIAgent
         token = _make_codex_jwt("acct-rotation")
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            agent = AIAgent(
-                api_key="placeholder-openrouter-key",
-                base_url="https://openrouter.ai/api/v1",
-                provider="openrouter",
-                model="anthropic/claude-sonnet-4.6",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            # Simulate rotation into a Codex credential
-            agent._client_kwargs["api_key"] = token
-            agent._apply_client_headers_for_base_url(
-                "https://chatgpt.com/backend-api/codex"
-            )
-            headers = agent._client_kwargs.get("default_headers") or {}
-            assert headers.get("originator") == "codex_cli_rs"
-            assert headers.get("ChatGPT-Account-ID") == "acct-rotation"
-            assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
+        agent = self._dummy_agent("placeholder-openrouter-key")
+
+        agent._apply_client_headers_for_base_url("https://openrouter.ai/api/v1")
+        assert "originator" not in (agent._client_kwargs.get("default_headers") or {})
+
+        agent._client_kwargs["api_key"] = token
+        agent._apply_client_headers_for_base_url("https://chatgpt.com/backend-api/codex")
+
+        headers = agent._client_kwargs.get("default_headers") or {}
+        assert headers.get("originator") == "codex_cli_rs"
+        assert headers.get("ChatGPT-Account-ID") == "acct-rotation"
+        assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
         """Switching AWAY from chatgpt.com must drop the codex headers."""
-        from run_agent import AIAgent
         token = _make_codex_jwt()
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            agent = AIAgent(
-                api_key=token,
-                base_url="https://chatgpt.com/backend-api/codex",
-                provider="openai-codex",
-                model="gpt-5.4",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            # Sanity: headers are set initially
-            assert "originator" in (agent._client_kwargs.get("default_headers") or {})
-            agent._apply_client_headers_for_base_url(
-                "https://api.anthropic.com"
-            )
-            # default_headers should be popped for anthropic base
-            assert "default_headers" not in agent._client_kwargs
+        agent = self._dummy_agent(token)
+
+        agent._apply_client_headers_for_base_url("https://chatgpt.com/backend-api/codex")
+        assert "originator" in (agent._client_kwargs.get("default_headers") or {})
+
+        agent._apply_client_headers_for_base_url("https://api.anthropic.com")
+        assert "default_headers" not in agent._client_kwargs
 
     def test_openrouter_base_url_does_not_get_codex_headers(self):
-        from run_agent import AIAgent
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            AIAgent(
-                api_key="sk-or-test",
-                base_url="https://openrouter.ai/api/v1",
-                provider="openrouter",
-                model="anthropic/claude-sonnet-4.6",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            headers = mock_openai.call_args.kwargs.get("default_headers") or {}
-            assert headers.get("originator") != "codex_cli_rs"
+        agent = self._dummy_agent("sk-or-test")
+        agent._apply_client_headers_for_base_url("https://openrouter.ai/api/v1")
+
+        headers = agent._client_kwargs.get("default_headers") or {}
+        assert headers.get("originator") != "codex_cli_rs"
 
 
 # ---------------------------------------------------------------------------

@@ -5266,6 +5266,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -5285,6 +5286,7 @@ def _run_npm_install_deterministic(
             capture_output=capture_output,
             text=True,
             check=False,
+            env=env,
         )
         if ci_result.returncode == 0:
             return ci_result
@@ -5297,6 +5299,7 @@ def _run_npm_install_deterministic(
         capture_output=capture_output,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -5317,13 +5320,27 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         return True
 
     npm = shutil.which("npm")
+    preferred_node_bin = Path.home() / ".local/lib/nodejs/current/bin"
+    if not npm:
+        preferred_npm = preferred_node_bin / "npm"
+        if preferred_npm.is_file() and os.access(preferred_npm, os.X_OK):
+            npm = str(preferred_npm)
+    build_env = os.environ.copy()
+    if preferred_node_bin.exists():
+        build_env["PATH"] = str(preferred_node_bin) + os.pathsep + build_env.get("PATH", "")
+
     if not npm:
         if fatal:
             print("Web UI frontend not built and npm is not available.")
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+    r1 = _run_npm_install_deterministic(
+        npm,
+        web_dir,
+        extra_args=("--silent",),
+        env=build_env,
+    )
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -5332,7 +5349,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
-    r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
+    r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True, env=build_env)
     if r2.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"

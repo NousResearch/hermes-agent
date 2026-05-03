@@ -869,8 +869,10 @@ def skill_view(
     """
     try:
         # ── Qualified name dispatch (plugin skills) ──────────────────
-        # Names containing ':' are routed to the plugin skill registry.
-        # Bare names fall through to the existing flat-tree scan below.
+        # Names containing ':' are first routed to the plugin skill registry.
+        # If the namespace plugin exists but did not register any skills, fall
+        # back to the flat-tree scan so category-qualified local skills like
+        # ``software-development:systematic-debugging`` keep working.
         if ":" in name:
             from agent.skill_utils import is_valid_namespace, parse_qualified_name
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -916,7 +918,8 @@ def skill_view(
                     session_id=task_id,
                 )
 
-            # Plugin exists but this specific skill is missing?
+            # Plugin exists and registered plugin skills, but not this one.
+            # Return a plugin-specific error instead of falling through.
             available = pm.list_plugin_skills(namespace)
             if available:
                 return json.dumps(
@@ -928,8 +931,9 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            # Plugin itself not found — fall through to flat-tree scan
-            # which will return a normal "not found" with suggestions.
+            # Otherwise fall through to the flat-tree scan below. This keeps
+            # category-qualified local skills usable even when no plugin skill
+            # registry exists for the namespace.
 
         from agent.skill_utils import get_external_skills_dirs
 
@@ -952,36 +956,52 @@ def skill_view(
         skill_md = None
 
         # Search all dirs: local first, then external (first match wins)
-        for search_dir in all_dirs:
-            # Try direct path first (e.g., "mlops/axolotl")
-            direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                skill_dir = direct_path
-                skill_md = direct_path / "SKILL.md"
-                break
-            elif direct_path.with_suffix(".md").exists():
-                skill_md = direct_path.with_suffix(".md")
+        search_names = [name]
+        if ":" in name:
+            from agent.skill_utils import parse_qualified_name
+            _, bare = parse_qualified_name(name)
+            if bare not in search_names:
+                search_names.append(bare)
+
+        for search_name in search_names:
+            for search_dir in all_dirs:
+                # Try direct path first (e.g., "mlops/axolotl")
+                direct_path = search_dir / search_name
+                if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                    skill_dir = direct_path
+                    skill_md = direct_path / "SKILL.md"
+                    break
+                elif direct_path.with_suffix(".md").exists():
+                    skill_md = direct_path.with_suffix(".md")
+                    break
+            if skill_md:
                 break
 
         # Search by directory name across all dirs
         if not skill_md:
-            for search_dir in all_dirs:
-                from agent.skill_utils import iter_skill_index_files
+            for search_name in search_names:
+                for search_dir in all_dirs:
+                    from agent.skill_utils import iter_skill_index_files
 
-                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
-                    if found_skill_md.parent.name == name:
-                        skill_dir = found_skill_md.parent
-                        skill_md = found_skill_md
+                    for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                        if found_skill_md.parent.name == search_name:
+                            skill_dir = found_skill_md.parent
+                            skill_md = found_skill_md
+                            break
+                    if skill_md:
                         break
                 if skill_md:
                     break
 
         # Legacy: flat .md files
         if not skill_md:
-            for search_dir in all_dirs:
-                for found_md in search_dir.rglob(f"{name}.md"):
-                    if found_md.name != "SKILL.md":
-                        skill_md = found_md
+            for search_name in search_names:
+                for search_dir in all_dirs:
+                    for found_md in search_dir.rglob(f"{search_name}.md"):
+                        if found_md.name != "SKILL.md":
+                            skill_md = found_md
+                            break
+                    if skill_md:
                         break
                 if skill_md:
                     break

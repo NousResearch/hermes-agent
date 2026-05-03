@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set
@@ -61,6 +62,10 @@ DEFAULT_EXCLUDES = [
 
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("HERMES_CHECKPOINT_TIMEOUT", "30"))))
+_STALE_INDEX_LOCK_SECONDS: int = max(
+    10,
+    min(3600, int(os.getenv("HERMES_CHECKPOINT_STALE_LOCK_SECONDS", "300"))),
+)
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -159,6 +164,33 @@ def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     return env
 
 
+def _maybe_remove_stale_index_lock(shadow_repo: Path) -> None:
+    """Remove a stale shadow-repo index.lock left by a dead git process.
+
+    Checkpoints use private shadow repos under ~/.hermes/checkpoints, so this
+    never touches the user's project .git/index.lock.  Fresh locks are left in
+    place; only old locks are removed to keep background checkpoints from
+    permanently degrading after a killed/timeout git process.
+    """
+    lock_path = shadow_repo / "index.lock"
+    try:
+        stat = lock_path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not stat checkpoint index lock %s: %s", lock_path, exc)
+        return
+
+    age = time.time() - stat.st_mtime
+    if age < _STALE_INDEX_LOCK_SECONDS:
+        return
+    try:
+        lock_path.unlink()
+        logger.info("Removed stale checkpoint index lock: %s", lock_path)
+    except OSError as exc:
+        logger.debug("Could not remove stale checkpoint index lock %s: %s", lock_path, exc)
+
+
 def _run_git(
     args: List[str],
     shadow_repo: Path,
@@ -182,6 +214,7 @@ def _run_git(
         logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
         return False, "", msg
 
+    _maybe_remove_stale_index_lock(shadow_repo)
     env = _git_env(shadow_repo, str(normalized_working_dir))
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()

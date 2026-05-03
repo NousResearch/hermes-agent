@@ -391,7 +391,8 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
     assert "model.provider 'volcengine-plan' is not a recognised provider" not in out
 
 
-def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
+
+def test_run_doctor_accepts_builtin_custom_provider(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
@@ -479,6 +480,43 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
         )
+
+
+def test_run_doctor_rejects_unresolved_provider_even_with_known_providers_unavailable(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: definitely-unknown\n"
+        "  default: gpt-test\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.providers as providers_mod
+
+    monkeypatch.setattr(auth_mod, "PROVIDER_REGISTRY", {"anthropic": types.SimpleNamespace(api_key_env_vars=())})
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(providers_mod, "resolve_provider_full", lambda *a, **kw: None)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'definitely-unknown' is not a recognised provider" in out
 
 
 def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser(monkeypatch, tmp_path):

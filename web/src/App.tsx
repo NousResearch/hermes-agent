@@ -80,6 +80,15 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
+const PRIMARY_NAV_PATHS = new Set([
+  "/sessions",
+  "/cron",
+  "/logs",
+]);
+
+const BRAND_NAME = "小爱交易控制台";
+const BRAND_STACKED = ["小爱交易", "控制台"] as const;
+
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
@@ -186,7 +195,7 @@ function buildNavItems(
   builtIn: NavItem[],
   manifests: PluginManifest[],
 ): NavItem[] {
-  const items = [...builtIn];
+  const items = [...builtIn.filter((item) => PRIMARY_NAV_PATHS.has(item.path))];
 
   for (const manifest of manifests) {
     if (manifest.tab.override) continue;
@@ -426,7 +435,7 @@ export default function App() {
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
           style={{ mixBlendMode: "plus-lighter" }}
         >
-          {t.app.brand}
+          {BRAND_NAME}
         </Typography>
       </header>
 
@@ -476,9 +485,9 @@ export default function App() {
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
-                  Hermes
+                  {BRAND_STACKED[0]}
                   <br />
-                  Agent
+                  {BRAND_STACKED[1]}
                 </Typography>
               </div>
 

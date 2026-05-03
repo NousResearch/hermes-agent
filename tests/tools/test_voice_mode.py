@@ -61,16 +61,27 @@ def mock_sd(monkeypatch):
 # ============================================================================
 
 class TestDetectAudioEnvironment:
-    def test_clean_environment_is_available(self, monkeypatch):
+    def test_clean_environment_is_available(self, monkeypatch, tmp_path):
         """No SSH, Docker, or WSL — should be available."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
+        proc_version = tmp_path / "proc_version"
+        proc_version.write_text("Linux 6.8.0-generic #1 SMP PREEMPT_DYNAMIC")
+
+        _real_open = open
+        def _fake_open(f, *a, **kw):
+            if f == "/proc/version":
+                return _real_open(str(proc_version), *a, **kw)
+            return _real_open(f, *a, **kw)
+
         from tools.voice_mode import detect_audio_environment
-        result = detect_audio_environment()
+        with patch("builtins.open", side_effect=_fake_open):
+            result = detect_audio_environment()
         assert result["available"] is True
         assert result["warnings"] == []
 
@@ -216,18 +227,29 @@ class TestDetectAudioEnvironment:
         assert any("Termux:API Android app is not installed" in w for w in result["warnings"])
 
 
-    def test_termux_api_microphone_allows_voice_without_sounddevice(self, monkeypatch):
+    def test_termux_api_microphone_allows_voice_without_sounddevice(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record" if cmd == "termux-microphone-record" else None)
         monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
 
+        proc_version = tmp_path / "proc_version"
+        proc_version.write_text("Linux localhost 5.15.0-android")
+
+        _real_open = open
+        def _fake_open(f, *a, **kw):
+            if f == "/proc/version":
+                return _real_open(str(proc_version), *a, **kw)
+            return _real_open(f, *a, **kw)
+
         from tools.voice_mode import detect_audio_environment
-        result = detect_audio_environment()
+        with patch("builtins.open", side_effect=_fake_open):
+            result = detect_audio_environment()
 
         assert result["available"] is True
         assert any("Termux:API microphone recording available" in n for n in result.get("notices", []))

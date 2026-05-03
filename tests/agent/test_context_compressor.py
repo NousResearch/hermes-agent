@@ -1,9 +1,37 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import pytest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+
+
+
+
+def test_compaction_template_frames_active_task_as_checkpoint_not_command():
+    source = Path("agent/context_compressor.py").read_text()
+    assert "best-effort checkpoint" in source
+    assert "not an instruction to override later live user messages" in source
+    assert "SINGLE MOST IMPORTANT FIELD" not in source
+    assert "must pick up exactly here" not in source
+
+def test_summary_prefix_demotes_active_task_to_reference_when_later_user_exists():
+    assert "REFERENCE ONLY" in SUMMARY_PREFIX
+    assert "background reference" in SUMMARY_PREFIX
+    assert "latest real user message" in SUMMARY_PREFIX
+    assert "current task is identified" not in SUMMARY_PREFIX
+    assert "resume exactly from there" not in SUMMARY_PREFIX
+
+
+
+def test_iterative_summary_prompt_revalidates_stale_task_state_instead_of_preserving_blindly():
+    source = Path("agent/context_compressor.py").read_text()
+    assert "Do NOT blindly preserve stale Active Task" in source
+    assert "Pending User Asks" in source
+    assert "Re-evaluate" in source
+    assert "latest real user message" in source
+    assert "PRESERVE all existing information that is still relevant" not in source
 
 
 @pytest.fixture()
@@ -65,24 +93,34 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None, so should use truncation fallback
+        # If auxiliary summarization is unavailable, compression must use a
+        # static fallback marker immediately instead of attempting real network
+        # calls or hanging the test/runtime.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no auxiliary LLM provider configured")):
+            result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
+        assert any(
+            isinstance(m.get("content"), str)
+            and "Summary generation was unavailable" in m.get("content", "")
+            for m in result
+        )
         assert compressor.compression_count == 1
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
-        compressor.compress(msgs)
-        assert compressor.compression_count == 1
-        compressor.compress(msgs)
-        assert compressor.compression_count == 2
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no auxiliary LLM provider configured")):
+            compressor.compress(msgs)
+            assert compressor.compression_count == 1
+            compressor.compress(msgs)
+            assert compressor.compression_count == 2
 
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no auxiliary LLM provider configured")):
+            result = compressor.compress(msgs)
         # First 2 messages should be preserved (protect_first_n=2)
         # Last 2 messages should be preserved (protect_last_n=2)
         assert result[-1]["content"] == msgs[-1]["content"]
@@ -128,7 +166,8 @@ class TestGenerateSummaryNoneContent:
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
             for i in range(10)
         ]
-        result = c.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no auxiliary LLM provider configured")):
+            result = c.compress(msgs)
         assert len(result) < len(msgs)
 
 

@@ -69,12 +69,22 @@ def _make_runner():
 
 def _clear_approval_state():
     """Reset all module-level approval state between tests."""
-    from tools import approval as mod
+    import tools.approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
+    mod.load_permanent_allowlist = lambda: set()
+    mod.save_permanent_allowlist = lambda patterns: None
+    mod._session_yolo.clear()
     mod._pending.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_approval_state_between_tests():
+    _clear_approval_state()
+    yield
+    _clear_approval_state()
 
 
 # ------------------------------------------------------------------
@@ -375,7 +385,7 @@ class TestBlockingApprovalE2E:
             resolve_gateway_approval, check_all_command_guards,
         )
 
-        session_key = "e2e-test"
+        session_key = "e2e-test-approve-once"
         notified = []
 
         register_gateway_notify(session_key, lambda d: notified.append(d))
@@ -399,23 +409,27 @@ class TestBlockingApprovalE2E:
                 os.environ.pop("HERMES_SESSION_KEY", None)
                 reset_current_session_key(token)
 
-        t = threading.Thread(target=agent_thread)
-        t.start()
+        try:
+            os.environ["TIRITH_ENABLED"] = "0"
+            t = threading.Thread(target=agent_thread)
+            t.start()
+            for _ in range(50):
+                if notified:
+                    break
+                time.sleep(0.05)
 
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
+            assert len(notified) == 1
+            assert "rm -rf /important" in notified[0]["command"]
 
-        assert len(notified) == 1
-        assert "rm -rf /important" in notified[0]["command"]
+            resolve_gateway_approval(session_key, "once")
+            t.join(timeout=5)
 
-        resolve_gateway_approval(session_key, "once")
-        t.join(timeout=5)
+            assert result_holder[0] is not None
+            assert result_holder[0]["approved"] is True
+        finally:
+            os.environ.pop("TIRITH_ENABLED", None)
+            unregister_gateway_notify(session_key)
 
-        assert result_holder[0] is not None
-        assert result_holder[0]["approved"] is True
-        unregister_gateway_notify(session_key)
 
     def test_blocking_approval_deny(self):
         """check_all_command_guards returns BLOCKED when denied."""
@@ -447,19 +461,24 @@ class TestBlockingApprovalE2E:
                 os.environ.pop("HERMES_SESSION_KEY", None)
                 reset_current_session_key(token)
 
-        t = threading.Thread(target=agent_thread)
-        t.start()
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
+        try:
+            os.environ["TIRITH_ENABLED"] = "0"
+            t = threading.Thread(target=agent_thread)
+            t.start()
+            for _ in range(50):
+                if notified:
+                    break
+                time.sleep(0.05)
 
-        resolve_gateway_approval(session_key, "deny")
-        t.join(timeout=5)
+            assert len(notified) == 1
+            resolve_gateway_approval(session_key, "deny")
+            t.join(timeout=5)
 
-        assert result_holder[0]["approved"] is False
-        assert "BLOCKED" in result_holder[0]["message"]
-        unregister_gateway_notify(session_key)
+            assert result_holder[0]["approved"] is False
+            assert "BLOCKED" in result_holder[0]["message"]
+        finally:
+            os.environ.pop("TIRITH_ENABLED", None)
+            unregister_gateway_notify(session_key)
 
     def test_blocking_approval_timeout(self):
         """check_all_command_guards returns BLOCKED on timeout."""
@@ -470,6 +489,7 @@ class TestBlockingApprovalE2E:
 
         session_key = "e2e-timeout"
         register_gateway_notify(session_key, lambda d: None)
+        os.environ["TIRITH_ENABLED"] = "0"
 
         result_holder = [None]
 
@@ -493,12 +513,15 @@ class TestBlockingApprovalE2E:
                 reset_current_session_key(token)
 
         t = threading.Thread(target=agent_thread)
-        t.start()
-        t.join(timeout=10)
+        try:
+            t.start()
+            t.join(timeout=10)
 
-        assert result_holder[0]["approved"] is False
-        assert "timed out" in result_holder[0]["message"]
-        unregister_gateway_notify(session_key)
+            assert result_holder[0]["approved"] is False
+            assert "timed out" in result_holder[0]["message"]
+        finally:
+            os.environ.pop("TIRITH_ENABLED", None)
+            unregister_gateway_notify(session_key)
 
     def test_parallel_subagent_approvals(self):
         """Multiple threads can block concurrently and be resolved independently."""
@@ -536,28 +559,32 @@ class TestBlockingApprovalE2E:
             threading.Thread(target=make_agent(1, "rm -rf /b")),
             threading.Thread(target=make_agent(2, "rm -rf /c")),
         ]
-        for t in threads:
-            t.start()
+        try:
+            os.environ["TIRITH_ENABLED"] = "0"
+            for t in threads:
+                t.start()
 
-        # Wait for all 3 to block
-        for _ in range(100):
-            if len(notified) >= 3:
-                break
-            time.sleep(0.05)
+            # Wait for all 3 to block
+            for _ in range(100):
+                if len(notified) >= 3:
+                    break
+                time.sleep(0.05)
 
-        assert len(notified) == 3
-        assert len(_gateway_queues.get(session_key, [])) == 3
+            assert len(notified) == 3
+            assert len(_gateway_queues.get(session_key, [])) == 3
 
-        # Approve all at once
-        count = resolve_gateway_approval(session_key, "session", resolve_all=True)
-        assert count == 3
+            # Approve all at once
+            count = resolve_gateway_approval(session_key, "session", resolve_all=True)
+            assert count == 3
 
-        for t in threads:
-            t.join(timeout=5)
+            for t in threads:
+                t.join(timeout=5)
 
-        assert all(r is not None for r in results)
-        assert all(r["approved"] is True for r in results)
-        unregister_gateway_notify(session_key)
+            assert all(r is not None for r in results)
+            assert all(r["approved"] is True for r in results)
+        finally:
+            unregister_gateway_notify(session_key)
+            os.environ.pop("TIRITH_ENABLED", None)
 
     def test_parallel_mixed_approve_deny(self):
         """Approve some, deny others in a parallel batch."""
@@ -592,30 +619,34 @@ class TestBlockingApprovalE2E:
             threading.Thread(target=make_agent(0, "rm -rf /x")),
             threading.Thread(target=make_agent(1, "rm -rf /y")),
         ]
-        for t in threads:
-            t.start()
+        try:
+            os.environ["TIRITH_ENABLED"] = "0"
+            for t in threads:
+                t.start()
 
-        # Wait for both threads to register pending approvals instead of
-        # relying on a fixed sleep.  The approval module stores entries in
-        # _gateway_queues[session_key] — poll until we see 2 entries.
-        from tools.approval import _gateway_queues
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if len(_gateway_queues.get(session_key, [])) >= 2:
-                break
-            time.sleep(0.05)
+            # Wait for both threads to register pending approvals instead of
+            # relying on a fixed sleep.  The approval module stores entries in
+            # _gateway_queues[session_key] — poll until we see 2 entries.
+            from tools.approval import _gateway_queues
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if len(_gateway_queues.get(session_key, [])) >= 2:
+                    break
+                time.sleep(0.05)
 
-        # Approve first, deny second
-        resolve_gateway_approval(session_key, "once")   # oldest
-        resolve_gateway_approval(session_key, "deny")   # next
+            # Approve first, deny second
+            resolve_gateway_approval(session_key, "once")   # oldest
+            resolve_gateway_approval(session_key, "deny")   # next
 
-        for t in threads:
-            t.join(timeout=5)
+            for t in threads:
+                t.join(timeout=5)
 
-        assert all(r is not None for r in results)
-        assert sorted(r["approved"] for r in results) == [False, True]
-        assert sum("BLOCKED" in (r.get("message") or "") for r in results) == 1
-        unregister_gateway_notify(session_key)
+            assert all(r is not None for r in results)
+            assert sorted(r["approved"] for r in results) == [False, True]
+            assert sum("BLOCKED" in (r.get("message") or "") for r in results) == 1
+        finally:
+            unregister_gateway_notify(session_key)
+            os.environ.pop("TIRITH_ENABLED", None)
 
 
 # ------------------------------------------------------------------

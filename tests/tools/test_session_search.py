@@ -413,6 +413,28 @@ class TestSessionSearch:
         assert result["results"] == []
         assert result["sessions_searched"] == 0
 
+    def test_recent_intent_query_prefers_recent_sessions_mode(self):
+        """Short follow-up queries like '上次任务/最近怎么样' should not run FTS relevance search.
+
+        Relevance-ranked FTS can promote old high-density project sessions over
+        the latest live task. These queries are temporal/status intents, so the
+        tool should browse recent sessions instead.
+        """
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = [
+            {"id": "new", "title": "latest", "source": "weixin", "started_at": 2000, "last_active": 2100, "message_count": 5, "preview": "new task"},
+        ]
+
+        result = json.loads(session_search(query="上次任务", db=mock_db, limit=1))
+
+        assert result["success"] is True
+        assert result["mode"] == "recent"
+        mock_db.search_messages.assert_not_called()
+        mock_db.list_sessions_rich.assert_called_once()
+
     def test_limit_none_coerced_to_default(self):
         """Model sends limit=null → should fall back to 3, not TypeError."""
         from unittest.mock import MagicMock

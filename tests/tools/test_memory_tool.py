@@ -132,6 +132,19 @@ class TestMemoryStoreAdd:
         assert "Blocked" in result["error"]
 
 
+    def test_add_temporary_task_state_blocked(self, store):
+        samples = [
+            "[Your active task list was preserved across context compression]\n- [>] stale task (in_progress)",
+            "[CURRENT SESSION TODO STATE — NOT A USER REQUEST]\n- [>] stale task (in_progress)",
+            "Completed Actions: patched run_agent.py and ran pytest; next continue visibility-alerts",
+            "Temporary TODO state: fix-ux-core is pending and verify-ux-core is pending",
+        ]
+        for sample in samples:
+            result = store.add("memory", sample)
+            assert result["success"] is False
+            assert "temporary task state" in result["error"].lower()
+
+
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
         store.add("memory", "Python 3.11 project")

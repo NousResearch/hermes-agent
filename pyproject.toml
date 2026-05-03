@@ -147,6 +147,7 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gat
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "ssh: marks tests requiring an SSH-capable environment or remote filesystem",
 ]
 addopts = "-m 'not integration' -n auto"
 

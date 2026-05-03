@@ -348,10 +348,12 @@ def _reset_module_state():
 
     # --- tools.approval — the single biggest source of cross-test pollution ---
     try:
-        from tools import approval as _approval_mod
+        import tools.approval as _approval_mod
         _approval_mod._session_approved.clear()
         _approval_mod._session_yolo.clear()
         _approval_mod._permanent_approved.clear()
+        _approval_mod.load_permanent_allowlist = lambda: set()
+        _approval_mod.save_permanent_allowlist = lambda patterns: None
         _approval_mod._pending.clear()
         _approval_mod._gateway_queues.clear()
         _approval_mod._gateway_notify_cbs.clear()

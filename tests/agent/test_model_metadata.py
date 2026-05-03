@@ -35,10 +35,8 @@ from agent.model_metadata import (
 )
 
 
-# =========================================================================
-# Token estimation
-# =========================================================================
-
+# ==================================================================# Token estimation
+# ==================================================================
 class TestEstimateTokensRough:
     def test_empty_string(self):
         assert estimate_tokens_rough("") == 0
@@ -104,10 +102,8 @@ class TestEstimateMessagesTokensRough:
         assert result == (len(str(msg)) + 3) // 4
 
 
-# =========================================================================
-# Default context lengths
-# =========================================================================
-
+# ==================================================================# Default context lengths
+# ==================================================================
 class TestDefaultContextLengths:
     def test_claude_models_context_lengths(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
@@ -228,6 +224,66 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
+    def test_custom_endpoint_known_gpt_family_uses_static_fallback_not_probe_down(self, tmp_path, monkeypatch):
+        """Sparse custom /models responses for known GPT slugs should not
+        pin the context window to the generic 128k probe-down fallback.
+        """
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="gpt-5.5",
+                base_url="https://third-party.example/v1",
+                provider="custom",
+            )
+
+        assert ctx == 1_050_000
+        cached = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert cached["gpt-5.5@https://third-party.example/v1"] == 1_050_000
+
+    def test_unknown_custom_endpoint_probe_down_is_cached(self, tmp_path, monkeypatch):
+        """Unknown custom endpoints still fall back to 128k, but cache the
+        fallback so subsequent calls avoid repeated probe-down log noise.
+        """
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="unknown-future-model",
+                base_url="https://third-party.example/v1",
+                provider="custom",
+            )
+
+        assert ctx == 256_000
+        cached = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert cached["unknown-future-model@https://third-party.example/v1"] == 256_000
+
+    def test_local_custom_endpoint_queries_server_before_static_family_default(self, tmp_path, monkeypatch):
+        """Local OpenAI-compatible servers should win over public cloud family defaults."""
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={"gpt-local": {}}), \
+             patch("agent.model_metadata._query_local_context_length", return_value=65_536) as local_probe:
+            ctx = mm.get_model_context_length(
+                model="gpt-local",
+                base_url="http://127.0.0.1:11434/v1",
+                provider="custom",
+            )
+
+        assert ctx == 65_536
+        local_probe.assert_called_once()
+        cached = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert cached["gpt-local@http://127.0.0.1:11434/v1"] == 65_536
 
     def test_all_values_positive(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
@@ -237,10 +293,8 @@ class TestDefaultContextLengths:
         assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
 
 
-# =========================================================================
-# Codex OAuth context-window resolution (provider="openai-codex")
-# =========================================================================
-
+# ==================================================================# Codex OAuth context-window resolution (provider="openai-codex")
+# ==================================================================
 class TestCodexOAuthContextLength:
     """ChatGPT Codex OAuth imposes lower context limits than the direct
     OpenAI API for the same slugs. Verified Apr 2026 via live probe of
@@ -451,10 +505,8 @@ class TestCodexOAuthContextLength:
         assert ctx == 1_000_000, "Non-codex 1M cache entries must be respected"
 
 
-# =========================================================================
-# get_model_context_length — resolution order
-# =========================================================================
-
+# ==================================================================# get_model_context_length — resolution order
+# ==================================================================
 class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_known_model_from_api(self, mock_fetch):
@@ -628,10 +680,8 @@ class TestGetModelContextLength:
         assert result == 200000
 
 
-# =========================================================================
-# Bedrock context resolution — must run BEFORE custom-endpoint probe
-# =========================================================================
-
+# ==================================================================# Bedrock context resolution — must run BEFORE custom-endpoint probe
+# ==================================================================
 class TestBedrockContextResolution:
     """Regression tests for Bedrock context-length resolution order.
 
@@ -679,10 +729,8 @@ class TestBedrockContextResolution:
         assert mock_fetch.called
 
 
-# =========================================================================
-# _strip_provider_prefix — Ollama model:tag vs provider:model
-# =========================================================================
-
+# ==================================================================# _strip_provider_prefix — Ollama model:tag vs provider:model
+# ==================================================================
 class TestStripProviderPrefix:
     def test_known_provider_prefix_is_stripped(self):
         assert _strip_provider_prefix("local:my-model") == "my-model"
@@ -723,10 +771,8 @@ class TestStripProviderPrefix:
         assert result == 32768
 
 
-# =========================================================================
-# fetch_model_metadata — caching, TTL, slugs, failures
-# =========================================================================
-
+# ==================================================================# fetch_model_metadata — caching, TTL, slugs, failures
+# ==================================================================
 class TestFetchModelMetadata:
     def _reset_cache(self):
         import agent.model_metadata as mm
@@ -845,10 +891,8 @@ class TestFetchModelMetadata:
         assert result == {}
 
 
-# =========================================================================
-# Context probe tiers
-# =========================================================================
-
+# ==================================================================# Context probe tiers
+# ==================================================================
 class TestContextProbeTiers:
     def test_tiers_descending(self):
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
@@ -891,10 +935,8 @@ class TestGetNextProbeTier:
         assert get_next_probe_tier(0) is None
 
 
-# =========================================================================
-# Error message parsing
-# =========================================================================
-
+# ==================================================================# Error message parsing
+# ==================================================================
 class TestParseContextLimitFromError:
     def test_openai_format(self):
         msg = "This model's maximum context length is 32768 tokens. However, your messages resulted in 45000 tokens."
@@ -943,10 +985,8 @@ class TestParseContextLimitFromError:
         assert parse_context_limit_from_error(msg) is None
 
 
-# =========================================================================
-# Persistent context length cache
-# =========================================================================
-
+# ==================================================================# Persistent context length cache
+# ==================================================================
 class TestContextLengthCache:
     def test_save_and_load(self, tmp_path):
         cache_file = tmp_path / "cache.yaml"

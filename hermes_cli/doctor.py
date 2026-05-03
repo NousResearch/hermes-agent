@@ -363,19 +363,28 @@ def run_doctor(args):
                 except Exception:
                     runtime_provider = provider
 
+            canonical_provider = provider
             catalog_provider = provider
-            if (
-                provider
-                and _resolve_provider_full is not None
-                and provider not in ("auto", "custom")
-            ):
+            unresolved_provider = False
+            if provider and _resolve_provider_full is not None and provider != "auto":
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
-                catalog_provider = provider_def.id if provider_def is not None else None
-                if catalog_provider is not None:
-                    provider_ids_to_accept.add(catalog_provider)
+                # "custom" is a legacy built-in provider selected by model.base_url;
+                # it is intentionally present in doctor known_providers but is not
+                # represented by the catalog/user-provider resolver.
+                if provider_def is not None:
+                    catalog_provider = provider_def.id
+                    canonical_provider = provider_def.id
+                    provider_ids_to_accept.add(provider_def.id)
+                elif provider == "custom":
+                    catalog_provider = provider
+                    canonical_provider = provider
+                    provider_ids_to_accept.add(provider)
+                else:
+                    catalog_provider = None
+                    unresolved_provider = True
 
             if provider and provider != "auto":
-                if catalog_provider is None or (
+                if unresolved_provider or catalog_provider is None or (
                     known_providers
                     and not (provider_ids_to_accept & valid_provider_ids)
                 ):

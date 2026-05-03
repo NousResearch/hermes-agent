@@ -180,5 +180,40 @@ class TestMediaExtraction:
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
 
 
+# Regression tests for placeholder/missing MEDIA paths in gateway delivery.
+from gateway.platforms.base import BasePlatformAdapter
+
+
+def test_extract_media_ignores_documentation_path_placeholder():
+    content = "示例：MEDIA:/path/to/file.png\n真实说明保留"
+
+    media, cleaned = BasePlatformAdapter.extract_media(content)
+
+    assert media == []
+    assert "MEDIA:/path/to/file.png" in cleaned
+    assert "真实说明保留" in cleaned
+
+
+def test_extract_media_keeps_missing_concrete_media_for_delivery_attempt(tmp_path):
+    missing = tmp_path / "definitely_missing_hermes_regression.png"
+    content = f"请发送 MEDIA:{missing}"
+
+    media, cleaned = BasePlatformAdapter.extract_media(content)
+
+    assert media == [(str(missing), False)]
+    assert "MEDIA:" not in cleaned
+
+
+def test_media_delivery_candidate_requires_existing_file(tmp_path):
+    missing = tmp_path / "missing.png"
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"fake")
+
+    assert BasePlatformAdapter._is_deliverable_local_media(str(existing)) is True
+    assert BasePlatformAdapter._is_deliverable_local_media(str(missing)) is False
+    assert BasePlatformAdapter._is_deliverable_local_media("/path/to/file.png") is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+

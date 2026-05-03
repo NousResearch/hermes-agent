@@ -11,11 +11,67 @@ Covers:
 
 import json
 import os
+import sys
 import time
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
+
+
+class FakeBotocoreClientError(Exception):
+    def __init__(self, error_response=None, operation_name=None, **kwargs):
+        super().__init__(str(error_response or operation_name or kwargs))
+        self.response = error_response
+        self.operation_name = operation_name
+
+
+class FakeBotocoreConnectionError(Exception):
+    pass
+
+
+class FakeBotocoreHTTPClientError(Exception):
+    pass
+
+
+class FakeBotocoreConnectionClosedError(FakeBotocoreHTTPClientError):
+    def __init__(self, endpoint_url=None, **kwargs):
+        super().__init__(f"Connection closed: {endpoint_url}")
+        self.endpoint_url = endpoint_url
+
+
+class FakeBotocoreEndpointConnectionError(FakeBotocoreHTTPClientError):
+    def __init__(self, endpoint_url=None, **kwargs):
+        super().__init__(f"Could not connect: {endpoint_url}")
+        self.endpoint_url = endpoint_url
+
+
+class FakeBotocoreReadTimeoutError(FakeBotocoreHTTPClientError):
+    def __init__(self, endpoint_url=None, **kwargs):
+        super().__init__(f"Read timeout: {endpoint_url}")
+        self.endpoint_url = endpoint_url
+
+
+@pytest.fixture(autouse=True)
+def fake_botocore_exceptions(monkeypatch):
+    """Keep Bedrock stale-connection tests deterministic without optional botocore."""
+    try:
+        import botocore.exceptions  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+
+    botocore_module = ModuleType("botocore")
+    exceptions_module = ModuleType("botocore.exceptions")
+    exceptions_module.ClientError = FakeBotocoreClientError
+    exceptions_module.ConnectionError = FakeBotocoreConnectionError
+    exceptions_module.HTTPClientError = FakeBotocoreHTTPClientError
+    exceptions_module.ConnectionClosedError = FakeBotocoreConnectionClosedError
+    exceptions_module.EndpointConnectionError = FakeBotocoreEndpointConnectionError
+    exceptions_module.ReadTimeoutError = FakeBotocoreReadTimeoutError
+    botocore_module.exceptions = exceptions_module
+    monkeypatch.setitem(sys.modules, "botocore", botocore_module)
+    monkeypatch.setitem(sys.modules, "botocore.exceptions", exceptions_module)
 
 
 # ---------------------------------------------------------------------------

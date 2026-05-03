@@ -311,6 +311,24 @@ _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 
+
+
+def _is_auto_todo_snapshot_content(content: Any) -> bool:
+    """Return True for internal todo-state snapshots accidentally stored as user turns.
+
+    Older context compression appended the active todo list as role=user, which
+    made stale task state look like a real user request when gateway proxy mode
+    replayed local history.  Treat both legacy and current marker formats as
+    internal state, not conversation history.
+    """
+    if not isinstance(content, str):
+        return False
+    stripped = content.lstrip()
+    return (
+        stripped.startswith("[Your active task list was preserved across context compression]")
+        or stripped.startswith("[CURRENT SESSION TODO STATE — NOT A USER REQUEST]")
+    )
+
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
@@ -2134,21 +2152,20 @@ class GatewayRunner:
                 pass  # don't let interrupt failure block the ack
 
         # Check if busy ack is disabled — skip sending but still process the input.
-        # Placed before debounce so we don't stamp a "last ack" timestamp that was
-        # never actually delivered.
+        # Placed before stamping the last ack timestamp so disabled acks do not
+        # look as if they were delivered.
         busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
-        # Debounce: only send an acknowledgment once every 30 seconds per session
-        # to avoid spamming the user when they send multiple messages quickly
-        _BUSY_ACK_COOLDOWN = 30
+        # Send a visible acknowledgment for every foreground user message.
+        # This gateway is often driven from chat where a rapid follow-up means
+        # "stop the old work and answer this now"; debouncing the ack made the
+        # interruption look like it disappeared into a black hole even though
+        # the pending message was stored. Keep per-message visibility and rely
+        # on the platform adapter's own rate limits/retries for delivery.
         now = time.time()
-        last_ack = self._busy_ack_ts.get(session_key, 0)
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
-            return True  # interrupt sent (if not queue), ack already delivered recently
-
         self._busy_ack_ts[session_key] = now
 
         # Build a status-rich acknowledgment
@@ -8432,6 +8449,28 @@ class GatewayRunner:
                 except OSError:
                     pass
 
+    @staticmethod
+    def _is_deliverable_media_path(media_path: str) -> bool:
+        """Return whether a MEDIA/local-file path is safe to hand to an adapter.
+
+        Remote URLs and platform-specific opaque paths are left to the adapter.
+        Local absolute or home-relative paths must exist as files; otherwise the
+        gateway would call platform upload APIs with guaranteed-bad paths.
+        """
+        from pathlib import Path
+        from urllib.parse import urlparse
+
+        if not media_path or not str(media_path).strip():
+            return False
+        path_text = str(media_path).strip()
+        parsed = urlparse(path_text)
+        if parsed.scheme and parsed.scheme.lower() not in {"file"}:
+            return True
+        if path_text.startswith(("/", "~/")) or parsed.scheme.lower() == "file":
+            local_text = parsed.path if parsed.scheme.lower() == "file" else path_text
+            return Path(os.path.expanduser(local_text)).is_file()
+        return True
+
     async def _deliver_media_from_response(
         self,
         response: str,
@@ -8491,6 +8530,9 @@ class GatewayRunner:
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
+                    if not self._is_deliverable_media_path(media_path):
+                        logger.warning("[%s] Skipping non-deliverable post-stream media path: %r", adapter.name, media_path)
+                        continue
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
@@ -8741,6 +8783,9 @@ class GatewayRunner:
                 # Send media files
                 for media_path, _is_voice in (media_files or []):
                     try:
+                        if not self._is_deliverable_media_path(media_path):
+                            logger.warning("[%s] Skipping non-deliverable background media path: %r", adapter.name, media_path)
+                            continue
                         await adapter.send_document(
                             chat_id=source.chat_id,
                             file_path=media_path,
@@ -11672,6 +11717,8 @@ class GatewayRunner:
             role = msg.get("role")
             content = msg.get("content")
             if role in ("user", "assistant") and content:
+                if role == "user" and _is_auto_todo_snapshot_content(content):
+                    continue
                 api_messages.append({"role": role, "content": content})
 
         api_messages.append({"role": "user", "content": message})
@@ -12013,38 +12060,47 @@ class GatewayRunner:
             if not progress_queue or not _run_still_current():
                 return
 
-            # First-touch onboarding: the first time a tool takes longer than
-            # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
-            # (progress_mode == "all"), append a one-time hint suggesting
-            # /verbose.  We only fire when (a) the user hasn't seen the hint
-            # before and (b) /verbose is actually usable on this platform
-            # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
-                try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_gateway,
-                        )
-                        _cfg = _load_gateway_config()
-                        gate_on = is_truthy_value(
-                            cfg_get(_cfg, "display", "tool_progress_command"),
-                            default=False,
-                        )
-                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                            long_tool_hint_fired[0] = True
-                            progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
-                except Exception as _hint_err:
-                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+            # Act on visible tool lifecycle events. Historically the gateway
+            # only showed tool.started and ignored tool.completed, which made
+            # long tool runs look stuck right after the tool returned.
+            if event_type not in ("tool.started", "tool.completed"):
                 return
 
+            if event_type == "tool.completed":
+                # First-touch onboarding: the first time a tool takes longer than
+                # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
+                # (progress_mode == "all"), append a one-time hint suggesting
+                # /verbose. The CLI has its own trigger.
+                if not long_tool_hint_fired[0]:
+                    try:
+                        duration_for_hint = kwargs.get("duration") or 0
+                        if duration_for_hint >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                            from agent.onboarding import (
+                                TOOL_PROGRESS_FLAG,
+                                is_seen,
+                                mark_seen,
+                                tool_progress_hint_gateway,
+                            )
+                            _cfg = _load_gateway_config()
+                            gate_on = is_truthy_value(
+                                cfg_get(_cfg, "display", "tool_progress_command"),
+                                default=False,
+                            )
+                            if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                                long_tool_hint_fired[0] = True
+                                progress_queue.put(tool_progress_hint_gateway())
+                                mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                    except Exception as _hint_err:
+                        logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in ("tool.started",):
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(tool_name, default="✅")
+                duration = kwargs.get("duration")
+                suffix = ""
+                if isinstance(duration, (int, float)):
+                    suffix = f" ({duration:.1f}s)"
+                status = "failed" if kwargs.get("is_error") else "done"
+                progress_queue.put(f"{emoji} {tool_name or 'tool'} {status}{suffix}")
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.

@@ -1,4 +1,5 @@
 from hermes_cli.goal_loop import (
+    expand_goal_skill_invocation,
     get_goal_max_loops,
     make_goal_supervisor_prompt,
     make_goal_worker_prompt,
@@ -57,3 +58,46 @@ def test_supervisor_prompt_requires_compact_decision():
     assert "COMPLETE:" in prompt
     assert "CONTINUE:" in prompt
     assert "I ran tests" in prompt
+
+
+def test_expand_goal_skill_invocation_loads_nested_skill(monkeypatch):
+    calls = {}
+
+    def fake_resolve(command):
+        calls["resolved"] = command
+        return "/automatestig-disa-coverage-batch"
+
+    def fake_build(cmd_key, user_instruction="", task_id=None, runtime_note=""):
+        calls["built"] = (cmd_key, user_instruction, task_id, runtime_note)
+        return "[IMPORTANT: The user has invoked the AutomateSTIG skill]\n" + user_instruction
+
+    monkeypatch.setattr("agent.skill_commands.resolve_skill_command_key", fake_resolve)
+    monkeypatch.setattr("agent.skill_commands.build_skill_invocation_message", fake_build)
+
+    expanded, skill_name = expand_goal_skill_invocation(
+        "/automatestig-disa-coverage-batch keep batching",
+        task_id="goal_123",
+    )
+
+    assert calls["resolved"] == "automatestig-disa-coverage-batch"
+    assert calls["built"] == (
+        "/automatestig-disa-coverage-batch",
+        "keep batching",
+        "goal_123",
+        "Loaded from a nested skill slash command inside /goal.",
+    )
+    assert skill_name == "automatestig-disa-coverage-batch"
+    assert "AutomateSTIG skill" in expanded
+    assert "keep batching" in expanded
+
+
+def test_expand_goal_skill_invocation_leaves_plain_goal_unchanged(monkeypatch):
+    def fail_resolve(_command):
+        raise AssertionError("plain goals should not resolve skill commands")
+
+    monkeypatch.setattr("agent.skill_commands.resolve_skill_command_key", fail_resolve)
+
+    expanded, skill_name = expand_goal_skill_invocation("keep batching AutomateSTIG")
+
+    assert expanded == "keep batching AutomateSTIG"
+    assert skill_name is None

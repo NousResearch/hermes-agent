@@ -48,6 +48,50 @@ def get_goal_max_loops(default: int = 6) -> int:
         return max(1, default)
 
 
+def expand_goal_skill_invocation(goal: str, task_id: str | None = None) -> tuple[str, str | None]:
+    """Expand a nested skill slash command used as the /goal prompt.
+
+    Gateway/CLI command dispatch consumes the outer ``/goal`` command, so a
+    prompt like ``/goal /automatestig-disa-coverage-batch keep batching`` would
+    otherwise hand the literal inner slash command to the worker instead of
+    loading the skill.  If the goal starts with a registered skill slash command,
+    replace it with the same skill-invocation payload normal chat dispatch uses.
+    Plain goals are returned unchanged.
+    """
+
+    raw = (goal or "").strip()
+    if not raw.startswith("/"):
+        return goal, None
+
+    parts = raw[1:].split(maxsplit=1)
+    if not parts or not parts[0]:
+        return goal, None
+
+    command = parts[0]
+    user_instruction = parts[1].strip() if len(parts) > 1 else ""
+
+    try:
+        from agent.skill_commands import (
+            build_skill_invocation_message,
+            resolve_skill_command_key,
+        )
+
+        cmd_key = resolve_skill_command_key(command)
+        if not cmd_key:
+            return goal, None
+        expanded = build_skill_invocation_message(
+            cmd_key,
+            user_instruction,
+            task_id=task_id,
+            runtime_note="Loaded from a nested skill slash command inside /goal.",
+        )
+        if not expanded:
+            return goal, None
+        return expanded, cmd_key.lstrip("/")
+    except Exception:
+        return goal, None
+
+
 def make_goal_worker_prompt(goal: str, iteration: int, previous_response: str = "", supervisor_feedback: str = "") -> str:
     """Build the prompt sent to the worker agent for a goal iteration."""
 

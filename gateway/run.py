@@ -7140,6 +7140,7 @@ class GatewayRunner:
         """Execute a /goal worker/supervisor loop and deliver the result to the chat."""
         from run_agent import AIAgent
         from hermes_cli.goal_loop import (
+            expand_goal_skill_invocation,
             get_goal_max_loops,
             make_goal_supervisor_prompt,
             make_goal_worker_prompt,
@@ -7154,6 +7155,7 @@ class GatewayRunner:
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
         max_loops = get_goal_max_loops()
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        worker_goal, loaded_skill_name = expand_goal_skill_invocation(prompt, task_id=task_id)
 
         try:
             user_config = _load_gateway_config()
@@ -7174,7 +7176,7 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(worker_goal, model, runtime_kwargs)
 
             def run_sync():
                 previous_response = ""
@@ -7217,7 +7219,7 @@ class GatewayRunner:
                     try:
                         result = worker.run_conversation(
                             user_message=make_goal_worker_prompt(
-                                prompt,
+                                worker_goal,
                                 iteration,
                                 previous_response=previous_response,
                                 supervisor_feedback=supervisor_feedback,
@@ -7258,6 +7260,8 @@ class GatewayRunner:
             feedback = (result or {}).get("supervisor_feedback", "")
             status = "complete" if completed else f"stopped after {max_loops} loop(s)"
             header = f'🎯 Goal loop {status}\nGoal: "{preview}"\n'
+            if loaded_skill_name:
+                header += f"Loaded skill: {loaded_skill_name}\n"
             if feedback:
                 header += f"Supervisor: {feedback[:240]}{'...' if len(feedback) > 240 else ''}\n"
             header += "\n"

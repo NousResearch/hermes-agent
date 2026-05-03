@@ -6472,6 +6472,7 @@ class HermesCLI:
     def _handle_goal_command(self, cmd: str):
         """Handle /goal <prompt> — run an autonomous supervised loop in the background."""
         from hermes_cli.goal_loop import (
+            expand_goal_skill_invocation,
             get_goal_max_loops,
             make_goal_supervisor_prompt,
             make_goal_worker_prompt,
@@ -6486,16 +6487,20 @@ class HermesCLI:
             return
 
         goal = parts[1].strip()
+        display_goal = goal
         self._background_task_counter += 1
         task_num = self._background_task_counter
         task_id = f"goal_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        goal, loaded_skill_name = expand_goal_skill_invocation(goal, task_id=task_id)
         max_loops = get_goal_max_loops()
 
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot start goal: no valid credentials.")
             return
 
-        _cprint(f"  🎯 Goal loop #{task_num} started: \"{goal[:60]}{'...' if len(goal) > 60 else ''}\"")
+        _cprint(f"  🎯 Goal loop #{task_num} started: \"{display_goal[:60]}{'...' if len(display_goal) > 60 else ''}\"")
+        if loaded_skill_name:
+            _cprint(f"  Loaded nested skill: {loaded_skill_name}")
         _cprint(f"  Task ID: {task_id}")
         _cprint(f"  Max supervisor loops: {max_loops}")
         _cprint("  You can continue chatting — the final goal report will appear when done.\n")
@@ -6579,7 +6584,7 @@ class HermesCLI:
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 status = "complete" if completed else f"stopped after {max_loops} loop(s)"
                 _cprint(f"  🎯 Goal loop #{task_num} {status}")
-                _cprint(f"  Goal: \"{goal[:80]}{'...' if len(goal) > 80 else ''}\"")
+                _cprint(f"  Goal: \"{display_goal[:80]}{'...' if len(display_goal) > 80 else ''}\"")
                 if supervisor_feedback:
                     _cprint(f"  Supervisor: {supervisor_feedback[:240]}{'...' if len(supervisor_feedback) > 240 else ''}")
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")

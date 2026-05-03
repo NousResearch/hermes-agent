@@ -93,9 +93,6 @@ class ModelInfo:
     def supports_audio_input(self) -> bool:
         return "audio" in self.input_modalities
 
-    def supports_video_input(self) -> bool:
-        return "video" in self.input_modalities
-
     def format_cost(self) -> str:
         """Human-readable cost string, e.g. '$3.00/M in, $15.00/M out'."""
         if not self.has_cost_data():

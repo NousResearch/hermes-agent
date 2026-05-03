@@ -110,9 +110,13 @@ def _assert_stale_transport_payload(out: str, server_name: str):
 
 
 def _install_stub_server(name: str = "wpcom"):
-    """Register a minimal server stub that _handle_session_expired_and_retry
-    can signal via _reconnect_event, and that reports ready+session after
-    the event fires."""
+    """Register a minimal server stub for stale-session recovery tests.
+
+    The real MCPServerTask keeps ``_ready`` set across reconnects but replaces
+    ``session`` only after the transport has been rebuilt. The stub mirrors
+    that lifecycle: signalling ``_reconnect_event`` records the signal and
+    swaps in a new session object, so tests catch retry-before-rebuild bugs.
+    """
     from tools import mcp_tool
 
     mcp_tool._ensure_mcp_loop()
@@ -122,10 +126,26 @@ def _install_stub_server(name: str = "wpcom"):
     # _reconnect_event is called via loop.call_soon_threadsafe(…set); use
     # a threading-safe substitute.
     reconnect_flag = threading.Event()
+    initial_session = MagicMock(name=f"{name}-initial-session")
+    reconnected_session = MagicMock(name=f"{name}-reconnected-session")
 
     class _EventAdapter:
         def set(self):
             reconnect_flag.set()
+            for method_name in (
+                "call_tool",
+                "list_resources",
+                "read_resource",
+                "list_prompts",
+                "get_prompt",
+            ):
+                if method_name in initial_session.__dict__:
+                    setattr(
+                        reconnected_session,
+                        method_name,
+                        getattr(initial_session, method_name),
+                    )
+            server.session = reconnected_session
 
     server._reconnect_event = _EventAdapter()
 
@@ -137,9 +157,10 @@ def _install_stub_server(name: str = "wpcom"):
     server._ready.is_set = ready_flag.is_set
 
     # session attr must be truthy for the handler's initial check
-    # (``if not server or not server.session``) and for the post-
-    # reconnect readiness probe (``srv.session is not None``).
-    server.session = MagicMock()
+    # (``if not server or not server.session``) and the post-reconnect probe.
+    server.session = initial_session
+    server.initial_session = initial_session
+    server.reconnected_session = reconnected_session
     return server, reconnect_flag
 
 
@@ -395,6 +416,36 @@ def test_session_expired_handler_returns_structured_error_when_retry_fails(
         _assert_stale_transport_payload(out, "srv-retry-error")
     finally:
         mcp_tool._servers.pop("srv-retry-error", None)
+
+
+def test_session_expired_handler_waits_for_rebuilt_session_before_retry(
+    monkeypatch, tmp_path
+):
+    """Do not retry on the stale session just because _ready was already set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-rebuilt-session")
+    mcp_tool._servers["srv-rebuilt-session"] = server
+
+    def _retry_requires_rebuilt_session():
+        assert reconnect_flag.is_set()
+        assert server.session is server.reconnected_session
+        assert server.session is not server.initial_session
+        return '{"ok": true}'
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-rebuilt-session",
+            RuntimeError("McpError: Session terminated"),
+            _retry_requires_rebuilt_session,
+            "tools/call",
+        )
+        assert json.loads(out) == {"ok": True}
+    finally:
+        mcp_tool._servers.pop("srv-rebuilt-session", None)
 
 
 # ---------------------------------------------------------------------------

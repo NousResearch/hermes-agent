@@ -1763,12 +1763,23 @@ def _handle_session_expired_and_retry(
     )
 
     # Trigger the same reconnect mechanism the OAuth recovery path
-    # uses, then wait briefly for the new session to come back ready.
+    # uses, then wait briefly for a *rebuilt* session to come back ready.
+    # ``_ready`` intentionally remains set across reconnects in the server
+    # lifecycle, so readiness alone can describe the stale session that just
+    # failed. Capture the old identity and require a new ClientSession before
+    # retrying, otherwise Streamable HTTP retries can reuse the terminated
+    # transport session.
+    old_session = getattr(srv, "session", None)
     loop.call_soon_threadsafe(srv._reconnect_event.set)
     deadline = time.monotonic() + _SESSION_EXPIRED_RECONNECT_TIMEOUT
     ready = False
     while time.monotonic() < deadline:
-        if srv.session is not None and srv._ready.is_set():
+        current_session = getattr(srv, "session", None)
+        if (
+            current_session is not None
+            and current_session is not old_session
+            and srv._ready.is_set()
+        ):
             ready = True
             break
         time.sleep(0.25)

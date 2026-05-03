@@ -679,6 +679,8 @@ AUTHOR_MAP = {
     "ztzheng@163.com": "chengoak",  # PR #17467
     "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only
     "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
+    # Debug share upload-time redaction (May 2026)
+    "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
 }
 
 

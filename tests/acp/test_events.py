@@ -10,6 +10,7 @@ import acp
 from acp.schema import ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
 
 from acp_adapter.events import (
+    make_interim_assistant_cb,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -325,3 +326,31 @@ class TestMessageCallback:
             cb("")
 
         mock_rcts.assert_not_called()
+
+
+
+class TestInterimAssistantCallback:
+    def test_emits_commentary_agent_message_chunk(self, mock_conn, event_loop_fixture):
+        loop = event_loop_fixture
+        cb = make_interim_assistant_cb(mock_conn, "session-1", loop)
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb("I’ll inspect the repo first.", already_streamed=False)
+
+        mock_send.assert_called_once()
+        update = mock_send.call_args.args[3]
+        assert update.session_update == "agent_message_chunk"
+        assert update.field_meta["phase"] == "commentary"
+        assert update.field_meta["alreadyStreamed"] is False
+        assert update.field_meta["car"]["phase"] == "commentary"
+
+    def test_marks_already_streamed_commentary(self, mock_conn, event_loop_fixture):
+        loop = event_loop_fixture
+        cb = make_interim_assistant_cb(mock_conn, "session-1", loop)
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb("Already visible", already_streamed=True)
+
+        update = mock_send.call_args.args[3]
+        assert update.field_meta["alreadyStreamed"] is True
+        assert update.field_meta["hermes"]["alreadyStreamed"] is True

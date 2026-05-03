@@ -174,6 +174,33 @@ def make_step_cb(
     return _step
 
 
+
+
+def _merge_update_meta(update: Any, **values: Any) -> Any:
+    """Attach ACP `_meta` metadata to a generated update object.
+
+    The Python ACP SDK exposes the schema `_meta` field as `field_meta` and
+    serializes it back to `_meta`. Keeping commentary markers there avoids
+    adding non-schema top-level fields to `agent_message_chunk`.
+    """
+    existing = getattr(update, "field_meta", None)
+    metadata = dict(existing) if isinstance(existing, dict) else {}
+    metadata.update(values)
+    try:
+        update.field_meta = metadata
+        return update
+    except Exception:
+        logger.debug("Failed to attach ACP update metadata", exc_info=True)
+        try:
+            payload = update.model_dump(by_alias=True, exclude_none=True)
+        except Exception:
+            payload = {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": ""},
+            }
+        payload["_meta"] = metadata
+        return payload
+
 # ------------------------------------------------------------------
 # Agent message callback
 # ------------------------------------------------------------------
@@ -192,3 +219,42 @@ def make_message_cb(
         _send_update(conn, session_id, loop, update)
 
     return _message
+
+def make_interim_assistant_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+) -> Callable:
+    """Create a callback for completed interim assistant commentary.
+
+    AIAgent calls this callback for real assistant-facing progress messages that
+    Hermes gateway surfaces in Telegram/Discord. Over ACP these are still
+    `agent_message_chunk` updates, but their `_meta` marks them as live-only
+    commentary so CAR can render them without treating them as final output.
+    """
+
+    def _interim_assistant(
+        text: str,
+        *,
+        already_streamed: bool = False,
+        **_: Any,
+    ) -> None:
+        if not text:
+            return
+        update = acp.update_agent_message_text(text)
+        update = _merge_update_meta(
+            update,
+            phase="commentary",
+            alreadyStreamed=bool(already_streamed),
+            car={
+                "phase": "commentary",
+                "alreadyStreamed": bool(already_streamed),
+            },
+            hermes={
+                "phase": "commentary",
+                "alreadyStreamed": bool(already_streamed),
+            },
+        )
+        _send_update(conn, session_id, loop, update)
+
+    return _interim_assistant

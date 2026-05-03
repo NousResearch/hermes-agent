@@ -263,6 +263,59 @@ class TestCronjobToolScript:
         assert update_result["success"] is True
         assert update_result["job"]["script"] == "new_script.py"
 
+    def test_create_repeat_string_once_for_one_shot(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="1h",
+            prompt="Hello",
+            repeat="once",
+        ))
+        assert result["success"] is True
+        assert result["job"]["repeat"] == "once"
+
+    def test_update_repeat_string_once_normalizes_to_none(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Hello",
+            repeat=3,
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            repeat="once",
+        ))
+        assert update_result["success"] is True
+        assert update_result["job"]["repeat"] == "forever"
+
+    def test_update_repeat_numeric_string_coerces_to_count(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Hello",
+            repeat=1,
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            repeat="5",
+        ))
+        assert update_result["success"] is True
+        assert update_result["job"]["repeat"] == "5 times"
+
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob

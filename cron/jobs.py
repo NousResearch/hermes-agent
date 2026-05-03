@@ -71,6 +71,21 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def normalize_repeat_value(repeat: Any) -> Optional[int]:
+    """Normalize repeat values from tool/model input.
+
+    Accepts ints or int-like strings. Non-numeric values like "once" are treated
+    as unset (None). Zero or negative values are also treated as None.
+    """
+    if repeat is None:
+        return None
+    try:
+        repeat_int = int(repeat)
+    except (TypeError, ValueError):
+        return None
+    return None if repeat_int <= 0 else repeat_int
+
+
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
@@ -423,7 +438,7 @@ def create_job(
     prompt: str,
     schedule: str,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Any] = None,
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
@@ -472,9 +487,7 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    repeat = normalize_repeat_value(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

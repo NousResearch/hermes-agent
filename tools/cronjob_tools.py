@@ -24,6 +24,7 @@ from cron.jobs import (
     create_job,
     get_job,
     list_jobs,
+    normalize_repeat_value,
     parse_schedule,
     pause_job,
     remove_job,
@@ -249,7 +250,7 @@ def cronjob(
     prompt: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Any] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
@@ -428,8 +429,7 @@ def cronjob(
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                normalized_repeat = normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

@@ -371,8 +371,25 @@ class TeamsAdapter(BasePlatformAdapter):
             )
 
         # Only authorized users may click approval buttons.
+        # Default-deny: require either TEAMS_ALLOWED_USERS or an explicit
+        # TEAMS_ALLOW_ALL_USERS=true opt-in. Without one of these set, the
+        # bot silently treated every clicker as authorized — meaning any
+        # Teams user who could message the bot could approve dangerous commands.
         allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
-        if allowed_csv:
+        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+
+        if not allow_all:
+            if not allowed_csv:
+                logger.warning(
+                    "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "
+                    "and TEAMS_ALLOW_ALL_USERS not set — default deny"
+                )
+                return InvokeResponse(
+                    status=200,
+                    body=AdaptiveCardActionMessageResponse(
+                        value="⛔ Approval buttons require TEAMS_ALLOWED_USERS to be configured."
+                    ),
+                )
             from_account = ctx.activity.from_
             clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}

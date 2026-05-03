@@ -1652,8 +1652,8 @@ async def _send_qqbot(pconfig, chat_id, message):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Works for guild channels without requiring
-    a running gateway adapter.
+    and post a message. Supports guild channels, C2C (private) chats,
+    and group chats by trying the appropriate endpoints.
     """
     try:
         import httpx
@@ -1682,20 +1682,40 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot: no access_token in response")
 
             # Step 2: Send message via REST
+            # QQ Bot API has separate endpoints for channels, C2C, and groups.
+            # We try them in order: channel first, then fallback to C2C.
             headers = {
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
             payload = {"content": message[:4000], "msg_type": 0}
 
+            # Try channel endpoint first (works for guild channels)
+            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 return {"success": True, "platform": "qqbot", "chat_id": chat_id,
                         "message_id": data.get("id")}
-            else:
-                return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
+
+            # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
+            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
+            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
+            if resp_c2c.status_code in (200, 201):
+                data = resp_c2c.json()
+                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                        "message_id": data.get("id")}
+
+            # If C2C also failed, try group endpoint
+            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
+            resp_group = await client.post(url_group, json=payload, headers=headers)
+            if resp_group.status_code in (200, 201):
+                data = resp_group.json()
+                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                        "message_id": data.get("id")}
+
+            # All endpoints failed — return the most informative error
+            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 

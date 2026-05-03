@@ -635,6 +635,7 @@ AUTHOR_MAP = {
     "nftpoetrist@gmail.com": "nftpoetrist",
     "dodofun@126.com": "colorcross",
     "1615063567@qq.com": "zhao0112",
+    "ethanguo.2003@gmail.com": "EthanGuo-coder",
     "leozeli@qq.com": "leozeli",
     "linlehao@cuhk.edu.cn": "LehaoLin",
     "liutong@isacas.ac.cn": "I3eg1nner",

@@ -417,7 +417,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         thread_id = target.get("thread_id")
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
-        origin = job.get("origin") or {}
+        origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
             logger.warning(

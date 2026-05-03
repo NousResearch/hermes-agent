@@ -4283,7 +4283,8 @@ def _minimax_oauth_login(
     print(f"Portal: {portal_base_url}")
 
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
-                      headers={"Accept": "application/json"}) as client:
+                      headers={"Accept": "application/json"},
+                      follow_redirects=True) as client:
         code_data = _minimax_request_user_code(
             client, portal_base_url=portal_base_url,
             client_id=pconfig.client_id,
@@ -4360,7 +4361,8 @@ def _refresh_minimax_oauth_state(
         return state
 
     portal_base_url = state["portal_base_url"]
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      follow_redirects=True) as client:
         response = client.post(
             f"{portal_base_url}/oauth/token",
             data={

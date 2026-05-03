@@ -564,17 +564,21 @@ async def _upload_ciphertext(
     Accepts either a constructed CDN URL (from upload_param) or a direct
     upload_full_url — both use POST with the raw ciphertext as the body.
     """
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
-        if response.status == 200:
-            encrypted_param = response.headers.get("x-encrypted-param")
-            if encrypted_param:
-                await response.read()
-                return encrypted_param
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors when
+    # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+    async def _do_upload() -> str:
+        async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}) as response:
+            if response.status == 200:
+                encrypted_param = response.headers.get("x-encrypted-param")
+                if encrypted_param:
+                    await response.read()
+                    return encrypted_param
+                raw = await response.text()
+                raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
             raw = await response.text()
-            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-        raw = await response.text()
-        raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+    return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
 async def _download_bytes(
@@ -583,10 +587,13 @@ async def _download_bytes(
     url: str,
     timeout_seconds: float = 60.0,
 ) -> bytes:
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    async with session.get(url, timeout=timeout) as response:
-        response.raise_for_status()
-        return await response.read()
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors.
+    async def _do_download() -> bytes:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.read()
+    return await asyncio.wait_for(_do_download(), timeout=timeout_seconds)
 
 
 _WEIXIN_CDN_ALLOWLIST: frozenset[str] = frozenset(
@@ -1018,7 +1025,7 @@ async def qr_login(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
 
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with aiohttp.ClientSession(trust_env=False, connector=_make_ssl_connector()) as session:
         try:
             qr_resp = await _api_get(
                 session,
@@ -1231,8 +1238,13 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
-        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
-        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._poll_session = aiohttp.ClientSession(trust_env=False, connector=_make_ssl_connector())
+        # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
+        # "Timeout context manager should be used inside a task" errors when
+        # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
+        # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
+        _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+        self._send_session = aiohttp.ClientSession(trust_env=False, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1833,10 +1845,14 @@ class WeixinAdapter(BasePlatformAdapter):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
         assert self._send_session is not None
-        async with self._send_session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-            response.raise_for_status()
-            data = await response.read()
-            suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors.
+        async def _do_fetch():
+            async with self._send_session.get(url) as response:
+                response.raise_for_status()
+                return await response.read()
+        data = await asyncio.wait_for(_do_fetch(), timeout=30)
+        suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
             handle.write(data)
             return handle.name
@@ -2071,7 +2087,7 @@ async def send_weixin_direct(
             "context_token_used": bool(context_token),
         }
 
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with aiohttp.ClientSession(trust_env=False, connector=_make_ssl_connector()) as session:
         adapter = WeixinAdapter(
             PlatformConfig(
                 enabled=True,

@@ -502,9 +502,9 @@ def _sanitize_telegram_name(raw: str) -> str:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, str]],
+    entries: list[tuple[str, ...]],
     reserved: set[str],
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, ...]]:
     """Enforce 32-char command name limit with collision avoidance.
 
     Both Telegram and Discord cap slash command names at 32 characters.
@@ -512,6 +512,10 @@ def _clamp_command_names(
     (against *reserved* names or earlier entries in the same batch), the name is
     shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
     If all 10 digit slots are taken the entry is silently dropped.
+
+    Accepts tuples of any length >= 2.  Extra elements beyond ``(name, desc)``
+    (e.g. ``cmd_key``) are passed through unchanged, so callers can attach
+    metadata that survives the rename.
     """
     used: set[str] = set(reserved)
     result: list[tuple] = []

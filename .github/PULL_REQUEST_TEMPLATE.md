@@ -1,6 +1,7 @@
 ## What does this PR do?
 
-<!-- Describe the change clearly. What problem does it solve? Why is this approach the right one? -->
+<!-- Describe the problem, the root cause, and how you solved it.
+     The diagnosis (what was actually happening and why) is as important as the fix itself. -->
 
 
 
@@ -38,7 +39,9 @@ Fixes #
 
 ## Checklist
 
-<!-- Complete these before requesting review. -->
+<!-- Complete these before requesting review.
+     Tip: Check N/A boxes to show you've considered them — a checked N/A is more
+     informative than an unchecked box. Fill in every section or say why you skipped it. -->
 
 ### Code
 
@@ -48,6 +51,7 @@ Fixes #
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
 - [ ] I've run `pytest tests/ -q` and all tests pass
 - [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
+- [ ] I've noted any pre-existing test failures outside my change
 - [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->
 
 ### Documentation & Housekeeping
@@ -69,7 +73,13 @@ Fixes #
 - [ ] No external dependencies that aren't already available (prefer stdlib, curl, existing Hermes tools)
 - [ ] I've tested the skill end-to-end: `hermes --toolsets skills -q "Use the X skill to do Y"`
 
-## Screenshots / Logs
+## Verification Evidence
 
-<!-- If applicable, add screenshots or log output showing the fix/feature in action. -->
+<!-- Show your verification. Test output, before/after logs, screenshots from debug runs,
+     profiling traces — anything a reviewer can inspect without running your branch.
+     If tests produce output, paste it here. For performance changes, include timings. -->
+
+<!-- Example: Before the fix, non-Bedrock provider listing emitted botocore timeout traces
+     for http://169.254.169.254. Targeted test run: 38 passed. Full suite: 19093 passed
+     (28 pre-existing failures listed below, none in touched files). -->
 

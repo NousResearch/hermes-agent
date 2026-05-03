@@ -559,23 +559,17 @@ def build_bankr_wallet_prompt() -> str:
     if not api_key_present and not wallet_address:
         return ""
 
-    address_line = (
-        f" Wallet address: {wallet_address}." if wallet_address else ""
-    )
+    address_line = f" Address: {wallet_address}." if wallet_address else ""
     return (
         "# Bankr wallet\n"
-        "You have a Bankr-managed wallet on Base available for crypto, x402, "
-        "and on-chain tasks."
+        "lightweight runtime note: this agent has a Bankr-managed Base wallet "
+        "when BANKR_API_KEY/BANKR_AGENT_API_KEY and "
+        "BANKR_WALLET_ADDRESS/BANKR_AGENT_WALLET_ADDRESS are present."
         f"{address_line}\n"
-        "Use the installed Bankr skills selectively when the user asks for "
-        "wallet, payment, x402, token, Base, or on-chain work. Do not load "
-        "every Bankr skill into context by default.\n"
-        "Relevant environment variables are BANKR_API_KEY and BANKR_WALLET_ADDRESS, "
-        "with BANKR_AGENT_API_KEY and BANKR_AGENT_WALLET_ADDRESS as aliases. "
-        "Do not reveal API keys or secret values.\n"
-        "V1 is Base-only. Do not initiate or recommend non-Base deposits or "
-        "transfers from this wallet unless the user explicitly changes the "
-        "configured network in a future version."
+        "For wallet, crypto, x402, token, deposit, transfer, or Base questions, "
+        "load the relevant wallet or Bankr skill with skill_view and follow it. "
+        "Do not load wallet skills unless they are relevant.\n"
+        "Do not include API key values in responses. V1 wallet support is Base-only."
     )
 
 

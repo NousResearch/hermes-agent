@@ -60,17 +60,19 @@ class TestBankrWalletPrompt:
 
         assert build_bankr_wallet_prompt() == ""
 
-    def test_describes_base_wallet_without_revealing_api_key(self, monkeypatch):
+    def test_adds_light_runtime_guidance_without_revealing_api_key(self, monkeypatch):
         monkeypatch.setenv("BANKR_API_KEY", "bk_agent_secret")
         monkeypatch.setenv("BANKR_WALLET_ADDRESS", "0x000000000000000000000000000000000000ba5e")
 
         prompt = build_bankr_wallet_prompt()
 
-        assert "Bankr-managed wallet on Base" in prompt
+        assert "lightweight runtime note" in prompt
+        assert "Bankr-managed Base wallet" in prompt
         assert "BANKR_API_KEY" in prompt
         assert "BANKR_WALLET_ADDRESS" in prompt
-        assert "Use the installed Bankr skills selectively" in prompt
-        assert "Do not reveal" in prompt
+        assert "load the relevant wallet or Bankr skill" in prompt
+        assert "Do not include API key values" in prompt
+        assert "Base-only" in prompt
         assert "bk_agent_secret" not in prompt
 
 
@@ -1110,5 +1112,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

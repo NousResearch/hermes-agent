@@ -173,6 +173,119 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
 
 
+def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  allow_from:\n"
+        "    - \"111\"\n"
+        "    - \"222\"\n"
+        "  group_allow_from:\n"
+        "    - \"333\"\n"
+        "  group_allowed_chats:\n"
+        "    - \"-100\"\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "111,222"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "333"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
+
+
+def test_config_env_overrides_telegram_user_allowlists(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  allow_from: \"111\"\n"
+        "  group_allow_from: \"222\"\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "888")
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "999"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "888"
+
+
+def test_dm_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate():
+    adapter = _make_adapter(allow_from=["111", "222"])
+
+    assert adapter._should_process_message(_dm_message("hello", from_user_id=111)) is True
+    assert adapter._should_process_message(_dm_message("hello", from_user_id=333)) is True
+
+
+def test_group_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate():
+    adapter = _make_adapter(group_allow_from=["111"])
+
+    assert adapter._should_process_message(_group_message("hello", from_user_id=333)) is True
+
+
+def test_top_level_require_mention_bridges_to_telegram(monkeypatch, tmp_path):
+    """require_mention at the config.yaml top level (alongside group_sessions_per_user)
+    must behave identically to telegram.require_mention: true (#3979).
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    # Intentionally no "telegram:" section — keys are at the top level.
+    (hermes_home / "config.yaml").write_text(
+        "require_mention: true\n"
+        "group_sessions_per_user: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+
+    # The adapter's extra dict must also carry the setting so that
+    # _telegram_require_mention() works even without the env var.
+    tg_cfg = config.platforms.get(__import__("gateway.config", fromlist=["Platform"]).Platform.TELEGRAM)
+    if tg_cfg is not None:
+        assert tg_cfg.extra.get("require_mention") is True
+
+
+def test_top_level_require_mention_does_not_override_telegram_section(monkeypatch, tmp_path):
+    """When telegram.require_mention is explicitly set, top-level require_mention
+    must not override it (platform-specific config takes precedence).
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "require_mention: true\n"
+        "telegram:\n"
+        "  require_mention: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    # The telegram-specific "false" must win over the top-level "true".
+    assert __import__("os").environ.get("TELEGRAM_REQUIRE_MENTION") == "false"
+
+
 def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

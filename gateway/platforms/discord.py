@@ -67,6 +67,66 @@ from gateway.platforms.base import (
 )
 from tools.url_safety import is_safe_url
 
+from gateway.platforms.discord_components import (
+    CUSTOM_ID_PREFIX,
+    build_view_from_spec,
+    component_store,
+)
+
+
+def _normalize_component_spec(raw_spec):
+    """Normalize a component spec from the send_message tool to builder format.
+
+    The send_message tool uses the Discord API format::
+
+        [{"components": [{"type": "button", "label": "X", ...}]}]
+
+    The builder expects the friendlier format::
+
+        {"action_rows": [{"buttons": [...]}, {"select": {...}}]}
+
+    This function detects the input format and converts as needed.
+    """
+    if not raw_spec:
+        return None
+    if not isinstance(raw_spec, (list, dict)):
+        logger.warning("Component spec is not a list or dict: %r", type(raw_spec))
+        return None
+
+    # Already in builder format (has "action_rows" key)
+    if isinstance(raw_spec, dict) and "action_rows" in raw_spec:
+        return raw_spec
+
+    # API format: list of action rows, each with a "components" array
+    if isinstance(raw_spec, list):
+        action_rows = []
+        for row in raw_spec:
+            if not isinstance(row, dict):
+                continue
+            row_components = row.get("components", [])
+            buttons = []
+            select = None
+            for comp in row_components:
+                if not isinstance(comp, dict):
+                    continue
+                comp_type = comp.get("type", "button")
+                if comp_type == "button":
+                    buttons.append(comp)
+                elif comp_type in ("string_select", "select"):
+                    select = comp
+            row_dict = {}
+            if buttons:
+                row_dict["buttons"] = buttons
+            if select:
+                row_dict["select"] = select
+            if row_dict:
+                action_rows.append(row_dict)
+        if action_rows:
+            return {"action_rows": action_rows}
+
+    logger.warning("Could not normalize component spec: %r", raw_spec)
+    return None
+
 
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
@@ -785,6 +845,162 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._handle_message(message)
 
             @self._client.event
+            async def on_interaction(interaction):
+                """Handle Discord component interactions for REST-sent messages.
+
+                discord.py's View system automatically intercepts interactions
+                for messages sent via ``channel.send(view=...)`` (websocket
+                path).  But components sent via the REST API (aiohttp in
+                ``_send_discord``) have no View attached — Discord fires the
+                interaction but nobody acknowledges it, resulting in "This
+                interaction failed" errors.
+
+                This handler catches those orphaned interactions by checking
+                if the message has a registered discord.py View.  If not, it
+                looks up the message_id in the ComponentStore for REST-sent
+                entries, acknowledges the interaction, and routes it as a
+                MessageEvent.
+
+                Note: discord.py 2.x dispatches ``on_interaction`` for ALL
+                interaction types.  We only handle component interactions
+                (type 3) with no registered View.
+                """
+                # Only handle component interactions
+                if interaction.type != discord.InteractionType.component:
+                    return
+
+                message_id = str(interaction.message.id) if interaction.message else ""
+
+                # Check if discord.py has a registered View for this message.
+                # The view_store._views dict is keyed by message_id and maps
+                # to {(component_type, custom_id): Item}.  If any entry
+                # exists, a View callback will handle (or is handling) this
+                # interaction — don't interfere.
+                view_store = adapter_self._client._connection._view_store
+                if message_id and view_store._views.get(int(message_id)):
+                    return
+
+                # Check if this is an agent component we sent via REST
+                tracked = component_store.get(message_id)
+                if not tracked or not tracked.rest_sent:
+                    return
+
+                # Single-use guard: if this interaction was already handled,
+                # acknowledge and ignore (Discord requires *some* response).
+                if tracked.resolved:
+                    try:
+                        await interaction.response.defer()
+                    except Exception:
+                        pass
+                    return
+
+                # Extract component info from the interaction
+                data = interaction.data or {}
+                custom_id_raw = data.get("custom_id", "")
+                component_type = data.get("component_type", 0)
+
+                # Only handle agent components (hermes: prefix)
+                if not custom_id_raw.startswith(CUSTOM_ID_PREFIX):
+                    return
+
+                # Strip the prefix to get the original custom_id
+                original_custom_id = custom_id_raw[len(CUSTOM_ID_PREFIX):]
+
+                # Build interaction text
+                from gateway.platforms.discord_components import (
+                    _format_interaction_text,
+                )
+
+                if component_type == 2:  # Button
+                    label = data.get("label", "")
+                    kind = "Button clicked"
+                    interaction_text = _format_interaction_text(
+                        kind,
+                        label=label,
+                        custom_id=original_custom_id,
+                    )
+                elif component_type == 3:  # String Select
+                    values = data.get("values", [])
+                    kind = "Select chosen"
+                    interaction_text = _format_interaction_text(
+                        kind,
+                        label=values[0] if values else "",
+                        custom_id=original_custom_id,
+                        values=values,
+                    )
+                else:
+                    logger.debug("Unhandled component type %d in on_interaction", component_type)
+                    return
+
+                # Acknowledge the interaction — update the message to disable
+                # components (single-use behavior) and show the user we got it
+                try:
+                    channel = adapter_self._client.get_channel(int(tracked.chat_id))
+                    if channel is None:
+                        channel = await adapter_self._client.fetch_channel(int(tracked.chat_id))
+                    msg = await channel.fetch_message(int(message_id))
+
+                    # Build updated components with all items disabled
+                    updated_components = []
+                    for action_row in (msg.components or []):
+                        row_data = {}
+                        row_comps = []
+                        for comp in action_row.children:
+                            comp_dict = comp.to_dict()
+                            comp_dict["disabled"] = True
+                            row_comps.append(comp_dict)
+                        if row_comps:
+                            row_data["type"] = 1
+                            row_data["components"] = row_comps
+                            updated_components.append(row_data)
+
+                    await interaction.response.edit_message(
+                        content=msg.content,
+                        components=updated_components,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to edit REST-sent component message %s on interaction",
+                        message_id,
+                        exc_info=True,
+                    )
+                    # Fallback: at least acknowledge to prevent the error
+                    try:
+                        await interaction.response.defer()
+                    except Exception:
+                        pass
+
+                # Mark as resolved
+                tracked.resolved = True
+
+                # Route the interaction as a MessageEvent
+                from gateway.platforms.base import MessageEvent, MessageType
+
+                source = adapter_self.build_source(
+                    chat_id=tracked.chat_id,
+                    user_id=str(interaction.user.id),
+                    user_name=str(interaction.user),
+                )
+
+                event = MessageEvent(
+                    text=interaction_text,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    raw_message=interaction,
+                    message_id=message_id,
+                    reply_to_message_id=message_id,
+                )
+
+                try:
+                    await adapter_self.handle_message(event)
+                except Exception:
+                    logger.error(
+                        "Error routing REST component interaction for message %s",
+                        message_id,
+                        exc_info=True,
+                    )
+
+            @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
                 # Only track channels where the bot is connected
@@ -1386,6 +1602,12 @@ class DiscordAdapter(BasePlatformAdapter):
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
+            # Build interactive view from component spec in metadata
+            view = None
+            component_spec = None
+            if metadata and metadata.get("components"):
+                component_spec = metadata["components"]
+
             message_ids = []
             reference = None
 
@@ -1404,11 +1626,34 @@ class DiscordAdapter(BasePlatformAdapter):
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
+
+                # Attach the view only to the last chunk
+                chunk_view = None
+                if i == len(chunks) - 1 and component_spec:
+                    # Build the view lazily on first use
+                    if view is None:
+                        session_key = metadata.get("session_key", "") if metadata else ""
+                        # Convert API-format spec to builder format if needed
+                        normalized = _normalize_component_spec(component_spec)
+                        view = build_view_from_spec(
+                            spec=normalized,
+                            message_id="",  # placeholder; updated after send
+                            session_key=session_key,
+                            source=None,  # set after we have channel context
+                            interaction_callback=lambda event: asyncio.ensure_future(
+                                adapter_self.handle_message(event)
+                            ),
+                        )
+                    chunk_view = view
+
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: dict = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if chunk_view is not None:
+                        send_kwargs["view"] = chunk_view
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1427,13 +1672,33 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        send_kwargs_retry: dict = {
+                            "content": chunk,
+                            "reference": None,
+                        }
+                        if chunk_view is not None:
+                            send_kwargs_retry["view"] = chunk_view
+                        msg = await channel.send(**send_kwargs_retry)
                     else:
                         raise
                 message_ids.append(str(msg.id))
+
+            # Store the view and update message_id in ComponentStore
+            if view and message_ids:
+                session_key = metadata.get("session_key", "") if metadata else ""
+                view._message_id = str(message_ids[-1])
+                # Update the view's source with actual channel/user context
+                source = self.build_source(chat_id=str(channel.id), user_id="", user_name="")
+                view._source = source
+                component_store.register(
+                    message_id=message_ids[-1],
+                    view=view,
+                    session_key=session_key,
+                    interaction_callback=lambda event: asyncio.ensure_future(
+                        self.handle_message(event)
+                    ),
+                    source=source,
+                )
 
             return SendResult(
                 success=True,

@@ -918,6 +918,8 @@ async def video_analyze_tool(
     model: str = None,
 ) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
+    if not isinstance(user_prompt, str):
+        user_prompt = str(user_prompt) if user_prompt is not None else ""
     debug_call_data = {
         "parameters": {
             "video_url": video_url,

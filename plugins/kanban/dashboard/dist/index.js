@@ -532,7 +532,173 @@
           allTasks: board.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+        h(MissionControlSection, null),
       ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Mission Control (Class B strategic cards) — pulled from Convex
+  // -------------------------------------------------------------------------
+
+  const MC_CONVEX_URL = "https://uncommon-emu-480.convex.cloud";
+  const MC_QUERY_PATH = "tasks:list";
+  const MC_POLL_MS = 30000;
+
+  function MissionControlSection() {
+    const [tasks, setTasks] = useState(null);
+    const [error, setError] = useState(null);
+    const [statusFilter, setStatusFilter] = useState("active"); // active | all
+    const [assigneeFilter, setAssigneeFilter] = useState("");
+    const [search, setSearch] = useState("");
+    const [updatedAt, setUpdatedAt] = useState(0);
+
+    useEffect(function () {
+      let cancelled = false;
+      function load() {
+        fetch(`${MC_CONVEX_URL}/api/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: MC_QUERY_PATH, args: {}, format: "json" }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            if (cancelled) return;
+            const v = (j && (j.value || j.result)) || [];
+            setTasks(Array.isArray(v) ? v : []);
+            setUpdatedAt(Date.now());
+            setError(null);
+          })
+          .catch(function (e) {
+            if (cancelled) return;
+            setError(String(e && e.message ? e.message : e));
+          });
+      }
+      load();
+      const id = setInterval(load, MC_POLL_MS);
+      return function () { cancelled = true; clearInterval(id); };
+    }, []);
+
+    const filtered = useMemo(function () {
+      if (!tasks) return null;
+      const q = search.trim().toLowerCase();
+      const ACTIVE = new Set(["pending", "in_progress", "in_review", "backlog"]);
+      return tasks.filter(function (t) {
+        if (statusFilter === "active") {
+          if (!ACTIVE.has(t.status)) return false;
+        }
+        if (assigneeFilter && (t.assignee || "") !== assigneeFilter) return false;
+        if (q) {
+          const hay = `${t.title || ""} ${t.description || ""}`.toLowerCase();
+          if (hay.indexOf(q) < 0) return false;
+        }
+        return true;
+      }).sort(function (a, b) {
+        return (b.updatedAt || 0) - (a.updatedAt || 0);
+      });
+    }, [tasks, statusFilter, assigneeFilter, search]);
+
+    const assignees = useMemo(function () {
+      if (!tasks) return [];
+      const s = new Set();
+      tasks.forEach(function (t) { if (t.assignee) s.add(t.assignee); });
+      return Array.from(s).sort();
+    }, [tasks]);
+
+    const counts = useMemo(function () {
+      if (!tasks) return null;
+      const c = { all: tasks.length };
+      tasks.forEach(function (t) { c[t.status] = (c[t.status] || 0) + 1; });
+      return c;
+    }, [tasks]);
+
+    return h("section", { className: "hermes-mc" },
+      h("div", { className: "hermes-mc-head" },
+        h("div", { className: "hermes-mc-title" },
+          h("span", { className: "hermes-mc-dot" }),
+          "Mission Control",
+          h("span", { className: "hermes-mc-subtitle" },
+            "Class B — human-paired strategic cards"),
+        ),
+        h("div", { className: "hermes-mc-meta" },
+          counts ? h("span", { className: "hermes-mc-counts" },
+            `${counts.in_progress || 0} running · ${counts.pending || 0} pending · ${counts.in_review || 0} review · ${counts.backlog || 0} backlog · ${counts.done || 0} done`
+          ) : null,
+          updatedAt ? h("span", { className: "hermes-mc-stamp" },
+            `updated ${timeAgo(updatedAt / 1000)}`) : null,
+        ),
+      ),
+      h("div", { className: "hermes-mc-toolbar" },
+        h(Label, null, "Status",
+          h(Select, {
+            value: statusFilter,
+            onChange: function (e) { setStatusFilter(e.target.value); },
+          },
+            h(SelectOption, { value: "active" }, "Active (no done)"),
+            h(SelectOption, { value: "all" }, "All"),
+          ),
+        ),
+        h(Label, null, "Assignee",
+          h(Select, {
+            value: assigneeFilter,
+            onChange: function (e) { setAssigneeFilter(e.target.value); },
+          },
+            h(SelectOption, { value: "" }, "All"),
+            assignees.map(function (a) {
+              return h(SelectOption, { key: a, value: a }, a);
+            }),
+          ),
+        ),
+        h(Label, null, "Search",
+          h(Input, {
+            value: search,
+            placeholder: "title or description…",
+            onChange: function (e) { setSearch(e.target.value); },
+          }),
+        ),
+        h("a", {
+          className: "hermes-mc-link",
+          href: "https://uncommon-emu-480.convex.site",
+          target: "_blank",
+          rel: "noreferrer",
+        }, "Open Mission Control →"),
+      ),
+      error ? h("div", { className: "hermes-mc-error" },
+        `Failed to load Convex tasks: ${error}`) : null,
+      !tasks ? h("div", { className: "hermes-mc-empty" }, "Loading Mission Control…")
+        : filtered.length === 0 ? h("div", { className: "hermes-mc-empty" },
+            "No matching cards.")
+        : h("div", { className: "hermes-mc-table-wrap" },
+            h("table", { className: "hermes-mc-table" },
+              h("thead", null,
+                h("tr", null,
+                  h("th", null, "Title"),
+                  h("th", null, "Status"),
+                  h("th", null, "Assignee"),
+                  h("th", null, "Priority"),
+                  h("th", null, "Updated"),
+                ),
+              ),
+              h("tbody", null,
+                filtered.slice(0, 200).map(function (t) {
+                  return h("tr", { key: t._id, className: `hermes-mc-row hermes-mc-status-${t.status}` },
+                    h("td", { className: "hermes-mc-cell-title" },
+                      h("div", { className: "hermes-mc-cell-title-line" }, t.title || "(untitled)"),
+                      t.description ? h("div", { className: "hermes-mc-cell-desc" },
+                        (t.description || "").slice(0, 160)) : null,
+                    ),
+                    h("td", null,
+                      h("span", { className: `hermes-mc-pill hermes-mc-pill-${t.status}` },
+                        t.status || "—"),
+                    ),
+                    h("td", null, t.assignee || "—"),
+                    h("td", null, t.priority || "—"),
+                    h("td", null, t.updatedAt ? timeAgo(t.updatedAt / 1000) : "—"),
+                  );
+                }),
+              ),
+            ),
+          ),
     );
   }
 

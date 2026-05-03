@@ -758,3 +758,159 @@
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
+
+/* ============================================================ */
+/* Mission Control (Class B strategic cards) — stacked under     */
+/* the kanban board, pulled from Convex /api/query tasks:list    */
+/* ============================================================ */
+
+.hermes-mc {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.hermes-mc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.hermes-mc-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+.hermes-mc-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #c084fc;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #c084fc 25%, transparent);
+}
+.hermes-mc-subtitle {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-left: 0.4rem;
+}
+.hermes-mc-meta {
+  display: flex;
+  gap: 0.85rem;
+  align-items: center;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-mc-counts { font-variant-numeric: tabular-nums; }
+.hermes-mc-stamp { font-style: italic; }
+.hermes-mc-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.65rem;
+}
+.hermes-mc-link {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  text-decoration: none;
+  border-bottom: 1px dotted color-mix(in srgb, var(--color-foreground) 35%, transparent);
+}
+.hermes-mc-link:hover { color: var(--color-foreground); }
+.hermes-mc-error {
+  font-size: 0.75rem;
+  color: var(--color-destructive, #f87171);
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, #f87171 12%, transparent);
+}
+.hermes-mc-empty {
+  padding: 1.25rem;
+  font-size: 0.8rem;
+  color: var(--color-muted-foreground);
+  text-align: center;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: 0.5rem;
+}
+.hermes-mc-table-wrap {
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+}
+.hermes-mc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.hermes-mc-table thead th {
+  text-align: left;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-mc-table tbody td {
+  padding: 0.55rem 0.7rem;
+  vertical-align: top;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 35%, transparent);
+}
+.hermes-mc-row:hover td {
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+.hermes-mc-cell-title { max-width: 32rem; }
+.hermes-mc-cell-title-line {
+  font-weight: 500;
+  color: var(--color-foreground);
+}
+.hermes-mc-cell-desc {
+  margin-top: 0.2rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  line-height: 1.35;
+}
+.hermes-mc-pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  color: var(--color-muted-foreground);
+}
+.hermes-mc-pill-in_progress {
+  background: color-mix(in srgb, #60a5fa 18%, transparent);
+  border-color: color-mix(in srgb, #60a5fa 45%, transparent);
+  color: var(--color-foreground);
+}
+.hermes-mc-pill-pending {
+  background: color-mix(in srgb, #fbbf24 18%, transparent);
+  border-color: color-mix(in srgb, #fbbf24 45%, transparent);
+  color: var(--color-foreground);
+}
+.hermes-mc-pill-in_review {
+  background: color-mix(in srgb, #c084fc 18%, transparent);
+  border-color: color-mix(in srgb, #c084fc 45%, transparent);
+  color: var(--color-foreground);
+}
+.hermes-mc-pill-backlog {
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+}
+.hermes-mc-pill-done {
+  background: color-mix(in srgb, #3fb97d 18%, transparent);
+  border-color: color-mix(in srgb, #3fb97d 45%, transparent);
+  color: var(--color-foreground);
+}

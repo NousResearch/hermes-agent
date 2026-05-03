@@ -143,7 +143,18 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["max_output_tokens"] = max_tokens
 
         if is_xai_responses and session_id:
-            kwargs["extra_headers"] = {"x-grok-conv-id": session_id}
+            existing_extra_headers = kwargs.get("extra_headers")
+            merged_extra_headers: Dict[str, str] = {}
+            if isinstance(existing_extra_headers, dict):
+                merged_extra_headers.update(
+                    {
+                        str(key): str(value)
+                        for key, value in existing_extra_headers.items()
+                        if key and value is not None
+                    }
+                )
+            merged_extra_headers["x-grok-conv-id"] = session_id
+            kwargs["extra_headers"] = merged_extra_headers
 
         return kwargs
 

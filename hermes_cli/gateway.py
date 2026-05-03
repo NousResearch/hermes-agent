@@ -237,6 +237,26 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     return False
 
 
+def _get_ancestor_pids() -> set[int]:
+    """Return the set of PIDs in the current process's ancestor chain.
+
+    Walks from the current PID up to PID 1 (init) so that process-table scans
+    never match the calling CLI process or any of its parents.  This prevents
+    ``hermes gateway status`` from falsely counting the ``hermes`` CLI that
+    invoked it as a running gateway instance (see #13242).
+    """
+    ancestors: set[int] = set()
+    pid = os.getpid()
+    # Cap iterations to avoid infinite loops on exotic platforms.
+    for _ in range(64):
+        ancestors.add(pid)
+        parent = _get_parent_pid(pid)
+        if parent is None or parent <= 0 or parent in ancestors:
+            break
+        pid = parent
+    return ancestors
+
+
 def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int]) -> None:
     if pid is None or pid <= 0:
         return
@@ -252,6 +272,10 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
     discover gateways outside the current profile.
     """
+    # Exclude the entire ancestor chain so the CLI process that invoked this
+    # scan (e.g. ``hermes gateway status``) is never mistaken for a running
+    # gateway.  See #13242.
+    exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
     patterns = [
         "hermes_cli.main gateway",

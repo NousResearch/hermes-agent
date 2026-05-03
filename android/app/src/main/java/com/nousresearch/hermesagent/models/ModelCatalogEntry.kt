@@ -33,6 +33,12 @@ data class ModelCatalogEntry(
     /** Whether this model supports quantization */
     val supportsQuantization: Boolean = false,
 
+    /** Whether this model supports image input through the selected runtime */
+    val supportsImageInput: Boolean = false,
+
+    /** Whether this model supports audio input through the selected runtime */
+    val supportsAudioInput: Boolean = false,
+
     /** Whether this model is recommended for mobile devices */
     val isMobileRecommended: Boolean = false,
 

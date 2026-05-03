@@ -35,7 +35,7 @@ def test_local_model_download_view_model_and_store_support_resumable_download_st
     assert 'setAllowedOverRoaming(allowRoaming)' in download_manager
     assert 'findCompatibleRepoFile' in download_manager
     assert 'findFallbackRepoFile' in download_manager
-    assert 'does not publish a .litertlm file' in download_manager
+    assert 'does not publish a .litertlm or .task file' in download_manager
     assert 'mobile-ready repo' in download_manager
     assert 'selectRepoFileForDownload(' in download_manager
     assert 'Downloading is allowed; the selected backend will decide at load time whether it can run this file.' in download_manager
@@ -54,11 +54,18 @@ def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
     assert 'gemma-4-e4b-litert-lm' in catalog
     assert 'litert-community/gemma-4-E4B-it-litert-lm' in catalog
     assert '3_654_467_584' in catalog
+    assert 'gemma-3-1b-it-litert-lm' in catalog
+    assert 'litert-community/Gemma3-1B-IT' in catalog
+    assert 'gemma-3-4b-it-vision-task' in catalog
+    assert 'supportsImageInput = true' in catalog
+    assert 'google/gemma-3n-E2B-it-litert-lm' in catalog
+    assert 'google/gemma-3n-E4B-it-litert-lm' in catalog
     assert 'qwen3-0-6b-litert-lm' in catalog
     assert 'litert-community/Qwen3-0.6B' in catalog
     assert '614_236_160' in catalog
     assert 'qwen2-5-1-5b-instruct-litert-lm' in catalog
     assert 'phi-4-mini-instruct-litert-lm' not in catalog
+    assert 'lower.endsWith(".litertlm") || lower.endsWith(".task")' in download_manager
     assert '"q4" in lower || "int4" in lower -> 0' in download_manager
     assert '"q8" in lower || "int8" in lower -> 1' in download_manager
     assert '"f32" in lower || "float32" in lower -> 20' in download_manager
@@ -90,7 +97,8 @@ def test_on_device_backend_preflights_required_model_extensions_before_launching
     assert 'matchesBackendArtifact' in backend_manager
     assert 'incompatiblePreferredDownloadStatus' in backend_manager
     assert 'lower.endsWith(".gguf")' in backend_manager
-    assert 'lower.endsWith(".litertlm")' in backend_manager
+    assert 'lower.endsWith(".litertlm") || lower.endsWith(".task")' in backend_manager
+    assert '.litertlm or .task' in backend_manager
     assert 'Download a $requiredExtension artifact and mark it as preferred first.' in backend_manager
 
 

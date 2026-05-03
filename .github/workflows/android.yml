@@ -20,17 +20,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Set up Java 17
+      - name: Set up Java 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
           cache: gradle
 
-      - name: Set up Python 3.11 for Chaquopy
+      - name: Set up Python 3.12 for Chaquopy
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -58,7 +58,7 @@ jobs:
       - name: Build Android debug APK and run unit tests
         working-directory: android
         run: |
-          export PYTHON_FOR_BUILD="$(command -v python3.11 || command -v python3 || command -v python)"
+          export PYTHON_FOR_BUILD="$(command -v python3.12 || command -v python3 || command -v python)"
           ./gradlew :app:testDebugUnitTest -PskipHermesAndroidLinuxAssets=true
           ./gradlew :app:assembleDebug
 

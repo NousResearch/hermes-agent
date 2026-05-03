@@ -33,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -53,6 +54,7 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
     var expanded by remember { mutableStateOf(false) }
+    var modelExpanded by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
     val selectedPreset = ProviderPresets.find(uiState.provider)
 
@@ -97,7 +99,9 @@ fun SettingsScreen(
                             label = { Text(strings.providerLabel()) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                             modifier = Modifier
-                                .fillMaxWidth(),
+                                .fillMaxWidth()
+                                .menuAnchor()
+                                .testTag("HermesProviderDropdown"),
                         )
                         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                             ProviderPresets.defaults.forEach { preset ->
@@ -136,17 +140,19 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
 
-                    OutlinedTextField(
-                        value = uiState.model,
-                        onValueChange = viewModel::updateModel,
-                        label = { Text(strings.modelLabel()) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        strings.suggestedModelSummary(
-                            selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" } ?: "choose a provider-supported model",
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
+                    ModelSelectionCard(
+                        expanded = modelExpanded,
+                        onExpandedChange = { modelExpanded = !modelExpanded },
+                        selectedModel = uiState.model,
+                        providerId = uiState.provider,
+                        suggestedModel = selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" }
+                            ?: "choose a provider-supported model",
+                        onSelectModel = { modelId ->
+                            viewModel.updateModel(modelId)
+                            modelExpanded = false
+                        },
+                        onModelTextChange = viewModel::updateModel,
+                        strings = strings,
                     )
 
                     OutlinedTextField(
@@ -177,6 +183,64 @@ fun SettingsScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelSelectionCard(
+    expanded: Boolean,
+    onExpandedChange: () -> Unit,
+    selectedModel: String,
+    providerId: String,
+    suggestedModel: String,
+    onSelectModel: (String) -> Unit,
+    onModelTextChange: (String) -> Unit,
+    strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
+) {
+    val options = ProviderPresets.modelSelections(providerId)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(strings.modelSelectionTitle(), style = MaterialTheme.typography.titleMedium)
+            Text(strings.modelSelectionDescription(), style = MaterialTheme.typography.bodySmall)
+            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { onExpandedChange() }) {
+                OutlinedTextField(
+                    value = selectedModel,
+                    onValueChange = onModelTextChange,
+                    label = { Text(strings.modelLabel()) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor()
+                        .testTag("HermesModelDropdown"),
+                    singleLine = true,
+                )
+                DropdownMenu(expanded = expanded, onDismissRequest = onExpandedChange) {
+                    options.forEach { model ->
+                        DropdownMenuItem(
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(model.label)
+                                    Text(model.description, style = MaterialTheme.typography.bodySmall)
+                                }
+                            },
+                            onClick = { onSelectModel(model.id) },
+                        )
+                    }
+                }
+            }
+            Text(strings.suggestedModelSummary(suggestedModel), style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -245,8 +309,22 @@ private fun OnDeviceInferenceCard(
                     onSelectBackend(if (enabled) BackendKind.LITERT_LM.persistedValue else BackendKind.NONE.persistedValue)
                 },
             )
-            Text(summary.ifBlank { strings.noCompatibleLocalModel }, style = MaterialTheme.typography.bodySmall)
+            Text(localizedOnDeviceSummary(summary, strings), style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+private fun localizedOnDeviceSummary(
+    summary: String,
+    strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
+): String {
+    val trimmed = summary.trim()
+    return when {
+        trimmed.isBlank() -> strings.noCompatibleLocalModel
+        trimmed.startsWith("No preferred local model") -> strings.noCompatibleLocalModel
+        trimmed.startsWith("Preferred local model:") ->
+            "${strings.preferredLocalModel}: ${trimmed.substringAfter(':').trim()}"
+        else -> trimmed
     }
 }
 

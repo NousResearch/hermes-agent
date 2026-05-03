@@ -34,6 +34,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -213,7 +214,7 @@ private fun HermesTopBar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Image(
-                    painter = painterResource(id = R.drawable.ic_hermes_logo),
+                    painter = painterResource(id = R.drawable.nous_hermes_logo),
                     contentDescription = strings.hermesLogoDescription,
                     modifier = Modifier.size(34.dp),
                 )
@@ -253,6 +254,7 @@ private fun HermesBottomNavigation(
             NavigationBarItem(
                 selected = currentSection == section,
                 onClick = { onSelect(section) },
+                modifier = Modifier.testTag("HermesNav${section.name}"),
                 icon = {
                     Icon(
                         painter = painterResource(id = section.iconRes),
@@ -318,7 +320,7 @@ private fun HermesSetupScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Image(
-            painter = painterResource(id = R.drawable.ic_hermes_logo),
+            painter = painterResource(id = R.drawable.nous_hermes_logo),
             contentDescription = strings.hermesLogoDescription,
             modifier = Modifier.size(72.dp),
         )
@@ -343,7 +345,7 @@ private fun HermesSetupScreen(
             }
         }
         Button(onClick = onRetry) {
-            Text("Retry Hermes")
+            Text(strings.retryHermes())
         }
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -357,11 +359,11 @@ private fun HermesSetupScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("Getting started", style = MaterialTheme.typography.titleMedium)
-                Text("1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.")
-                Text("2. Settings: choose a provider, confirm the base URL/model, and save your API key.")
-                Text("3. Device: grant shared-folder access if you want Hermes to edit real mobile files directly.")
-                Text("4. Hermes chat: use voice input, chat commands, or the cog button for page-specific actions once the runtime is ready.")
+                Text(strings.gettingStartedTitle(), style = MaterialTheme.typography.titleMedium)
+                Text(strings.gettingStartedStep(1))
+                Text(strings.gettingStartedStep(2))
+                Text(strings.gettingStartedStep(3))
+                Text(strings.gettingStartedStep(4))
             }
         }
     }

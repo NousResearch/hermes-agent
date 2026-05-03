@@ -7,10 +7,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_hermes_home_includes_getting_started_actions():
     app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
 
-    assert 'Text("Getting started"' in app_shell
-    assert 'Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.' in app_shell
-    assert 'Device: grant shared-folder access if you want Hermes to edit real mobile files directly.' in app_shell
-    assert 'Hermes chat: use voice input, chat commands, or the cog button' in app_shell
+    assert 'Text(strings.gettingStartedTitle()' in app_shell
+    assert 'Text(strings.gettingStartedStep(1))' in app_shell
+    assert 'Text(strings.gettingStartedStep(4))' in app_shell
     assert 'label = "Nous Portal"' in app_shell
     assert 'label = "Device"' in app_shell
 
@@ -24,6 +23,8 @@ def test_settings_screen_includes_new_user_guidance():
     assert 'Text(strings.currentProviderProfile(providerLabel))' in settings
     assert 'strings.apiKeyHelp()' in settings
     assert 'New here?' in strings
+    assert 'Getting started' in strings
+    assert 'Hermes chat: use voice input, chat commands, or the cog button' in strings
     assert 'Use Accounts if you want Corr3xt-based sign-in flows' in strings
     assert 'Choose the provider you want Hermes to call directly.' in strings
     assert 'Paste the key for the selected provider, then tap Save' in strings

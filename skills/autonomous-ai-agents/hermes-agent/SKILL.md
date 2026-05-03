@@ -791,6 +791,61 @@ and logs — avoids shell-escaping backslashes in bash.
 
 ---
 
+## Native Android/Gemma Debugging
+
+Use this flow when working on the native Hermes Android APK, Gemma LiteRT-LM inference, emulator validation, Chaquopy, or `feat/termux-install-path`. Prefer the native APK under `android/` for device tools, filesystem access, settings actions, and local model inference; use Termux only when the task explicitly targets Termux.
+
+### Environment
+
+- Use JDK 21. JDK 17 is too old for LiteRT-LM class files, and newer bleeding-edge JDKs can break the Kotlin/Gradle stack.
+- Use Python 3.12 for Chaquopy builds and set `PYTHON_FOR_BUILD` to that interpreter when Gradle cannot find it automatically.
+- Set `ANDROID_HOME` and `ANDROID_SDK_ROOT` to an SDK that contains platform-tools, emulator, Android 35 platforms, and Android 35 build tools.
+- Keep `android/local.properties` pointed at the SDK with `sdk.dir=...` for repeatable local builds.
+
+PowerShell validation setup:
+
+```powershell
+$env:JAVA_HOME = "<path-to-jdk-21>"
+$env:ANDROID_HOME = "<path-to-android-sdk>"
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+$env:PYTHON_FOR_BUILD = "<path-to-python-3.12>"
+```
+
+### Validation Gates
+
+Run these from the repository root after native Android changes:
+
+```powershell
+python -m pytest tests/hermes_android -q
+python -m pytest tests/tools/test_skills_sync.py -q
+Set-Location android
+.\gradlew.bat :app:testDebugUnitTest -PskipHermesAndroidLinuxAssets=true
+.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:installDebug :app:installDebugAndroidTest
+```
+
+For emulator end-to-end coverage, run the focused instrumentation classes together so chat, typing, settings/model selection, translations, Gemma inference, and native tools are exercised in one installed APK:
+
+```powershell
+adb shell am instrument -w -r -e class com.nousresearch.hermesagent.DeepAppUiVisualInstrumentedTest,com.nousresearch.hermesagent.Gemma4LocalInferenceInstrumentedTest,com.nousresearch.hermesagent.NativeAppChatAndToolInstrumentedTest,com.nousresearch.hermesagent.NativeAppUiChatInstrumentedTest,com.nousresearch.hermesagent.NativeAgentToolAccessInstrumentedTest,com.nousresearch.hermesagent.LiteRtLmModelMatrixInstrumentedTest com.nousresearch.hermesagent.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+### Model Provisioning
+
+- Provision local LiteRT-LM models into the app sandbox at `files/hermes-home/downloads/models/` with `adb push` or `adb exec-in run-as ... cat > ...`.
+- Keep Gemma 4 E2B/E4B as first-class text models and Gemma 3/Gemma 3n vision entries as first-class multimodal models.
+- A real image-description validation requires a provisioned Gemma 3/Gemma 3n vision-capable `.task` or `.litertlm` file. If only text-only Gemma 4 is available, assert that image requests fail clearly instead of pretending vision succeeded.
+- When testing large models, watch emulator `/data` free space and remove failed model files/caches before retrying.
+- Use Tasker terminology when comparing Android automation capabilities, and pair it with Shizuku for privileged shell/system actions. Cover Tasker-style profiles, tasks, variables, scenes, plugins, widgets, and app triggers honestly against the Hermes APK's current native Android tools.
+
+### Debugging Notes
+
+- Native tool tests need the embedded Linux/runtime assets. Do not use `-PskipHermesAndroidLinuxAssets=true` for the final device-tool access pass.
+- Capture UI screenshots from instrumentation when changing chat, onboarding, settings, accounts, device, portal, model selection, or localization pages.
+- Restore generated Android pip-stub metadata churn before committing if Chaquopy rewrites `PKG-INFO`.
+
+---
+
 ## Troubleshooting
 
 ### Voice not working

@@ -638,4 +638,10 @@ Thanks to everyone who contributed to v0.13.0 — commits, co-authored work, and
 
 ---
 
+## Native Android/Gemma APK Lane
+
+This release also carries the native Android APK work: local Gemma 4 E2B/E4B LiteRT-LM model selection, Gemma 3/Gemma 3n vision entries, image attachment plumbing, Python 3.12 Chaquopy builds, and emulator coverage for chat typing, settings/model selection, translated pages, terminal file actions, Android system status, cron lifecycle, and background runtime start/stop.
+
+Validation for the Android lane included `python -m pytest tests/hermes_android -q`, Gradle debug/unit-test builds, `DeepAppUiVisualInstrumentedTest`, and focused Gemma/native-tool instrumentation. Gemma 4 E4B, Qwen3 0.6B, and Qwen2.5 1.5B passed the model matrix; Phi-4-mini was attempted under the 5 GB artifact ceiling but is not marked supported because the emulator aborted inside the native LiteRT loader during initialization.
+
 **Full Changelog**: [v2026.4.30...v2026.5.7](https://github.com/NousResearch/hermes-agent/compare/v2026.4.30...v2026.5.7)

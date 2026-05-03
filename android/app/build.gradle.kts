@@ -77,7 +77,7 @@ fun resolvedBuildPython(): String {
         return configured
     }
     val osName = System.getProperty("os.name").lowercase()
-    return if (osName.contains("windows")) "python" else "python3.11"
+    return if (osName.contains("windows")) "python" else "python3.12"
 }
 
 fun hermesWheelName(): String = "hermes_agent-${hermesVersionName()}-py3-none-any.whl"
@@ -173,7 +173,7 @@ android {
 
 chaquopy {
     defaultConfig {
-        version = "3.11"
+        version = "3.12"
 
         buildPython(resolvedBuildPython())
 

@@ -144,6 +144,7 @@ object OnDeviceBackendManager {
             modelPath = modelFile.absolutePath,
             requestedModelName = preferred.title,
             port = LITERT_LM_PORT,
+            inferenceConfig = inferenceConfigFor(preferred),
         )
         currentStatus = status
         return status
@@ -182,6 +183,10 @@ object OnDeviceBackendManager {
 
         // AICore uses same port as LiteRT-LM but with AICore-appropriate inference config
         val inferenceConfig = AICoreBackendController.createAICoreInferenceConfig()
+            .copy(
+                supportImage = preferred.supportsImageInput(),
+                supportAudio = preferred.supportsAudioInput(),
+            )
         val status = LiteRtLmOpenAiProxy.ensureRunning(
             context = context,
             modelPath = modelFile.absolutePath,
@@ -211,10 +216,37 @@ object OnDeviceBackendManager {
         val lower = destinationPath.lowercase(Locale.US)
         return when (backendKind) {
             BackendKind.LLAMA_CPP -> lower.endsWith(".gguf")
-            BackendKind.LITERT_LM -> lower.endsWith(".litertlm")
-            BackendKind.AICORE -> lower.endsWith(".litertlm")  // AICore uses same format
+            BackendKind.LITERT_LM -> lower.endsWith(".litertlm") || lower.endsWith(".task")
+            BackendKind.AICORE -> lower.endsWith(".litertlm") || lower.endsWith(".task")
             BackendKind.NONE -> true
         }
+    }
+
+    private fun inferenceConfigFor(preferred: LocalModelDownloadRecord): LiteRtLmOpenAiProxy.InferenceConfig {
+        return LiteRtLmOpenAiProxy.InferenceConfig(
+            supportImage = preferred.supportsImageInput(),
+            supportAudio = preferred.supportsAudioInput(),
+        )
+    }
+
+    private fun LocalModelDownloadRecord.supportsImageInput(): Boolean {
+        val lower = modelIdentityText()
+        return "gemma-3n" in lower ||
+            "gemma3-4b" in lower ||
+            "gemma-3-4b" in lower ||
+            "vision" in lower ||
+            "image-text" in lower
+    }
+
+    private fun LocalModelDownloadRecord.supportsAudioInput(): Boolean {
+        val lower = modelIdentityText()
+        return "gemma-3n" in lower || "audio" in lower
+    }
+
+    private fun LocalModelDownloadRecord.modelIdentityText(): String {
+        return listOf(title, repoOrUrl, filePath, destinationFileName, destinationPath)
+            .joinToString(" ")
+            .lowercase(Locale.US)
     }
 
     private fun incompatiblePreferredDownloadStatus(
@@ -223,8 +255,8 @@ object OnDeviceBackendManager {
     ): LocalBackendStatus {
         val requiredExtension = when (backendKind) {
             BackendKind.LLAMA_CPP -> ".gguf"
-            BackendKind.LITERT_LM -> ".litertlm"
-            BackendKind.AICORE -> ".litertlm"
+            BackendKind.LITERT_LM -> ".litertlm or .task"
+            BackendKind.AICORE -> ".litertlm or .task"
             BackendKind.NONE -> "supported"
         }
         val backendLabel = when (backendKind) {

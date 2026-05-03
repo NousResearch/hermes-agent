@@ -1,7 +1,10 @@
 package com.nousresearch.hermesagent.ui.chat
 
 import android.content.Context
+import com.nousresearch.hermesagent.api.ChatContentPart
+import com.nousresearch.hermesagent.api.ChatMessage
 import com.nousresearch.hermesagent.api.HermesApiClient
+import com.nousresearch.hermesagent.api.toJsonObject
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
 import com.nousresearch.hermesagent.device.NativeAndroidShellTool
 import okhttp3.MediaType.Companion.toMediaType
@@ -33,14 +36,17 @@ class NativeToolCallingChatClient(
         modelName: String,
         sessionId: String,
         userText: String,
+        userContentParts: List<ChatContentPart> = emptyList(),
     ): Result {
         val normalizedBaseUrl = baseUrl.trimEnd('/')
         val messages = JSONArray()
             .put(systemMessage())
             .put(
-                JSONObject()
-                    .put("role", "user")
-                    .put("content", userText)
+                ChatMessage(
+                    role = "user",
+                    content = userText,
+                    contentParts = userContentParts,
+                ).toJsonObject()
             )
 
         var executedToolCalls = 0

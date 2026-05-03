@@ -82,6 +82,75 @@ class LiteRtLmModelMatrixInstrumentedTest {
         assertFalse(completion.toString(), content.isBlank())
     }
 
+    @Test
+    fun provisionedVisionLiteRtLmModelDescribesImageLocally() {
+        val args = InstrumentationRegistry.getArguments()
+        val modelId = args.getString("vision_model_id", DEFAULT_VISION_MODEL_ID)
+        val modelFileName = args.getString("vision_model_file_name", DEFAULT_VISION_MODEL_FILE_NAME)
+        val modelFile = File(context.filesDir, "hermes-home/downloads/models/$modelFileName")
+
+        assumeTrue("LiteRT-LM vision model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
+
+        val status = LiteRtLmOpenAiProxy.ensureRunning(
+            context = context,
+            modelPath = modelFile.absolutePath,
+            requestedModelName = modelId,
+            port = OnDeviceBackendManager.LITERT_LM_PORT,
+            inferenceConfig = LiteRtLmOpenAiProxy.InferenceConfig(supportImage = true),
+        )
+        assertTrue(status.statusMessage, status.started)
+
+        val health = executeJson(
+            Request.Builder()
+                .url(status.baseUrl.removeSuffix("/v1") + "/health")
+                .get()
+                .build()
+        )
+        assertEquals(health.toString(), "gpu", health.optString("vision_accelerator"))
+
+        val completion = executeJson(
+            Request.Builder()
+                .url("${status.baseUrl}/chat/completions")
+                .post(visionCompletionRequestBody(modelId))
+                .build()
+        )
+        val content = completion
+            .getJSONArray("choices")
+            .getJSONObject(0)
+            .getJSONObject("message")
+            .optString("content")
+        assertFalse("Expected nonblank image description from $modelId", content.isBlank())
+    }
+
+    @Test
+    fun provisionedTextOnlyLiteRtLmModelRejectsImageRequestsClearly() {
+        val args = InstrumentationRegistry.getArguments()
+        val modelId = args.getString("model_id", DEFAULT_MODEL_ID)
+        val modelFileName = args.getString("model_file_name", DEFAULT_MODEL_FILE_NAME)
+        val modelFile = File(context.filesDir, "hermes-home/downloads/models/$modelFileName")
+
+        assumeTrue("LiteRT-LM model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
+
+        val status = LiteRtLmOpenAiProxy.ensureRunning(
+            context = context,
+            modelPath = modelFile.absolutePath,
+            requestedModelName = modelId,
+            port = OnDeviceBackendManager.LITERT_LM_PORT,
+        )
+        assertTrue(status.statusMessage, status.started)
+
+        client.newCall(
+            Request.Builder()
+                .url("${status.baseUrl}/chat/completions")
+                .post(visionCompletionRequestBody(modelId))
+                .build()
+        ).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            assertEquals(body, 400, response.code)
+            assertTrue(body, body.contains("image input requires a LiteRT-LM model started with image support"))
+        }
+    }
+
     private fun completionRequestBody(modelId: String) = JSONObject()
         .put("model", modelId)
         .put(
@@ -90,6 +159,29 @@ class LiteRtLmModelMatrixInstrumentedTest {
                 JSONObject()
                     .put("role", "user")
                     .put("content", "Reply with exactly one short word: ok")
+            )
+        )
+        .put("stream", false)
+        .toString()
+        .toRequestBody(JSON_MEDIA_TYPE)
+
+    private fun visionCompletionRequestBody(modelId: String) = JSONObject()
+        .put("model", modelId)
+        .put(
+            "messages",
+            JSONArray().put(
+                JSONObject()
+                    .put("role", "user")
+                    .put(
+                        "content",
+                        JSONArray()
+                            .put(JSONObject().put("type", "text").put("text", "Describe the image in one short sentence."))
+                            .put(
+                                JSONObject()
+                                    .put("type", "image_url")
+                                    .put("image_url", JSONObject().put("url", BLUE_PIXEL_DATA_URL)),
+                            ),
+                    )
             )
         )
         .put("stream", false)
@@ -107,7 +199,11 @@ class LiteRtLmModelMatrixInstrumentedTest {
     private companion object {
         private const val DEFAULT_MODEL_ID = "gemma-4-E2B-it"
         private const val DEFAULT_MODEL_FILE_NAME = "gemma-4-E2B-it.litertlm"
+        private const val DEFAULT_VISION_MODEL_ID = "gemma-3n-E2B-it-int4"
+        private const val DEFAULT_VISION_MODEL_FILE_NAME = "gemma-3n-E2B-it-int4.litertlm"
         private const val DEFAULT_MODEL_BYTES = 2_583_085_056L
+        private const val BLUE_PIXEL_DATA_URL =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNgYPgPAAEDAQD1KpcPAAAAAElFTkSuQmCC"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

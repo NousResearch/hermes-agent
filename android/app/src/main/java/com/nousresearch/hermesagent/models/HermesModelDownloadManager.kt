@@ -46,6 +46,10 @@ object HermesModelDownloadManager {
         "google/gemma-4-e2b-it" to "litert-community/gemma-4-E2B-it-litert-lm",
         "google/gemma-4-e4b" to "litert-community/gemma-4-E4B-it-litert-lm",
         "google/gemma-4-e4b-it" to "litert-community/gemma-4-E4B-it-litert-lm",
+        "google/gemma-3-1b-it" to "litert-community/Gemma3-1B-IT",
+        "google/gemma-3-4b-it" to "litert-community/Gemma3-4B-IT",
+        "google/gemma-3n-e2b-it" to "google/gemma-3n-E2B-it-litert-lm",
+        "google/gemma-3n-e4b-it" to "google/gemma-3n-E4B-it-litert-lm",
         "qwen/qwen2.5-1.5b-instruct" to "litert-community/Qwen2.5-1.5B-Instruct",
         "deepseek-ai/deepseek-r1-distill-qwen-1.5b" to "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
         "microsoft/phi-4-mini-instruct" to "litert-community/Phi-4-mini-instruct",
@@ -410,9 +414,9 @@ object HermesModelDownloadManager {
 
     private fun noLiteRtArtifactMessage(repoId: String, aliasRepoId: String?): String {
         return if (!aliasRepoId.isNullOrBlank()) {
-            "huggingface.co/$repoId does not publish a .litertlm file. Hermes recommends $aliasRepoId for LiteRT-LM, or you can enter an exact .litertlm file path."
+            "huggingface.co/$repoId does not publish a .litertlm or .task file. Hermes recommends $aliasRepoId for LiteRT-LM, or you can enter an exact .litertlm/.task file path."
         } else {
-            "huggingface.co/$repoId does not publish a .litertlm file. Enter an exact .litertlm file path or choose a repo that ships LiteRT-LM artifacts."
+            "huggingface.co/$repoId does not publish a .litertlm or .task file. Enter an exact .litertlm/.task file path or choose a repo that ships LiteRT-LM artifacts."
         }
     }
 
@@ -573,7 +577,7 @@ object HermesModelDownloadManager {
     private fun isCompatibleRepoFile(path: String, runtimeFlavor: String): Boolean {
         val lower = path.substringBefore('?').lowercase(Locale.US)
         return when (runtimeFlavor.uppercase(Locale.US)) {
-            "LITERT-LM" -> lower.endsWith(".litertlm")
+            "LITERT-LM" -> lower.endsWith(".litertlm") || lower.endsWith(".task")
             else -> lower.endsWith(".gguf")
         }
     }
@@ -585,6 +589,7 @@ object HermesModelDownloadManager {
                 "_qualcomm_" in lower || ".mediatek." in lower || "_mt" in lower || "_sm" in lower -> 30
                 "q4" in lower || "int4" in lower -> 0
                 "q8" in lower || "int8" in lower -> 1
+                lower.endsWith(".task") && ("web" in lower || "int4" in lower || "q4" in lower) -> 0
                 "f32" in lower || "float32" in lower -> 20
                 else -> 2
             }
@@ -752,5 +757,9 @@ object HermesModelDownloadManager {
         "google/gemma-4-e2b-it",
         "google/gemma-4-e4b",
         "google/gemma-4-e4b-it",
+        "google/gemma-3-1b-it",
+        "google/gemma-3-4b-it",
+        "google/gemma-3n-e2b-it",
+        "google/gemma-3n-e4b-it",
     )
 }

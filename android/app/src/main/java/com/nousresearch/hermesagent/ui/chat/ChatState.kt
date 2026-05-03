@@ -15,6 +15,13 @@ data class ChatConversationSummary(
     val messageCount: Int,
 )
 
+data class ChatAttachment(
+    val uri: String,
+    val displayName: String,
+    val mimeType: String,
+    val sizeBytes: Long = 0L,
+)
+
 data class ChatUiState(
     val activeConversationId: String = "",
     val activeConversationTitle: String = "New chat",
@@ -22,6 +29,7 @@ data class ChatUiState(
     val isShowingHistory: Boolean = false,
     val messages: List<ChatUiMessage> = emptyList(),
     val input: String = "",
+    val attachments: List<ChatAttachment> = emptyList(),
     val isSending: Boolean = false,
     val isListening: Boolean = false,
     val status: String = "",

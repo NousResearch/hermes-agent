@@ -7,8 +7,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_android_manifest_uses_hermes_theme_and_icon():
     manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
 
-    assert 'android:icon="@drawable/ic_hermes_logo"' in manifest
-    assert 'android:roundIcon="@drawable/ic_hermes_logo"' in manifest
+    assert 'android:icon="@drawable/nous_hermes_logo"' in manifest
+    assert 'android:roundIcon="@drawable/nous_hermes_logo"' in manifest
     assert 'android:theme="@style/Theme.HermesAgent"' in manifest
 
 
@@ -16,6 +16,7 @@ def test_android_brand_resources_exist_and_define_hermes_palette():
     colors = (REPO_ROOT / "android/app/src/main/res/values/colors.xml").read_text(encoding="utf-8")
     themes = (REPO_ROOT / "android/app/src/main/res/values/themes.xml").read_text(encoding="utf-8")
     icon = (REPO_ROOT / "android/app/src/main/res/drawable/ic_hermes_logo.xml").read_text(encoding="utf-8")
+    nous_icon = REPO_ROOT / "android/app/src/main/res/drawable/nous_hermes_logo.png"
     strings = (REPO_ROOT / "android/app/src/main/res/values/strings.xml").read_text(encoding="utf-8")
 
     assert 'name="hermes_primary"' in colors
@@ -27,6 +28,8 @@ def test_android_brand_resources_exist_and_define_hermes_palette():
     assert '@color/hermes_surface_dark' in themes
     assert 'viewportWidth="108"' in icon
     assert '#5B2E8C' in icon
+    assert nous_icon.is_file()
+    assert nous_icon.stat().st_size > 20_000
     assert '<string name="app_name">Hermes</string>' in strings
 
 
@@ -39,6 +42,7 @@ def test_app_shell_has_compact_brand_bar_bottom_nav_and_custom_icons():
 
     assert 'HermesTopBar(' in app_shell
     assert 'NavigationBar(' in app_shell
+    assert 'R.drawable.nous_hermes_logo' in app_shell
     assert 'R.drawable.ic_action_cog' in app_shell
     assert 'R.drawable.ic_nav_hermes' in shell_models
     assert 'R.drawable.ic_nav_accounts' in shell_models
@@ -60,6 +64,8 @@ def test_app_shell_has_compact_brand_bar_bottom_nav_and_custom_icons():
         'ic_action_external.xml',
         'ic_action_mic.xml',
         'ic_action_speaker.xml',
+        'ic_action_image.xml',
+        'ic_action_close.xml',
         'ic_action_fullscreen.xml',
         'ic_action_minimize.xml',
     ]:

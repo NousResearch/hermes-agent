@@ -53,8 +53,11 @@ def test_runtime_service_enters_foreground_before_runtime_startup():
     service = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
     start_body = service.split("private fun startOrRefreshForeground()", 1)[1].split("private fun buildNotification", 1)[0]
 
-    assert start_body.index("startForeground(") < start_body.index("HermesRuntimeManager.ensureStarted(")
-    assert 'buildNotification(runtime = null)' in service
+    assert start_body.index("promoteToForeground(runtime = null)") < start_body.index("HermesRuntimeManager.ensureStarted(")
+    assert "override fun onCreate()" in service
+    assert "promoteToForeground(runtime = null)" in service.split("override fun onCreate()", 1)[1].split("override fun onStartCommand", 1)[0]
+    assert "ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC" in service
+    assert 'val notification = buildNotification(runtime)' in service
 
 
 def test_android_anthropic_stub_warns_at_runtime():

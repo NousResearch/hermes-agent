@@ -1,10 +1,14 @@
 package com.nousresearch.hermesagent.ui.chat
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.text.format.DateFormat
+import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.api.ChatCompletionRequest
+import com.nousresearch.hermesagent.api.ChatContentPart
 import com.nousresearch.hermesagent.api.ChatMessage
 import com.nousresearch.hermesagent.api.HermesSseClient
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
@@ -26,6 +30,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateInput(value: String) {
         _uiState.update { it.copy(input = value) }
+    }
+
+    fun attachImage(uriString: String) {
+        val uri = Uri.parse(uriString)
+        val details = queryAttachmentDetails(uri)
+        _uiState.update { state ->
+            if (state.attachments.any { it.uri == uriString }) {
+                state
+            } else {
+                state.copy(
+                    attachments = state.attachments + ChatAttachment(
+                        uri = uriString,
+                        displayName = details.displayName,
+                        mimeType = details.mimeType,
+                        sizeBytes = details.sizeBytes,
+                    ),
+                    status = "Image attached for multimodal Gemma requests",
+                    error = "",
+                )
+            }
+        }
+    }
+
+    fun removeAttachment(uriString: String) {
+        _uiState.update { state ->
+            state.copy(attachments = state.attachments.filterNot { it.uri == uriString })
+        }
     }
 
     fun applyVoiceInput(text: String) {
@@ -119,8 +150,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendMessage() {
-        val text = _uiState.value.input.trim()
-        if (text.isEmpty() || _uiState.value.isSending) {
+        val snapshot = _uiState.value
+        val text = snapshot.input.trim()
+        val attachments = snapshot.attachments
+        if ((text.isEmpty() && attachments.isEmpty()) || snapshot.isSending) {
             return
         }
 
@@ -133,7 +166,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val sessionId = conversationStore.currentSessionId()
         val now = System.currentTimeMillis()
-        val userMessage = ChatUiMessage(UUID.randomUUID().toString(), "user", text, now)
+        val persistedUserText = buildPersistedUserText(text, attachments)
+        val userMessage = ChatUiMessage(UUID.randomUUID().toString(), "user", persistedUserText, now)
         val assistantMessageId = UUID.randomUUID().toString()
         val assistantPlaceholder = ChatUiMessage(assistantMessageId, "assistant", "", now + 1)
         persistMessages(sessionId, userMessage, assistantPlaceholder)
@@ -145,14 +179,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 conversationSummaries = loadSummaries(),
                 messages = conversationStore.currentConversationMessages().toUiMessages(),
                 input = "",
+                attachments = emptyList(),
                 isSending = true,
                 error = "",
-                status = "Hermes is replying…",
+                status = if (attachments.isEmpty()) "Hermes is replying…" else "Hermes is reading the image…",
                 isShowingHistory = false,
             )
         }
 
         viewModelScope.launch(Dispatchers.IO) {
+            val userContentParts = runCatching { buildUserContentParts(text, attachments) }.getOrElse { error ->
+                _uiState.update {
+                    it.copy(
+                        isSending = false,
+                        error = error.message ?: error.javaClass.simpleName,
+                        status = "",
+                    )
+                }
+                return@launch
+            }
             if (endpoint.nativeToolCalling) {
                 runCatching {
                     val result = NativeToolCallingChatClient(getApplication<Application>()).send(
@@ -160,6 +205,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelName = endpoint.modelName,
                         sessionId = sessionId,
                         userText = text,
+                        userContentParts = userContentParts,
                     )
                     conversationStore.updateMessageContent(
                         sessionId = sessionId,
@@ -196,7 +242,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val client = HermesSseClient(baseUrl = endpoint.baseUrl, apiKey = endpoint.apiKey)
             val request = ChatCompletionRequest(
                 model = endpoint.modelName,
-                messages = listOf(ChatMessage(role = "user", content = text)),
+                messages = listOf(ChatMessage(role = "user", content = text, contentParts = userContentParts)),
                 stream = true,
                 sessionId = sessionId,
             )
@@ -319,6 +365,71 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
         }
+    }
+
+    private data class AttachmentDetails(
+        val displayName: String,
+        val mimeType: String,
+        val sizeBytes: Long,
+    )
+
+    private fun queryAttachmentDetails(uri: Uri): AttachmentDetails {
+        val app = getApplication<Application>()
+        var displayName = uri.lastPathSegment ?: "image"
+        var sizeBytes = 0L
+        app.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (cursor.moveToFirst()) {
+                if (nameIndex >= 0) {
+                    displayName = cursor.getString(nameIndex) ?: displayName
+                }
+                if (sizeIndex >= 0) {
+                    sizeBytes = cursor.getLong(sizeIndex).coerceAtLeast(0L)
+                }
+            }
+        }
+        val mimeType = app.contentResolver.getType(uri).orEmpty().ifBlank { "image/*" }
+        return AttachmentDetails(displayName = displayName, mimeType = mimeType, sizeBytes = sizeBytes)
+    }
+
+    private fun buildPersistedUserText(text: String, attachments: List<ChatAttachment>): String {
+        if (attachments.isEmpty()) {
+            return text
+        }
+        val attachmentSummary = attachments.joinToString("\n") { attachment ->
+            "[image: ${attachment.displayName}]"
+        }
+        return listOf(text, attachmentSummary).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    private fun buildUserContentParts(text: String, attachments: List<ChatAttachment>): List<ChatContentPart> {
+        if (attachments.isEmpty()) {
+            return emptyList()
+        }
+        val parts = mutableListOf<ChatContentPart>()
+        if (text.isNotBlank()) {
+            parts += ChatContentPart(type = "text", text = text)
+        }
+        attachments.forEach { attachment ->
+            parts += ChatContentPart(
+                type = "image_url",
+                imageUrl = readAttachmentAsDataUrl(attachment),
+            )
+        }
+        return parts
+    }
+
+    private fun readAttachmentAsDataUrl(attachment: ChatAttachment): String {
+        val app = getApplication<Application>()
+        val uri = Uri.parse(attachment.uri)
+        val mimeType = attachment.mimeType.ifBlank {
+            app.contentResolver.getType(uri).orEmpty().ifBlank { "application/octet-stream" }
+        }
+        val bytes = app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalArgumentException("Unable to read ${attachment.displayName}")
+        require(bytes.isNotEmpty()) { "Selected image ${attachment.displayName} is empty" }
+        return "data:$mimeType;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 
     private fun List<StoredConversationMessage>.toUiMessages(): List<ChatUiMessage> {

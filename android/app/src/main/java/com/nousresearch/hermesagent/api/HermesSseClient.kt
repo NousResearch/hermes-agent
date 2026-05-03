@@ -26,18 +26,13 @@ class HermesSseClient(
                 put("model", request.model)
                 put("stream", true)
                 put(
-                    "messages",
-                    JSONArray().apply {
-                        request.messages.forEach { msg ->
-                            put(
-                                JSONObject().apply {
-                                    put("role", msg.role)
-                                    put("content", msg.content)
-                                }
-                            )
-                        }
+                "messages",
+                JSONArray().apply {
+                    request.messages.forEach { msg ->
+                            put(msg.toJsonObject())
                     }
-                )
+                }
+            )
             }
             val builder = Request.Builder()
                 .url("$normalizedBaseUrl/v1/chat/completions")

@@ -423,6 +423,16 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # When every configured messaging platform fails to connect at startup,
+    # default upstream behaviour is to mark the gateway as ``startup_failed``
+    # and let launchd / systemd restart it. With a single revoked credential
+    # (e.g. a rotated Discord bot token) this becomes a tight crash loop. When
+    # this knob is True, the gateway logs the failures and continues running
+    # in cron-only mode (matching the ``no platforms enabled`` path), and the
+    # affected platforms remain in the retry queue so they reconnect if the
+    # credential later comes back.
+    run_without_messaging_platforms: bool = False
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -524,6 +534,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "run_without_messaging_platforms": self.run_without_messaging_platforms,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -593,6 +604,9 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            run_without_messaging_platforms=_coerce_bool(
+                data.get("run_without_messaging_platforms"), False
+            ),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
@@ -697,6 +711,9 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            if "run_without_messaging_platforms" in yaml_cfg:
+                gw_data["run_without_messaging_platforms"] = yaml_cfg["run_without_messaging_platforms"]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.

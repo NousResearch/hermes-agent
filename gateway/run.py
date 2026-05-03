@@ -2963,15 +2963,28 @@ class GatewayRunner:
                 return True
             if enabled_platform_count > 0:
                 reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
-                logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
-                try:
-                    from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-                except Exception:
-                    pass
-                return False
-            logger.warning("No messaging platforms enabled.")
-            logger.info("Gateway will continue running for cron job execution.")
+                # ``run_without_messaging_platforms`` lets the gateway keep
+                # running cron in the face of stale/revoked credentials
+                # instead of crashlooping under launchd. The retry queue is
+                # already populated above, so the platform reconnects if the
+                # credential is rotated back in.
+                if getattr(self.config, "run_without_messaging_platforms", False):
+                    logger.warning(
+                        "All configured messaging platforms failed to connect: %s. "
+                        "run_without_messaging_platforms=true — continuing in cron-only mode.",
+                        reason,
+                    )
+                else:
+                    logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
+                    try:
+                        from gateway.status import write_runtime_status
+                        write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    except Exception:
+                        pass
+                    return False
+            else:
+                logger.warning("No messaging platforms enabled.")
+                logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters

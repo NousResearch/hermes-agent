@@ -109,12 +109,12 @@ The CLI always shows which profile is active:
 Profiles are often confused with workspaces or sandboxes, but they are different things:
 
 - A **profile** gives Hermes its own state directory: `config.yaml`, `.env`, `SOUL.md`, sessions, memory, logs, cron jobs, and gateway state.
-- A **workspace** or **working directory** is where terminal commands start. For CLI/TUI on local backend, this is always your launch directory. For gateway mode, it's controlled by `terminal.cwd` in config.
+- A **workspace** or **working directory** is where terminal commands start. That is controlled separately by `terminal.cwd`.
 - A **sandbox** is what limits filesystem access. Profiles do **not** sandbox the agent.
 
 On the default `local` terminal backend, the agent still has the same filesystem access as your user account. A profile does not stop it from accessing folders outside the profile directory.
 
-If you want a profile's **gateway** to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
+If you want a profile to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
 
 ```yaml
 terminal:
@@ -122,14 +122,13 @@ terminal:
   cwd: /absolute/path/to/project
 ```
 
-:::note
-This only affects gateway/cron mode. If you run `hermes -p myprofile` from CLI, the agent uses your shell's current directory regardless of `terminal.cwd`. The `terminal.cwd` config is for headless modes (gateway, cron) where there's no shell to `cd` from.
-:::
+Using `cwd: "."` on the local backend means "the directory Hermes was launched from", not "the profile directory".
 
 Also note:
 
 - `SOUL.md` can guide the model, but it does not enforce a workspace boundary.
 - Changes to `SOUL.md` take effect cleanly on a new session. Existing sessions may still be using the old prompt state.
+- Asking the model "what directory are you in?" is not a reliable isolation test. If you need a predictable starting directory for tools, set `terminal.cwd` explicitly.
 
 ## Running gateways
 

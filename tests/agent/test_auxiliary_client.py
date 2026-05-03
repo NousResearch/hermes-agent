@@ -57,6 +57,18 @@ def codex_auth_dir(tmp_path, monkeypatch):
     return codex_dir
 
 
+class TestAuxiliaryMaxTokensParam:
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base_path(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+
 class TestNormalizeAuxProvider:
     def test_maps_github_copilot_aliases(self):
         assert _normalize_aux_provider("github") == "copilot"

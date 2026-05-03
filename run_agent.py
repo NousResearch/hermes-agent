@@ -2852,6 +2852,16 @@ class AIAgent:
             url = getattr(self, "_base_url_lower", "") or ""
         return "openai.azure.com" in url
 
+    def _is_github_copilot_url(self, base_url: str = None) -> bool:
+        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
+        if base_url is not None:
+            hostname = base_url_hostname(base_url)
+        else:
+            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
+                getattr(self, "_base_url_lower", "")
+            )
+        return hostname == "api.githubcopilot.com"
+
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
 
@@ -3047,7 +3057,7 @@ class AIAgent:
         OpenAI-compatible endpoint. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        if self._is_direct_openai_url() or self._is_azure_openai_url():
+        if self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 

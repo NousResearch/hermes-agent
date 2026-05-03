@@ -223,6 +223,35 @@ def test_agent_created_excludes_hub_installed(skills_home):
     assert "hub-skill" not in names
 
 
+def test_agent_created_excludes_hub_installed_non_ascii_name(skills_home):
+    """Hub-installed skills whose SKILL.md `name:` is non-ASCII (e.g.
+    'Get笔记') but whose lock key is a ASCII slug (e.g. 'getnote') must
+    still be excluded from agent-created lists.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/19293
+    """
+    from tools.skill_usage import list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+    # Directory name matches hub slug; SKILL.md name is non-ASCII
+    d = skills_dir / "getnote"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: Get笔记\ndescription: test\n---\n\n# body\n",
+        encoding="utf-8",
+    )
+    _write_skill(skills_dir, "my-skill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps({"version": 1, "installed": {"getnote": {"source": "taps/main"}}}),
+        encoding="utf-8",
+    )
+    names = list_agent_created_skill_names()
+    assert "my-skill" in names
+    assert "Get笔记" not in names
+    assert "getnote" not in names
+
+
 def test_is_agent_created(skills_home):
     from tools.skill_usage import is_agent_created
     skills_dir = skills_home / "skills"

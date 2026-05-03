@@ -174,7 +174,12 @@ def list_agent_created_skill_names() -> List[str]:
         if parts and (parts[0].startswith(".") or parts[0] == "node_modules"):
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
-        if name in off_limits:
+        # Guard against non-ASCII SKILL.md names: hub lock keys are ASCII
+        # slugs (e.g. "getnote") while the displayed name may be non-ASCII
+        # (e.g. "Get笔记").  Check both the parsed name AND the directory
+        # name so that hub-installed skills with non-ASCII names are still
+        # protected from curator processing.
+        if name in off_limits or skill_md.parent.name in off_limits:
             continue
         names.append(name)
     return sorted(set(names))

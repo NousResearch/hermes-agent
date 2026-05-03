@@ -23,6 +23,7 @@ import re
 import secrets
 import struct
 import tempfile
+import textwrap
 import time
 import uuid
 from datetime import datetime
@@ -31,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
+
+WEIXIN_COPY_LINE_WIDTH = 120
 
 try:
     import aiohttp
@@ -729,6 +732,46 @@ def _normalize_markdown_blocks(content: str) -> str:
         result.append(line)
 
     return "\n".join(result).strip()
+
+
+def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
+    """Wrap long display lines that are hard to copy in WeChat clients."""
+    if not content:
+        return content
+
+    wrapped: List[str] = []
+    in_code_block = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if _FENCE_RE.match(stripped):
+            in_code_block = not in_code_block
+            wrapped.append(line)
+            continue
+
+        if (
+            in_code_block
+            or len(line) <= WEIXIN_COPY_LINE_WIDTH
+            or not stripped
+            or stripped.startswith("|")
+            or _TABLE_RULE_RE.match(stripped)
+        ):
+            wrapped.append(line)
+            continue
+
+        wrapped_lines = textwrap.wrap(
+            line,
+            width=WEIXIN_COPY_LINE_WIDTH,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=True,
+        )
+        wrapped.extend(wrapped_lines or [line])
+
+    return "\n".join(wrapped).strip()
 
 
 def _split_markdown_blocks(content: str) -> List[str]:
@@ -2022,7 +2065,7 @@ class WeixinAdapter(BasePlatformAdapter):
     def format_message(self, content: Optional[str]) -> str:
         if content is None:
             return ""
-        return _normalize_markdown_blocks(content)
+        return _wrap_copy_friendly_lines_for_weixin(_normalize_markdown_blocks(content))
 
 
 async def send_weixin_direct(

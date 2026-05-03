@@ -4895,26 +4895,29 @@ class AIAgent:
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
+
+        # Wrap injected context in clear XML tags for model disambiguation.
+        # This prevents the model from confusing injected context with user messages.
         if system_message is not None:
-            prompt_parts.append(system_message)
+            prompt_parts.append(f"<system-injection type=\"user-provided-context\">{system_message}</system-injection>")
 
         if self._memory_store:
             if self._memory_enabled:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
-                    prompt_parts.append(mem_block)
+                    prompt_parts.append(f"<system-injection type=\"memory\">{mem_block}</system-injection>")
             # USER.md is always included when enabled.
             if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
-                    prompt_parts.append(user_block)
+                    prompt_parts.append(f"<system-injection type=\"user-profile\">{user_block}</system-injection>")
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
             try:
                 _ext_mem_block = self._memory_manager.build_system_prompt()
                 if _ext_mem_block:
-                    prompt_parts.append(_ext_mem_block)
+                    prompt_parts.append(f"<system-injection type=\"external-memory\">{_ext_mem_block}</system-injection>")
             except Exception:
                 pass
 
@@ -4934,7 +4937,7 @@ class AIAgent:
         else:
             skills_prompt = ""
         if skills_prompt:
-            prompt_parts.append(skills_prompt)
+            prompt_parts.append(f"<system-injection type=\"skills\">{skills_prompt}</system-injection>")
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
@@ -4945,7 +4948,7 @@ class AIAgent:
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
-                prompt_parts.append(context_files_prompt)
+                prompt_parts.append(f"<system-injection type=\"context-files\">{context_files_prompt}</system-injection>")
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
@@ -4956,7 +4959,7 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        prompt_parts.append(f"<system-injection type=\"meta\">{timestamp_line}</system-injection>")
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
@@ -4964,28 +4967,28 @@ class AIAgent:
         if self.provider == "alibaba":
             _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
             prompt_parts.append(
-                f"You are powered by the model named {_model_short}. "
+                f"<system-injection type=\"model-identity\">You are powered by the model named {_model_short}. "
                 f"The exact model ID is {self.model}. "
                 f"When asked what model you are, always answer based on this information, "
-                f"not on any model name returned by the API."
+                f"not on any model name returned by the API.</system-injection>"
             )
 
         # Environment hints (WSL, Termux, etc.) — tell the agent about the
         # execution environment so it can translate paths and adapt behavior.
         _env_hints = build_environment_hints()
         if _env_hints:
-            prompt_parts.append(_env_hints)
+            prompt_parts.append(f"<system-injection type=\"environment\">{_env_hints}</system-injection>")
 
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
+            prompt_parts.append(f"<system-injection type=\"platform\">{PLATFORM_HINTS[platform_key]}</system-injection>")
         elif platform_key:
             # Check plugin registry for platform-specific LLM guidance
             try:
                 from gateway.platform_registry import platform_registry
                 _entry = platform_registry.get(platform_key)
                 if _entry and _entry.platform_hint:
-                    prompt_parts.append(_entry.platform_hint)
+                    prompt_parts.append(f"<system-injection type=\"platform\">{_entry.platform_hint}</system-injection>")
             except Exception:
                 pass
 

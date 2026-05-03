@@ -4,6 +4,13 @@ import json
 import os
 import pytest
 
+_ANTHROPIC_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def _clear_anthropic_env(monkeypatch):
+    for var in _ANTHROPIC_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
 
 def _write_config(tmp_path, config: dict) -> None:
     hermes_home = tmp_path / "hermes"
@@ -27,6 +34,7 @@ def _clean_anthropic_env(monkeypatch):
 
 def test_returns_false_when_no_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _clear_anthropic_env(monkeypatch)
     (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
 
     from hermes_cli.auth import is_provider_explicitly_configured
@@ -55,6 +63,7 @@ def test_returns_true_when_config_provider_matches(tmp_path, monkeypatch):
 
 def test_returns_false_when_config_provider_is_different(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _clear_anthropic_env(monkeypatch)
     _write_config(tmp_path, {"model": {"provider": "kimi-coding", "default": "kimi-k2"}})
     _write_auth_store(tmp_path, {
         "version": 1,
@@ -78,6 +87,7 @@ def test_returns_true_when_anthropic_env_var_set(tmp_path, monkeypatch):
 def test_claude_code_oauth_token_does_not_count_as_explicit(tmp_path, monkeypatch):
     """CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code, not the user — must not gate."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _clear_anthropic_env(monkeypatch)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-auto-token")
     (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
 

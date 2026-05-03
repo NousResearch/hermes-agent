@@ -17,7 +17,9 @@ from tools.vision_tools import (
     _image_to_base64_data_url,
     _resize_image_for_vision,
     _is_image_size_error,
+    _is_timeout_error,
     _MAX_BASE64_BYTES,
+    _PROACTIVE_COMPRESS_BYTES,
     _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
@@ -918,3 +920,84 @@ class TestIsImageSizeError:
 
     def test_empty_message(self):
         assert not _is_image_size_error(Exception(""))
+
+
+class TestIsTimeoutError:
+    """Tests for the timeout-error detection helper."""
+
+    def test_timed_out_message(self):
+        assert _is_timeout_error(Exception("Request timed out."))
+
+    def test_api_timeout_error(self):
+        from openai import APITimeoutError
+        import httpx
+        req = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+        assert _is_timeout_error(APITimeoutError(request=req))
+
+    def test_timeout_in_class_name(self):
+        class ReadTimeoutError(Exception):
+            pass
+        assert _is_timeout_error(ReadTimeoutError("read timeout"))
+
+    def test_unrelated_error(self):
+        assert not _is_timeout_error(Exception("Connection refused"))
+
+    def test_auth_error(self):
+        assert not _is_timeout_error(Exception("401 Unauthorized"))
+
+    def test_empty_message(self):
+        assert not _is_timeout_error(Exception(""))
+
+
+class TestProactiveCompressConstant:
+    def test_threshold_is_sensible(self):
+        assert 50 * 1024 <= _PROACTIVE_COMPRESS_BYTES <= 500 * 1024
+
+
+@pytest.mark.asyncio
+class TestTimeoutRetry:
+    """Vision analyze retries once on timeout with compressed image."""
+
+    async def test_timeout_retry_succeeds(self, tmp_path):
+        img = tmp_path / "large.png"
+        # Create a PNG > _PROACTIVE_COMPRESS_BYTES using random pixel data
+        # (random data resists zlib compression, producing a large file)
+        import struct, zlib, random
+        rng = random.Random(42)
+        w, h = 300, 300
+        raw_rows = b""
+        for _row in range(h):
+            raw_rows += b"\x00" + bytes(rng.getrandbits(8) for _ in range(w * 3))
+        def make_png(width, height, rows):
+            def chunk(ctype, data):
+                c = ctype + data
+                return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            idat = chunk(b"IDAT", zlib.compress(rows, 1))
+            iend = chunk(b"IEND", b"")
+            return sig + ihdr + idat + iend
+        img.write_bytes(make_png(w, h, raw_rows))
+        assert img.stat().st_size > _PROACTIVE_COMPRESS_BYTES
+
+        from types import SimpleNamespace
+        good_resp = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="A red image", reasoning_content=None)
+            )]
+        )
+        call_count = {"n": 0}
+        async def mock_llm(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise Exception("Request timed out.")
+            return good_resp
+
+        with patch("tools.vision_tools.async_call_llm", side_effect=mock_llm), \
+             patch("tools.vision_tools.check_website_access", return_value=None):
+            result = await vision_analyze_tool(str(img), "describe this image")
+
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        assert parsed["analysis"] == "A red image"
+        assert call_count["n"] == 2

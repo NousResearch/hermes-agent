@@ -286,6 +286,10 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
+# Proactively compress images larger than this before the first API call.
+# Reduces upload time and prevents timeouts on slower connections (WSL2, etc).
+_PROACTIVE_COMPRESS_BYTES = 150 * 1024
+
 
 def _is_image_size_error(error: Exception) -> bool:
     """Detect if an API error is related to image or payload size."""
@@ -295,6 +299,20 @@ def _is_image_size_error(error: Exception) -> bool:
         "request_too_large", "image_url", "invalid_request",
         "exceeds", "size limit",
     ))
+
+
+def _is_timeout_error(error: Exception) -> bool:
+    """Detect if an error is a timeout (API or HTTP level)."""
+    try:
+        from openai import APITimeoutError
+        if isinstance(error, APITimeoutError):
+            return True
+    except ImportError:
+        pass
+    err_type = type(error).__name__
+    if "Timeout" in err_type:
+        return True
+    return "timed out" in str(error).lower()
 
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
@@ -502,10 +520,22 @@ async def vision_analyze_tool(
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
         
-        # Convert image to base64 — send at full resolution first.
-        # If the provider rejects it as too large, we auto-resize and retry.
+        # Convert image to base64.  For images whose raw file size exceeds
+        # _PROACTIVE_COMPRESS_BYTES, compress up-front to reduce upload time
+        # and avoid timeouts on slower connections (e.g. WSL2 → remote API).
         logger.info("Converting image to base64...")
-        image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
+        if image_size_bytes > _PROACTIVE_COMPRESS_BYTES:
+            logger.info(
+                "Image %.1f KB exceeds proactive-compress threshold (%.0f KB), "
+                "compressing before upload...",
+                image_size_kb, _PROACTIVE_COMPRESS_BYTES / 1024,
+            )
+            image_data_url = _resize_image_for_vision(
+                temp_image_path, mime_type=detected_mime_type,
+                max_base64_bytes=_RESIZE_TARGET_BYTES)
+        else:
+            image_data_url = _image_to_base64_data_url(
+                temp_image_path, mime_type=detected_mime_type)
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
 
@@ -576,7 +606,8 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
-        # Try full-size image first; on size-related rejection, downscale and retry.
+        # Try the API call; on size rejection downscale and retry, on timeout
+        # compress (if not already) and retry with an extended deadline.
         try:
             response = await async_call_llm(**call_kwargs)
         except Exception as _api_err:
@@ -591,6 +622,20 @@ async def vision_analyze_tool(
                 image_data_url = _resize_image_for_vision(
                     temp_image_path, mime_type=detected_mime_type)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
+                response = await async_call_llm(**call_kwargs)
+            elif _is_timeout_error(_api_err):
+                logger.warning(
+                    "Vision API timed out (timeout=%.0fs, payload=%.1f KB); "
+                    "retrying with compressed image and extended timeout...",
+                    call_kwargs.get("timeout", 0), len(image_data_url) / 1024,
+                )
+                if image_size_bytes > _PROACTIVE_COMPRESS_BYTES // 2:
+                    image_data_url = _resize_image_for_vision(
+                        temp_image_path, mime_type=detected_mime_type,
+                        max_base64_bytes=_RESIZE_TARGET_BYTES)
+                    messages[0]["content"][1]["image_url"]["url"] = image_data_url
+                retry_timeout = max(call_kwargs.get("timeout", 120.0) * 2, 180.0)
+                call_kwargs["timeout"] = retry_timeout
                 response = await async_call_llm(**call_kwargs)
             else:
                 raise
@@ -645,6 +690,14 @@ async def vision_analyze_tool(
             analysis = (
                 f"{model} does not support vision or our request was not "
                 f"accepted by the server. Error: {e}"
+            )
+        elif _is_timeout_error(e):
+            analysis = (
+                "The vision API request timed out even after retrying with "
+                "a compressed image. Try increasing the timeout in your "
+                "config.yaml (auxiliary.vision.timeout, default 120 seconds) "
+                "or use a smaller image. "
+                f"Error: {e}"
             )
         elif "invalid_request" in err_str or "image_url" in err_str:
             analysis = (

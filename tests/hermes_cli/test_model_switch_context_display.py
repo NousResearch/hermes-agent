@@ -146,3 +146,31 @@ class TestResolveDisplayContextLength:
                 custom_providers=custom_provs,
             )
         assert ctx == 400_000
+
+    def test_providers_dict_context_length_wins(self):
+        """Named ``providers:`` entries are the canonical config schema and
+        should drive /model context display without probing the endpoint.
+        """
+        fake_config = {
+            "providers": {
+                "sub2api-openai": {
+                    "models": {
+                        "gpt-5.5": {"context_length": 1_050_000},
+                    }
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch(
+                 "agent.model_metadata.get_model_context_length",
+                 return_value=256_000,
+             ) as mock_resolver:
+            ctx = resolve_display_context_length(
+                "gpt-5.5",
+                "sub2api-openai",
+                base_url="http://127.0.0.1:8080/v1",
+                api_key="k",
+            )
+
+        assert ctx == 1_050_000
+        mock_resolver.assert_not_called()

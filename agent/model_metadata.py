@@ -708,13 +708,74 @@ def fetch_endpoint_model_metadata(
     return {}
 
 
+def _fetch_gemini_native_model_metadata(
+    base_url: str,
+    api_key: str = "",
+) -> Dict[str, Dict[str, Any]]:
+    """Fetch model metadata from a Gemini native-compatible ``/v1beta`` endpoint."""
+    normalized = _normalize_base_url(base_url)
+    if not normalized.lower().endswith("/v1beta"):
+        return {}
+    if not api_key:
+        api_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+    cache_key = f"{normalized}|gemini|{hash(api_key or '')}"
+
+    cached = _endpoint_model_metadata_cache.get(cache_key)
+    cached_at = _endpoint_model_metadata_cache_time.get(cache_key, 0)
+    if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+        return cached
+
+    headers = {"x-goog-api-key": api_key} if api_key else {}
+    try:
+        response = requests.get(
+            normalized.rstrip("/") + "/models",
+            headers=headers,
+            timeout=10,
+            verify=_resolve_requests_verify(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        cache: Dict[str, Dict[str, Any]] = {}
+        for model in payload.get("models", []):
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("name") or "").strip()
+            if model_id.startswith("models/"):
+                model_id = model_id.split("/", 1)[1]
+            if not model_id:
+                continue
+            entry: Dict[str, Any] = {"name": model_id}
+            context_length = _extract_context_length(model)
+            if context_length is None:
+                context_length = DEFAULT_CONTEXT_LENGTHS.get(model_id)
+            if context_length is None and "gemini" in model_id.lower():
+                context_length = DEFAULT_CONTEXT_LENGTHS.get("gemini")
+            if context_length is not None:
+                entry["context_length"] = context_length
+            max_completion_tokens = _extract_max_completion_tokens(model)
+            if max_completion_tokens is not None:
+                entry["max_completion_tokens"] = max_completion_tokens
+            _add_model_aliases(cache, model_id, entry)
+
+        _endpoint_model_metadata_cache[cache_key] = cache
+        _endpoint_model_metadata_cache_time[cache_key] = time.time()
+        return cache
+    except Exception as exc:
+        logger.debug("Failed to fetch Gemini native model metadata from %s/models: %s", normalized, exc)
+        _endpoint_model_metadata_cache[cache_key] = {}
+        _endpoint_model_metadata_cache_time[cache_key] = time.time()
+        return {}
+
+
 def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    endpoint_metadata = _fetch_gemini_native_model_metadata(base_url, api_key=api_key)
+    if not endpoint_metadata:
+        endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:
@@ -1253,6 +1314,17 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    # 0a. providers.<id>.models.<model>.context_length override. This is the
+    # canonical schema for named user providers.
+    if provider and model:
+        try:
+            from hermes_cli.config import get_provider_model_context_length
+            provider_ctx = get_provider_model_context_length(provider, model)
+            if provider_ctx:
+                return provider_ctx
+        except Exception:
+            pass
+
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
@@ -1323,7 +1395,11 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    if (
+        provider == "gemini"
+        or str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
+        or (_is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url))
+    ):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length

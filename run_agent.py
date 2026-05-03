@@ -7560,7 +7560,14 @@ class AIAgent:
             _fb_is_azure = self._is_azure_openai_url(fb_base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+            elif (
+                fb_provider == "anthropic"
+                or fb_base_url.rstrip("/").lower().endswith("/anthropic")
+                or (
+                    base_url_host_matches(fb_base_url, "api.kimi.com")
+                    and "/coding" in fb_base_url.lower()
+                )
+            ):
                 fb_api_mode = "anthropic_messages"
             elif _fb_is_azure:
                 # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
@@ -8194,6 +8201,7 @@ class AIAgent:
         MiniMax keeps dots (e.g. MiniMax-M2.7).
         OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
         ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1).
+        Xiaomi MiMo keeps dots (e.g. mimo-v2.5-pro).
         AWS Bedrock uses dotted inference-profile IDs
         (e.g. ``global.anthropic.claude-opus-4-7``,
         ``us.anthropic.claude-sonnet-4-5-20250929-v1:0``) and rejects
@@ -8204,7 +8212,7 @@ class AIAgent:
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
-            "zai", "bedrock",
+            "zai", "xiaomi", "bedrock",
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
@@ -8214,6 +8222,7 @@ class AIAgent:
             or "minimax" in base
             or "opencode.ai/zen/" in base
             or "bigmodel.cn" in base
+            or "xiaomimimo.com" in base
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base

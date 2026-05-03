@@ -216,10 +216,25 @@ object OnDeviceBackendManager {
         val lower = destinationPath.lowercase(Locale.US)
         return when (backendKind) {
             BackendKind.LLAMA_CPP -> lower.endsWith(".gguf")
-            BackendKind.LITERT_LM -> lower.endsWith(".litertlm") || lower.endsWith(".task")
-            BackendKind.AICORE -> lower.endsWith(".litertlm") || lower.endsWith(".task")
+            BackendKind.LITERT_LM -> isLiteRtLmArtifactPath(lower)
+            BackendKind.AICORE -> isLiteRtLmArtifactPath(lower)
             BackendKind.NONE -> true
         }
+    }
+
+    private fun isLiteRtLmArtifactPath(lowerPath: String): Boolean {
+        return lowerPath.endsWith(".litertlm") ||
+            (lowerPath.endsWith(".task") && !isLiteRtWebTaskArtifact(lowerPath))
+    }
+
+    private fun isLiteRtWebTaskArtifact(lowerPath: String): Boolean {
+        return lowerPath.endsWith(".task") && (
+            lowerPath.endsWith("-web.task") ||
+                lowerPath.endsWith("_web.task") ||
+                "-web." in lowerPath ||
+                "_web." in lowerPath ||
+                "/web/" in lowerPath
+            )
     }
 
     private fun inferenceConfigFor(preferred: LocalModelDownloadRecord): LiteRtLmOpenAiProxy.InferenceConfig {
@@ -253,6 +268,15 @@ object OnDeviceBackendManager {
         preferred: LocalModelDownloadRecord,
         backendKind: BackendKind,
     ): LocalBackendStatus {
+        val lower = preferred.destinationPath.lowercase(Locale.US)
+        if (backendKind in setOf(BackendKind.LITERT_LM, BackendKind.AICORE) && isLiteRtWebTaskArtifact(lower)) {
+            return LocalBackendStatus(
+                backendKind = backendKind,
+                started = false,
+                sourceModelPath = preferred.destinationPath,
+                statusMessage = "Preferred local model ${preferred.destinationFileName} is a web/browser .task FlatBuffer, not an Android LiteRT-LM bundle. Remove it and download the .litertlm artifact instead.",
+            ).also { currentStatus = it }
+        }
         val requiredExtension = when (backendKind) {
             BackendKind.LLAMA_CPP -> ".gguf"
             BackendKind.LITERT_LM -> ".litertlm or .task"

@@ -65,7 +65,10 @@ def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
     assert '614_236_160' in catalog
     assert 'qwen2-5-1-5b-instruct-litert-lm' in catalog
     assert 'phi-4-mini-instruct-litert-lm' not in catalog
-    assert 'lower.endsWith(".litertlm") || lower.endsWith(".task")' in download_manager
+    assert 'lower.endsWith(".litertlm") ||' in download_manager
+    assert 'lower.endsWith(".task") && !isLiteRtWebTaskArtifact(lower)' in download_manager
+    assert 'isLiteRtWebTaskArtifact(lower) -> Int.MAX_VALUE' in download_manager
+    assert 'lower.endsWith(".litertlm") -> 0' in download_manager
     assert '"q4" in lower || "int4" in lower -> 0' in download_manager
     assert '"q8" in lower || "int8" in lower -> 1' in download_manager
     assert '"f32" in lower || "float32" in lower -> 20' in download_manager
@@ -97,9 +100,20 @@ def test_on_device_backend_preflights_required_model_extensions_before_launching
     assert 'matchesBackendArtifact' in backend_manager
     assert 'incompatiblePreferredDownloadStatus' in backend_manager
     assert 'lower.endsWith(".gguf")' in backend_manager
-    assert 'lower.endsWith(".litertlm") || lower.endsWith(".task")' in backend_manager
+    assert 'isLiteRtLmArtifactPath(lower)' in backend_manager
+    assert 'web/browser .task FlatBuffer' in backend_manager
     assert '.litertlm or .task' in backend_manager
     assert 'Download a $requiredExtension artifact and mark it as preferred first.' in backend_manager
+
+
+def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
+    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+
+    assert 'validateModelArtifact(modelPath)' in proxy
+    assert "header[4] == 'T'.code.toByte()" in proxy
+    assert "header[7] == '3'.code.toByte()" in proxy
+    assert 'web/browser .task FlatBuffer' in proxy
+    assert 'download the .litertlm artifact instead' in proxy
 
 
 def test_portal_screen_exposes_fullscreen_and_minimize_controls():

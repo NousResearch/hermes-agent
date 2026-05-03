@@ -132,6 +132,72 @@ class TestGenerateSummaryNoneContent:
         assert len(result) < len(msgs)
 
 
+class TestSummarizerPreambleContentFilterSafety:
+    """Regression: summarizer preamble must not use phrases that
+    Azure/OpenAI-compatible content filters score as prompt-injection /
+    jailbreak patterns (#19362).
+
+    The earlier wording — "DIFFERENT assistant", "injected as reference
+    material", "Do NOT respond to any questions or requests" — produced
+    deterministic ``400 ResponsibleAIPolicyViolation`` rejections on the
+    auxiliary compression call once a long session triggered auto-compress.
+    """
+
+    _BANNED_PHRASES = (
+        "DIFFERENT assistant",
+        "different assistant",
+        "injected as reference material",
+        "do not respond to any questions",
+        "do not respond to any requests",
+    )
+
+    def _captured_prompt(self) -> str:
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+        return mock_call.call_args.kwargs["messages"][0]["content"]
+
+    def test_first_compaction_prompt_avoids_jailbreak_phrases(self):
+        prompt = self._captured_prompt()
+        lowered = prompt.lower()
+        for phrase in self._BANNED_PHRASES:
+            assert phrase.lower() not in lowered, (
+                f"Summariser preamble must not contain {phrase!r} — "
+                "Azure/OpenAI content filters flag it as a jailbreak pattern."
+            )
+
+    def test_iterative_update_prompt_avoids_jailbreak_phrases(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "updated summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        c._previous_summary = "## Active Task\nNone."
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"].lower()
+        for phrase in self._BANNED_PHRASES:
+            assert phrase.lower() not in prompt, (
+                f"Iterative-update preamble must not contain {phrase!r}."
+            )
+
+
 class TestNonStringContent:
     """Regression: content as dict (e.g., llama.cpp tool calls) must not crash."""
 

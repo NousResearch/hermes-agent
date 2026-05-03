@@ -999,6 +999,21 @@ class DiscordAdapter(BasePlatformAdapter):
         deleted = 0
         http = self._client.http
 
+        # Discord caps global application commands at 100. If the remote app is
+        # already at the cap, creating replacement commands before pruning stale
+        # ones fails with "maximum number of application commands reached" and
+        # leaves the stale bloat intact. Prune commands Hermes no longer wants
+        # first so the later upserts have room to succeed.
+        stale_by_key = {
+            key: command
+            for key, command in existing_by_key.items()
+            if key not in desired_by_key
+        }
+        for key, current in stale_by_key.items():
+            await http.delete_global_command(app_id, current.id)
+            existing_by_key.pop(key, None)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:

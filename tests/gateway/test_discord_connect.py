@@ -448,6 +448,80 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
+async def test_safe_sync_slash_commands_prunes_stale_before_creating():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    calls = []
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {"id": self.id, "application_id": 999, **self._payload}
+
+    desired_created = {
+        "name": "status",
+        "description": "Show Hermes session status",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    existing_deleted = _ExistingCommand(
+        13,
+        {
+            "name": "stale-skill",
+            "description": "Legacy per-skill slash command",
+            "type": 1,
+            "options": [],
+            "nsfw": False,
+            "dm_permission": True,
+            "default_member_permissions": None,
+        },
+    )
+
+    async def _delete(_app_id, command_id):
+        calls.append(("delete", command_id))
+
+    async def _upsert(_app_id, payload):
+        calls.append(("upsert", payload["name"]))
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_created)],
+        fetch_commands=AsyncMock(return_value=[existing_deleted]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(side_effect=_upsert),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(side_effect=_delete),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["created"] == 1
+    assert summary["deleted"] == 1
+    assert calls == [("delete", 13), ("upsert", "status")]
+
+
+@pytest.mark.asyncio
 async def test_safe_sync_slash_commands_recreates_metadata_only_diffs():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 

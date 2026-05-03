@@ -161,6 +161,49 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _bundled_hub_guard(name: str) -> Optional[str]:
+    """Return a refusal message if *name* is a bundled or hub-installed skill.
+
+    Bundled skills (shipped with Hermes) and hub-installed skills (pulled
+    via ``hermes skills install``) are off-limits to ``skill_manage`` —
+    a poisoned skill could otherwise tell the curator to overwrite a
+    trusted bundled skill via prompt injection. The curator's prompt
+    text says "DO NOT touch bundled or hub-installed skills" but that
+    is an LLM instruction, not a code-level enforced boundary.
+
+    Best-effort: if we cannot determine the skill's source we let the
+    write through rather than block on a broken state.
+    """
+    try:
+        from tools.skills_sync import _get_bundled_dir, _discover_bundled_skills
+        bundled_dir = _get_bundled_dir()
+        if bundled_dir.exists():
+            bundled_names = {bname for bname, _ in _discover_bundled_skills(bundled_dir)}
+            if name in bundled_names:
+                return (
+                    f"Skill '{name}' is a bundled skill and cannot be modified "
+                    f"by skill_manage. Bundled skills ship with Hermes and are "
+                    f"protected from agent edits. To override, copy the skill "
+                    f"to your local skills directory first."
+                )
+
+        try:
+            from hermes_constants import get_hermes_home
+            hub_marker = get_hermes_home() / "skills" / name / ".hub-source"
+            if hub_marker.exists():
+                return (
+                    f"Skill '{name}' is a hub-installed skill and cannot be modified "
+                    f"by skill_manage. Hub skills are managed via "
+                    f"`hermes skills update`. To override, copy the skill to a "
+                    f"different name first."
+                )
+        except Exception:
+            logger.debug("hub-marker lookup failed for %s", name, exc_info=True)
+    except Exception:
+        logger.debug("bundled-hub-guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -439,6 +482,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -482,6 +529,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
 
     pinned_err = _pinned_guard(name)
     if pinned_err:
@@ -576,6 +627,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -645,6 +700,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -682,6 +741,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
 
     pinned_err = _pinned_guard(name)
     if pinned_err:

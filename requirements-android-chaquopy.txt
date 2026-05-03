@@ -17,6 +17,7 @@ anyio==4.13.0
 attrs==26.1.0
 certifi==2026.2.25
 charset-normalizer==3.4.7
+croniter==6.0.0
 distro==1.9.0
 fire==0.7.1
 frozenlist==1.8.0
@@ -28,9 +29,12 @@ multidict==6.7.1
 openai==1.39.0
 propcache==0.4.1
 pydantic==1.10.24
+python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+pytz==2025.2
 PyYAML==6.0.3
 requests==2.33.1
+six==1.17.0
 sniffio==1.3.1
 tenacity==9.1.4
 termcolor==3.3.0

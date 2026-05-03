@@ -89,10 +89,17 @@ object HermesModelDownloadManager {
         val totalBytes = head.contentLength.coerceAtLeast(0L)
         val memoryInfo = ActivityManager.MemoryInfo()
         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(memoryInfo)
-        val ramWarning = if (totalBytes > 0L && totalBytes > memoryInfo.totalMem) {
-            "Warning: this download is larger than your phone RAM. Downloading is allowed, but local inference may require a smaller quant or an external runtime."
+        val estimatedRuntimeBytes = if (draft.runtimeFlavor.equals("LiteRT-LM", ignoreCase = true) && totalBytes > 0L) {
+            totalBytes.saturatingMultiply(2L)
         } else {
-            ""
+            totalBytes
+        }
+        val ramWarning = when {
+            totalBytes > 0L && totalBytes > memoryInfo.totalMem ->
+                "Warning: this download is larger than your phone RAM. Downloading is allowed, but local inference may require a smaller quant or an external runtime."
+            estimatedRuntimeBytes > 0L && estimatedRuntimeBytes > memoryInfo.totalMem ->
+                "Warning: this LiteRT-LM file may need extra RAM and cache space while the native engine initializes. Downloading is allowed, but local inference may require a smaller quant or a higher-RAM device."
+            else -> ""
         }
         val destinationName = destinationFileName(
             repoOrUrl = draft.repoOrUrl,
@@ -574,7 +581,13 @@ object HermesModelDownloadManager {
     private fun compatibleFileRank(path: String, runtimeFlavor: String): Int {
         val lower = path.lowercase(Locale.US)
         return when (runtimeFlavor.uppercase(Locale.US)) {
-            "LITERT-LM" -> 0
+            "LITERT-LM" -> when {
+                "_qualcomm_" in lower || ".mediatek." in lower || "_mt" in lower || "_sm" in lower -> 30
+                "q4" in lower || "int4" in lower -> 0
+                "q8" in lower || "int8" in lower -> 1
+                "f32" in lower || "float32" in lower -> 20
+                else -> 2
+            }
             else -> when {
                 "q4_k_m" in lower -> 0
                 "q4_k_s" in lower -> 1
@@ -637,6 +650,13 @@ object HermesModelDownloadManager {
 
     private fun sanitizeFileName(name: String): String {
         return name.replace(Regex("[^A-Za-z0-9._-]"), "_").lowercase(Locale.US)
+    }
+
+    private fun Long.saturatingMultiply(factor: Long): Long {
+        if (this <= 0L || factor <= 0L) {
+            return 0L
+        }
+        return if (this > Long.MAX_VALUE / factor) Long.MAX_VALUE else this * factor
     }
 
     private fun looksLikeHuggingFaceResource(url: String): Boolean {

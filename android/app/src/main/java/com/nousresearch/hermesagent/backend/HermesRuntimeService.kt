@@ -37,19 +37,25 @@ class HermesRuntimeService : Service() {
     }
 
     private fun startOrRefreshForeground() {
+        startForeground(NOTIFICATION_ID, buildNotification(runtime = null))
+        running = true
+        DeviceStateWriter.write(applicationContext)
+
         val runtime = HermesRuntimeManager.ensureStarted(applicationContext)
-        startForeground(NOTIFICATION_ID, buildNotification(runtime))
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, buildNotification(runtime))
         running = true
         DeviceStateWriter.write(applicationContext)
     }
 
-    private fun buildNotification(runtime: HermesRuntimeManager.RuntimeState): Notification {
-        val contentTitle = if (runtime.started) {
-            "Hermes runtime active"
-        } else {
-            "Hermes runtime waiting for attention"
+    private fun buildNotification(runtime: HermesRuntimeManager.RuntimeState?): Notification {
+        val contentTitle = when {
+            runtime == null -> "Hermes runtime starting"
+            runtime.started -> "Hermes runtime active"
+            else -> "Hermes runtime waiting for attention"
         }
         val contentText = when {
+            runtime == null -> "Preparing the local Hermes backend"
             !runtime.error.isNullOrBlank() -> runtime.error
             !runtime.modelName.isNullOrBlank() -> "Serving ${runtime.modelName} locally"
             !runtime.baseUrl.isNullOrBlank() -> "Serving local Hermes backend"

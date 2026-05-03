@@ -44,6 +44,27 @@ def test_local_model_download_view_model_and_store_support_resumable_download_st
     assert 'supportsResume' in download_store
 
 
+def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
+    catalog = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/ModelManagerViewModel.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+
+    assert 'gemma-4-e2b-litert-lm' in catalog
+    assert 'litert-community/gemma-4-E2B-it-litert-lm' in catalog
+    assert '2_583_085_056' in catalog
+    assert 'gemma-4-e4b-litert-lm' in catalog
+    assert 'litert-community/gemma-4-E4B-it-litert-lm' in catalog
+    assert '3_654_467_584' in catalog
+    assert 'qwen3-0-6b-litert-lm' in catalog
+    assert 'litert-community/Qwen3-0.6B' in catalog
+    assert '614_236_160' in catalog
+    assert 'qwen2-5-1-5b-instruct-litert-lm' in catalog
+    assert 'phi-4-mini-instruct-litert-lm' not in catalog
+    assert '"q4" in lower || "int4" in lower -> 0' in download_manager
+    assert '"q8" in lower || "int8" in lower -> 1' in download_manager
+    assert '"f32" in lower || "float32" in lower -> 20' in download_manager
+    assert 'LiteRT-LM file may need extra RAM and cache space' in download_manager
+
+
 def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobile_restart_guidance():
     downloads_ui = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")

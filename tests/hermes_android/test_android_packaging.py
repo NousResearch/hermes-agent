@@ -38,11 +38,23 @@ def test_android_anthropic_stub_matches_project_requirement_floor():
 def test_android_runtime_requirements_pin_pre_jiter_openai_sdk():
     requirements = (REPO_ROOT / "requirements-android-chaquopy.txt").read_text(encoding="utf-8")
 
+    assert "croniter==6.0.0" in requirements
+    assert "python-dateutil==2.9.0.post0" in requirements
+    assert "pytz==2025.2" in requirements
+    assert "six==1.17.0" in requirements
     assert "openai==1.39.0" in requirements
     assert "httpx==0.27.2" in requirements
     assert "pydantic==1.10.24" in requirements
     assert "\nfirecrawl-py" not in requirements
     assert "\npydantic_core" not in requirements
+
+
+def test_runtime_service_enters_foreground_before_runtime_startup():
+    service = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
+    start_body = service.split("private fun startOrRefreshForeground()", 1)[1].split("private fun buildNotification", 1)[0]
+
+    assert start_body.index("startForeground(") < start_body.index("HermesRuntimeManager.ensureStarted(")
+    assert 'buildNotification(runtime = null)' in service
 
 
 def test_android_anthropic_stub_warns_at_runtime():

@@ -376,8 +376,8 @@ class TestSuspendRecentlyActiveSkipsResumePending:
         assert e.suspended is False
         assert e.resume_pending is True
 
-    def test_non_resume_pending_still_suspended(self, tmp_path):
-        """Non-resume sessions still get the old crash-recovery suspension."""
+    def test_non_resume_pending_gets_resume_pending(self, tmp_path):
+        """Non-resume sessions are now marked resume_pending (not suspended)."""
         store = _make_store(tmp_path)
         source_a = _make_source(chat_id="a")
         source_b = _make_source(chat_id="b")
@@ -386,9 +386,11 @@ class TestSuspendRecentlyActiveSkipsResumePending:
         store.mark_resume_pending(entry_a.session_key)
 
         count = store.suspend_recently_active()
+        # entry_a is already resume_pending → skipped. entry_b gets marked.
         assert count == 1
         assert store._entries[entry_a.session_key].suspended is False
-        assert store._entries[entry_b.session_key].suspended is True
+        assert store._entries[entry_b.session_key].resume_pending is True
+        assert store._entries[entry_b.session_key].suspended is False
 
 
 # ---------------------------------------------------------------------------

@@ -607,3 +607,108 @@ class TestSharedBoardPaths:
             task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.title == "cross-profile"
+
+    def test_hermes_kanban_db_pin_beats_kanban_home(
+        self, tmp_path, monkeypatch
+    ):
+        # HERMES_KANBAN_DB pins the file path directly and beats both
+        # HERMES_KANBAN_HOME and the `get_default_hermes_root()` path.
+        # This is the env the dispatcher injects into workers.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        umbrella = tmp_path / "umbrella"
+        umbrella.mkdir()
+        pinned_db = tmp_path / "pinned" / "board.db"
+        pinned_db.parent.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(umbrella))
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned_db))
+
+        assert kb.kanban_db_path() == pinned_db
+        # workspaces_root still follows HERMES_KANBAN_HOME -- the pins
+        # are independent.
+        assert kb.workspaces_root() == umbrella / "kanban" / "workspaces"
+
+    def test_hermes_kanban_workspaces_root_pin_beats_kanban_home(
+        self, tmp_path, monkeypatch
+    ):
+        # HERMES_KANBAN_WORKSPACES_ROOT pins the workspaces root directly.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        umbrella = tmp_path / "umbrella"
+        umbrella.mkdir()
+        pinned_ws = tmp_path / "pinned-workspaces"
+        pinned_ws.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(umbrella))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(pinned_ws))
+
+        assert kb.workspaces_root() == pinned_ws
+        # kanban_db_path still follows HERMES_KANBAN_HOME.
+        assert kb.kanban_db_path() == umbrella / "kanban.db"
+
+    def test_empty_per_path_overrides_fall_through(
+        self, tmp_path, monkeypatch
+    ):
+        # Empty/whitespace pins are treated as unset, same as
+        # HERMES_KANBAN_HOME.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_DB", "   ")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", "")
+
+        assert kb.kanban_db_path() == default_home / "kanban.db"
+        assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
+
+    def test_dispatcher_spawn_injects_kanban_db_and_workspaces_root(
+        self, tmp_path, monkeypatch
+    ):
+        # The dispatcher's `_default_spawn` must inject HERMES_KANBAN_DB
+        # and HERMES_KANBAN_WORKSPACES_ROOT into the worker env so the
+        # worker converges on the dispatcher's paths even when the
+        # `-p <profile>` flag rewrites HERMES_HOME.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_dispatch_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
+        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
+            default_home / "kanban" / "workspaces"
+        )
+        assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"

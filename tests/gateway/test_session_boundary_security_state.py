@@ -124,6 +124,10 @@ async def test_resume_clears_session_scoped_approval_and_yolo_state():
     runner, session_key = _make_resume_runner()
     other_key = "agent:main:telegram:dm:other-chat"
 
+    runner._pending_skills_reload_notes = {
+        session_key: "[USER INITIATED SKILLS RELOAD: target]",
+        other_key: "[USER INITIATED SKILLS RELOAD: other]",
+    }
     approve_session(session_key, "recursive delete")
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
@@ -140,10 +144,12 @@ async def test_resume_clears_session_scoped_approval_and_yolo_state():
     assert is_session_yolo_enabled(session_key) is False
     assert session_key not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
+    assert session_key not in runner._pending_skills_reload_notes
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
     assert other_key in runner._pending_approvals
     assert other_key in runner._update_prompt_pending
+    assert other_key in runner._pending_skills_reload_notes
 
 
 @pytest.mark.asyncio
@@ -151,6 +157,10 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     runner, session_key = _make_branch_runner()
     other_key = "agent:main:telegram:dm:other-chat"
 
+    runner._pending_skills_reload_notes = {
+        session_key: "[USER INITIATED SKILLS RELOAD: target]",
+        other_key: "[USER INITIATED SKILLS RELOAD: other]",
+    }
     approve_session(session_key, "recursive delete")
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
@@ -167,10 +177,12 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     assert is_session_yolo_enabled(session_key) is False
     assert session_key not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
+    assert session_key not in runner._pending_skills_reload_notes
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
     assert other_key in runner._pending_approvals
     assert other_key in runner._update_prompt_pending
+    assert other_key in runner._pending_skills_reload_notes
 
 
 @pytest.mark.asyncio
@@ -216,6 +228,7 @@ def test_clear_session_boundary_security_state_is_scoped():
     runner = object.__new__(GatewayRunner)
     runner._pending_approvals = {}
     runner._update_prompt_pending = {}
+    runner._pending_skills_reload_notes = {}
 
     source = _make_source()
     session_key = build_session_key(source)
@@ -229,6 +242,12 @@ def test_clear_session_boundary_security_state_is_scoped():
     runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True
     runner._update_prompt_pending[other_key] = True
+    runner._pending_skills_reload_notes[session_key] = (
+        "[USER INITIATED SKILLS RELOAD: target]"
+    )
+    runner._pending_skills_reload_notes[other_key] = (
+        "[USER INITIATED SKILLS RELOAD: other]"
+    )
 
     runner._clear_session_boundary_security_state(session_key)
 
@@ -237,16 +256,19 @@ def test_clear_session_boundary_security_state_is_scoped():
     assert is_session_yolo_enabled(session_key) is False
     assert session_key not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
+    assert session_key not in runner._pending_skills_reload_notes
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
     assert other_key in runner._pending_approvals
     assert other_key in runner._update_prompt_pending
+    assert other_key in runner._pending_skills_reload_notes
 
     # Empty session_key is a no-op
     runner._clear_session_boundary_security_state("")
     assert is_approved(other_key, "recursive delete") is True
     assert other_key in runner._update_prompt_pending
+    assert other_key in runner._pending_skills_reload_notes
 
 
 def test_clear_session_boundary_security_state_wakes_blocked_approvals():

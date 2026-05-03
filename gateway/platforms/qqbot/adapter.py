@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -145,6 +145,20 @@ class QQAdapter(BasePlatformAdapter):
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 
+    # -- Active instance registry (class-level singleton) -------------------
+
+    _active_instance: ClassVar[Optional["QQAdapter"]] = None
+
+    @classmethod
+    def get_active(cls) -> Optional["QQAdapter"]:
+        """Return the currently connected QQAdapter, or None."""
+        return cls._active_instance
+
+    @classmethod
+    def set_active(cls, adapter: Optional["QQAdapter"]) -> None:
+        """Register (or clear) the active adapter instance."""
+        cls._active_instance = adapter
+
     @property
     def _log_tag(self) -> str:
         """Log prefix including app_id for multi-instance disambiguation."""
@@ -243,14 +257,10 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
-            # faster behind proxies like Cloudflare Warp (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
-                limits=platform_httpx_limits(),
             )
 
             # 1. Get access token
@@ -267,6 +277,7 @@ class QQAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
+            QQAdapter.set_active(self)
             logger.info("[%s] Connected", self._log_tag)
             return True
         except Exception as exc:
@@ -281,6 +292,7 @@ class QQAdapter(BasePlatformAdapter):
         """Close all connections and stop listeners."""
         self._running = False
         self._mark_disconnected()
+        QQAdapter.set_active(None)
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -577,6 +589,7 @@ class QQAdapter(BasePlatformAdapter):
             gateway_url = await self._get_gateway_url()
             await self._open_ws(gateway_url)
             self._mark_connected()
+            QQAdapter.set_active(self)
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
@@ -1202,7 +1215,7 @@ class QQAdapter(BasePlatformAdapter):
             elif ct.startswith("image/"):
                 # Image: download and cache locally.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path and os.path.isfile(cached_path):
                         image_urls.append(cached_path)
                         image_media_types.append(ct or "image/jpeg")
@@ -1217,7 +1230,7 @@ class QQAdapter(BasePlatformAdapter):
             else:
                 # Other attachments (video, file, etc.): record as text.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path:
                         other_attachments.append(f"[Attachment: {filename or ct}]")
                 except Exception as exc:
@@ -1231,8 +1244,17 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
-        """Download a URL and cache it locally."""
+    async def _download_and_cache(
+        self, url: str, content_type: str, filename: str = ""
+    ) -> Optional[str]:
+        """Download a URL and cache it locally.
+
+        Args:
+            url: The URL to download.
+            content_type: MIME type hint for the content.
+            filename: Original filename from the message (used for cache naming
+                when available, falling back to URL basename for non-image types).
+        """
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
@@ -1263,8 +1285,11 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = Path(urlparse(url).path).name or "qq_attachment"
-            return cache_document_from_bytes(data, filename)
+            # Use the original filename from the QQ message content when
+            # available; fall back to the URL basename to preserve user-provided
+            # names (e.g. "report.pdf") instead of generic UUID-based names.
+            cache_name = filename or Path(urlparse(url).path).name or "qq_attachment"
+            return cache_document_from_bytes(data, cache_name)
 
     @staticmethod
     def _is_voice_content_type(content_type: str, filename: str) -> bool:
@@ -2399,4 +2424,65 @@ class QQAdapter(BasePlatformAdapter):
         if msg_id in self._seen_messages:
             return True
         self._seen_messages[msg_id] = now
-        return False
+
+
+# ---------------------------------------------------------------------------
+# Module-level thin delegates (preserve import compatibility for external callers)
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+# Common file extension sets for media dispatch
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
+AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".aac", ".m4a", ".flac", ".amr"}
+
+
+def get_active_adapter() -> Optional["QQAdapter"]:
+    """Return the currently connected QQAdapter, or None."""
+    return QQAdapter.get_active()
+
+
+async def send_qqbot_direct(
+    adapter: "QQAdapter",
+    chat_id: str,
+    message: str,
+    media_files: Optional[List[Tuple[str, bool]]] = None,
+) -> Dict[str, Any]:
+    """Send text + media via the QQ adapter WebSocket (used by the ``send_message`` tool).
+
+    Mirrors the pattern used by Yuanbao's ``send_yuanbao_direct``: send text
+    first, then iterate media_files by file extension.
+    """
+    last_result: Optional[SendResult] = None
+
+    # 1. Send text
+    if message.strip():
+        last_result = await adapter.send(chat_id, message)
+        if not last_result.success:
+            return {"error": f"QQBot send failed: {last_result.error}"}
+
+    # 2. Iterate media_files, dispatch by file extension
+    for media_path, _is_voice in media_files or []:
+        ext = Path(media_path).suffix.lower()
+        if ext in IMAGE_EXTS:
+            last_result = await adapter.send_image_file(chat_id, media_path)
+        elif ext in VIDEO_EXTS:
+            last_result = await adapter.send_video(chat_id, media_path)
+        elif ext in AUDIO_EXTS or _is_voice:
+            last_result = await adapter.send_voice(chat_id, media_path)
+        else:
+            last_result = await adapter.send_document(chat_id, media_path)
+
+        if not last_result.success:
+            return {"error": f"QQBot media send failed: {last_result.error}"}
+
+    if last_result is None:
+        return {"error": "No deliverable text or media remained after processing"}
+
+    return {
+        "success": True,
+        "platform": "qqbot",
+        "chat_id": chat_id,
+        "message_id": last_result.message_id if last_result else None,
+    }

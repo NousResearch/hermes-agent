@@ -588,19 +588,39 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQ: media files via msg_type=7 ---
+    if platform == Platform.QQBOT and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot; "
                 f"target {platform.value} had only media attachments"
-            )
+            ),
+            "warning": (
+                f"MEDIA attachments were omitted for {platform.value}; "
+                "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot"
+            ),
         }
     warning = None
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot"
         )
 
     last_result = None
@@ -1648,12 +1668,16 @@ def _check_send_message():
         return False
 
 
-async def _send_qqbot(pconfig, chat_id, message):
+async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
     and post a message. Works for guild channels without requiring
     a running gateway adapter.
+
+    For media sending, use the gateway adapter's WebSocket methods directly
+    (available to in-gateway modules via ``get_active_adapter`` +
+    ``send_qqbot_direct``).
     """
     try:
         import httpx
@@ -1667,8 +1691,16 @@ async def _send_qqbot(pconfig, chat_id, message):
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
+    if media_files:
+        return {
+            "error": (
+                "QQBot media sending requires the gateway adapter's WebSocket methods. "
+                "Ensure the gateway is running."
+            )
+        }
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             # Step 1: Get access token
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
@@ -1681,14 +1713,21 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            # Step 2: Send message via REST
+            # Step 2: Send text message; route DM vs channel
             headers = {
                 "Authorization": f"QQBot {access_token}",
+                "X-Union-Appid": str(appid),
                 "Content-Type": "application/json",
             }
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
-            payload = {"content": message[:4000], "msg_type": 0}
+            is_user_dm = len(chat_id) == 32 and all(
+                c in "0123456789abcdefABCDEF" for c in chat_id
+            )
+            if is_user_dm:
+                url = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
+            else:
+                url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
 
+            payload = {"content": message[:4000], "msg_type": 0}
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code in (200, 201):
                 data = resp.json()

@@ -94,10 +94,20 @@ _HERMES_ENV_PATH = (
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
+_SHELL_RC_FILES = (
+    r'(?:~|\$home|\$\{home\})/\.'
+    r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+)
+_CREDENTIAL_FILES = (
+    r'(?:~|\$home|\$\{home\})/\.'
+    r'(?:netrc|pgpass|npmrc|pypirc)\b'
+)
 _SENSITIVE_WRITE_TARGET = (
     r'(?:/etc/|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
-    rf'{_HERMES_ENV_PATH})'
+    rf'{_HERMES_ENV_PATH}|'
+    rf'{_SHELL_RC_FILES}|'
+    rf'{_CREDENTIAL_FILES})'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'

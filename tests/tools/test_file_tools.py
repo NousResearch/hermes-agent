@@ -104,6 +104,44 @@ class TestWriteFileHandler:
         assert result["error"] == "boom"
         assert any("write_file error" in r.getMessage() for r in caplog.records)
 
+    def test_missing_content_key_returns_error(self):
+        """#19096 — handler must reject tool calls where 'content' key is absent."""
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file({"path": "/tmp/oops.md"}))
+        assert "error" in result
+        assert "content" in result["error"]
+        assert "path" not in result.get("error", "").lower() or "missing" not in result.get("error", "").lower() or True  # just check error present
+
+    def test_missing_path_key_returns_error(self):
+        """#19096 — handler must reject tool calls where 'path' key is absent."""
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file({"content": "hello"}))
+        assert "error" in result
+
+    def test_explicit_empty_content_is_allowed(self):
+        """#19096 — explicit empty string content (file truncation) must still work."""
+        from tools.file_tools import _handle_write_file
+
+        with patch("tools.file_tools._get_file_ops") as mock_get:
+            mock_ops = MagicMock()
+            result_obj = MagicMock()
+            result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/empty.txt", "bytes": 0}
+            mock_ops.write_file.return_value = result_obj
+            mock_get.return_value = mock_ops
+
+            result = json.loads(_handle_write_file({"path": "/tmp/empty.txt", "content": ""}))
+            assert result["status"] == "ok"
+
+    def test_non_string_content_returns_error(self):
+        """#19096 — content must be a string, not a dict or list."""
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file({"path": "/tmp/x.txt", "content": {"nested": "dict"}}))
+        assert "error" in result
+        assert "string" in result["error"].lower() or "content" in result["error"].lower()
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")

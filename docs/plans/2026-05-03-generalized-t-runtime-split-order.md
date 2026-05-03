@@ -140,6 +140,12 @@ The single-profile CLI should call the runtime cycle and output its result as JS
   - `run_profiles_from_config(profiles_config, tech_data_config, ...)` → summary dict
 - Wire to `hermes_t/__main__.py` as `--profiles-config` / `--tech-data-config`
 
+### Landed minimum scope:
+- `python -m hermes_t --profiles-config profiles.json` is now wired
+- Current mode is **sequential only**
+- Multi-profile output is `{"profile_count": N, "results": [...]}`
+- `--quote-data-config` / `--quote-snapshot-config` reuse the same provider assembly path
+
 ### Key constraint:
 - Sequential execution only (no concurrency in this phase)
 - Symbol-level tech_data fallback: missing → default
@@ -203,8 +209,8 @@ Priority list (from experience):
 | Phase 0: Post-market review module | ✅ DONE + reviewed | #19148 (open, 2 commits) |
 | Phase 1: Store + shared CLI | ✅ DONE | (PR already open, atop Phase 0) |
 | Phase 2: Runtime cycle skeleton | ✅ DONE | (committed, atop Phase 1) |
-| Phase 3: Quote provider split | — | — |
-| Phase 4: Multi-profile orchestrator | — | — |
-| Phase 5: Hardening | — | — |
+| Phase 3: Quote provider split | ✅ DONE (minimal provider path) | atop current branch |
+| Phase 4: Multi-profile orchestrator | ✅ DONE (minimal sequential CLI) | atop current branch / PR #19268 |
+| Phase 5: Hardening | 🟡 IN PROGRESS | atop current branch |
 | Phase 6: Review integration | — | — |
 | Phase 7: Agent tool integration | — | — |

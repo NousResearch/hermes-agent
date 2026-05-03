@@ -71,6 +71,7 @@ def build_runtime_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tech-data-config", type=Path, default=None)
     parser.add_argument("--quote-data-config", type=Path, default=None)
     parser.add_argument("--quote-snapshot-config", type=Path, default=None)
+    parser.add_argument("--profiles-config", type=Path, default=None)
     parser.add_argument("--trade-date", default=None)
     parser.add_argument("--dispatch", action="store_true")
     return parser

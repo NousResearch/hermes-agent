@@ -13,6 +13,7 @@ from hermes_t.cli_shared import (
     build_runtime_profile_from_args,
     build_runtime_store,
 )
+from hermes_t.orchestrator import run_profiles_from_config
 from hermes_t.runtime import run_runtime_cycle
 from hermes_t.tech_data import build_tech_data_provider
 
@@ -45,10 +46,27 @@ def _build_payload(args: Namespace, profile: RuntimeProfile) -> dict[str, object
     )
 
 
+def _build_profiles_payload(args: Namespace) -> dict[str, object]:
+    provider = build_tech_data_provider(
+        tech_data_config_path=args.tech_data_config,
+        quote_data_config_path=args.quote_data_config,
+        quote_snapshot_config_path=args.quote_snapshot_config,
+        default_tech_data={"signal": str(args.signal), "score": int(args.score)},
+    )
+    return run_profiles_from_config(
+        base_dir=args.base_dir,
+        profiles_config_path=args.profiles_config,
+        tech_data_provider=provider,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_runtime_parser()
     args = parser.parse_args(argv)
-    payload = _build_payload(args, build_runtime_profile_from_args(args))
+    if args.profiles_config is not None:
+        payload = _build_profiles_payload(args)
+    else:
+        payload = _build_payload(args, build_runtime_profile_from_args(args))
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return 0
 

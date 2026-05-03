@@ -40,6 +40,8 @@ MAX_REPLY_CHARS = 3900
 _PENDING_TTL_SECS = 120
 _APPROVAL_ID_LEN = 5
 _APPROVAL_ID_ALPHABET = "".join([c for c in ascii_lowercase if c != "l"])
+_TRANSCRIPT_MAX_MESSAGES = 40
+_TRANSCRIPT_MAX_CHARS = 12000
 
 _CTX = None  # set by register()
 
@@ -396,11 +398,11 @@ def _extract_tool_rule(text: str) -> str:
 
 
 def _claude_code_max_turns() -> int:
-    raw = os.environ.get("KAZE_CLAUDE_MODE_MAX_TURNS", "10").strip()
+    raw = os.environ.get("KAZE_CLAUDE_MODE_MAX_TURNS", "30").strip()
     try:
         value = int(raw)
     except Exception:
-        value = 10
+        value = 30
     return max(1, min(60, value))
 
 
@@ -437,7 +439,73 @@ def _pop_pending_prompt(token: str) -> _PendingPrompt | None:
     return _PENDING.pop((token or "").strip(), None)
 
 
-def build_pre_dispatch_decision(event: Any, gateway: Any = None) -> dict[str, Any] | None:
+def _message_text_for_transcript(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if text:
+                    parts.append(str(text))
+            elif item is not None:
+                parts.append(str(item))
+        return " ".join(parts)
+    return "" if content is None else str(content)
+
+
+def _format_recent_transcript(session_store: Any, session_key: str) -> str:
+    if session_store is None or not session_key:
+        return ""
+    try:
+        session_store._ensure_loaded()
+        entry = getattr(session_store, "_entries", {}).get(session_key)
+        session_id = getattr(entry, "session_id", "") if entry else ""
+        if not session_id:
+            return ""
+        messages = session_store.load_transcript(session_id)
+    except Exception:
+        return ""
+    lines: list[str] = []
+    for message in messages[-_TRANSCRIPT_MAX_MESSAGES:]:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "unknown")
+        if role == "tool":
+            continue
+        text = _message_text_for_transcript(message).strip()
+        if not text:
+            continue
+        text = re.sub(r"\s+", " ", text)
+        lines.append(f"{role}: {text[:1000]}")
+    excerpt = "\n".join(lines)
+    if len(excerpt) > _TRANSCRIPT_MAX_CHARS:
+        excerpt = excerpt[-_TRANSCRIPT_MAX_CHARS:]
+        first_newline = excerpt.find("\n")
+        if first_newline >= 0:
+            excerpt = excerpt[first_newline + 1 :]
+    return excerpt
+
+
+def _build_claude_mode_prompt(*, user_text: str, transcript: str) -> str:
+    if not transcript:
+        return user_text
+    return (
+        "You are the Claude Code CLI lane invoked from Hermes/Kaze for this Telegram chat.\n"
+        "Use the recent Hermes session transcript below as the available Telegram chat history. "
+        "Do not claim access to messages outside this transcript. Answer the user's latest message directly and concisely.\n\n"
+        "<recent_telegram_session_transcript>\n"
+        f"{transcript}\n"
+        "</recent_telegram_session_transcript>\n\n"
+        "<latest_user_message>\n"
+        f"{user_text}\n"
+        "</latest_user_message>"
+    )
+
+
+def build_pre_dispatch_decision(event: Any, gateway: Any = None, session_store: Any = None) -> dict[str, Any] | None:
     """Return a pre_gateway_dispatch rewrite/allow decision for an event."""
     text = getattr(event, "text", None) or ""
     source = getattr(event, "source", None)
@@ -492,14 +560,16 @@ def build_pre_dispatch_decision(event: Any, gateway: Any = None) -> dict[str, An
             session_key = gateway._session_key_for_source(source)
         except Exception:
             session_key = ""
-        token = _stash_pending_prompt(chat_key=chat_key, session_key=session_key, prompt=text)
+        transcript = _format_recent_transcript(session_store, session_key)
+        prompt = _build_claude_mode_prompt(user_text=text, transcript=transcript)
+        token = _stash_pending_prompt(chat_key=chat_key, session_key=session_key, prompt=prompt)
         return {"action": "rewrite", "text": f"/{INTERNAL_RUN} {token}"}
 
     return None
 
 
 def pre_gateway_dispatch(event: Any = None, gateway: Any = None, session_store: Any = None, **_: Any) -> dict[str, Any] | None:
-    return build_pre_dispatch_decision(event, gateway)
+    return build_pre_dispatch_decision(event, gateway, session_store=session_store)
 
 
 def _format_backend_status() -> tuple[str, bool]:

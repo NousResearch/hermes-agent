@@ -33,6 +33,25 @@ class _FakeGateway:
         self._evicted.append(session_key)
 
 
+class _FakeSessionEntry:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+
+class _FakeSessionStore:
+    def __init__(self, session_key: str, messages: list[dict]):
+        self._entries = {session_key: _FakeSessionEntry("session-1")}
+        self._messages = messages
+        self.loaded = False
+
+    def _ensure_loaded(self) -> None:
+        self.loaded = True
+
+    def load_transcript(self, session_id: str):
+        assert session_id == "session-1"
+        return self._messages
+
+
 def _tg_source(chat_id: str = "1"):
     return SimpleNamespace(
         platform=SimpleNamespace(value="telegram"),
@@ -116,6 +135,52 @@ def test_claude_mode_rewrites_plain_message_to_internal_run_when_backend_availab
     # No provider-switch masquerade.
     assert gw._session_model_overrides == {}
     assert gw._evicted == []
+
+
+def test_claude_mode_injects_recent_session_transcript_without_rewrite_leak(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+
+    from hermes_cli.plugins import discover_plugins, invoke_hook
+    discover_plugins(force=True)
+    from hermes_plugins import kaze_claude_mode as mod
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+    from hermes_plugins.kaze_claude_mode import set_enabled, state_key_from_source
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    session_key = "agent:main:telegram:dm:1"
+    set_enabled(chat_key, True, source=src)
+    store = _FakeSessionStore(
+        session_key,
+        [
+            {"role": "user", "content": "Earlier user request"},
+            {"role": "assistant", "content": "Earlier assistant answer"},
+            {"role": "tool", "content": "raw tool JSON should be skipped"},
+        ],
+    )
+
+    event = SimpleNamespace(text="What did I miss?", source=src)
+    results = invoke_hook("pre_gateway_dispatch", event=event, gateway=_FakeGateway(session_key), session_store=store)
+
+    assert len(results) == 1
+    assert results[0]["text"].startswith("/kaze-claude-mode-run ")
+    assert "Earlier user request" not in results[0]["text"]
+    token = results[0]["text"].split(maxsplit=1)[1]
+    prompt = mod._PENDING[token].prompt
+    assert "<recent_telegram_session_transcript>" in prompt
+    assert "Earlier user request" in prompt
+    assert "Earlier assistant answer" in prompt
+    assert "raw tool JSON" not in prompt
+    assert "<latest_user_message>" in prompt
+    assert "What did I miss?" in prompt
+    assert store.loaded is True
 
 
 @pytest.mark.asyncio

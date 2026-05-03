@@ -10,6 +10,8 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import json
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -17,6 +19,88 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+_HARMONY_TOOL_CALL_RE = re.compile(
+    r"(?:<\|start\|>assistant)?"
+    r"<\|channel\|>[A-Za-z0-9_-]+"
+    r"\s+to=(?P<name>[A-Za-z0-9_.-]+)"
+    r"(?:\s+(?:code|json|python|text))?"
+    r"(?:\s*<\|constrain\|>[A-Za-z0-9_-]+)?"
+    r"\s*<\|message\|>"
+    r"(?P<args>.*?)(?=<\|(?:end|call|start|channel)\|>|$)",
+    re.DOTALL,
+)
+
+
+def _sanitize_harmony_tool_name(name: str) -> str:
+    """Return an OpenAI-tool-name-safe version of a Harmony target."""
+    cleaned = (name or "").strip()
+    if cleaned.startswith("functions."):
+        cleaned = cleaned[len("functions."):]
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", cleaned).strip("_")
+    return cleaned or "unknown_tool"
+
+
+def _parse_harmony_args(raw_args: str) -> Optional[str]:
+    """Normalize a complete Harmony argument JSON payload to a JSON string."""
+    text = (raw_args or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json|javascript|js)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        parsed = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+def _extract_harmony_tool_calls(content: Any) -> tuple[Optional[List[ToolCall]], Any]:
+    """Recover complete Harmony/Codex-style tool calls leaked as text.
+
+    Some OpenAI-compatible local backends return strings such as
+    ``<|channel|>commentary to=terminal code<|message|>{"command":"pwd"}``
+    in ``message.content`` instead of populating ``message.tool_calls``.
+    Treat complete JSON payloads as real tool calls so the normal validation,
+    repair, and execution loop can handle them instead of sending raw markup
+    to chat clients.
+    """
+    if not isinstance(content, str) or "<|channel|>" not in content or "<|message|>" not in content:
+        return None, content
+
+    tool_calls: List[ToolCall] = []
+    consumed_spans: List[tuple[int, int]] = []
+    for match in _HARMONY_TOOL_CALL_RE.finditer(content):
+        arguments = _parse_harmony_args(match.group("args"))
+        if arguments is None:
+            continue
+
+        raw_name = match.group("name")
+        name = _sanitize_harmony_tool_name(raw_name)
+        provider_data = {"raw_harmony_name": raw_name} if raw_name != name else None
+        tool_calls.append(ToolCall(
+            id=f"call_harmony_{len(tool_calls) + 1}",
+            name=name,
+            arguments=arguments,
+            provider_data=provider_data,
+        ))
+        consumed_spans.append((match.start(), match.end()))
+
+    if not tool_calls:
+        return None, content
+
+    parts: List[str] = []
+    cursor = 0
+    for start, end in consumed_spans:
+        if cursor < start:
+            parts.append(content[cursor:start])
+        cursor = max(cursor, end)
+    if cursor < len(content):
+        parts.append(content[cursor:])
+    cleaned = "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+    cleaned = re.sub(r"<\|(?:call|end)\|>", "", cleaned).strip()
+    return tool_calls, cleaned
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -435,6 +519,7 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = response.choices[0]
         msg = choice.message
         finish_reason = choice.finish_reason or "stop"
+        content = msg.content
 
         tool_calls = None
         if msg.tool_calls:
@@ -461,6 +546,12 @@ class ChatCompletionsTransport(ProviderTransport):
                     arguments=tc.function.arguments,
                     provider_data=tc_provider_data or None,
                 ))
+        else:
+            recovered_tool_calls, cleaned_content = _extract_harmony_tool_calls(content)
+            if recovered_tool_calls:
+                tool_calls = recovered_tool_calls
+                content = cleaned_content
+                finish_reason = "tool_calls"
 
         usage = None
         if hasattr(response, "usage") and response.usage:
@@ -490,7 +581,7 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_details"] = rd
 
         return NormalizedResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,

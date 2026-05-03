@@ -655,6 +655,84 @@ class TestChatCompletionsNormalize:
         nr = transport.normalize_response(r)
         assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
 
+    def test_recovers_harmony_tool_call_leaked_as_content(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content='<|channel|>commentary to=terminal code<|message|>{"command": "pwd"}',
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == ""
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].id == "call_harmony_1"
+        assert nr.tool_calls[0].name == "terminal"
+        assert nr.tool_calls[0].arguments == '{"command": "pwd"}'
+
+    def test_recovers_harmony_tool_call_and_preserves_visible_text(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        "I will inspect that.\n"
+                        '<|channel|>commentary to=functions.read_file code<|message|>{"path": "/tmp/a"}'
+                        "<|call|>"
+                    ),
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == "I will inspect that."
+        assert nr.finish_reason == "tool_calls"
+        assert nr.tool_calls[0].name == "read_file"
+        assert nr.tool_calls[0].arguments == '{"path": "/tmp/a"}'
+
+    def test_recovers_harmony_namespaced_tool_as_safe_invalid_name(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        '<|channel|>commentary to=repo_browser.print_tree code'
+                        '<|message|>{"path": "/root/hermes-wiki", "depth": 2}'
+                    ),
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "tool_calls"
+        assert nr.tool_calls[0].name == "repo_browser_print_tree"
+        assert nr.tool_calls[0].provider_data == {
+            "raw_harmony_name": "repo_browser.print_tree",
+        }
+
+    def test_ignores_incomplete_harmony_tool_call_json(self, transport):
+        raw = '<|channel|>commentary to=terminal code<|message|>{"command": '
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=raw, tool_calls=None, reasoning_content=None),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == raw
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None
+
 
 class TestChatCompletionsCacheStats:
 

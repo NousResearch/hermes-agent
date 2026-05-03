@@ -180,15 +180,29 @@ whatsapp:
 
 WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
 
-### Inbound text batching
+### Inbound batching
 
-When someone sends **several plain-text bubbles in a row** (or the client splits a long message), the gateway adapter can **merge** those into a single agent turn after a short **quiet period**, so the model sees one combined message instead of multiple interrupting turns.
+Batching mirrors **Telegram** in the gateway: separate quiet periods for **text** vs **rapid photo bursts**.
 
-- **Default:** `0.6` seconds after the last text chunk before dispatch (`HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS`). Near-max-length chunks use a longer wait (`HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS`, default `2.0`) because a follow-up piece often arrives immediately after.
-- **Disable:** set `HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS=0` in `.env` — each bubble is dispatched as soon as the adapter receives it (same effect as turning off batching on other platforms).
-- **Scope:** applies to **text-only** inbound messages. Media (images, voice, documents) is not merged through this path.
+**Text**
 
-See [Environment variables](/docs/reference/environment-variables) for the WhatsApp batching rows (`HERMES_WHATSAPP_TEXT_BATCH_*`).
+When someone sends several plain-text bubbles (or one long message is split client-side), the adapter merges them after a short quiet window so the agent sees one combined turn:
+
+- **`HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS`** (default `0.6`) — after the last text chunk.
+- **`HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS`** (default `2.0`) — used when the latest chunk is near the split threshold (continuation likely).
+
+Set `HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS=0` to disable **text** batching.
+
+**Photos**
+
+Successive photos from the same chat are merged like Telegram albums:
+
+- **`HERMES_WHATSAPP_MEDIA_BATCH_DELAY_SECONDS`** (default `0.8`) — same knob role as **`HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS`**.
+- Set to `0` to dispatch each photo immediately.
+
+Other inbound media (voice, video, documents) are not merged on this path.
+
+See [Environment variables](/docs/reference/environment-variables) (`HERMES_WHATSAPP_TEXT_BATCH_*`, `HERMES_WHATSAPP_MEDIA_BATCH_DELAY_SECONDS`).
 
 ### Chunking
 

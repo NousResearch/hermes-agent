@@ -268,15 +268,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         self._mention_patterns = self._compile_mention_patterns()
-        # Plain-text batching before dispatch (`HERMES_WHATSAPP_TEXT_BATCH_*`).
         self._text_batch_delay_seconds = float(
             os.getenv("HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS", "0.6")
         )
         self._text_batch_split_delay_seconds = float(
             os.getenv("HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0")
         )
+        self._media_batch_delay_seconds = float(
+            os.getenv("HERMES_WHATSAPP_MEDIA_BATCH_DELAY_SECONDS", "0.8")
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._pending_photo_batches: Dict[str, MessageEvent] = {}
+        self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
@@ -808,7 +812,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
 
-        self._cancel_pending_text_batches()
+        self._cancel_pending_inbound_batches()
 
         # Close the persistent HTTP session
         if self._http_session and not self._http_session.closed:
@@ -1133,16 +1137,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
 
     # ------------------------------------------------------------------
-    # Text batching
+    # Text and photo batching before dispatch
     # ------------------------------------------------------------------
 
-    def _cancel_pending_text_batches(self) -> None:
-        """Cancel flush timers and drop buffered text (disconnect)."""
+    def _cancel_pending_inbound_batches(self) -> None:
+        """Cancel flush timers and drop buffered text/photo batches (disconnect)."""
         for task in self._pending_text_batch_tasks.values():
             if not task.done():
                 task.cancel()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        for task in self._pending_photo_batch_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._pending_photo_batch_tasks.clear()
+        self._pending_photo_batches.clear()
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching."""
@@ -1196,6 +1205,47 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    def _photo_batch_key(self, event: MessageEvent) -> str:
+        """Return a batching key for photo bursts (WhatsApp bridge has no album id)."""
+        return f"{self._text_batch_key(event)}:photo-burst"
+
+    def _enqueue_photo_event(self, event: MessageEvent) -> None:
+        """Merge photo events into a pending batch and schedule flush."""
+        batch_key = self._photo_batch_key(event)
+        existing = self._pending_photo_batches.get(batch_key)
+        if existing is None:
+            self._pending_photo_batches[batch_key] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
+
+        prior_task = self._pending_photo_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_photo_batch(batch_key)
+        )
+
+    async def _flush_photo_batch(self, batch_key: str) -> None:
+        """Wait for quiet period, then dispatch merged images as one event."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            event = self._pending_photo_batches.pop(batch_key, None)
+            if not event:
+                return
+            logger.info(
+                "[WhatsApp] Flushing photo batch %s with %d image(s)",
+                batch_key,
+                len(event.media_urls),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_photo_batch_tasks.get(batch_key) is current_task:
+                self._pending_photo_batch_tasks.pop(batch_key, None)
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
@@ -1224,6 +1274,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 and not event.media_urls
                             ):
                                 self._enqueue_text_event(event)
+                            elif (
+                                self._media_batch_delay_seconds > 0
+                                and event.message_type == MessageType.PHOTO
+                                and event.media_urls
+                            ):
+                                self._enqueue_photo_event(event)
                             else:
                                 await self.handle_message(event)
             except asyncio.CancelledError:

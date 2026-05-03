@@ -293,8 +293,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
-| `HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS` | Quiet period (seconds) before flushing merged **plain-text** inbound bubbles to the agent (default `0.6`). Set to `0` to disable batching. Same behavior pattern as Telegram/Discord gateway batching. |
-| `HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Longer quiet period when the latest text chunk is near the split threshold — continuation likely (default `2.0`). |
+| `HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS` | Quiet period (seconds) before flushing merged **plain-text** inbound bubbles (default `0.6`). Set to `0` to disable text batching. Matches Telegram/Discord gateway text batching. |
+| `HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Longer quiet period when the latest **text** chunk is near the split threshold — continuation likely (default `2.0`). |
+| `HERMES_WHATSAPP_MEDIA_BATCH_DELAY_SECONDS` | Grace window before flushing merged **rapid photo bursts** from the same chat (default `0.8`, same role as `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS`). Set to `0` to dispatch each image immediately. |
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |
@@ -503,7 +504,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 |----------|-------------|
 | `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | Grace window before flushing a queued Telegram text chunk (default: `0.6`). |
 | `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a single Telegram message exceeds the length limit (default: `2.0`). |
-| `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | Grace window before flushing queued Telegram media (default: `0.6`). |
+| `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | Grace window before flushing queued Telegram photo bursts/albums (default: `0.8`). |
 | `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | Delay before sending a follow-up after the agent finishes, to avoid racing the last stream chunk. |
 | `HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | Override the underlying `python-telegram-bot` HTTP timeouts (seconds). |
 | `HERMES_TELEGRAM_HTTP_POOL_SIZE` | Max concurrent HTTP connections to the Telegram API. |

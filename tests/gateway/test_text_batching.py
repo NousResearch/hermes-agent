@@ -401,10 +401,28 @@ def _make_whatsapp_adapter():
     adapter.config = config
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
+    adapter._pending_photo_batches = {}
+    adapter._pending_photo_batch_tasks = {}
     adapter._text_batch_delay_seconds = 0.1
     adapter._text_batch_split_delay_seconds = 0.3
+    adapter._media_batch_delay_seconds = 0.1
     adapter.handle_message = AsyncMock()
     return adapter
+
+
+def _make_photo_event(
+    *,
+    media_path: str = "/tmp/fake1.jpg",
+    caption: str = "",
+    chat_id: str = "12345",
+) -> MessageEvent:
+    return MessageEvent(
+        text=caption,
+        message_type=MessageType.PHOTO,
+        source=SessionSource(platform=Platform.WHATSAPP, chat_id=chat_id, chat_type="dm"),
+        media_urls=[media_path],
+        media_types=["image/jpeg"],
+    )
 
 
 class TestWhatsAppTextBatching:
@@ -448,6 +466,35 @@ class TestWhatsAppTextBatching:
 
         await asyncio.sleep(0.25)
         adapter.handle_message.assert_called_once()
+
+
+class TestWhatsAppPhotoBatching:
+    @pytest.mark.asyncio
+    async def test_single_photo_dispatched_after_delay(self):
+        adapter = _make_whatsapp_adapter()
+        event = _make_photo_event()
+
+        adapter._enqueue_photo_event(event)
+        adapter.handle_message.assert_not_called()
+        await asyncio.sleep(0.2)
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert len(dispatched.media_urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_rapid_photos_merged(self):
+        adapter = _make_whatsapp_adapter()
+        adapter._enqueue_photo_event(_make_photo_event(media_path="/tmp/a.jpg"))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_photo_event(_make_photo_event(media_path="/tmp/b.jpg"))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert len(dispatched.media_urls) == 2
+        assert "/tmp/a.jpg" in dispatched.media_urls
+        assert "/tmp/b.jpg" in dispatched.media_urls
 
 
 # =====================================================================

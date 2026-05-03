@@ -194,10 +194,11 @@ def test_forget_removes_record(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_agent_created_excludes_bundled(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names
+    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "bundled-skill", category="github")
     _write_skill(skills_dir, "my-skill")
+    mark_agent_created("my-skill")
     # Seed a bundled manifest marking bundled-skill as upstream
     (skills_dir / ".bundled_manifest").write_text(
         "bundled-skill:abc123\n", encoding="utf-8",
@@ -208,10 +209,11 @@ def test_agent_created_excludes_bundled(skills_home):
 
 
 def test_agent_created_excludes_hub_installed(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names
+    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "hub-skill")
     _write_skill(skills_dir, "my-skill")
+    mark_agent_created("my-skill")
     hub_dir = skills_dir / ".hub"
     hub_dir.mkdir()
     (hub_dir / "lock.json").write_text(
@@ -238,9 +240,10 @@ def test_is_agent_created(skills_home):
 
 
 def test_agent_created_skips_archive_and_hub_dirs(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names
+    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "real-skill")
+    mark_agent_created("real-skill")
     # Dot-prefixed dirs must be ignored even if they contain SKILL.md
     archive = skills_dir / ".archive" / "old-skill"
     archive.mkdir(parents=True)
@@ -368,27 +371,41 @@ def test_archive_collision_gets_suffix(skills_home):
 # Reporting
 # ---------------------------------------------------------------------------
 
-def test_agent_created_report_includes_defaults(skills_home):
-    from tools.skill_usage import agent_created_report, bump_view
+def test_agent_created_report_includes_marked_skills_with_defaults(skills_home):
+    from tools.skill_usage import agent_created_report, bump_view, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "a")
     _write_skill(skills_dir, "b")
+    mark_agent_created("a")
+    mark_agent_created("b")
     bump_view("a")
     rows = agent_created_report()
     by_name = {r["name"]: r for r in rows}
     assert "a" in by_name and "b" in by_name
     assert by_name["a"]["view_count"] == 1
-    # b has no usage record yet — must still appear with defaults
+    # b has only the provenance marker — activity fields still default.
     assert by_name["b"]["view_count"] == 0
     assert by_name["b"]["state"] == "active"
 
 
+def test_manual_skill_with_usage_is_not_curator_managed(skills_home):
+    from tools.skill_usage import agent_created_report, bump_view, list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "manual-skill")
+
+    bump_view("manual-skill")
+
+    assert "manual-skill" not in list_agent_created_skill_names()
+    assert "manual-skill" not in {r["name"] for r in agent_created_report()}
+
+
 def test_agent_created_report_excludes_bundled_and_hub(skills_home):
-    from tools.skill_usage import agent_created_report
+    from tools.skill_usage import agent_created_report, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "mine")
     _write_skill(skills_dir, "bundled")
     _write_skill(skills_dir, "hubbed")
+    mark_agent_created("mine")
     (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
     hub = skills_dir / ".hub"
     hub.mkdir()
@@ -414,6 +431,7 @@ def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, 
     ])
     monkeypatch.setattr(skill_usage, "_now_iso", lambda: next(timestamps))
 
+    skill_usage.mark_agent_created("mine")
     skill_usage.bump_view("mine")
     skill_usage.bump_patch("mine")
 

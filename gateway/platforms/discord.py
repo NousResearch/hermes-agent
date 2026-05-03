@@ -3494,7 +3494,11 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            auto_thread_in_free_response = os.getenv("DISCORD_AUTO_THREAD_IN_FREE_RESPONSE_CHANNELS", "false").lower() in ("true", "1", "yes")
+            if auto_thread_in_free_response:
+                skip_thread = bool(channel_ids & no_thread_channels)
+            else:
+                skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

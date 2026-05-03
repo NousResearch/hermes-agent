@@ -62,6 +62,12 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 
 process.on('beforeExit', () => stopMemoryMonitor())
 
+// Ensure terminal modes are always restored on exit — process.exit() does not
+// trigger signal handlers, so /quit (which calls Ink's exit → process.exit(0))
+// would skip the gracefulExit cleanup and leave kitty keyboard protocol, mouse
+// modes, etc. enabled.  process.on('exit') is synchronous and guaranteed to run.
+process.on('exit', () => resetTerminalModes())
+
 const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
   import('@hermes/ink'),
   import('./app.js'),

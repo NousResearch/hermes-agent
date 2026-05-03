@@ -657,6 +657,30 @@ class TestAuxiliaryPoolAwareness:
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
 
+    def test_call_llm_applies_task_max_retries_with_client_options(self):
+        base_client = MagicMock()
+        base_client.base_url = "http://127.0.0.1:18901/v1"
+        tuned_client = MagicMock()
+        tuned_client.base_url = "http://127.0.0.1:18901/v1"
+        tuned_client.chat.completions.create.return_value = {"ok": True}
+        base_client.with_options.return_value = tuned_client
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("custom", "gpt-5.4", "http://127.0.0.1:18901/v1", "key", None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(base_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"max_retries": 0}),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        base_client.with_options.assert_called_once_with(max_retries=0)
+        tuned_client.chat.completions.create.assert_called_once()
+        base_client.chat.completions.create.assert_not_called()
+
     def test_call_llm_retries_nous_after_401(self):
         class _Auth401(Exception):
             status_code = 401

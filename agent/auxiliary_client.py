@@ -3174,6 +3174,36 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _get_task_max_retries(task: str) -> Optional[int]:
+    """Read auxiliary.<task>.max_retries when explicitly configured."""
+    if not task:
+        return None
+    task_config = _get_auxiliary_task_config(task)
+    raw = task_config.get("max_retries")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        return None
+    return max(0, value)
+
+
+def _apply_task_client_options(client: Any, task: str) -> Any:
+    """Apply per-task OpenAI-SDK options such as max_retries when supported."""
+    max_retries = _get_task_max_retries(task)
+    if max_retries is None:
+        return client
+    with_options = getattr(client, "with_options", None)
+    if not callable(with_options):
+        return client
+    try:
+        return with_options(max_retries=max_retries)
+    except TypeError:
+        # Non-OpenAI adapters may expose a partial with_options signature.
+        return client
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -3457,6 +3487,7 @@ def call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    client = _apply_task_client_options(client, task)
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
@@ -3547,6 +3578,7 @@ def call_llm(
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
+                refreshed_client = _apply_task_client_options(refreshed_client, task)
                 logger.info("Auxiliary %s: refreshed Nous runtime credentials after 401, retrying",
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
@@ -3580,6 +3612,7 @@ def call_llm(
                     )
                 )
                 if retry_client is not None:
+                    retry_client = _apply_task_client_options(retry_client, task)
                     retry_kwargs = _build_call_kwargs(
                         resolved_provider,
                         retry_model or final_model,
@@ -3621,6 +3654,7 @@ def call_llm(
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason)
             if fb_client is not None:
+                fb_client = _apply_task_client_options(fb_client, task)
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
@@ -3762,6 +3796,7 @@ async def async_call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    client = _apply_task_client_options(client, task)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
@@ -3838,6 +3873,7 @@ async def async_call_llm(
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
+                refreshed_client = _apply_task_client_options(refreshed_client, task)
                 logger.info("Auxiliary %s (async): refreshed Nous runtime credentials after 401, retrying",
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
@@ -3870,6 +3906,7 @@ async def async_call_llm(
                         api_mode=resolved_api_mode,
                     )
                 if retry_client is not None:
+                    retry_client = _apply_task_client_options(retry_client, task)
                     retry_kwargs = _build_call_kwargs(
                         resolved_provider,
                         retry_model or final_model,
@@ -3897,6 +3934,7 @@ async def async_call_llm(
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason)
             if fb_client is not None:
+                fb_client = _apply_task_client_options(fb_client, task)
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
@@ -3907,6 +3945,7 @@ async def async_call_llm(
                 async_fb, async_fb_model = _to_async_client(
                     fb_client, fb_model or "", is_vision=(task == "vision")
                 )
+                async_fb = _apply_task_client_options(async_fb, task)
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(

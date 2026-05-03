@@ -2755,7 +2755,7 @@ class GatewayRunner:
             try:
                 suspended = self.session_store.suspend_recently_active()
                 if suspended:
-                    logger.info("Suspended %d in-flight session(s) from previous run", suspended)
+                    logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
             except Exception as e:
                 logger.warning("Session suspension on startup failed: %s", e)
 

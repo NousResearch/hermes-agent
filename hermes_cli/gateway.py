@@ -2770,6 +2770,42 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
+def _truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_official_docker_checkout() -> bool:
+    return (
+        str(PROJECT_ROOT) == "/opt/hermes"
+        and (PROJECT_ROOT / "docker" / "entrypoint.sh").is_file()
+    )
+
+
+def _guard_official_docker_root_gateway() -> None:
+    """Refuse gateway startup when the official Docker privilege drop was bypassed."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    if _truthy_env(os.getenv("HERMES_ALLOW_ROOT_GATEWAY")):
+        return
+    if not _is_official_docker_checkout():
+        return
+
+    print_error(
+        "Refusing to run the Hermes gateway as root inside the official Docker image."
+    )
+    print(
+        "  The image entrypoint normally drops privileges to the 'hermes' user. "
+        "If you override entrypoint in Docker Compose, include "
+        "/opt/hermes/docker/entrypoint.sh before the Hermes command."
+    )
+    print(
+        "  Running the gateway as root can leave root-owned files in "
+        "$HERMES_HOME and break later non-root dashboard/gateway runs."
+    )
+    print("  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk.")
+    sys.exit(1)
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
@@ -2780,6 +2816,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
     """
+    _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Refresh the systemd unit definition on every boot so that restart

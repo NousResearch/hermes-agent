@@ -54,6 +54,28 @@ class TestWeixinFormatting:
 
         assert adapter.format_message(content) == content
 
+    def test_format_message_wraps_long_plain_lines_for_copying(self):
+        adapter = _make_adapter()
+
+        content = (
+            "Here is a long issue template line with many copyable fields "
+            + " ".join(f"field_{idx}=value_{idx}" for idx in range(24))
+        )
+
+        formatted = adapter.format_message(content)
+
+        assert "\n" in formatted
+        assert all(len(line) <= weixin.WEIXIN_COPY_LINE_WIDTH for line in formatted.splitlines())
+        assert " ".join(formatted.split()) == " ".join(content.split())
+
+    def test_format_message_does_not_wrap_long_code_block_lines(self):
+        adapter = _make_adapter()
+
+        command = "hermes " + " ".join(f"--option-{idx}=value" for idx in range(30))
+        content = f"```bash\n{command}\n```"
+
+        assert adapter.format_message(content) == content
+
     def test_format_message_returns_empty_string_for_none(self):
         adapter = _make_adapter()
 

@@ -901,6 +901,46 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_handles_bytes_values(self):
+        """#19090 — bundle.files values may be bytes (e.g. read via Path.read_bytes()).
+
+        Calling .encode() on a bytes object raises AttributeError; the function
+        must normalise both str and bytes to bytes before hashing.
+        """
+        bundle_str = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "hello"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        bundle_bytes = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": b"hello"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        # Both should produce the same hash (str and its UTF-8 bytes equivalent)
+        assert bundle_content_hash(bundle_str) == bundle_content_hash(bundle_bytes)
+
+    def test_bundle_content_hash_mixed_str_and_bytes(self):
+        """#19090 — a bundle with mixed str and bytes file values must not crash."""
+        bundle = SkillBundle(
+            name="mixed-skill",
+            files={
+                "SKILL.md": "text content",
+                "assets/logo.png": b"\x89PNG\r\n\x1a\n",
+            },
+            source="github",
+            identifier="owner/repo/mixed-skill",
+            trust_level="community",
+        )
+        # Must not raise AttributeError; return value is a sha256:... string
+        result = bundle_content_hash(bundle)
+        assert result.startswith("sha256:")
+        assert len(result) == len("sha256:") + 16
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

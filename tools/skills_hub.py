@@ -2798,10 +2798,20 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
-    """Compute a deterministic hash for an in-memory skill bundle."""
+    """Compute a deterministic hash for an in-memory skill bundle.
+
+    ``bundle.files`` values may be ``str`` (text content fetched from a hub
+    API or extracted from a ZIP manifest) or ``bytes`` (binary content read
+    directly from disk with ``Path.read_bytes()``).  Calling ``.encode()``
+    on a ``bytes`` object raises ``AttributeError``; we normalise both to
+    ``bytes`` before hashing.
+    """
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
-        h.update(bundle.files[rel_path].encode("utf-8"))
+        content = bundle.files[rel_path]
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        h.update(content)
     return f"sha256:{h.hexdigest()[:16]}"
 
 

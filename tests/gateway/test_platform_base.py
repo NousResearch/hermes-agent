@@ -295,6 +295,30 @@ class TestExtractMedia:
         assert len(media) == 1
         assert "Here is your audio" in cleaned
 
+    def test_inline_media_example_is_not_extracted(self):
+        content = "解释里提到 `MEDIA:/tmp/foo.txt` 这种写法，不是真附件。"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/tmp/foo.txt" in cleaned
+
+    def test_prose_media_example_is_not_extracted(self):
+        content = "如果要发文件，写 MEDIA:/tmp/foo.txt；这里只是在解释。"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/tmp/foo.txt" in cleaned
+
+    def test_fenced_media_example_is_not_extracted(self):
+        content = "```text\nMEDIA:/tmp/foo.txt\n```\n普通解释"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/tmp/foo.txt" in cleaned
+
+    def test_standalone_backticked_media_directive_still_extracts(self):
+        content = "`MEDIA:/tmp/real.ogg`"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/real.ogg", False)]
+        assert cleaned == ""
+
     def test_cleaned_content_trims_excess_newlines(self):
         content = "Before\n\nMEDIA:/audio.ogg\n\n\n\nAfter"
         _, cleaned = BasePlatformAdapter.extract_media(content)

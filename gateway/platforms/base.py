@@ -1888,26 +1888,56 @@ class BasePlatformAdapter(ABC):
         media = []
         cleaned = content
         
-        # Check for [[audio_as_voice]] directive
+        # Check for [[audio_as_voice]] directive. Remove it after MEDIA span
+        # removal so match offsets still refer to the original content string.
         has_voice_tag = "[[audio_as_voice]]" in content
-        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
+        #
+        # SECURITY / UX NOTE:
+        # Only honor MEDIA as a real outbound directive when it starts a logical
+        # line. Explanatory prose like "use `MEDIA:/tmp/foo.txt`" must remain
+        # plain text; otherwise the gateway tries to upload documentation
+        # examples as real files. Fenced code blocks are never directives.
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+
+        fenced_spans = [m.span() for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL)]
+
+        def _in_fenced_code(pos: int) -> bool:
+            return any(start <= pos < end for start, end in fenced_spans)
+
+        def _is_standalone_directive(match: re.Match) -> bool:
+            line_start = content.rfind('\n', 0, match.start()) + 1
+            return content[line_start:match.start()].strip() == ""
+
+        accepted_matches = []
         for match in media_pattern.finditer(content):
+            if _in_fenced_code(match.start()) or not _is_standalone_directive(match):
+                continue
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
+                accepted_matches.append(match)
                 media.append((os.path.expanduser(path), has_voice_tag))
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        # Remove only accepted MEDIA directives from content. Do not run a global
+        # regex substitution, because skipped inline examples must survive.
+        if accepted_matches:
+            parts = []
+            last = 0
+            for match in accepted_matches:
+                parts.append(cleaned[last:match.start()])
+                last = match.end()
+            parts.append(cleaned[last:])
+            cleaned = ''.join(parts)
+
+        if accepted_matches or has_voice_tag:
+            cleaned = cleaned.replace("[[audio_as_voice]]", "")
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned

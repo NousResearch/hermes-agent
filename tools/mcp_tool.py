@@ -1665,9 +1665,27 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "invalid or expired session",
     "expired session",
     "session expired",
+    # ROB-89: auto_trader/FastMCP can surface stale Streamable HTTP sessions
+    # as McpError: Session terminated.
+    "session terminated",
     "session not found",
     "unknown session",
 )
+_SESSION_EXPIRED_RECONNECT_TIMEOUT = 15
+
+
+def _stale_transport_error(server_name: str, op_description: str) -> str:
+    """Return a structured operator-facing stale MCP transport error."""
+    return json.dumps({
+        "error": _sanitize_error(
+            f"MCP server '{server_name}' transport session was terminated "
+            f"and could not be re-established for {op_description}. "
+            "This is a stale Streamable HTTP session, not a server-down "
+            f"condition. Run `hermes mcp test {server_name}` if it persists."
+        ),
+        "stale_transport": True,
+        "server": server_name,
+    }, ensure_ascii=False)
 
 
 def _is_session_expired_error(exc: BaseException) -> bool:
@@ -1721,9 +1739,10 @@ def _handle_session_expired_and_retry(
 
     Returns:
         A JSON string if reconnect + retry was attempted and produced
-        a response, or ``None`` to fall through to the caller's
-        generic error path (not a session-expired error, no server
-        record, reconnect didn't ready in time, or retry also failed).
+        a response, a structured stale-transport error if recovery was
+        attempted but failed, or ``None`` to fall through to the caller's
+        generic error path before any reconnect attempt (not a
+        session-expired error, no server record, or no running loop).
     """
     if not _is_session_expired_error(exc):
         return None
@@ -1746,7 +1765,7 @@ def _handle_session_expired_and_retry(
     # Trigger the same reconnect mechanism the OAuth recovery path
     # uses, then wait briefly for the new session to come back ready.
     loop.call_soon_threadsafe(srv._reconnect_event.set)
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + _SESSION_EXPIRED_RECONNECT_TIMEOUT
     ready = False
     while time.monotonic() < deadline:
         if srv.session is not None and srv._ready.is_set():
@@ -1755,11 +1774,12 @@ def _handle_session_expired_and_retry(
         time.sleep(0.25)
     if not ready:
         logger.warning(
-            "MCP server '%s': reconnect did not ready within 15s after "
-            "session-expired error; falling through to error response.",
+            "MCP server '%s': reconnect did not ready within %ss after "
+            "session-expired error; returning stale-transport response.",
             server_name,
+            _SESSION_EXPIRED_RECONNECT_TIMEOUT,
         )
-        return None
+        return _stale_transport_error(server_name, op_description)
 
     try:
         result = retry_call()
@@ -1768,6 +1788,11 @@ def _handle_session_expired_and_retry(
             if "error" not in parsed:
                 _server_error_counts[server_name] = 0
                 return result
+            logger.warning(
+                "MCP %s/%s retry after session reconnect returned error: %s",
+                server_name, op_description, parsed.get("error"),
+            )
+            return _stale_transport_error(server_name, op_description)
         except (json.JSONDecodeError, TypeError):
             _server_error_counts[server_name] = 0
             return result
@@ -1776,7 +1801,7 @@ def _handle_session_expired_and_retry(
             "MCP %s/%s retry after session reconnect failed: %s",
             server_name, op_description, retry_exc,
         )
-    return None
+    return _stale_transport_error(server_name, op_description)
 
 
 # Dedicated event loop running in a background daemon thread.

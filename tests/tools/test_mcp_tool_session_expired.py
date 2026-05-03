@@ -12,8 +12,7 @@ affected MCP server failed until the gateway was manually restarted.
 """
 import json
 import threading
-import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -78,6 +77,31 @@ def test_is_session_expired_rejects_empty_message():
     from tools.mcp_tool import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("")) is False
     assert _is_session_expired_error(Exception()) is False
+
+
+def test_is_session_expired_detects_session_terminated():
+    """ROB-89: auto_trader emits session-terminated transport expiry."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+    assert _is_session_expired_error(RuntimeError("McpError: Session terminated")) is True
+
+
+def test_is_session_expired_detects_session_terminated_case_insensitive():
+    """Case variants from SDK/server formatters should still match."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("SESSION TERMINATED")) is True
+    assert _is_session_expired_error(RuntimeError("session terminated")) is True
+    assert _is_session_expired_error(RuntimeError("McpError: session terminated")) is True
+
+
+def _assert_stale_transport_payload(out: str, server_name: str):
+    parsed = json.loads(out)
+    assert parsed["stale_transport"] is True
+    assert parsed["server"] == server_name
+    assert "transport session was terminated" in parsed["error"]
+    assert "not a server-down condition" in parsed["error"]
+    assert f"hermes mcp test {server_name}" in parsed["error"]
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +195,45 @@ def test_call_tool_handler_reconnects_on_session_expired(monkeypatch, tmp_path):
         mcp_tool._server_error_counts.pop("wpcom", None)
 
 
+def test_call_tool_handler_reconnects_on_session_terminated(monkeypatch, tmp_path):
+    """ROB-89 auto_trader symptom: McpError: Session terminated should
+    reconnect and retry once instead of falling through as server-down."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, reconnect_flag = _install_stub_server("auto_trader")
+    mcp_tool._servers["auto_trader"] = server
+    mcp_tool._server_error_counts.pop("auto_trader", None)
+
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("McpError: Session terminated")
+        result = MagicMock()
+        result.isError = False
+        result.content = [MagicMock(type="text", text='{"account":"paper"}')]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_sequence
+
+    try:
+        handler = _make_tool_handler("auto_trader", "alpaca_paper_get_account", 10.0)
+        out = handler({})
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        assert parsed["result"] == '{"account":"paper"}'
+        assert reconnect_flag.is_set()
+        assert call_count["n"] == 2
+    finally:
+        mcp_tool._servers.pop("auto_trader", None)
+        mcp_tool._server_error_counts.pop("auto_trader", None)
+
+
 def test_call_tool_handler_non_session_expired_error_falls_through(
     monkeypatch, tmp_path
 ):
@@ -256,9 +319,8 @@ def test_session_expired_handler_returns_none_without_server_record():
 def test_session_expired_handler_returns_none_when_retry_also_fails(
     monkeypatch, tmp_path
 ):
-    """If the retry after reconnect also raises, fall through to the
-    generic error path (don't loop forever, don't mask the second
-    failure)."""
+    """If the retry after reconnect also raises, return a structured
+    stale-transport operator signal instead of generic server-down text."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
@@ -277,12 +339,62 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
             _retry_raises,
             "tools/call",
         )
-        assert out is None, (
-            "When the retry itself fails, the handler must return None "
-            "so the caller's generic error path runs — no retry loop."
-        )
+        _assert_stale_transport_payload(out, "srv-retry-fail")
     finally:
         mcp_tool._servers.pop("srv-retry-fail", None)
+
+
+def test_session_expired_handler_returns_structured_error_when_reconnect_times_out(
+    monkeypatch, tmp_path
+):
+    """Once reconnect is attempted, readiness timeout should be reported
+    as stale transport, not as generic MCP server-down."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-timeout")
+    server._ready.is_set = MagicMock(return_value=False)
+    mcp_tool._servers["srv-timeout"] = server
+    monkeypatch.setattr(mcp_tool, "_SESSION_EXPIRED_RECONNECT_TIMEOUT", 0.01)
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-timeout",
+            RuntimeError("Session terminated"),
+            lambda: '{"ok": true}',
+            "tools/call",
+        )
+        assert reconnect_flag.is_set()
+        _assert_stale_transport_payload(out, "srv-timeout")
+    finally:
+        mcp_tool._servers.pop("srv-timeout", None)
+
+
+def test_session_expired_handler_returns_structured_error_when_retry_fails(
+    monkeypatch, tmp_path
+):
+    """A retry returning JSON error is still failed stale-session recovery."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-retry-error")
+    mcp_tool._servers["srv-retry-error"] = server
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-retry-error",
+            RuntimeError("McpError: Session terminated"),
+            lambda: '{"error": "still stale"}',
+            "tools/call",
+        )
+        assert reconnect_flag.is_set()
+        _assert_stale_transport_payload(out, "srv-retry-error")
+    finally:
+        mcp_tool._servers.pop("srv-retry-error", None)
 
 
 # ---------------------------------------------------------------------------

@@ -1225,6 +1225,16 @@ def run_doctor(args):
                     headers=_headers,
                     timeout=10,
                 )
+                if (
+                    _pname == "Alibaba/DashScope"
+                    and not _base
+                    and _resp.status_code == 401
+                ):
+                    _resp = httpx.get(
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+                        headers=_headers,
+                        timeout=10,
+                    )
                 if _resp.status_code == 200:
                     print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
                 elif _resp.status_code == 401:

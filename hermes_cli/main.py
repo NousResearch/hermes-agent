@@ -114,11 +114,16 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
-    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it.
-    # This lets child processes (relaunch, subprocess) inherit the parent's
-    # profile choice without having to pass --profile again.
+    # 1.5 If HERMES_HOME already points to a named profile directory (parent dir
+    # is "profiles"), trust it — a parent process already resolved the active
+    # profile and the child should inherit it without re-reading active_profile.
+    # But if HERMES_HOME is the root (~/.hermes or a Docker custom root like
+    # /opt/data), we must still check active_profile so `hermes profile use`
+    # takes effect on the next invocation.
     if profile_name is None and os.environ.get("HERMES_HOME"):
-        return
+        from pathlib import Path as _Path
+        if _Path(os.environ["HERMES_HOME"]).parent.name == "profiles":
+            return
 
     # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:

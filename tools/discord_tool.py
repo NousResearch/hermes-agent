@@ -28,6 +28,7 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -291,6 +292,68 @@ def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
     })
 
 
+_CHANNEL_NAME_ALLOWED = re.compile(r"[^a-z0-9_-]")
+_CHANNEL_NAME_WS = re.compile(r"\s+")
+_CHANNEL_NAME_DASHES = re.compile(r"-{2,}")
+
+
+def _normalize_channel_name(name: str) -> str:
+    """Normalize a Discord text-channel name.
+
+    Lowercases, replaces whitespace runs with hyphens, drops chars outside
+    ``[a-z0-9_-]``, collapses repeated hyphens, and trims edge hyphens.
+    Returns ``""`` if the result is empty.
+    """
+    s = (name or "").strip().lower()
+    s = _CHANNEL_NAME_WS.sub("-", s)
+    s = _CHANNEL_NAME_ALLOWED.sub("", s)
+    return _CHANNEL_NAME_DASHES.sub("-", s).strip("-")
+
+
+def _create_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    parent_id: str = "",
+    topic: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Create a narrow, text-only Discord channel in a guild."""
+    raw = (name or "").strip()
+    if not 1 <= len(raw) <= 100:
+        return json.dumps({
+            "error": f"Channel name length must be 1-100 chars (got {len(raw)}).",
+        })
+    normalized = _normalize_channel_name(raw)
+    if not normalized:
+        return json.dumps({
+            "error": (
+                f"Channel name '{name}' is empty after normalization. "
+                "Allowed chars: a-z, 0-9, '_', '-'."
+            ),
+        })
+
+    body: Dict[str, Any] = {
+        "name": normalized,
+        "type": 0,  # GUILD_TEXT — intentionally narrow, no voice/forum/category creation.
+    }
+    if parent_id:
+        body["parent_id"] = parent_id
+    if topic:
+        body["topic"] = topic
+
+    ch = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": ch["id"],
+        "name": ch.get("name"),
+        "type": _channel_type_name(ch.get("type", 0)),
+        "guild_id": ch.get("guild_id"),
+        "parent_id": ch.get("parent_id"),
+        "topic": ch.get("topic"),
+    })
+
+
 def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all roles in a guild."""
     roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
@@ -469,6 +532,7 @@ _ACTIONS = {
     "server_info": _server_info,
     "list_channels": _list_channels,
     "channel_info": _channel_info,
+    "create_channel": _create_channel,
     "list_roles": _list_roles,
     "member_info": _member_info,
     "search_members": _search_members,
@@ -495,6 +559,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("server_info", "(guild_id)", "server details + member counts"),
     ("list_channels", "(guild_id)", "all channels grouped by category"),
     ("channel_info", "(channel_id)", "single channel details"),
+    ("create_channel", "(guild_id, name)", "create a text channel; optional parent_id/topic"),
     ("list_roles", "(guild_id)", "roles sorted by position"),
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
@@ -514,6 +579,7 @@ _INTENT_GATED_MEMBERS = frozenset({"member_info", "search_members"})
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "server_info": ["guild_id"],
     "list_channels": ["guild_id"],
+    "create_channel": ["guild_id", "name"],
     "list_roles": ["guild_id"],
     "member_info": ["guild_id", "user_id"],
     "search_members": ["guild_id", "query"],
@@ -637,8 +703,10 @@ def _build_schema(
             "Available actions:\n"
             f"{manifest_block}\n\n"
             "Call list_guilds first to discover guild_ids, then list_channels for "
-            "channel_ids. Runtime errors will tell you if the bot lacks a specific "
-            "per-guild permission (e.g. MANAGE_ROLES for add_role)."
+            "channel_ids. create_channel only creates text channels and requires "
+            "the bot to have MANAGE_CHANNELS. Runtime errors will tell you if "
+            "the bot lacks a specific per-guild permission (e.g. MANAGE_ROLES "
+            "for add_role)."
             f"{content_note}"
         )
     else:
@@ -682,7 +750,15 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "New thread name (create_thread) or text channel name (create_channel).",
+        },
+        "parent_id": {
+            "type": "string",
+            "description": "Optional Discord category ID to place a created text channel under (create_channel).",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Optional text channel topic, max 1024 characters (create_channel).",
         },
         "limit": {
             "type": "integer",
@@ -754,6 +830,11 @@ _ACTION_403_HINT = {
         "Bot lacks MANAGE_MESSAGES permission in this channel. "
         "Ask the server admin to grant the bot a role that has MANAGE_MESSAGES, "
         "or a per-channel overwrite."
+    ),
+    "create_channel": (
+        "Bot lacks MANAGE_CHANNELS permission in this server, or the bot role "
+        "does not have access to the requested category. Grant Manage Channels "
+        "to the bot role and keep it below Administrator."
     ),
     "unpin_message": (
         "Bot lacks MANAGE_MESSAGES permission in this channel."
@@ -827,6 +908,8 @@ def _run_discord_action(
     before: str = "",
     after: str = "",
     auto_archive_duration: int = 1440,
+    parent_id: str = "",
+    topic: str = "",
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -860,6 +943,8 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "parent_id": parent_id,
+        "topic": topic,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -882,6 +967,8 @@ def _run_discord_action(
             before=before,
             after=after,
             auto_archive_duration=auto_archive_duration,
+            parent_id=parent_id,
+            topic=topic,
         )
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
@@ -911,6 +998,7 @@ _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "parent_id": "", "topic": "",
 }
 
 

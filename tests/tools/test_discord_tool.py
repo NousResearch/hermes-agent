@@ -21,6 +21,7 @@ from tools.discord_tool import (
     _enrich_403,
     _get_bot_token,
     _load_allowed_actions_config,
+    _normalize_channel_name,
     _reset_capability_cache,
     check_discord_tool_requirements,
     discord_admin_handler,
@@ -283,6 +284,140 @@ class TestChannelInfo:
         assert result["name"] == "general"
         assert result["type"] == "text"
         assert result["guild_id"] == "111"
+
+
+# ---------------------------------------------------------------------------
+# Action: create_channel
+# ---------------------------------------------------------------------------
+
+class TestCreateChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel_minimal(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "99", "name": "ai-command-center", "type": 0,
+            "guild_id": "111", "parent_id": None, "topic": None,
+        }
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="ai-command-center",
+        ))
+        assert result["success"] is True
+        assert result["channel_id"] == "99"
+        assert result["name"] == "ai-command-center"
+        assert result["type"] == "text"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "ai-command-center", "type": 0},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel_with_parent_and_topic(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "100", "name": "research", "type": 0,
+            "guild_id": "111", "parent_id": "10", "topic": "Research work",
+        }
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="research",
+            parent_id="10", topic="Research work",
+        ))
+        assert result["success"] is True
+        assert result["parent_id"] == "10"
+        assert result["topic"] == "Research work"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={
+                "name": "research", "type": 0,
+                "parent_id": "10", "topic": "Research work",
+            },
+        )
+
+    def test_create_channel_requires_guild_id_and_name(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action="create_channel"))
+        assert "error" in result
+        assert "guild_id" in result["error"]
+        assert "name" in result["error"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_normalizes_uppercase_and_spaces(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "200", "name": "ai-command-center", "type": 0,
+            "guild_id": "111", "parent_id": None, "topic": None,
+        }
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="  AI Command Center  ",
+        ))
+        assert result["success"] is True
+        # Body sent to Discord uses the normalized name, not the raw input.
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "ai-command-center", "type": 0},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_strips_invalid_chars(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "201", "name": "research-q3", "type": 0,
+            "guild_id": "111", "parent_id": None, "topic": None,
+        }
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="Research! Q3 ★ #2024",
+        ))
+        assert result["success"] is True
+        # '!', '★', '#' are stripped; whitespace becomes '-', '#2024' loses '#'.
+        sent_name = mock_req.call_args.kwargs["body"]["name"]
+        assert sent_name == "research-q3-2024"
+
+    def test_create_channel_rejects_empty_after_normalization(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        # All characters get stripped; nothing remains.
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="!!!★",
+        ))
+        assert "error" in result
+        assert "empty after normalization" in result["error"]
+
+    def test_create_channel_rejects_too_long_name(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="x" * 101,
+        ))
+        assert "error" in result
+        assert "1-100" in result["error"]
+
+    def test_create_channel_rejects_whitespace_only(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="   ",
+        ))
+        assert "error" in result
+        # Whitespace-only collapses to length 0 after .strip().
+        assert "1-100" in result["error"]
+
+
+class TestNormalizeChannelName:
+    def test_lowercases_and_dashes_spaces(self):
+        assert _normalize_channel_name("Hello World") == "hello-world"
+
+    def test_collapses_repeated_dashes(self):
+        assert _normalize_channel_name("a   b") == "a-b"
+        assert _normalize_channel_name("a---b") == "a-b"
+
+    def test_strips_edge_dashes(self):
+        assert _normalize_channel_name("--ops--") == "ops"
+
+    def test_drops_disallowed_chars(self):
+        assert _normalize_channel_name("ops!@#$%^&*()") == "ops"
+
+    def test_keeps_underscore_and_digits(self):
+        assert _normalize_channel_name("Build_Logs_2024") == "build_logs_2024"
+
+    def test_empty_after_normalization(self):
+        assert _normalize_channel_name("!!!") == ""
+        assert _normalize_channel_name("   ") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +720,7 @@ class TestRegistration:
         entry = registry._tools["discord_admin"]
         desc = entry.schema["description"]
         assert "list_guilds()" in desc
+        assert "create_channel(guild_id, name)" in desc
         assert "add_role(guild_id, user_id, role_id)" in desc
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc

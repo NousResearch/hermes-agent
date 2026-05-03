@@ -901,6 +901,27 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_accepts_bytes_content(self, tmp_path):
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"same content",
+                "references/checklist.md": b"- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_bytes(b"same content")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "checklist.md").write_bytes(b"- [ ] security\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

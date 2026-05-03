@@ -34,6 +34,9 @@ existing tmux/worktree runner.
   disabled by the caller.
 - Add a small retrospective/distillation marker so Hermes can later decide
   whether a long or complex job deserves deeper learning extraction.
+- Add an automatic launch health check in the monitor/status path so obvious
+  repo-trust prompts, permission prompts, and MCP startup stalls are surfaced
+  quickly instead of letting a Codex job sit silently idle.
 
 ## Non-goals
 
@@ -50,5 +53,6 @@ existing tmux/worktree runner.
   - Codex CLI profile/config/search flag rendering
   - prompt handoff injection
   - status serialization and Discord status rendering
+  - launch health detection/alert rendering
 - Syntax check for `tools/codex_job_tool.py`.
 - Use `scripts/run_tests.sh` rather than direct `pytest`.

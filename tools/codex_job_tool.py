@@ -320,6 +320,17 @@ def _slugify(text: str, fallback: str = "codex-job", max_len: int = 48) -> str:
     return value[:max_len].strip("-") or fallback
 
 
+def _default_discord_thread_name(title: str, job_id: str, max_len: int = 90) -> str:
+    """Prefer human-readable Discord thread titles; keep technical IDs in status."""
+    value = re.sub(r"\s+", " ", (title or "").strip())
+    if not value or value.lower() in {"codex job", "job", "review", "implementation"}:
+        value = f"Codex job {job_id}"
+    value = _suppress_dangerous_mentions(value)
+    if len(value) <= max_len:
+        return value
+    return value[: max(0, max_len - 1)].rstrip(" -–—·") + "…"
+
+
 def _coerce_string_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -507,6 +518,8 @@ When you finish, keep the human-readable final summary concise and include these
 - Notable lessons for future runs
 - Suggested docs/skill updates
 """.strip()
+
+_MCP_STARTUP_STALL_SECONDS = 45
 
 
 def _append_worker_handoff_template(prompt: str) -> str:
@@ -757,7 +770,7 @@ def _send_message(args: dict[str, Any]) -> dict[str, Any]:
 def _setup_discord(job: dict[str, Any], args: dict[str, Any]) -> None:
     parent_target = args.get("discord_parent_target")
     target = args.get("discord_target")
-    thread_name = args.get("thread_name") or f"codex-{job['job_id']}-{_slugify(job['title'], max_len=32)}"
+    thread_name = args.get("thread_name") or _default_discord_thread_name(job.get("title") or "Codex job", job["job_id"])
 
     if parent_target and not target:
         created = _send_message({
@@ -771,6 +784,7 @@ def _setup_discord(job: dict[str, Any], args: dict[str, Any]) -> None:
             return
         target = created.get("target")
         job["discord_thread_id"] = created.get("thread_id")
+        job["discord_thread_name"] = thread_name
         job["discord_parent_target"] = parent_target
         job["discord_thread_target"] = target
 
@@ -988,6 +1002,7 @@ def _handle_status(args: dict[str, Any]) -> str:
             job["ended_at"] = _now_iso()
             _save_job(job)
         elif output:
+            _update_launch_health(job, output, tmux_alive=alive)
             _update_runtime_observations(job, output)
             _save_job(job)
     return json.dumps({"success": True, "job": job, "tmux_alive": alive, "summary": _job_status_summary(job, alive)}, ensure_ascii=False)
@@ -1102,11 +1117,174 @@ def _clean_codex_output(text: str, max_chars: int = 1800) -> str:
     return "\n".join(reversed(selected)).strip()
 
 
+def _detect_launch_health(output: str, *, tmux_alive: bool, elapsed_seconds: float = 0) -> dict[str, Any] | None:
+    """Detect early Codex startup states that need operator attention."""
+    if not tmux_alive:
+        return None
+    cleaned = _strip_terminal_sequences(output or "")
+    recent_lines = [line.strip() for line in cleaned.splitlines() if line.strip()][-24:]
+    lowered_lines = [line.lower() for line in recent_lines]
+    lowered = re.sub(r"\s+", " ", "\n".join(recent_lines)).strip().lower()
+    if not lowered:
+        return None
+
+    last_progress_line = max((index for index, line in enumerate(recent_lines) if _is_launch_progress_line(line)), default=-1)
+
+    trust_line = max(
+        (
+            index
+            for index, line in enumerate(lowered_lines)
+            if (
+                ("do you trust" in line and ("folder" in line or "files" in line or "repo" in line))
+                or "trust the files in this folder" in line
+                or "trust this repo" in line
+            )
+        ),
+        default=-1,
+    )
+    if trust_line > last_progress_line:
+        return {
+            "kind": "repo_trust_prompt",
+            "phase": "awaiting_user_input",
+            "severity": "needs_input",
+            "summary": "Codex is waiting at a repository trust prompt.",
+            "recommendation": "Inspect with tmux attach and approve only if this is the expected trusted repo/worktree.",
+        }
+
+    permission_patterns = (
+        r"\ballow\b.{0,80}\b(command|tool|operation|edit|write|run)\b",
+        r"\b(approve|deny)\b.{0,80}\b(command|tool|operation|request)\b",
+        r"\brequires approval\b",
+        r"\bwaiting for approval\b",
+        r"\bdo you want to allow\b",
+        r"\bwould you like to run\b",
+    )
+    permission_line = max(
+        (
+            index
+            for index, line in enumerate(lowered_lines)
+            if any(re.search(pattern, line) for pattern in permission_patterns)
+        ),
+        default=-1,
+    )
+    if permission_line > last_progress_line:
+        return {
+            "kind": "permission_prompt",
+            "phase": "awaiting_user_input",
+            "severity": "needs_input",
+            "summary": "Codex appears to be waiting for an approval or permission prompt.",
+            "recommendation": "Inspect with tmux attach and approve or deny the prompt so the job does not sit idle.",
+        }
+
+    mcp_line = max(
+        (
+            index
+            for index, line in enumerate(lowered_lines)
+            if (
+                "starting mcp server" in line
+                or "booting mcp server" in line
+                or ("mcp server" in line and ("starting" in line or "booting" in line or "handshaking" in line))
+            )
+        ),
+        default=-1,
+    )
+    mcp_starting = mcp_line >= 0
+    if elapsed_seconds >= _MCP_STARTUP_STALL_SECONDS and mcp_line > last_progress_line and mcp_starting and "esc to interrupt" in lowered:
+        return {
+            "kind": "mcp_startup_stall",
+            "phase": "startup_stalled",
+            "severity": "startup_delay",
+            "summary": "Codex appears stuck during MCP startup.",
+            "recommendation": "Inspect with tmux attach; press Esc only when the stalled MCP is irrelevant to this job, otherwise wait or fix the MCP configuration.",
+        }
+
+    return None
+
+
+def _job_elapsed_seconds(job: dict[str, Any]) -> float:
+    raw = job.get("started_at") or job.get("created_at")
+    if not raw:
+        return 0.0
+    try:
+        started = datetime.strptime(str(raw).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return 0.0
+    return max(0.0, (datetime.utcnow() - started).total_seconds())
+
+
+def _normalize_codex_activity_line(line: str) -> str:
+    value = line.strip()
+    while value.startswith(("•", "└", "├", "│")):
+        value = value[1:].strip()
+    return value
+
+
+def _is_launch_progress_line(line: str) -> bool:
+    lowered = _normalize_codex_activity_line(line).lower()
+    return bool(
+        re.match(r"^(ran|edited|read|search|searched|listed|opened)\b", lowered)
+        or lowered.startswith(("result:", "objective:", "approach:", "plan:"))
+        or "hermes_job_done" in lowered
+    )
+
+
+def _looks_like_launch_progress(output: str) -> bool:
+    recent_lines = [line.strip() for line in _strip_terminal_sequences(output or "").splitlines() if line.strip()][-24:]
+    return any(_is_launch_progress_line(line) for line in recent_lines)
+
+
+def _resolve_launch_health(job: dict[str, Any]) -> None:
+    existing = job.get("health_check") if isinstance(job.get("health_check"), dict) else {}
+    if not existing or existing.get("resolved_at"):
+        return
+    existing["status"] = "resolved"
+    existing["resolved_at"] = _now_iso()
+    job["health_check"] = existing
+    if job.get("phase") in {"awaiting_user_input", "startup_stalled"}:
+        job["phase"] = "running"
+    if job.get("blockers") == existing.get("summary"):
+        job["blockers"] = ""
+
+
+def _update_launch_health(job: dict[str, Any], output: str, *, tmux_alive: bool, elapsed_seconds: float | None = None) -> dict[str, Any] | None:
+    elapsed = _job_elapsed_seconds(job) if elapsed_seconds is None else elapsed_seconds
+    health = _detect_launch_health(output, tmux_alive=tmux_alive, elapsed_seconds=elapsed)
+    if not health:
+        if _looks_like_launch_progress(output):
+            _resolve_launch_health(job)
+        return None
+    existing = job.get("health_check") if isinstance(job.get("health_check"), dict) else {}
+    is_continuing_same_detection = existing.get("kind") == health.get("kind") and existing.get("detected_at") and not existing.get("resolved_at")
+    if is_continuing_same_detection:
+        health["detected_at"] = existing["detected_at"]
+    else:
+        health["detected_at"] = _now_iso()
+        for key in (
+            "health_alert_sent_at",
+            "health_alert_kind",
+            "health_alert_message_id",
+            "health_alert_target",
+            "health_alert_error",
+        ):
+            job.pop(key, None)
+    health["elapsed_seconds"] = int(elapsed)
+    health["attach_command"] = job.get("attach_command")
+    job["health_check"] = health
+    job["phase"] = health.get("phase") or job.get("phase") or "running"
+    if health.get("summary"):
+        job["blockers"] = health["summary"]
+    return health
+
+
 def _truncate_text(text: str, max_chars: int) -> str:
     text = (text or "").strip()
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _suppress_dangerous_mentions(text: str) -> str:
+    return (text or "").replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
 
 
 def _completion_status_from_payload(payload: dict[str, Any], cleaned_output: str = "") -> str:
@@ -1394,6 +1572,7 @@ def _record_completion_state(job: dict[str, Any], state: dict[str, Any], output:
     job["completion_payload"] = state.get("payload") or {}
     if output:
         _update_runtime_observations(job, output)
+    _resolve_launch_health(job)
     payload = job.get("completion_payload") or {}
     if isinstance(payload, dict):
         existing_tests = str(job.get("tests") or "").strip().lower()
@@ -1469,6 +1648,7 @@ def _job_status_summary(job: dict[str, Any], alive: bool) -> dict[str, Any]:
         "key_findings": job.get("key_findings"),
         "tests": job.get("tests"),
         "blockers": job.get("blockers"),
+        "health_check": job.get("health_check") or {},
         "final_handoff": job.get("final_handoff") or {},
         "distillation": job.get("distillation") or {},
         "attach_command": job.get("attach_command"),
@@ -1606,6 +1786,16 @@ def _render_monitor_status(job: dict[str, Any], alive: bool, output: str) -> str
         f"- **Blockers/decisions:** {_truncate_text(blockers, 150)}\n"
         f"- **Attach:** `{job['attach_command']}`\n"
     )
+    health = job.get("health_check") if isinstance(job.get("health_check"), dict) else {}
+    if health and not health.get("resolved_at"):
+        health_text = "\n".join(
+            part for part in (
+                health.get("summary"),
+                health.get("recommendation"),
+                f"Attach: {health.get('attach_command') or job.get('attach_command')}",
+            ) if part
+        )
+        message += f"\n**Launch health check**\n```text\n{_truncate_text(health_text, 420)}\n```\n"
     if key_findings:
         message += f"\n**Task summary / key findings**\n```text\n{key_findings}\n```\n"
     if workspace_summary:
@@ -1705,6 +1895,52 @@ def _send_completion_summary(job: dict[str, Any], output: str, status: str = "ex
         _append_monitor_log(job, f"completion summary exception: {exc}")
 
 
+def _render_health_alert(job: dict[str, Any]) -> str:
+    health = job.get("health_check") if isinstance(job.get("health_check"), dict) else {}
+    summary = _suppress_dangerous_mentions(health.get("summary") or "Codex needs attention during startup.")
+    recommendation = _suppress_dangerous_mentions(health.get("recommendation") or "Inspect the tmux session before taking action.")
+    title = _suppress_dangerous_mentions(str(job.get("title") or ""))
+    attach = health.get("attach_command") or job.get("attach_command") or "n/a"
+    return _truncate_text(
+        (
+            f"**Codex job `{job['job_id']}` needs attention**\n"
+            f"- **Title:** {title}\n"
+            f"- **Health check:** `{health.get('kind') or 'unknown'}`\n"
+            f"- **Phase:** `{health.get('phase') or job.get('phase') or 'running'}`\n"
+            f"- **Summary:** {summary}\n"
+            f"- **Recommendation:** {recommendation}\n"
+            f"- **Attach:** `{attach}`"
+        ),
+        1900,
+    )
+
+
+def _send_health_alert_if_needed(job: dict[str, Any]) -> None:
+    health = job.get("health_check") if isinstance(job.get("health_check"), dict) else {}
+    kind = health.get("kind")
+    if not kind or health.get("resolved_at"):
+        return
+    if job.get("health_alert_sent_at") and job.get("health_alert_kind") == kind:
+        return
+    target = job.get("summary_target") or job.get("discord_thread_target")
+    if not target:
+        return
+    try:
+        result = _send_message({"action": "send", "target": target, "message": _render_health_alert(job)})
+        if result.get("error"):
+            job["health_alert_error"] = result.get("error")
+            _append_monitor_log(job, f"health alert error: {result.get('error')}")
+            return
+        job["health_alert_sent_at"] = _now_iso()
+        job["health_alert_kind"] = kind
+        job["health_alert_message_id"] = result.get("message_id")
+        job["health_alert_target"] = target
+        _append_monitor_log(job, f"health alert sent: {kind}")
+    except Exception as exc:
+        job["health_alert_error"] = str(exc)
+        _append_monitor_log(job, f"health alert exception: {exc}")
+
+
 def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6) -> None:
     started = time.time()
     while time.time() - started < max_seconds:
@@ -1729,8 +1965,11 @@ def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6)
             _record_completion_state(job, completion_state, output)
             if not alive:
                 job["ended_at"] = _now_iso()
-        elif output:
-            _update_runtime_observations(job, output)
+        else:
+            if output:
+                _update_launch_health(job, output, tmux_alive=alive, elapsed_seconds=max(time.time() - started, _job_elapsed_seconds(job)))
+                _update_runtime_observations(job, output)
+            _send_health_alert_if_needed(job)
         try:
             result = _send_message({
                 "action": "edit",
@@ -1748,6 +1987,7 @@ def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6)
             _send_completion_summary(job, output, status=job.get("status") or "completed")
             _save_job(job)
             return
+        _save_job(job)
         time.sleep(interval)
 
 

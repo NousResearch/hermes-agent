@@ -317,6 +317,242 @@ Next step: Add tests for event emission and wire the sink into app services.
     assert "**Recent useful activity**" in message
 
 
+def test_launch_health_detects_repo_trust_prompt():
+    from tools.codex_job_tool import _detect_launch_health
+
+    output = """
+OpenAI Codex
+
+Do you trust the files in this folder?
+/tmp/hermes-smoke/repo
+
+Only continue if you trust this repo.
+"""
+
+    health = _detect_launch_health(output, tmux_alive=True, elapsed_seconds=12)
+
+    assert health is not None
+    assert health["kind"] == "repo_trust_prompt"
+    assert health["phase"] == "awaiting_user_input"
+    assert "trust" in health["summary"].lower()
+    assert "tmux attach" in health["recommendation"].lower()
+
+
+def test_launch_health_detects_mcp_startup_stall_only_after_grace_period():
+    from tools.codex_job_tool import _detect_launch_health
+
+    output = "Starting MCP server `xcodebuildmcp`… esc to interrupt"
+
+    assert _detect_launch_health(output, tmux_alive=True, elapsed_seconds=10) is None
+
+    health = _detect_launch_health(output, tmux_alive=True, elapsed_seconds=61)
+
+    assert health is not None
+    assert health["kind"] == "mcp_startup_stall"
+    assert health["phase"] == "startup_stalled"
+    assert "mcp" in health["summary"].lower()
+
+
+def test_launch_health_ignores_stale_prompt_after_recent_activity():
+    from tools.codex_job_tool import _detect_launch_health
+
+    output = "\n".join([
+        "Starting MCP server `xcodebuildmcp`… esc to interrupt",
+        *[f"Ran step {index}" for index in range(35)],
+        "Result: continuing after startup",
+    ])
+
+    assert _detect_launch_health(output, tmux_alive=True, elapsed_seconds=90) is None
+
+
+def test_launch_health_ignores_stale_prompt_after_prefixed_codex_activity():
+    from tools.codex_job_tool import _detect_launch_health
+
+    trust_output = "Do you trust the files in this folder?\n• Ran pwd\n└ /tmp/repo"
+    mcp_output = "Starting MCP server `xcodebuildmcp`… esc to interrupt\n└ Read AGENTS.md"
+
+    assert _detect_launch_health(trust_output, tmux_alive=True, elapsed_seconds=20) is None
+    assert _detect_launch_health(mcp_output, tmux_alive=True, elapsed_seconds=90) is None
+
+
+def test_launch_health_resolves_when_prompt_disappears_after_progress():
+    from tools.codex_job_tool import _update_launch_health
+
+    job = {
+        "job_id": "health-resolve",
+        "phase": "awaiting_user_input",
+        "blockers": "Codex is waiting at a repository trust prompt.",
+        "attach_command": "tmux attach -t codex-health-resolve",
+        "health_check": {
+            "kind": "repo_trust_prompt",
+            "phase": "awaiting_user_input",
+            "summary": "Codex is waiting at a repository trust prompt.",
+            "detected_at": "2026-05-03T00:00:00Z",
+        },
+    }
+
+    health = _update_launch_health(job, "Ran pwd\nResult: continuing normally", tmux_alive=True, elapsed_seconds=30)
+
+    assert health is None
+    assert job["health_check"]["resolved_at"]
+    assert job["health_check"]["status"] == "resolved"
+    assert job["phase"] == "running"
+    assert job["blockers"] == ""
+
+
+def test_launch_health_resolves_when_progress_appears_after_prompt_in_recent_capture():
+    from tools.codex_job_tool import _update_launch_health
+
+    job = {
+        "job_id": "health-progress",
+        "phase": "awaiting_user_input",
+        "blockers": "Codex is waiting at a repository trust prompt.",
+        "health_check": {
+            "kind": "repo_trust_prompt",
+            "phase": "awaiting_user_input",
+            "summary": "Codex is waiting at a repository trust prompt.",
+            "detected_at": "2026-05-03T00:00:00Z",
+        },
+    }
+    output = "Do you trust the files in this folder?\nRan pwd\nResult: continued after trust prompt"
+
+    assert _update_launch_health(job, output, tmux_alive=True, elapsed_seconds=30) is None
+    assert job["health_check"]["status"] == "resolved"
+    assert job["phase"] == "running"
+
+
+def test_resolved_same_kind_health_prompt_sends_new_alert(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    sent = []
+
+    import tools.codex_job_tool as tool
+
+    monkeypatch.setattr(tool, "_send_message", lambda args: sent.append(args) or {"success": True, "message_id": f"alert-{len(sent)}"})
+    job = {
+        "job_id": "health-repeat",
+        "title": "Repeated prompt",
+        "summary_target": "discord",
+        "attach_command": "tmux attach -t codex-health-repeat",
+        "health_alert_sent_at": "2026-05-03T00:00:01Z",
+        "health_alert_kind": "repo_trust_prompt",
+        "health_check": {
+            "kind": "repo_trust_prompt",
+            "status": "resolved",
+            "resolved_at": "2026-05-03T00:00:02Z",
+            "detected_at": "2026-05-03T00:00:00Z",
+        },
+    }
+
+    health = tool._update_launch_health(job, "Do you trust the files in this folder?", tmux_alive=True, elapsed_seconds=90)
+    tool._send_health_alert_if_needed(job)
+
+    assert health is not None
+    assert health["detected_at"] != "2026-05-03T00:00:00Z"
+    assert len(sent) == 1
+    assert job["health_alert_message_id"] == "alert-1"
+
+
+def test_monitor_status_surfaces_launch_health_warning(tmp_path):
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import _render_monitor_status
+
+    job = {
+        "job_id": "health1",
+        "title": "Health check job",
+        "workspace_path": str(repo),
+        "branch": "codex/health-check-health1",
+        "model": "gpt-5.5",
+        "effort": "high",
+        "attach_command": "tmux attach -t codex-health1",
+        "health_check": {
+            "kind": "repo_trust_prompt",
+            "phase": "awaiting_user_input",
+            "summary": "Codex is waiting at a repository trust prompt.",
+            "recommendation": "Inspect tmux attach -t codex-health1 and approve only if trusted.",
+        },
+    }
+
+    message = _render_monitor_status(job, alive=True, output="Do you trust the files in this folder?")
+
+    assert "**Launch health check**" in message
+    assert "repository trust prompt" in message
+    assert "tmux attach -t codex-health1" in message
+
+
+def test_health_alert_is_sent_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    sent = []
+
+    import tools.codex_job_tool as tool
+
+    monkeypatch.setattr(tool, "_send_message", lambda args: sent.append(args) or {"success": True, "message_id": "alert-1"})
+    job = {
+        "job_id": "health2",
+        "title": "Prompt check",
+        "summary_target": "discord",
+        "discord_thread_target": "discord:123:456",
+        "attach_command": "tmux attach -t codex-health2",
+        "health_check": {
+            "kind": "permission_prompt",
+            "phase": "awaiting_user_input",
+            "summary": "Codex is waiting for approval.",
+            "recommendation": "Inspect and approve/deny the prompt.",
+        },
+    }
+
+    tool._send_health_alert_if_needed(job)
+    tool._send_health_alert_if_needed(job)
+
+    assert len(sent) == 1
+    assert sent[0]["target"] == "discord"
+    assert "Codex job `health2` needs attention" in sent[0]["message"]
+    assert job["health_alert_sent_at"]
+    assert job["health_alert_kind"] == "permission_prompt"
+
+
+def test_default_discord_thread_name_is_human_readable(monkeypatch):
+    import tools.codex_job_tool as tool
+
+    sent = []
+
+    def fake_send(args):
+        sent.append(args)
+        if args["action"] == "create_thread":
+            return {"target": "discord:parent:thread", "thread_id": "thread-123"}
+        return {"message_id": "status-123", "chat_id": "parent"}
+
+    monkeypatch.setattr(tool, "_send_message", fake_send)
+    job = {
+        "job_id": "b797",
+        "title": "Review Hermes codex launch health watchdog diff",
+        "status": "running",
+        "phase": "running",
+        "workspace_mode": "local",
+        "workspace_path": "/tmp/repo",
+        "repo_path": "/tmp/repo",
+        "branch": "codex/hermes-orchestration-mvp",
+        "model": "gpt-5.5",
+        "effort": "xhigh",
+        "profile": "review-rich-readonly",
+        "profile_summary": "Read-only review",
+        "included_capabilities": [],
+        "omitted_capabilities": [],
+        "approval": "never",
+        "sandbox": "read-only",
+        "search": False,
+        "tmux_session": "codex-b797",
+        "attach_command": "tmux attach -t codex-b797",
+    }
+
+    tool._setup_discord(job, {"discord_parent_target": "discord:#codex-control"})
+
+    assert sent[0]["action"] == "create_thread"
+    assert sent[0]["thread_name"].startswith("Review Hermes codex launch health watchdog")
+    assert "codex-b797" not in sent[0]["thread_name"]
+    assert job["discord_thread_name"] == sent[0]["thread_name"]
+
+
 def test_start_defaults_completion_summary_to_discord_home_when_discord_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -472,6 +708,44 @@ def test_completion_record_updates_placeholder_tests_from_payload():
     _record_completion_state(job, state, output)
 
     assert job["tests"] == "passed"
+
+
+def test_completion_record_resolves_stale_launch_health_warning():
+    from tools.codex_job_tool import _detect_completion_state, _record_completion_state
+
+    output = 'HERMES_JOB_DONE {"status":"completed","summary":"done","tests":"passed"}'
+    job = {
+        "job_id": "done-health",
+        "status": "running",
+        "phase": "awaiting_user_input",
+        "blockers": "Codex is waiting at a repository trust prompt.",
+        "health_check": {
+            "kind": "repo_trust_prompt",
+            "phase": "awaiting_user_input",
+            "summary": "Codex is waiting at a repository trust prompt.",
+            "detected_at": "2026-05-03T00:00:00Z",
+        },
+    }
+
+    state = _detect_completion_state(output, tmux_alive=True)
+    _record_completion_state(job, state, output)
+
+    assert job["status"] == "completed"
+    assert job["phase"] == "idle_complete"
+    assert job["health_check"]["status"] == "resolved"
+    assert job["health_check"]["resolved_at"]
+    assert job["blockers"] == ""
+
+
+def test_launch_health_detects_permission_prompt_that_mentions_read():
+    from tools.codex_job_tool import _detect_launch_health
+
+    output = "Would you like to run the read-only repository inspection command? Approve or deny."
+
+    health = _detect_launch_health(output, tmux_alive=True, elapsed_seconds=15)
+
+    assert health is not None
+    assert health["kind"] == "permission_prompt"
 
 
 def test_start_appends_machine_readable_completion_protocol(tmp_path, monkeypatch):

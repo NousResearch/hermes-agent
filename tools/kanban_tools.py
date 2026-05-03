@@ -399,7 +399,7 @@ KANBAN_COMPLETE_SCHEMA = {
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). If metadata contains "
         "pr_url/pr_number or github.pr_url/github.pr_number, the task "
-        "moves to in_review instead of done. At least one of ``summary`` "
+        "moves to in_review instead of done; clean CI/review moves it to merge_ready until the PR is merged/deployed. At least one of ``summary`` "
         "or ``result`` is required."
     ),
     "parameters": {

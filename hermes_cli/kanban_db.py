@@ -42,12 +42,13 @@ VALID_STATUSES = {
     "running",
     "in_review",
     "code_review",
+    "merge_ready",
     "blocked",
     "done",
     "archived",
 }
-REVIEW_STATUSES = {"in_review", "code_review"}
-REVIEW_TRANSITION_STATUSES = {"in_review", "code_review", "done", "blocked"}
+REVIEW_STATUSES = {"in_review", "code_review", "merge_ready"}
+REVIEW_TRANSITION_STATUSES = {"in_review", "code_review", "merge_ready", "done", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 # A running task's claim is valid for 15 minutes; after that the next
@@ -1222,11 +1223,13 @@ def transition_review_task(
 ) -> bool:
     """Move a PR review task among review lifecycle states.
 
-    Valid targets are ``in_review``, ``code_review``, ``done``, and
-    ``blocked``. The helper always clears active claim state because
-    review polling/feedback is an external lifecycle, not an active
-    worker claim. ``done`` is still the only status that unblocks child
-    dependencies.
+    Valid targets are ``in_review``, ``code_review``, ``merge_ready``,
+    ``done``, and ``blocked``. The helper always clears active claim
+    state because review polling/feedback is an external lifecycle, not
+    an active worker claim. ``merge_ready`` means the PR is green and
+    accepted but not yet merged/deployed; ``done`` is reserved for the
+    explicit post-merge/deploy completion and is still the only status
+    that unblocks child dependencies.
     """
     if status not in REVIEW_TRANSITION_STATUSES:
         raise ValueError(
@@ -1251,7 +1254,7 @@ def transition_review_task(
                    claim_expires = NULL,
                    worker_pid    = NULL
              WHERE id = ?
-               AND status IN ('in_review', 'code_review', 'blocked', 'done', 'ready', 'running')
+               AND status IN ('in_review', 'code_review', 'merge_ready', 'blocked', 'done', 'ready', 'running')
             """,
             (status, result, completed_at, task_id),
         )
@@ -1516,8 +1519,10 @@ def complete_task(
     If metadata contains ``pr_url`` / ``pr_number`` (or
     ``github.pr_url`` / ``github.pr_number``), the implementation is not
     dependency-complete yet. The run is closed, the claim is released,
-    and the task moves to ``in_review`` for CI/review follow-up. Only a
-    later clean review transition moves it to ``done``.
+    and the task moves to ``in_review`` for CI/review follow-up. A clean
+    review transition moves it to ``merge_ready``; ``done`` remains
+    reserved for after the PR is merged and deployed/released (or an
+    explicit human handoff says no deployment is needed).
     """
     now = int(time.time())
     pr_meta = extract_pr_metadata(metadata)
@@ -1533,7 +1538,7 @@ def complete_task(
                    claim_expires= NULL,
                    worker_pid   = NULL
              WHERE id = ?
-               AND status IN ('running', 'ready', 'blocked', 'in_review', 'code_review')
+               AND status IN ('running', 'ready', 'blocked', 'in_review', 'code_review', 'merge_ready')
             """,
             (
                 target_status,

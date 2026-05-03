@@ -58,9 +58,9 @@ UNRESOLVED_THREADS = {
 }
 
 
-def test_evaluate_green_pr_done():
+def test_evaluate_green_pr_merge_ready():
     result = pr.evaluate_pr_review(pr_view=GREEN_VIEW, checks=[], review_threads={})
-    assert result["state"] == "done"
+    assert result["state"] == "merge_ready"
     assert result["actionable"] is False
 
 
@@ -129,5 +129,34 @@ def test_poll_task_updates_status_and_seen_ids(kanban_home):
         events = [e for e in kb.list_events(conn, tid) if e.kind == "review_polled"]
         assert events
         assert "review:R1" in events[-1].payload["review"]["seen_ids"]
+    finally:
+        conn.close()
+
+
+def test_poll_task_green_pr_moves_to_merge_ready(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="impl", assignee="worker")
+        kb.complete_task(
+            conn,
+            tid,
+            summary="PR opened",
+            metadata={"pr_url": "https://github.com/acme/app/pull/42"},
+        )
+
+        def runner(args):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"url": "https://github.com/acme/app/pull/42", **GREEN_VIEW})
+            if args[:2] == ["pr", "checks"]:
+                return json.dumps([])
+            if args[:2] == ["api", "graphql"]:
+                return json.dumps({})
+            raise AssertionError(args)
+
+        result = pr.poll_task(conn, tid, runner=runner)
+        assert result["state"] == "merge_ready"
+        task = kb.get_task(conn, tid)
+        assert task.status == "merge_ready"
+        assert task.completed_at is None
     finally:
         conn.close()

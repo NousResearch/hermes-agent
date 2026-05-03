@@ -59,7 +59,7 @@ kanban_complete(
 )
 ```
 
-If `metadata` contains `pr_url` or `pr_number` (also accepted under `github.pr_url` / `github.pr_number`), Kanban does **not** mark the task `done`. It releases your claim and moves the task to `in_review` so CI/review polling can decide the next state. Clean PRs move to `done`; failing checks, requested changes, or unseen unresolved review comments move to `code_review`.
+If `metadata` contains `pr_url` or `pr_number` (also accepted under `github.pr_url` / `github.pr_number`), Kanban does **not** mark the task `done`. It releases your claim and moves the task to `in_review` so CI/review polling can decide the next state. Clean PRs move to `merge_ready`; failing checks, requested changes, or unseen unresolved review comments move to `code_review`. Only mark `done` after the PR is merged and deployed/released (or Josh explicitly says no release target is required).
 
 **Research task:**
 ```python

@@ -213,7 +213,7 @@ KANBAN_GUIDANCE = (
     "artifacts. `metadata` is machine-readable facts "
     "(`{changed_files: [...], tests_run: N, decisions: [...], pr_url: ...}`). "
     "If you opened a PR, include `pr_url` or `pr_number`; the task will move "
-    "to `in_review` instead of `done` until CI/review is clean. Downstream "
+    "to `in_review` instead of `done`; clean CI/review moves it to `merge_ready`. Downstream "
     "workers read both via their own `kanban_show`. Never put secrets / "
     "tokens / raw PII in either field — run rows are durable forever.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "

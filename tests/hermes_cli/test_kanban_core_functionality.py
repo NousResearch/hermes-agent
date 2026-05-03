@@ -45,6 +45,7 @@ def kanban_home(tmp_path, monkeypatch):
 def test_review_statuses_are_valid(kanban_home):
     assert "in_review" in kb.VALID_STATUSES
     assert "code_review" in kb.VALID_STATUSES
+    assert "merge_ready" in kb.VALID_STATUSES
 
 
 def test_idempotency_key_returns_existing_task(kanban_home):
@@ -1472,6 +1473,7 @@ def test_cli_stats_prints_review_statuses(kanban_home):
     out = run_slash("stats")
     assert "in_review" in out
     assert "code_review" in out
+    assert "merge_ready" in out
 
 
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):

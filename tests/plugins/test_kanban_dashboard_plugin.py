@@ -77,6 +77,7 @@ def test_board_empty(client):
         "running",
         "in_review",
         "code_review",
+        "merge_ready",
         "blocked",
         "done",
     ):

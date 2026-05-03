@@ -138,7 +138,7 @@ def evaluate_pr_review(
 
     Returns a JSON-serializable dict with:
 
-    - ``state`` / ``task_status``: ``done``, ``in_review``, or ``code_review``
+    - ``state`` / ``task_status``: ``merge_ready``, ``in_review``, or ``code_review``
     - ``actionable``: whether this poll found new feedback/failures
     - ``actionable_ids``: unseen review/check identifiers to persist as seen
     - ``observed_ids``: all currently open failure/feedback identifiers
@@ -211,7 +211,7 @@ def evaluate_pr_review(
         state = "code_review"
         reason = "already_seen_feedback"
     else:
-        state = "done"
+        state = "merge_ready"
         reason = "green"
 
     return {

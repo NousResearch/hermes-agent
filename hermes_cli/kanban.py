@@ -36,6 +36,7 @@ _STATUS_ICONS = {
     "running":  "●",
     "in_review": "◌",
     "code_review": "✎",
+    "merge_ready": "◆",
     "blocked":  "⊘",
     "done":     "✓",
     "archived": "—",
@@ -1220,7 +1221,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     print("By status:")
     for k in (
         "triage", "todo", "ready", "running",
-        "in_review", "code_review", "blocked", "done",
+        "in_review", "code_review", "merge_ready", "blocked", "done",
     ):
         print(f"  {k:11s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:

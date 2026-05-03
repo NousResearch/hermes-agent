@@ -137,7 +137,7 @@ Tell them what you created in plain prose:
 
 **Pipeline with gates:** `pm → backend-eng → reviewer`. Each stage's `parents=[previous_task]`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
 
-**Coding PR loop:** For implementation tasks, instruct the worker to include `pr_url` or `pr_number` in `kanban_complete(..., metadata={...})`. That moves the same implementation task to `in_review` instead of `done`. A poller can run `hermes kanban pr-review-poll <task_id>` once per cron/dispatcher tick: green checks and no open feedback transition to `done`; pending checks stay `in_review`; failing checks, requested changes, or unseen unresolved review comments transition to `code_review`. Use `github.pr_url` / `github.pr_number` if the metadata already has a GitHub namespace.
+**Coding PR loop:** For implementation tasks, instruct the worker to include `pr_url` or `pr_number` in `kanban_complete(..., metadata={...})`. That moves the same implementation task to `in_review` instead of `done`. A poller can run `hermes kanban pr-review-poll <task_id>` once per cron/dispatcher tick: green checks and no open feedback transition to `merge_ready`; pending checks stay `in_review`; failing checks, requested changes, or unseen unresolved review comments transition to `code_review`. A separate merge/deploy handoff transitions `merge_ready` to `done`. Use `github.pr_url` / `github.pr_number` if the metadata already has a GitHub namespace.
 
 **Same-profile queue:** 50 tasks, all assigned to `translator`, no dependencies between them. Dispatcher serializes — translator processes them in priority order, accumulating experience in their own memory.
 
@@ -145,7 +145,7 @@ Tell them what you created in plain prose:
 
 ## Pitfalls
 
-**Reassignment vs. new task.** Human review tasks can still create follow-up tasks, but PR-backed implementation tasks now have a built-in loop: `in_review` means waiting on CI/review, `code_review` means actionable PR feedback exists, and `done` means accepted. Don't mark PR-bearing implementation tasks done by hand unless the PR is clean/accepted.
+**Reassignment vs. new task.** Human review tasks can still create follow-up tasks, but PR-backed implementation tasks now have a built-in loop: `in_review` means waiting on CI/review, `code_review` means actionable PR feedback exists, `merge_ready` means the PR is clean/accepted but not yet merged/deployed, and `done` means merged plus deployed/released (or explicitly handed off). Do not mark PR-bearing implementation tasks done merely because review is clean.
 
 **Argument order for links.** `kanban_link(parent_id=..., child_id=...)` — parent first. Mixing them up demotes the wrong task to `todo`.
 

@@ -171,9 +171,10 @@ kanban_complete(
 the task to `in_review` and clears the active claim. A single poll with
 `hermes kanban pr-review-poll <task_id>` uses `gh` to read checks,
 review decision, and unresolved review threads. Green checks with no open
-feedback move the task to `done`; pending checks keep it `in_review`;
+feedback move the task to `merge_ready`; pending checks keep it `in_review`;
 failing checks, requested changes, or unseen unresolved review comments
-move it to `code_review`. The poller records seen check/comment IDs so
+move it to `code_review`. Only a later merge/deploy (or explicit handoff)
+should move the task to `done`. The poller records seen check/comment IDs so
 the same review comment is not processed repeatedly.
 
 ### Check CI Status

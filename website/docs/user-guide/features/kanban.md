@@ -45,7 +45,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 
 ## Core concepts
 
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | in_review | code_review | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation). `in_review` and `code_review` are used by PR-backed coding tasks: waiting on CI/review vs. actionable PR feedback.
+- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | in_review | code_review | merge_ready | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation). `in_review`, `code_review`, and `merge_ready` are used by PR-backed coding tasks: waiting on CI/review, actionable PR feedback, and green/accepted PR awaiting merge/deploy.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -237,7 +237,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 
 ### What the plugin gives you
 
-- A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `in_review`, `code_review`, `blocked`, `done` (plus `archived` when the toggle is on).
+- A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `in_review`, `code_review`, `merge_ready`, `blocked`, `done` (plus `archived` when the toggle is on).
   - `triage` is the parking column for rough ideas a specifier is expected to flesh out. Tasks created with `hermes kanban create --triage` (or via the Triage column's inline create) land here and the dispatcher leaves them alone until a human or specifier promotes them to `todo` / `ready`.
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.

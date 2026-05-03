@@ -8,7 +8,7 @@ task graphs. After each step, checks the full invariant set:
   I2. If a run has ended_at NULL, SOME task MUST have current_run_id
       pointing at it (no orphan open runs).
   I3. task.status in the valid set {triage, todo, ready, running,
-      blocked, done, archived}.
+      blocked, merge_ready, done, archived}.
   I4. task.claim_lock NULL iff status not in (running,).
   I5. Every run has started_at <= ended_at (or ended_at is NULL).
   I6. If outcome is set, ended_at must also be set.
@@ -75,7 +75,7 @@ def assert_invariants(conn, kb, ops_log):
         failures.append(f"I2: open run {row['id']} on task {row['task_id']} has no pointer")
 
     # I3: valid statuses
-    valid = {"triage", "todo", "ready", "running", "in_review", "code_review", "blocked", "done", "archived"}
+    valid = {"triage", "todo", "ready", "running", "in_review", "code_review", "merge_ready", "blocked", "done", "archived"}
     bad_status = conn.execute("SELECT id, status FROM tasks").fetchall()
     for row in bad_status:
         if row["status"] not in valid:

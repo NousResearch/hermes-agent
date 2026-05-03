@@ -25,6 +25,7 @@ from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
     _send_discord,
+    _send_slack,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -917,7 +918,7 @@ class TestParseTargetRefE164:
 
 
 class TestParseTargetRefSlack:
-    """_parse_target_ref recognizes Slack channel/user IDs as explicit."""
+    """_parse_target_ref recognizes Slack conversation and user targets."""
 
     def test_public_channel_id_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G")
@@ -931,12 +932,22 @@ class TestParseTargetRefSlack:
     def test_dm_id_is_explicit(self):
         assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
 
-    def test_user_id_is_not_explicit(self):
-        """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
-        targets. chat.postMessage rejects them — a DM must be opened first via
-        conversations.open to obtain a D... conversation ID.
-        """
-        assert _parse_target_ref("slack", "U123ABCDEF")[2] is False
+    def test_user_id_is_explicit_dm_target(self):
+        """Slack user IDs are explicit user targets that must be opened as DMs."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "U123ABCDEF")
+        assert chat_id == "user:U123ABCDEF"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_at_username_is_explicit_dm_target(self):
+        """slack:@username targets resolve to DMs through users.list + conversations.open."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "@alice")
+        assert chat_id == "user_name:alice"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_workspace_id_is_not_explicit(self):
+        """Slack workspace IDs (W...) are not sendable conversation/user targets."""
         assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
 
     def test_whitespace_is_stripped(self):
@@ -952,6 +963,105 @@ class TestParseTargetRefSlack:
     def test_slack_id_not_explicit_for_other_platforms(self):
         assert _parse_target_ref("discord", "C0B0QV5434G")[2] is False
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
+
+
+class TestSendSlackDmTargets:
+    """_send_slack opens user targets as DMs before posting."""
+
+    @staticmethod
+    def _mock_response(data):
+        response = MagicMock()
+        response.json = AsyncMock(return_value=data)
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+        return response
+
+    @staticmethod
+    def _mock_session(*responses):
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(side_effect=responses)
+        return session
+
+    def test_user_id_target_opens_dm_before_posting(self):
+        session = self._mock_session(
+            self._mock_response({"ok": True, "channel": {"id": "D123ABCDEF"}}),
+            self._mock_response({"ok": True, "ts": "123.456"}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user:U123ABCDEF", "hello"))
+
+        assert result == {
+            "success": True,
+            "platform": "slack",
+            "chat_id": "D123ABCDEF",
+            "message_id": "123.456",
+        }
+        open_payload = session.post.call_args_list[0].kwargs["json"]
+        post_payload = session.post.call_args_list[1].kwargs["json"]
+        assert open_payload == {"users": "U123ABCDEF"}
+        assert post_payload["channel"] == "D123ABCDEF"
+        assert post_payload["text"] == "hello"
+
+    def test_username_target_resolves_user_then_opens_dm(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "UOTHER123", "name": "someone", "profile": {"display_name": "Other", "real_name": "Other User"}},
+                    {"id": "U123ABCDEF", "name": "alice", "profile": {"display_name": "Alice", "real_name": "Alice Example"}},
+                ],
+                "response_metadata": {},
+            }),
+            self._mock_response({"ok": True, "channel": {"id": "D123ABCDEF"}}),
+            self._mock_response({"ok": True, "ts": "123.456"}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user_name:alice", "hello"))
+
+        assert result["success"] is True
+        assert result["chat_id"] == "D123ABCDEF"
+        assert session.post.call_args_list[1].kwargs["json"] == {"users": "U123ABCDEF"}
+
+    def test_username_target_does_not_match_display_or_real_name(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "U123ABCDEF", "name": "notalice", "profile": {"display_name": "alice", "real_name": "alice"}},
+                ],
+                "response_metadata": {},
+            }),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user_name:alice", "hello"))
+
+        assert "error" in result
+        assert "Could not resolve Slack user '@alice'" in result["error"]
+        assert session.post.call_count == 1
+
+    def test_ambiguous_username_returns_error_without_opening_dm(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "U111AAAAA", "name": "alice", "profile": {}},
+                    {"id": "U222BBBBB", "name": "alice", "profile": {}},
+                ],
+                "response_metadata": {},
+            }),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user_name:alice", "hello"))
+
+        assert "error" in result
+        assert "matched multiple Slack users" in result["error"]
+        assert session.post.call_count == 1
 
 
 class TestSendDiscordThreadId:

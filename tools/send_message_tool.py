@@ -22,12 +22,13 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
-# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) and workspace IDs
-# (W...) are NOT valid chat.postMessage channel values — posting to them fails
-# because the API requires a conversation ID. To DM a user you must first call
-# conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
-# through to channel-name resolution, which only matches by name and fails.
+# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) are parsed as
+# explicit user targets but are converted to D... conversations via
+# conversations.open before chat.postMessage.
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
+_SLACK_USER_NAME_RE = re.compile(r"^\s*@([A-Za-z0-9._-]{1,80})\s*$")
+_SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -333,6 +334,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+        match = _SLACK_USER_ID_RE.fullmatch(target_ref) or _SLACK_MENTION_RE.fullmatch(target_ref)
+        if match:
+            return f"user:{match.group(1)}", None, True
+        match = _SLACK_USER_NAME_RE.fullmatch(target_ref)
+        if match:
+            return f"user_name:{match.group(1)}", None, True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1121,7 +1128,12 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
 
 
 async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+    """Send via Slack Web API.
+
+    ``chat_id`` may be a Slack conversation ID (C/G/D...) or an internal user
+    target (``user:U...`` / ``user_name:...``). User targets are opened as DMs
+    before posting because Slack chat.postMessage requires a conversation ID.
+    """
     try:
         import aiohttp
     except ImportError:
@@ -1130,15 +1142,62 @@ async def _send_slack(token, chat_id, message):
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        url = "https://slack.com/api/chat.postMessage"
+        base_url = "https://slack.com/api"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        async def post_api(session, method, payload):
+            async with session.post(f"{base_url}/{method}", headers=headers, json=payload, **_req_kw) as resp:
+                return await resp.json()
+
+        async def resolve_user_name(session, name):
+            query = name.strip().lstrip("@").lower()
+            matches = []
+            cursor = None
+            for _page in range(20):
+                payload = {"limit": 200}
+                if cursor:
+                    payload["cursor"] = cursor
+                data = await post_api(session, "users.list", payload)
+                if not data.get("ok"):
+                    return None, f"Slack users.list error: {data.get('error', 'unknown')}"
+                for member in data.get("members", []):
+                    if member.get("deleted") or member.get("is_bot"):
+                        continue
+                    # ``@name`` should match the stable Slack handle only. Display
+                    # and real names are mutable/non-unique enough that using them
+                    # could DM the wrong person with sensitive content.
+                    if str(member.get("name", "")).strip().lower() == query:
+                        matches.append(member)
+                cursor = (data.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+            if not matches:
+                return None, f"Could not resolve Slack user '@{name}'."
+            if len(matches) > 1:
+                return None, f"Slack user '@{name}' matched multiple Slack users. Use a Slack user ID instead."
+            return matches[0].get("id"), None
+
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            if chat_id.startswith("user_name:"):
+                user_id, error = await resolve_user_name(session, chat_id[len("user_name:"):])
+                if error:
+                    return _error(error)
+                chat_id = f"user:{user_id}"
+
+            if chat_id.startswith("user:"):
+                user_id = chat_id[len("user:"):]
+                opened = await post_api(session, "conversations.open", {"users": user_id})
+                if not opened.get("ok"):
+                    return _error(f"Slack conversations.open error: {opened.get('error', 'unknown')}")
+                chat_id = (opened.get("channel") or {}).get("id")
+                if not chat_id:
+                    return _error("Slack conversations.open did not return a DM channel ID")
+
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
-            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
-                return _error(f"Slack API error: {data.get('error', 'unknown')}")
+            data = await post_api(session, "chat.postMessage", payload)
+            if data.get("ok"):
+                return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
+            return _error(f"Slack API error: {data.get('error', 'unknown')}")
     except Exception as e:
         return _error(f"Slack send failed: {e}")
 

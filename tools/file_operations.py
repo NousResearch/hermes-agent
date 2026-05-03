@@ -971,8 +971,11 @@ class ShellFileOperations(FileOperations):
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        hidden_exclude = "-not -path '*/.*'"
+        # Exclude hidden directories (matching ripgrep's default behavior),
+        # but only when the search path itself is not inside a hidden directory.
+        _path_parts = os.path.normpath(path).split(os.sep)
+        _has_hidden_component = any(p.startswith('.') for p in _path_parts if p)
+        hidden_exclude = "" if _has_hidden_component else "-not -path '*/.*'"
 
         cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
@@ -1166,7 +1169,12 @@ class ShellFileOperations(FileOperations):
         
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
+        # BUT: skip exclusion when the search path itself is inside a hidden
+        # directory, because --exclude-dir='.*' would exclude the search root.
+        _path_parts = os.path.normpath(path).split(os.sep)
+        _has_hidden_component = any(p.startswith('.') for p in _path_parts if p)
+        if not _has_hidden_component:
+            cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested
         if context > 0:

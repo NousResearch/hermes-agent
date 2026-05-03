@@ -61,6 +61,34 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
+def _extract_media_from_result(result: dict) -> list[str]:
+    """Scan agent result messages for screenshot_url/screenshot_path from tools."""
+    urls: list[str] = []
+    for msg in result.get("messages", []):
+        if msg.get("role") != "tool":
+            continue
+        try:
+            content = json.loads(msg["content"]) if isinstance(msg["content"], str) else msg["content"]
+        except (json.JSONDecodeError, TypeError, KeyError):
+            continue
+        if not isinstance(content, dict):
+            continue
+        _url = content.get("screenshot_url") or content.get("screenshot_path") or ""
+        if _url and isinstance(_url, str) and _url.strip():
+            _path = _url.strip()
+            if _path.startswith("/"):
+                try:
+                    _rel = str(Path(_path).relative_to(
+                        os.environ.get("HERMES_WORKSPACE",
+                                       str(Path(os.environ.get("HERMES_HOME", "/opt/data")) / "workspace"))))
+                    urls.append(f"/v1/workspace/download?path={_rel}")
+                except (ValueError, OSError):
+                    pass
+            else:
+                urls.append(f"/v1/workspace/download?path={_path}")
+    return urls
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -1210,6 +1238,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final_response:
             final_response = result.get("error", "(No response generated)")
 
+        # Extract media URLs from tool results
+        _media_urls = _extract_media_from_result(result)
+
         # Auto-generate session title after first exchange (non-blocking)
         if final_response and self._session_db:
             try:
@@ -1233,6 +1264,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "chat.completion",
             "created": created,
             "model": model_name,
+            "media": _media_urls or None,
             "choices": [
                 {
                     "index": 0,
@@ -1399,6 +1431,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
+
+            # Emit media events from tool results
+            if result:
+                for _media_url in _extract_media_from_result(result):
+                    _payload = {"url": _media_url, "type": "screenshot"}
+                    await response.write(
+                        f"event: hermes.media\ndata: {json.dumps(_payload)}\n\n".encode()
+                    )
 
             # Finish chunk
             finish_chunk = {

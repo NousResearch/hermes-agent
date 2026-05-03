@@ -1103,7 +1103,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path/screenshot_url. The screenshot will be delivered automatically to the user via the platform — do NOT include MEDIA: or the path in your response text. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2336,7 +2336,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     images, complex layouts, etc.).
     
     The screenshot is saved persistently and its file path is returned alongside
-    the analysis, so it can be shared with users via MEDIA:<path> in the response.
+    the analysis; the screenshot will be delivered automatically.
     
     Args:
         question: What you want to know about the page visually
@@ -2354,9 +2354,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     import uuid as uuid_mod
     effective_task_id = _last_session_key(task_id or "default")
     
-    # Save screenshot to persistent location so it can be shared with users
-    from hermes_constants import get_hermes_dir
-    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+    # Save screenshot to terminal.cwd/screenshots so it's accessible via workspace API
+    screenshots_dir = _get_screenshots_base() / "screenshots"
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     
     try:
@@ -2366,14 +2365,15 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
         
         # Take screenshot using agent-browser
+        logger.info("浏览器截图开始：%s", str(screenshot_path))
         screenshot_args = []
         if annotate:
             screenshot_args.append("--annotate")
         screenshot_args.append("--full")
         screenshot_args.append(str(screenshot_path))
         result = _run_browser_command(
-            effective_task_id, 
-            "screenshot", 
+            effective_task_id,
+            "screenshot",
             screenshot_args,
         )
         
@@ -2408,6 +2408,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_bytes = screenshot_path.read_bytes()
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
+        logger.info("浏览器截图完成：%s（%d 字节）", str(screenshot_path), len(_screenshot_bytes))
         
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
@@ -2481,6 +2482,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 raise
         
         analysis = (response.choices[0].message.content or "").strip()
+        logger.info("浏览器截图视觉分析完成，分析结果 %d 字符", len(analysis or ""))
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)
@@ -2488,6 +2490,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             "success": True,
             "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
+            "screenshot_url": _build_workspace_url(screenshot_path),
         }
         # Include annotation data if annotated screenshot was taken
         if annotate and result.get("data", {}).get("annotations"):
@@ -2503,8 +2506,36 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         error_info = {"success": False, "error": f"Error during vision analysis: {str(e)}"}
         if screenshot_path.exists():
             error_info["screenshot_path"] = str(screenshot_path)
-            error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
+            error_info["note"] = "Screenshot was captured but vision analysis failed. It will be delivered automatically on success."
         return json.dumps(error_info, ensure_ascii=False)
+
+
+def _get_screenshots_base() -> Path:
+    """Resolve screenshot storage directory: HERMES_WORKSPACE > config > default."""
+    _env = os.getenv("HERMES_WORKSPACE", "").strip()
+    if _env:
+        return Path(_env)
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _cwd = str(_cfg.get("terminal", {}).get("cwd", "") or "").strip()
+        if _cwd:
+            _base = Path(_cwd).expanduser().resolve()
+            if _base.is_dir():
+                return _base
+    except Exception:
+        pass
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "workspace"
+
+
+def _build_workspace_url(screenshot_path: Path) -> str:
+    """Return a workspace-relative path like 'screenshots/xxx.png'."""
+    _base = _get_screenshots_base()
+    try:
+        return str(screenshot_path.relative_to(_base))
+    except (ValueError, OSError, Exception):
+        return str(screenshot_path)
 
 
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):

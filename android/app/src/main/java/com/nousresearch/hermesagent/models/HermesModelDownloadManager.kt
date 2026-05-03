@@ -232,12 +232,27 @@ object HermesModelDownloadManager {
     }
 
     fun refreshDownloads(context: Context, store: LocalModelDownloadStore): List<LocalModelDownloadRecord> {
-        val refreshed = store.loadDownloads().map { refreshRecord(context, it) }
+        val refreshed = importExistingModelFiles(
+            context = context,
+            records = store.loadDownloads().map { refreshRecord(context, it) },
+        )
         store.saveDownloads(refreshed)
+        repairPreferredDownload(store, refreshed)
         return refreshed
     }
 
     fun refreshRecord(context: Context, record: LocalModelDownloadRecord): LocalModelDownloadRecord {
+        if (record.downloadManagerId < 0L) {
+            val file = File(record.destinationPath)
+            val present = file.isImportableModelFile()
+            return record.copy(
+                totalBytes = if (present) file.length().coerceAtLeast(record.totalBytes) else record.totalBytes,
+                downloadedBytes = if (present) file.length().coerceAtLeast(record.downloadedBytes) else record.downloadedBytes,
+                status = if (present) "completed" else "missing",
+                statusMessage = if (present) "Existing model file is present on disk" else "Imported model file is missing on disk",
+                updatedAtEpochMs = System.currentTimeMillis(),
+            )
+        }
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val query = DownloadManager.Query().setFilterById(record.downloadManagerId)
         downloadManager.query(query)?.use { cursor ->
@@ -276,6 +291,115 @@ object HermesModelDownloadManager {
 
     fun setPreferredDownload(store: LocalModelDownloadStore, recordId: String) {
         store.setPreferredDownloadId(recordId)
+    }
+
+    private fun importExistingModelFiles(
+        context: Context,
+        records: List<LocalModelDownloadRecord>,
+    ): List<LocalModelDownloadRecord> {
+        val now = System.currentTimeMillis()
+        val current = records.toMutableList()
+        val knownPaths = current
+            .mapNotNull { record -> record.destinationPath.canonicalPathOrNull() }
+            .toMutableSet()
+        modelsDirectory(context)
+            .listFiles()
+            .orEmpty()
+            .filter { it.isImportableModelFile() }
+            .sortedBy { it.name.lowercase(Locale.US) }
+            .forEach { file ->
+                val canonicalPath = file.absolutePath.canonicalPathOrNull() ?: return@forEach
+                if (canonicalPath in knownPaths) {
+                    val index = current.indexOfFirst { it.destinationPath.canonicalPathOrNull() == canonicalPath }
+                    if (index >= 0 && current[index].status != "completed") {
+                        val size = file.length().coerceAtLeast(current[index].totalBytes)
+                        current[index] = current[index].copy(
+                            totalBytes = size,
+                            downloadedBytes = size,
+                            status = "completed",
+                            statusMessage = "Existing model file is present on disk",
+                            updatedAtEpochMs = now,
+                        )
+                    }
+                    return@forEach
+                }
+                val size = file.length()
+                current += LocalModelDownloadRecord(
+                    title = file.name,
+                    sourceUrl = file.toURI().toString(),
+                    repoOrUrl = "Local file",
+                    filePath = file.name,
+                    revision = "local",
+                    runtimeFlavor = runtimeFlavorForLocalFile(file),
+                    destinationFileName = file.name,
+                    destinationPath = file.absolutePath,
+                    downloadManagerId = -1L,
+                    totalBytes = size,
+                    downloadedBytes = size,
+                    status = "completed",
+                    statusMessage = "Imported existing model file from disk",
+                    supportsResume = false,
+                    updatedAtEpochMs = now,
+                )
+                knownPaths += canonicalPath
+            }
+        return current.sortedByDescending { it.updatedAtEpochMs }
+    }
+
+    private fun repairPreferredDownload(
+        store: LocalModelDownloadStore,
+        records: List<LocalModelDownloadRecord>,
+    ) {
+        val preferredId = store.preferredDownloadId()
+        val preferred = records.firstOrNull { it.id == preferredId }
+        if (preferred != null && preferred.isReadyLocalModelRecord()) {
+            return
+        }
+        val replacement = records
+            .filter { it.isReadyLocalModelRecord() }
+            .sortedWith(compareBy<LocalModelDownloadRecord> { localModelPreferenceRank(it) }.thenBy { it.title.lowercase(Locale.US) })
+            .firstOrNull()
+        when {
+            replacement != null -> store.setPreferredDownloadId(replacement.id)
+            preferredId.isNotBlank() -> store.setPreferredDownloadId("")
+        }
+    }
+
+    private fun LocalModelDownloadRecord.isReadyLocalModelRecord(): Boolean {
+        return status == "completed" &&
+            File(destinationPath).isImportableModelFile()
+    }
+
+    private fun File.isImportableModelFile(): Boolean {
+        if (!isFile || length() <= 0L) {
+            return false
+        }
+        val lower = absolutePath.lowercase(Locale.US)
+        return lower.endsWith(".gguf") ||
+            lower.endsWith(".litertlm") ||
+            (lower.endsWith(".task") && !isLiteRtWebTaskArtifact(lower))
+    }
+
+    private fun runtimeFlavorForLocalFile(file: File): String {
+        return if (file.name.lowercase(Locale.US).endsWith(".gguf")) "GGUF" else "LiteRT-LM"
+    }
+
+    private fun localModelPreferenceRank(record: LocalModelDownloadRecord): Int {
+        val lower = record.destinationPath.lowercase(Locale.US)
+        return when {
+            lower.endsWith(".litertlm") && "gemma-4" in lower -> 0
+            lower.endsWith(".litertlm") -> 1
+            lower.endsWith(".task") -> 2
+            lower.endsWith(".gguf") -> 3
+            else -> 10
+        }
+    }
+
+    private fun String.canonicalPathOrNull(): String? {
+        if (isBlank()) {
+            return null
+        }
+        return runCatching { File(this).canonicalPath }.getOrNull()
     }
 
     private fun resolveDownloadSource(draft: ModelDownloadDraft, hfToken: String): ResolvedDownloadSource {

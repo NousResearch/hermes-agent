@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.backend
 import android.content.Context
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
+import com.nousresearch.hermesagent.models.HermesModelDownloadManager
 import java.io.File
 import java.util.Locale
 
@@ -207,8 +208,9 @@ object OnDeviceBackendManager {
 
     private fun preferredCompletedDownload(context: Context): LocalModelDownloadRecord? {
         val store = LocalModelDownloadStore(context)
+        val refreshed = HermesModelDownloadManager.refreshDownloads(context, store)
         val preferredId = store.preferredDownloadId().ifBlank { return null }
-        val preferred = store.findDownload(preferredId) ?: return null
+        val preferred = refreshed.firstOrNull { it.id == preferredId } ?: store.findDownload(preferredId) ?: return null
         return preferred.takeIf { it.status == "completed" }
     }
 

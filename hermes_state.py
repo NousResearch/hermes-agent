@@ -2350,16 +2350,25 @@ class SessionDB:
         self._execute_write(_do)
 
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
-        """Return True if a Hermes session is already bound to any Telegram DM topic."""
-        self.apply_telegram_topic_migration()
-        row = self._conn.execute(
-            """
-            SELECT 1 FROM telegram_dm_topic_bindings
-            WHERE session_id = ?
-            LIMIT 1
-            """,
-            (str(session_id),),
-        ).fetchone()
+        """Return True if a Hermes session is already bound to any Telegram DM topic.
+
+        Read-only: does NOT trigger the telegram-topic migration. If the
+        topic-mode tables have not been created yet (i.e. nobody has run
+        ``/topic`` in this profile), the session is by definition unbound
+        and we return False.
+        """
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT 1 FROM telegram_dm_topic_bindings
+                    WHERE session_id = ?
+                    LIMIT 1
+                    """,
+                    (str(session_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return False
         return row is not None
 
     def list_unlinked_telegram_sessions_for_user(
@@ -2369,35 +2378,66 @@ class SessionDB:
         user_id: str,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """List previous Telegram sessions for this user that are not bound to a topic."""
-        self.apply_telegram_topic_migration()
+        """List previous Telegram sessions for this user that are not bound to a topic.
+
+        Read-only: does NOT trigger the telegram-topic migration. If the
+        topic-mode tables are absent, fall back to a simpler query that
+        just returns this user's Telegram sessions — there can't be any
+        bindings yet.
+        """
         with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT s.*,
-                    COALESCE(
-                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                         FROM messages m
-                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                         ORDER BY m.timestamp, m.id LIMIT 1),
-                        ''
-                    ) AS _preview_raw,
-                    COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
-                FROM sessions s
-                WHERE s.source = 'telegram'
-                  AND s.user_id = ?
-                  AND NOT EXISTS (
-                      SELECT 1 FROM telegram_dm_topic_bindings b
-                      WHERE b.session_id = s.id
-                  )
-                ORDER BY last_active DESC, s.started_at DESC
-                LIMIT ?
-                """,
-                (str(user_id), int(limit)),
-            ).fetchall()
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT s.*,
+                        COALESCE(
+                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                             FROM messages m
+                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                             ORDER BY m.timestamp, m.id LIMIT 1),
+                            ''
+                        ) AS _preview_raw,
+                        COALESCE(
+                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                            s.started_at
+                        ) AS last_active
+                    FROM sessions s
+                    WHERE s.source = 'telegram'
+                      AND s.user_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM telegram_dm_topic_bindings b
+                          WHERE b.session_id = s.id
+                      )
+                    ORDER BY last_active DESC, s.started_at DESC
+                    LIMIT ?
+                    """,
+                    (str(user_id), int(limit)),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # telegram_dm_topic_bindings doesn't exist yet — no bindings
+                # means every telegram session for this user is "unlinked".
+                rows = self._conn.execute(
+                    """
+                    SELECT s.*,
+                        COALESCE(
+                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                             FROM messages m
+                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                             ORDER BY m.timestamp, m.id LIMIT 1),
+                            ''
+                        ) AS _preview_raw,
+                        COALESCE(
+                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                            s.started_at
+                        ) AS last_active
+                    FROM sessions s
+                    WHERE s.source = 'telegram'
+                      AND s.user_id = ?
+                    ORDER BY last_active DESC, s.started_at DESC
+                    LIMIT ?
+                    """,
+                    (str(user_id), int(limit)),
+                ).fetchall()
 
         sessions: List[Dict[str, Any]] = []
         for row in rows:

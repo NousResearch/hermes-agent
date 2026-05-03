@@ -1463,15 +1463,17 @@ class GatewayRunner:
         if session_db is None:
             return False
         try:
-            return bool(
-                session_db.is_telegram_topic_mode_enabled(
-                    chat_id=str(source.chat_id),
-                    user_id=str(source.user_id),
-                )
+            raw = session_db.is_telegram_topic_mode_enabled(
+                chat_id=str(source.chat_id),
+                user_id=str(source.user_id),
             )
         except Exception:
             logger.debug("Failed to read Telegram topic mode state", exc_info=True)
             return False
+        # Only honor a real True from the SessionDB. Any other value
+        # (including MagicMock instances from test fixtures that didn't
+        # opt into topic mode) means topic mode is off for this chat.
+        return raw is True
 
     def _is_telegram_topic_root_lobby(self, source: SessionSource) -> bool:
         """True for the main Telegram DM when topic mode has made it a lobby."""
@@ -5902,7 +5904,16 @@ class GatewayRunner:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
             if binding:
-                session_entry.session_id = str(binding.get("session_id") or session_entry.session_id)
+                bound_session_id = str(binding.get("session_id") or "")
+                if bound_session_id and bound_session_id != session_entry.session_id:
+                    # Route the override through SessionStore so the session_key
+                    # → session_id mapping is persisted to disk and the previous
+                    # lane session is ended cleanly. Mutating session_entry in
+                    # place here created a split-brain state where the JSON
+                    # index pointed at one id but code downstream used another.
+                    switched = self.session_store.switch_session(session_key, bound_session_id)
+                    if switched is not None:
+                        session_entry = switched
             else:
                 try:
                     self._record_telegram_topic_binding(source, session_entry)
@@ -7122,6 +7133,17 @@ class GatewayRunner:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = "\n⚠️ Title is empty after cleanup — session started untitled."
         header = header + _title_note
+
+        # When /new runs inside a Telegram DM topic lane, rewrite the
+        # (chat_id, thread_id) → session_id binding so the next message
+        # uses the freshly-created session. Without this, the binding
+        # still points at the old session and the binding-lookup at the
+        # top of _handle_message_with_agent would switch right back.
+        if self._is_telegram_topic_lane(source) and new_entry is not None:
+            try:
+                self._record_telegram_topic_binding(source, new_entry)
+            except Exception:
+                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:

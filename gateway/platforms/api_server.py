@@ -949,6 +949,25 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             overrides = None
 
+        # Extract files parameter — grouped by type: {images: [...], others: [...]}
+        files_raw = body.get("files", {})
+        if isinstance(files_raw, dict):
+            _append = ""
+            for _url in files_raw.get("images", []):
+                _url = str(_url or "").strip()
+                if _url:
+                    _append += f"\n\n图片地址：{_url}"
+            for _url in files_raw.get("others", []):
+                _url = str(_url or "").strip()
+                if _url:
+                    _append += f"\n\n文件地址：{_url}"
+            if _append:
+                _last_msg = messages[-1] if messages else None
+                if _last_msg and isinstance(_last_msg.get("content"), str):
+                    _last_msg["content"] += _append
+                    _truncated = _append[:200]
+                    logger.info("files 参数已拼接到用户消息：%s", _truncated)
+
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []

@@ -589,7 +589,7 @@ class TeamsAdapter(BasePlatformAdapter):
 
 def interactive_setup() -> None:
     """Guide the user through Teams setup using the Teams CLI."""
-    from hermes_cli.config import (
+    from hermes_cli.setup import (
         get_env_value,
         save_env_value,
         prompt,

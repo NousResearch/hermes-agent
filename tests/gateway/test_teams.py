@@ -313,6 +313,33 @@ class TestTeamsPluginRegistration:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Interactive setup
+# ---------------------------------------------------------------------------
+
+class TestTeamsInteractiveSetup:
+    def test_interactive_setup_uses_setup_prompt_helpers(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli import setup as setup_mod
+
+        answers = iter(["client-id", "client-secret", "tenant-id", "aad-1, aad-2"])
+        monkeypatch.setattr(setup_mod, "prompt", lambda *_args, **_kwargs: next(answers))
+        monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(setup_mod, "print_info", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(setup_mod, "print_success", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(setup_mod, "print_warning", lambda *_args, **_kwargs: None)
+
+        _teams_mod.interactive_setup()
+
+        env_text = (hermes_home / ".env").read_text(encoding="utf-8")
+        assert "TEAMS_CLIENT_ID=client-id" in env_text
+        assert "TEAMS_CLIENT_SECRET=client-secret" in env_text
+        assert "TEAMS_TENANT_ID=tenant-id" in env_text
+        assert "TEAMS_ALLOWED_USERS=aad-1,aad-2" in env_text
+
+
+# ---------------------------------------------------------------------------
 # Tests: Connect / Disconnect
 # ---------------------------------------------------------------------------
 

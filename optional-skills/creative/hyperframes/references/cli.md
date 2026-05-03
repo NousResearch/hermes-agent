@@ -8,8 +8,9 @@ Everything runs through `npx hyperframes` (or the globally-installed `hyperframe
 2. **Write** — author HTML composition (see `composition.md`)
 3. **Lint** — `npx hyperframes lint`
 4. **Validate** — `npx hyperframes validate` (WCAG contrast audit)
-5. **Preview** — `npx hyperframes preview`
-6. **Render** — `npx hyperframes render`
+5. **Inspect** — `npx hyperframes inspect` (visual layout audit)
+6. **Preview** — `npx hyperframes preview`
+7. **Render** — `npx hyperframes render`
 
 Always lint before preview/render — catches missing `data-composition-id`, overlapping tracks, and unregistered timelines.
 
@@ -59,6 +60,20 @@ npx hyperframes validate --no-contrast   # skip while iterating
 ```
 
 Seeks to 5 timestamps, screenshots the page, samples background pixels behind every text element, and warns on contrast ratios below 4.5:1 (normal text) or 3:1 (large text — 24px+, or 19px+ bold). Run before final render.
+
+## inspect
+
+```bash
+npx hyperframes inspect                 # visual layout audit at 5 timestamps
+npx hyperframes inspect ./my-project    # specific project
+npx hyperframes inspect --json          # agent-readable findings
+npx hyperframes inspect --samples 15    # denser timeline sweep
+npx hyperframes inspect --at 1.5,4,7.25 # explicit hero-frame timestamps
+```
+
+Use this after `lint` and `validate`, especially for compositions with speech bubbles, cards, captions, or tight typography. Reports overflow, off-frame elements, occluded text, contrast warnings, and per-timestamp layout summaries — catches issues that pure timeline lint can't see (e.g., a caption that wraps past the safe area only at a specific timestamp).
+
+`npx hyperframes layout` is a compatibility alias for the same visual inspection pass.
 
 ## preview
 

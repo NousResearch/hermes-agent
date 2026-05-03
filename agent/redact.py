@@ -108,10 +108,23 @@ _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
-# JSON field patterns: "apiKey": "value", "token": "value", etc.
+# JSON field patterns: "apiKey": "***", "token": "***", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(
     rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+
+# Free-form assignments in natural text: password=foo, admin_password: foo.
+# Keep the key and separator intact; redact only the value.
+_FREEFORM_ASSIGN_KEYS = r"(?:password|passwd|token|secret|client_secret|admin_password|auth|cookie|session|api_key|access_token|refresh_token)"
+_FREEFORM_ASSIGN_RE = re.compile(
+    rf"(?<![A-Za-z0-9_])"
+    rf"(?P<key>{_FREEFORM_ASSIGN_KEYS})"
+    rf"(?P<pre_space>\s*)"
+    rf"(?P<sep>[:=])"
+    rf"(?P<post_space>\s*)"
+    rf"(?P<value>\"[^\"\n]*\"|'[^'\n]*'|[^\s,;]+)",
     re.IGNORECASE,
 )
 
@@ -331,11 +344,27 @@ def redact_sensitive_text(text: str, *, force: bool = False) -> str:
         return f"{name}={quote}{_mask_token(value)}{quote}"
     text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
-    # JSON fields: "apiKey": "value"
+    # JSON fields: "apiKey": "***"
     def _redact_json(m):
         key, value = m.group(1), m.group(2)
         return f'{key}: "{_mask_token(value)}"'
     text = _JSON_FIELD_RE.sub(_redact_json, text)
+
+    # Free-form key/value pairs in natural text.
+    def _redact_freeform_assign(m):
+        key = m.group("key")
+        pre_space = m.group("pre_space") or ""
+        sep = m.group("sep")
+        post_space = m.group("post_space") or ""
+        value = m.group("value")
+        # Preserve quoting style only if it was present.
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            quote = value[0]
+            redacted_value = f"{quote}[REDACTED]{quote}"
+        else:
+            redacted_value = "[REDACTED]"
+        return f"{key}{pre_space}{sep}{post_space}{redacted_value}"
+    text = _FREEFORM_ASSIGN_RE.sub(_redact_freeform_assign, text)
 
     # Authorization headers
     text = _AUTH_HEADER_RE.sub(

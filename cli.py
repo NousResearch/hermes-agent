@@ -2399,7 +2399,13 @@ class HermesCLI:
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
-        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        # Preserve explicit alias-style model names such as @preset/hermes.
+        # Those are user-facing routing identifiers, not path-like names, so
+        # stripping the prefix would hide the actual active route in the TUI.
+        if model_name.startswith("@"):
+            model_short = model_name
+        else:
+            model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:
@@ -6571,10 +6577,10 @@ class HermesCLI:
             self._handle_goal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
-        elif canonical == "voice":
-            self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "voice":
+            self._handle_voice_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -8457,6 +8463,30 @@ class HermesCLI:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _handle_busy_command(self, command: str):
+        """Handle /busy [queue|interrupt|status] command."""
+        parts = command.strip().split(maxsplit=1)
+        arg = parts[1].lower().strip() if len(parts) > 1 else "status"
+
+        if arg == "status":
+            _cprint(f"  Busy input mode: {self.busy_input_mode}")
+            _cprint(
+                f"  Enter while busy: {'queues for next turn' if self.busy_input_mode == 'queue' else 'interrupts current run'}"
+            )
+            _cprint("  Usage: /busy [queue|interrupt|status]")
+            return
+
+        if arg not in {"queue", "interrupt"}:
+            _cprint(f"  Unknown busy subcommand: {arg}")
+            _cprint("  Usage: /busy [queue|interrupt|status]")
+            return
+
+        self.busy_input_mode = arg
+        if save_config_value("display.busy_input_mode", arg):
+            _cprint(f"  Busy input mode set to: {arg} (saved)")
+        else:
+            _cprint(f"  Busy input mode set to: {arg}")
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""

@@ -23,12 +23,30 @@ import re
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.redact import redact_sensitive_text
 from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
+
+_TEXT_OUTPUT_KEYS = frozenset({"content", "summary", "preview", "message"})
+
+
+def _sanitize_output_payload(value: Any, key: str | None = None) -> Any:
+    """Redact secret-like text fields in tool output while preserving metadata."""
+    if isinstance(value, dict):
+        return {k: _sanitize_output_payload(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_output_payload(item, key) for item in value]
+    if isinstance(value, str) and (key in _TEXT_OUTPUT_KEYS or key is None):
+        return redact_sensitive_text(value)
+    return value
+
+
+def _json_result(payload: Any) -> str:
+    return json.dumps(_sanitize_output_payload(payload), ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +231,9 @@ class HolographicMemoryProvider(MemoryProvider):
             lines = []
             for r in results:
                 trust = r.get("trust_score", r.get("trust", 0))
-                lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
-            return "## Holographic Memory\n" + "\n".join(lines)
+                content = redact_sensitive_text(r.get("content", ""))
+                lines.append(f"- [{trust:.1f}] {content}")
+            return redact_sensitive_text("## Holographic Memory\n" + "\n".join(lines))
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
             return ""
@@ -268,7 +287,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category", "general"),
                     tags=args.get("tags", ""),
                 )
-                return json.dumps({"fact_id": fact_id, "status": "added"})
+                return _json_result({"fact_id": fact_id, "status": "added"})
 
             elif action == "search":
                 results = retriever.search(
@@ -277,7 +296,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
-                return json.dumps({"results": results, "count": len(results)})
+                return _json_result({"results": results, "count": len(results)})
 
             elif action == "probe":
                 results = retriever.probe(
@@ -285,7 +304,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
-                return json.dumps({"results": results, "count": len(results)})
+                return _json_result({"results": results, "count": len(results)})
 
             elif action == "related":
                 results = retriever.related(
@@ -293,25 +312,25 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
-                return json.dumps({"results": results, "count": len(results)})
+                return _json_result({"results": results, "count": len(results)})
 
             elif action == "reason":
                 entities = args.get("entities", [])
                 if not entities:
-                    return tool_error("reason requires 'entities' list")
+                    return tool_error(redact_sensitive_text("reason requires 'entities' list"))
                 results = retriever.reason(
                     entities,
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
-                return json.dumps({"results": results, "count": len(results)})
+                return _json_result({"results": results, "count": len(results)})
 
             elif action == "contradict":
                 results = retriever.contradict(
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
-                return json.dumps({"results": results, "count": len(results)})
+                return _json_result({"results": results, "count": len(results)})
 
             elif action == "update":
                 updated = store.update_fact(
@@ -321,11 +340,11 @@ class HolographicMemoryProvider(MemoryProvider):
                     tags=args.get("tags"),
                     category=args.get("category"),
                 )
-                return json.dumps({"updated": updated})
+                return _json_result({"updated": updated})
 
             elif action == "remove":
                 removed = store.remove_fact(int(args["fact_id"]))
-                return json.dumps({"removed": removed})
+                return _json_result({"removed": removed})
 
             elif action == "list":
                 facts = store.list_facts(
@@ -333,26 +352,26 @@ class HolographicMemoryProvider(MemoryProvider):
                     min_trust=float(args.get("min_trust", 0.0)),
                     limit=int(args.get("limit", 10)),
                 )
-                return json.dumps({"facts": facts, "count": len(facts)})
+                return _json_result({"facts": facts, "count": len(facts)})
 
             else:
-                return tool_error(f"Unknown action: {action}")
+                return tool_error(redact_sensitive_text(f"Unknown action: {action}"))
 
         except KeyError as exc:
-            return tool_error(f"Missing required argument: {exc}")
+            return tool_error(redact_sensitive_text(f"Missing required argument: {exc}"))
         except Exception as exc:
-            return tool_error(str(exc))
+            return tool_error(redact_sensitive_text(str(exc)))
 
     def _handle_fact_feedback(self, args: dict) -> str:
         try:
             fact_id = int(args["fact_id"])
             helpful = args["action"] == "helpful"
             result = self._store.record_feedback(fact_id, helpful=helpful)
-            return json.dumps(result)
+            return _json_result(result)
         except KeyError as exc:
-            return tool_error(f"Missing required argument: {exc}")
+            return tool_error(redact_sensitive_text(f"Missing required argument: {exc}"))
         except Exception as exc:
-            return tool_error(str(exc))
+            return tool_error(redact_sensitive_text(str(exc)))
 
     # -- Auto-extraction (on_session_end) ------------------------------------
 

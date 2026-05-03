@@ -444,7 +444,20 @@ class TestSendUpdateNotification:
         }
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
         (hermes_home / ".update_output.txt").write_text(
-            "→ Found 3 new commit(s)\n✓ Code updated!\n✓ Update complete!"
+            "→ Found 3 new commit(s)\n✓ Code updated!\n✓ Update complete!\n"
+            "\nUpdate report\n"
+            "  Old HEAD: abc123deadbeef\n"
+            "  New HEAD: fedcba987654\n"
+            "  Target ref: origin/main\n"
+            "  Rescue ref: refs/hermes/update-rescue/test\n"
+            "  Local commits preserved: 1 (c1)\n"
+            "  Local commits skipped as upstream-equivalent: none\n"
+            "  Local commits replayed: 1 (c1)\n"
+            "  Replay conflict commit: none\n"
+            "  Autostash ref preserved: none\n"
+            "  Final git status:\n"
+            "    clean\n"
+            "  Gateway/service health: restarted: hermes-gateway.service"
         )
         (hermes_home / ".update_exit_code").write_text("0")
 

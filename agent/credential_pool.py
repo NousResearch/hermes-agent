@@ -68,8 +68,10 @@ SUPPORTED_POOL_STRATEGIES = {
 }
 
 # Cooldown before retrying an exhausted credential.
-# 429 (rate-limited) and 402 (billing/quota) both cool down after 1 hour.
+# Transient 401 auth failures cool down briefly so single-key setups can recover.
+# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
 # Provider-supplied reset_at timestamps override these defaults.
+EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
@@ -190,6 +192,8 @@ def _is_manual_source(source: str) -> bool:
 
 def _exhausted_ttl(error_code: Optional[int]) -> int:
     """Return cooldown seconds based on the HTTP status that caused exhaustion."""
+    if error_code == 401:
+        return EXHAUSTED_TTL_401_SECONDS
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS

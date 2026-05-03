@@ -2479,7 +2479,7 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                            "description": "Per-task ACP command override (e.g. 'copilot'). Overrides the top-level acp_command for this task only.",
                         },
                         "acp_args": {
                             "type": "array",
@@ -2519,10 +2519,11 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
+                    "Override ACP command for child agents (e.g. 'copilot'). "
                     "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                    "the parent's transport. Requires an ACP-compatible CLI "
+                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
+                    "See agent/copilot_acp_client.py for the implementation."
                 ),
             },
             "acp_args": {
@@ -2530,7 +2531,7 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
+                    "Only used when acp_command is set."
                 ),
             },
         },

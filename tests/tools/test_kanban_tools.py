@@ -444,7 +444,7 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
         skip_memory=True,
     )
     prompt = a._build_system_prompt()
-    assert "You are a Kanban worker" not in prompt
+    assert "Kanban task execution protocol" not in prompt
     assert "kanban_show()" not in prompt
 
 
@@ -468,7 +468,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     )
     prompt = a._build_system_prompt()
     # Header phrase
-    assert "You are a Kanban worker" in prompt
+    assert "Kanban task execution protocol" in prompt
     # Lifecycle signals
     assert "kanban_show()" in prompt
     assert "kanban_complete" in prompt

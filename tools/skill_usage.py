@@ -133,6 +133,12 @@ def _read_hub_installed_names() -> Set[str]:
     """Return the set of skill names installed via the Skills Hub.
 
     Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
+
+    Returns hub slugs (lock keys), install-path directory names, AND the
+    SKILL.md ``name`` field for each installed skill.  This ensures that
+    ``is_agent_created()`` correctly recognises hub-installed skills even when
+    the SKILL.md display name differs from the hub slug (e.g. non-ASCII names
+    like "Get\u7b14\u8bb0" vs slug "getnote").
     """
     lock_path = _skills_dir() / ".hub" / "lock.json"
     if not lock_path.exists():
@@ -142,7 +148,22 @@ def _read_hub_installed_names() -> Set[str]:
         if isinstance(data, dict):
             installed = data.get("installed") or {}
             if isinstance(installed, dict):
-                return {str(k) for k in installed.keys()}
+                names: Set[str] = {str(k) for k in installed.keys()}
+                skills_base = _skills_dir()
+                for _slug, meta in installed.items():
+                    # Add the directory name from install_path
+                    install_path = (meta or {}).get("install_path", "")
+                    if install_path:
+                        p = Path(install_path)
+                        names.add(p.name)
+                        # Also read the SKILL.md name field from the installed dir
+                        skill_md = skills_base / install_path / "SKILL.md"
+                        if skill_md.exists():
+                            md_name = _read_skill_name(skill_md, fallback="")
+                            if md_name:
+                                names.add(md_name)
+                names.discard("")
+                return names
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
     return set()

@@ -830,6 +830,46 @@ def _print_other_profiles_gateway_status() -> None:
         pass
 
 
+def _gateway_list() -> None:
+    """List all profiles and their gateway running status.
+
+    Provides a single-command overview of every known profile and whether
+    its gateway is currently running, so multi-profile users don't have to
+    check each profile individually.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name
+    except Exception:
+        print("Unable to list profiles.")
+        return
+
+    profiles = list_profiles()
+    if not profiles:
+        print("No profiles found.")
+        return
+
+    current = get_active_profile_name()
+
+    print("Gateways:")
+    for prof in profiles:
+        marker = "✓" if prof.gateway_running else "✗"
+        label = prof.name
+        if prof.name == current:
+            label += " (current)"
+        parts = [f"  {marker} {label:<24s}"]
+        if prof.gateway_running:
+            try:
+                from gateway.status import get_running_pid
+                pid = get_running_pid(prof.path / "gateway.pid", cleanup_stale=False)
+                if pid:
+                    parts.append(f"PID {pid}")
+            except Exception:
+                pass
+        else:
+            parts.append("not running")
+        print(" — ".join(parts))
+
+
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
                            all_profiles: bool = False) -> int:
     """Kill any running gateway processes. Returns count killed.
@@ -4797,6 +4837,9 @@ def _gateway_command_inner(args):
 
         # Show other profiles' gateway status for multi-profile awareness
         _print_other_profiles_gateway_status()
+
+    elif subcmd == "list":
+        _gateway_list()
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Hermes gateway unit files from

@@ -3,7 +3,9 @@
 Session Search Tool - Long-Term Conversation Recall
 
 Searches past session transcripts in SQLite via FTS5, then summarizes the top
-matching sessions using a cheap/fast model (same pattern as web_extract).
+matching sessions using the configured auxiliary session_search model (same
+pattern as web_extract). By default, auxiliary "auto" routing uses the main
+chat provider/model unless the user overrides auxiliary.session_search.
 Returns focused summaries of past conversations rather than raw transcripts,
 keeping the main model's context window clean.
 
@@ -11,7 +13,7 @@ Flow:
   1. FTS5 search finds matching messages ranked by relevance
   2. Groups by session, takes the top N unique sessions (default 3)
   3. Loads each session's conversation, truncates to ~100k chars centered on matches
-  4. Sends to Gemini Flash with a focused summarization prompt
+  4. Sends to the configured auxiliary model with a focused summarization prompt
   5. Returns per-session summaries with metadata
 """
 
@@ -330,7 +332,8 @@ def session_search(
     """
     Search past sessions and return focused summaries of matching conversations.
 
-    Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
+    Uses FTS5 to find matches, then summarizes the top sessions with the
+    configured auxiliary session_search model.
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:

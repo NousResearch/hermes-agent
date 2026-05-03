@@ -1675,12 +1675,9 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     and post a message. Works for guild channels without requiring
     a running gateway adapter.
 
-    Args:
-        pconfig: Platform config with app_id / token (client_secret).
-        chat_id: Channel ID (for channel messages) or user OpenID (for DMs).
-        message: Text message content.
-        media_files: Optional list of file paths to upload and send as
-            media attachments (msg_type=7).
+    For media sending, use the gateway adapter's WebSocket methods directly
+    (available to in-gateway modules via ``get_active_adapter`` +
+    ``send_qqbot_direct``).
     """
     try:
         import httpx
@@ -1694,8 +1691,16 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
+    if media_files:
+        return {
+            "error": (
+                "QQBot media sending requires the gateway adapter's WebSocket methods. "
+                "Ensure the gateway is running."
+            )
+        }
+
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             # Step 1: Get access token
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
@@ -1708,69 +1713,21 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            headers_base = {
+            # Step 2: Send text message; route DM vs channel
+            headers = {
                 "Authorization": f"QQBot {access_token}",
                 "X-Union-Appid": str(appid),
+                "Content-Type": "application/json",
             }
+            is_user_dm = len(chat_id) == 32 and all(
+                c in "0123456789abcdefABCDEF" for c in chat_id
+            )
+            if is_user_dm:
+                url = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
+            else:
+                url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
 
-            # Step 2a: Handle media files (msg_type=7)
-            if media_files:
-                import mimetypes
-                for file_path in media_files:
-                    if not os.path.isfile(file_path):
-                        logger.warning("[QQBot] Skipping non-existent file: %s", file_path)
-                        continue
-
-                    file_name = os.path.basename(file_path)
-                    content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-                    with open(file_path, "rb") as f:
-                        file_data = f.read()
-
-                    # Determine file_type: 1=image, 2=video, 3=audio, 4=file
-                    if content_type.startswith("image/"):
-                        file_type = 1
-                    elif content_type.startswith("video/"):
-                        file_type = 2
-                    elif content_type.startswith("audio/"):
-                        file_type = 3
-                    else:
-                        file_type = 4
-
-                    # Check if this is a user DM (OpenID format: 32 hex chars)
-                    is_user_dm = len(chat_id) == 32 and all(c in "0123456789abcdefABCDEF" for c in chat_id)
-                    if is_user_dm:
-                        upload_url = "https://api.sgroup.qq.com/v2/users/{openid}/messages"
-                        upload_url = upload_url.format(openid=chat_id)
-                    else:
-                        upload_url = f"https://api.sgroup.qq.com/v2/channels/{chat_id}/messages"
-
-                    files_payload = {
-                        "file": (file_name, file_data, content_type),
-                    }
-                    media_payload = {
-                        "msg_type": 7,
-                        "content": f'{{"file_name":"{file_name}"}}',
-                        "file_type": file_type,
-                    }
-                    media_headers = dict(headers_base)
-                    media_headers["Content-Type"] = "multipart/form-data"
-
-                    resp = await client.post(upload_url, data=media_payload, files=files_payload, headers=media_headers)
-                    if resp.status_code not in (200, 201):
-                        return _error(f"QQBot media upload failed: {resp.status_code} {resp.text}")
-
-                # If there's also text content, send it as a follow-up text message
-                if message:
-                    pass  # fall through to text send below
-                else:
-                    return {"success": True, "platform": "qqbot", "chat_id": chat_id}
-
-            # Step 2b: Send text message (msg_type=0) via channel endpoint
-            headers = dict(headers_base)
-            headers["Content-Type"] = "application/json"
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
             payload = {"content": message[:4000], "msg_type": 0}
-
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code in (200, 201):
                 data = resp.json()

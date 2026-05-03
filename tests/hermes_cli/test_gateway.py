@@ -317,6 +317,33 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     assert gateway.find_gateway_pids() == [321]
 
 
+def test_get_service_pids_uses_exact_service_name_not_wildcard(monkeypatch):
+    """_get_service_pids() must query the exact service name, not a wildcard
+    that would match other profiles' services (e.g. hermes-gateway* matching
+    hermes-gateway-wx1 when checking the default profile)."""
+    commands_run = []
+
+    def fake_run(cmd, **kwargs):
+        commands_run.append(cmd)
+        # Simulate systemd returning a PID for the exact service
+        if "show" in cmd and "MainPID" in " ".join(cmd):
+            return SimpleNamespace(returncode=0, stdout="12345\n")
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway")
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    pids = gateway._get_service_pids()
+
+    assert 12345 in pids
+    # Verify exact service name was used — no wildcard glob
+    for cmd in commands_run:
+        assert "*" not in " ".join(cmd), f"Wildcard found in command: {cmd}"
+        assert "hermes-gateway.service" in " ".join(cmd)
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

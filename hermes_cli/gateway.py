@@ -79,28 +79,20 @@ def _get_service_pids() -> set:
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
+        svc_name = get_service_name()
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
-                    scope_args + ["list-units", "hermes-gateway*",
-                                  "--plain", "--no-legend", "--no-pager"],
+                    scope_args + ["show", f"{svc_name}.service",
+                                  "--property=MainPID", "--value"],
                     capture_output=True, text=True, timeout=5,
                 )
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if not parts or not parts[0].endswith(".service"):
-                        continue
-                    svc = parts[0]
+                if result.returncode == 0:
                     try:
-                        show = subprocess.run(
-                            scope_args + ["show", svc,
-                                          "--property=MainPID", "--value"],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        pid = int(show.stdout.strip())
+                        pid = int(result.stdout.strip())
                         if pid > 0:
                             pids.add(pid)
-                    except (ValueError, subprocess.TimeoutExpired):
+                    except ValueError:
                         pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
@@ -4455,6 +4447,24 @@ def _gateway_command_inner(args):
                 else:
                     print("  hermes gateway install  # Install as user service")
                     print("  sudo hermes gateway install --system  # Install as boot-time system service")
+
+        # Show all profile gateways when multiple profiles exist
+        try:
+            from hermes_cli.profiles import list_profiles
+            profiles = list_profiles()
+            if len(profiles) > 1:
+                procs = find_profile_gateway_processes()
+                proc_map = {p.profile: p for p in procs}
+                print()
+                print("All profiles:")
+                for profile in profiles:
+                    proc = proc_map.get(profile.name)
+                    if proc:
+                        print(f"  ✓ {profile.name:<16} PID {proc.pid}")
+                    else:
+                        print(f"  ✗ {profile.name:<16} not running")
+        except Exception:
+            pass
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Hermes gateway unit files from

@@ -1465,8 +1465,8 @@ class TestBuildAssistantMessage:
 
         This preserves ``_copy_reasoning_content_for_api``'s downstream
         tiers at replay time — cross-provider leak guard (#15748),
-        promote-from-``reasoning``, and DeepSeek/Kimi ""-pad — which
-        would all be bypassed if we eagerly wrote ``reasoning_content=""``
+        promote-from-``reasoning``, and DeepSeek/Kimi " "-pad — which
+        would all be bypassed if we eagerly wrote ``reasoning_content=" "``
         on every assistant turn regardless of provider.
         """
         msg = _mock_assistant_msg(content="plain answer")
@@ -2180,6 +2180,73 @@ class TestHandleMaxIterations:
         assert result == "Summary"
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._cached_system_prompt = "You are helpful."
+        captured = {}
+
+        def fake_run_codex_stream(kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text="Summary")],
+                    )
+                ],
+            )
+
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_orphan",
+                "content": "orphaned result from compressed history",
+            },
+        ]
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations(messages, 90)
+
+        assert result == "Summary"
+        input_items = captured["input"]
+        assert not any(
+            item.get("type") == "function_call_output"
+            and item.get("call_id") == "call_orphan"
+            for item in input_items
+        )
+
+    def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "result"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
+            "call_123"
+        ]
 
 
 class TestRunConversation:
@@ -4550,7 +4617,7 @@ class TestReasoningReplayForStrictProviders:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_kimi_tool_replay_includes_empty_reasoning_content(self, agent):
+    def test_kimi_tool_replay_includes_space_reasoning_content(self, agent):
         self._setup_agent(agent)
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -4587,7 +4654,7 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["role"] == "assistant"
         assert replayed_assistant["tool_calls"][0]["function"]["name"] == "terminal"
         assert "reasoning_content" in replayed_assistant
-        assert replayed_assistant["reasoning_content"] == ""
+        assert replayed_assistant["reasoning_content"] == " "
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)

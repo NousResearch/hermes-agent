@@ -19,6 +19,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from utils import is_truthy_value
+
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
 # environments that lack it must still be able to import this module
@@ -93,6 +95,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
+    CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
+               args_hint="[text | pause | resume | clear | status]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -151,6 +155,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore")),
+    CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
+               "Tools & Skills", args_hint="[subcommand]",
+               subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
+                            "claim", "comment", "complete", "block", "unblock", "archive",
+                            "tail", "dispatch", "context", "init", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -366,7 +375,7 @@ def _resolve_config_gates() -> set[str]:
             else:
                 val = None
                 break
-        if val:
+        if is_truthy_value(val, default=False):
             result.add(cmd.name)
     return result
 

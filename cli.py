@@ -15,7 +15,6 @@ Usage:
 
 import logging
 import os
-import re
 import shutil
 import sys
 import json
@@ -86,7 +85,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -600,6 +599,7 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
+
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
@@ -934,6 +934,20 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     try:
         from hermes_cli.config import load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home
+        _hermes_home_maint = _get_hermes_home()
+
+        # One-time prune of empty TUI ghost sessions.
+        try:
+            if not session_db.get_meta("ghost_session_prune_v1"):
+                pruned = session_db.prune_empty_ghost_sessions(
+                    sessions_dir=_hermes_home_maint / "sessions"
+                )
+                session_db.set_meta("ghost_session_prune_v1", "1")
+                if pruned:
+                    logger.info("Pruned %d empty TUI ghost sessions", pruned)
+        except Exception as _prune_exc:
+            logger.debug("Ghost session prune skipped: %s", _prune_exc)
+
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_prune", False):
             return
@@ -941,7 +955,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             retention_days=int(cfg.get("retention_days", 90)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
-            sessions_dir=_get_hermes_home() / "sessions",
+            sessions_dir=_hermes_home_maint / "sessions",
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
@@ -1240,8 +1254,73 @@ def _cprint(text: str):
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
+
+    When called from a background thread while a prompt_toolkit
+    ``Application`` is running (the common case for the self-improvement
+    background review's ``💾 …`` summary, curator summaries, and other
+    bg-thread emissions), a direct ``_pt_print`` races with the input
+    area's redraw and the line can end up visually buried behind the
+    prompt.  Route those cases through ``run_in_terminal`` via
+    ``loop.call_soon_threadsafe``, which pauses the input area, prints
+    the line above it, and redraws the prompt cleanly.
     """
-    _pt_print(_PT_ANSI(text))
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal
+    except Exception:
+        _pt_print(_PT_ANSI(text))
+        return
+
+    app = None
+    try:
+        app = get_app_or_none()
+    except Exception:
+        app = None
+
+    # No active app, or we're already on the app's main thread: the
+    # direct prompt_toolkit print is safe and matches existing behavior
+    # (spinner frames, streamed tokens, tool activity prefixes, …).
+    if app is None or not getattr(app, "_is_running", False):
+        _pt_print(_PT_ANSI(text))
+        return
+
+    try:
+        loop = app.loop  # type: ignore[attr-defined]
+    except Exception:
+        loop = None
+    if loop is None:
+        _pt_print(_PT_ANSI(text))
+        return
+
+    import asyncio as _asyncio
+    try:
+        current_loop = _asyncio.get_event_loop_policy().get_event_loop()
+    except Exception:
+        current_loop = None
+    # Same thread as the app's loop → safe to print directly.
+    if current_loop is loop and loop.is_running():
+        _pt_print(_PT_ANSI(text))
+        return
+
+    # Cross-thread emission: ask the app's event loop to schedule a
+    # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
+    # prompt, prints, and redraws.  Fire-and-forget — if scheduling
+    # fails we fall back to a direct print so the line isn't lost.
+    def _schedule():
+        try:
+            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+        except Exception:
+            try:
+                _pt_print(_PT_ANSI(text))
+            except Exception:
+                pass
+
+    try:
+        loop.call_soon_threadsafe(_schedule)
+    except Exception:
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1540,9 +1619,29 @@ def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
 # that appears when the ESC byte was stripped by a prior filter.
 _DSR_CPR_ESC_RE = re.compile(r"\x1b\[\d+;\d+R")
 _DSR_CPR_VISIBLE_RE = re.compile(r"\^\[\[\d+;\d+R")
+_SGR_MOUSE_ESC_RE = re.compile(r"\x1b\[<\d+;\d+;\d+[Mm]")
+_SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
+# Some terminals/filters can drop ESC and literal "^[[", leaving only
+# "<btn;col;rowM" fragments in the buffer. Keep this broad on purpose:
+# these fragments are extremely unlikely to be intentional user input, and
+# stripping them is better than sending corrupted prompts.
+_SGR_MOUSE_BARE_RE = re.compile(r"<\d+;\d+;\d+[Mm]")
+_TERMINAL_INPUT_MODE_RESET_SEQ = (
+    "\x1b[?1006l"  # disable SGR mouse
+    "\x1b[?1003l"  # disable any-motion tracking
+    "\x1b[?1002l"  # disable button-motion tracking
+    "\x1b[?1000l"  # disable click tracking
+    "\x1b[?1004l"  # disable focus events
+    "\x1b[?2004l"  # disable bracketed paste
+    "\x1b[?1049l"  # leave alt screen (if stuck there)
+    "\x1b[<u"      # pop kitty keyboard mode
+    "\x1b[>4m"     # reset modifyOtherKeys
+    "\x1b[0m"      # reset text attributes
+    "\x1b[?25h"    # ensure cursor visible
+)
 
 
-def _strip_leaked_terminal_responses(text: str) -> str:
+def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     """Strip leaked terminal control-response sequences from user input.
 
     Covers Cursor Position Report (CPR / DSR) responses — ``ESC[<row>;<col>R``
@@ -1552,12 +1651,43 @@ def _strip_leaked_terminal_responses(text: str) -> str:
     (resize storms, multiplexer focus changes, slow PTYs) the response
     lands in the input buffer as literal text and corrupts what the user
     typed.
+
+    Also strips leaked SGR mouse-report fragments (``ESC[<...M/m`` and
+    degraded visible forms). Returns ``(cleaned_text, had_mouse_reports)``
+    so callers can trigger an in-place terminal mode recovery when needed.
     """
     if not text:
-        return text
-    text = _DSR_CPR_ESC_RE.sub("", text)
-    text = _DSR_CPR_VISIBLE_RE.sub("", text)
-    return text
+        return text, False
+
+    has_esc = "\x1b[" in text
+    has_visible = "^[" in text
+    has_bare_mouse = "<" in text and ";" in text and ("M" in text or "m" in text)
+    if not (has_esc or has_visible or has_bare_mouse):
+        return text, False
+
+    had_mouse_reports = False
+
+    if has_esc:
+        text = _DSR_CPR_ESC_RE.sub("", text)
+        text, count = _SGR_MOUSE_ESC_RE.subn("", text)
+        had_mouse_reports = had_mouse_reports or count > 0
+
+    if has_visible:
+        text = _DSR_CPR_VISIBLE_RE.sub("", text)
+        text, count = _SGR_MOUSE_VISIBLE_RE.subn("", text)
+        had_mouse_reports = had_mouse_reports or count > 0
+
+    if has_bare_mouse:
+        text, count = _SGR_MOUSE_BARE_RE.subn("", text)
+        had_mouse_reports = had_mouse_reports or count > 0
+
+    return text, had_mouse_reports
+
+
+def _strip_leaked_terminal_responses(text: str) -> str:
+    """Compatibility wrapper returning only cleaned text."""
+    cleaned, _ = _strip_leaked_terminal_responses_with_meta(text)
+    return cleaned
 
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
@@ -1931,6 +2061,8 @@ class HermesCLI:
         self._stream_box_opened = False  # True once the response box header is printed
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
+        self._last_input_mode_recovery = 0.0
+        self._input_mode_recovery_notice_shown = False
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -2000,6 +2132,8 @@ class HermesCLI:
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
+        self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
+
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # Validate each toolset — MCP server names are resolved via
             # live registry aliases (registered during discover_mcp_tools),
@@ -3450,6 +3584,7 @@ class HermesCLI:
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
+                disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
@@ -3497,14 +3632,18 @@ class HermesCLI:
                 tuple(runtime.get("args") or ()),
             )
 
-            if self._pending_title and self._session_db:
+            # Force-create DB row on /title intent, then apply title.
+            if self._pending_title and self._session_db and self.agent:
                 try:
-                    self._session_db.set_session_title(self.session_id, self._pending_title)
-                    _cprint(f"  Session title applied: {self._pending_title}")
-                    self._pending_title = None
+                    self.agent._ensure_db_session()
+                    if self.agent._session_db_created:
+                        self._session_db.set_session_title(self.session_id, self._pending_title)
+                        _cprint(f"  Session title applied: {self._pending_title}")
+                        self._pending_title = None
+                    # else: row creation failed transiently — keep _pending_title for retry
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
-                    self._pending_title = None
+                    # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -4121,6 +4260,37 @@ class HermesCLI:
             return
         sys.stdout.write(seq)
         sys.stdout.flush()
+
+    def _recover_terminal_input_modes(self, *, reason: str) -> None:
+        """Best-effort reset when leaked mouse reports indicate mode drift."""
+        now = time.monotonic()
+        # Rate-limit to avoid thrashing if a terminal floods reports.
+        if now - self._last_input_mode_recovery < 0.5:
+            return
+        self._last_input_mode_recovery = now
+
+        out = getattr(self, "_app", None)
+        output = getattr(out, "output", None) if out else None
+        try:
+            if output and hasattr(output, "write_raw"):
+                output.write_raw(_TERMINAL_INPUT_MODE_RESET_SEQ)
+                output.flush()
+            elif output and hasattr(output, "write"):
+                output.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+                output.flush()
+            else:
+                sys.stdout.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+                sys.stdout.flush()
+        except Exception:
+            return
+
+        logger.warning("Recovered terminal input modes after leak: %s", reason)
+        if not self._input_mode_recovery_notice_shown:
+            self._input_mode_recovery_notice_shown = True
+            _cprint(
+                f"  {_DIM}Recovered terminal input modes after leaked mouse reports. "
+                f"If this repeats, run /new or restart this tab.{_RST}"
+            )
 
     def _handle_copy_command(self, cmd_original: str) -> None:
         """Handle /copy [number] — copy assistant output to clipboard."""
@@ -4801,6 +4971,7 @@ class HermesCLI:
 
             if self._session_db:
                 try:
+                    self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -4810,6 +4981,7 @@ class HermesCLI:
                             "reasoning_config": self.reasoning_config,
                         },
                     )
+                    self.agent._session_db_created = True
                 except Exception:
                     pass
             # Notify memory providers that session_id rotated to a fresh
@@ -6003,6 +6175,27 @@ class HermesCLI:
         except Exception as exc:
             print(f"(._.) curator: {exc}")
 
+    def _handle_kanban_command(self, cmd: str):
+        """Handle the /kanban command — delegate to the shared kanban CLI.
+
+        The string form passed here is the user's full ``/kanban ...``
+        including the leading slash; we strip it and hand the remainder
+        to ``kanban.run_slash`` which returns a single formatted string.
+        """
+        from hermes_cli.kanban import run_slash
+
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        if rest.startswith("kanban"):
+            rest = rest[len("kanban"):].lstrip()
+        try:
+            output = run_slash(rest)
+        except Exception as exc:  # pragma: no cover - defensive
+            output = f"(._.) kanban error: {exc}"
+        if output:
+            print(output)
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -6248,6 +6441,8 @@ class HermesCLI:
             self._handle_cron_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
+        elif canonical == "kanban":
+            self._handle_kanban_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -6365,6 +6560,8 @@ class HermesCLI:
                 # No active run — treat as a normal next-turn message.
                 self._pending_input.put(payload)
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "goal":
+            self._handle_goal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -6410,12 +6607,17 @@ class HermesCLI:
                     self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import (
+                    get_plugin_command_handler,
+                    resolve_plugin_command_result,
+                )
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
                 if plugin_handler:
                     user_args = cmd_original[len(base_cmd):].strip()
                     try:
-                        result = plugin_handler(user_args)
+                        result = resolve_plugin_command_result(
+                            plugin_handler(user_args)
+                        )
                         if result:
                             _cprint(str(result))
                     except Exception as e:
@@ -6840,6 +7042,166 @@ class HermesCLI:
             print("   status       Show current browser mode")
             print()
 
+    # ────────────────────────────────────────────────────────────────
+    # /goal — persistent cross-turn goals (Ralph-style loop)
+    # ────────────────────────────────────────────────────────────────
+    def _get_goal_manager(self):
+        """Return the GoalManager bound to the current session_id.
+
+        Cached on ``self._goal_manager`` and rebound lazily when
+        ``session_id`` changes (e.g. after /new or a compression-driven
+        session split).
+        """
+        try:
+            from hermes_cli.goals import GoalManager
+            from hermes_cli.config import load_config
+        except Exception as exc:
+            logging.debug("goal manager unavailable: %s", exc)
+            return None
+
+        sid = getattr(self, "session_id", None) or ""
+        if not sid:
+            return None
+
+        existing = getattr(self, "_goal_manager", None)
+        if existing is not None and getattr(existing, "session_id", None) == sid:
+            return existing
+
+        try:
+            cfg = load_config() or {}
+            goals_cfg = cfg.get("goals") or {}
+            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+        except Exception:
+            max_turns = 20
+
+        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        self._goal_manager = mgr
+        return mgr
+
+    def _handle_goal_command(self, cmd: str) -> None:
+        """Dispatch /goal subcommands: set / status / pause / resume / clear."""
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        mgr = self._get_goal_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
+            return
+
+        lower = arg.lower()
+
+        # Bare /goal or /goal status → show current state
+        if not arg or lower == "status":
+            _cprint(f"  {mgr.status_line()}")
+            return
+
+        if lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            if state is None:
+                _cprint(f"  {_DIM}No goal set.{_RST}")
+            else:
+                _cprint(f"  ⏸ Goal paused: {state.goal}")
+            return
+
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                _cprint(f"  {_DIM}No goal to resume.{_RST}")
+            else:
+                _cprint(f"  ▶ Goal resumed: {state.goal}")
+                _cprint(
+                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
+                    f"is a no-op; type 'continue' to kick it off).{_RST}"
+                )
+            return
+
+        if lower in ("clear", "stop", "done"):
+            had = mgr.has_goal()
+            mgr.clear()
+            if had:
+                _cprint("  ✓ Goal cleared.")
+            else:
+                _cprint(f"  {_DIM}No active goal.{_RST}")
+            return
+
+        # Otherwise treat the arg as the goal text.
+        try:
+            state = mgr.set(arg)
+        except ValueError as exc:
+            _cprint(f"  Invalid goal: {exc}")
+            return
+
+        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        _cprint(
+            f"  {_DIM}After each turn, a judge model will check if the goal is done. "
+            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
+            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
+        )
+        # Kick the loop off immediately so the user doesn't have to send a
+        # separate message after setting the goal.
+        try:
+            self._pending_input.put(state.goal)
+        except Exception:
+            pass
+
+    def _maybe_continue_goal_after_turn(self) -> None:
+        """Hook run after every CLI turn. Judges + maybe re-queues.
+
+        Safe to call when no goal is set — returns quickly.
+
+        Preemption is automatic: if a real user message is already in
+        ``_pending_input`` we skip judging (the user's new input takes
+        priority and we'll re-judge after that turn). If judge says done,
+        mark it done and tell the user. If judge says continue and we're
+        under budget, push the continuation prompt onto the queue.
+        """
+        mgr = self._get_goal_manager()
+        if mgr is None or not mgr.is_active():
+            return
+
+        # If a real user message is already queued, don't inject a
+        # continuation prompt on top — let the user's turn go first.
+        try:
+            if getattr(self, "_pending_input", None) is not None \
+                    and not self._pending_input.empty():
+                return
+        except Exception:
+            pass
+
+        # Extract the agent's final response for this turn.
+        last_response = ""
+        try:
+            hist = self.conversation_history or []
+            for msg in reversed(hist):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        # Multimodal content — flatten text parts.
+                        parts = [
+                            p.get("text", "")
+                            for p in content
+                            if isinstance(p, dict) and p.get("type") in ("text", "output_text")
+                        ]
+                        last_response = "\n".join(t for t in parts if t)
+                    else:
+                        last_response = str(content or "")
+                    break
+        except Exception:
+            last_response = ""
+
+        decision = mgr.evaluate_after_turn(last_response, user_initiated=True)
+        msg = decision.get("message") or ""
+        if msg:
+            _cprint(f"  {msg}")
+
+        if decision.get("should_continue"):
+            prompt = decision.get("continuation_prompt")
+            if prompt:
+                try:
+                    self._pending_input.put(prompt)
+                except Exception as exc:
+                    logging.debug("goal continuation enqueue failed: %s", exc)
+
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         try:
@@ -6966,7 +7328,7 @@ class HermesCLI:
         import os
         from hermes_cli.colors import Colors as _Colors
 
-        current = bool(os.environ.get("HERMES_YOLO_MODE"))
+        current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
             _cprint(
@@ -7163,10 +7525,20 @@ class HermesCLI:
         original_count = len(self.conversation_history)
         with self._busy_command("Compressing context..."):
             try:
-                from agent.model_metadata import estimate_messages_tokens_rough
+                from agent.model_metadata import estimate_request_tokens_rough
                 from agent.manual_compression_feedback import summarize_manual_compression
                 original_history = list(self.conversation_history)
-                approx_tokens = estimate_messages_tokens_rough(original_history)
+                # Include system prompt + tool schemas in the estimate —
+                # a transcript-only number understates real request pressure
+                # and can even appear to grow after compression because a
+                # dense handoff summary replaces many short turns (#6217).
+                _sys_prompt = getattr(self.agent, "_cached_system_prompt", "") or ""
+                _tools = getattr(self.agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    original_history,
+                    system_prompt=_sys_prompt,
+                    tools=_tools,
+                )
                 if focus_topic:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
                           f"focus: \"{focus_topic}\"...")
@@ -7198,7 +7570,11 @@ class HermesCLI:
                 ):
                     self.session_id = self.agent.session_id
                     self._pending_title = None
-                new_tokens = estimate_messages_tokens_rough(self.conversation_history)
+                new_tokens = estimate_request_tokens_rough(
+                    self.conversation_history,
+                    system_prompt=_sys_prompt,
+                    tools=_tools,
+                )
                 summary = summarize_manual_compression(
                     original_history,
                     self.conversation_history,
@@ -10195,7 +10571,9 @@ class HermesCLI:
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
-            pasted_text = _strip_leaked_terminal_responses(pasted_text)
+            pasted_text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(pasted_text)
+            if _had_mouse_reports:
+                self._recover_terminal_input_modes(reason="mouse reports leaked into bracketed paste payload")
             if _should_auto_attach_clipboard_image_on_paste(pasted_text) and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
@@ -10349,7 +10727,9 @@ class HermesCLI:
                event so it never triggers this.
             """
             text = _strip_leaked_bracketed_paste_wrappers(buf.text)
-            text = _strip_leaked_terminal_responses(text)
+            text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
+            if _had_mouse_reports:
+                self._recover_terminal_input_modes(reason="mouse reports leaked into prompt buffer")
             if text != buf.text:
                 cursor = min(buf.cursor_position, len(text))
                 _paste_just_collapsed[0] = True
@@ -11102,7 +11482,9 @@ class HermesCLI:
 
                     if isinstance(user_input, str):
                         user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
-                        user_input = _strip_leaked_terminal_responses(user_input)
+                        user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
+                        if _had_mouse_reports:
+                            self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
@@ -11157,6 +11539,17 @@ class HermesCLI:
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
+
+                        # Goal continuation: if a standing goal is active, ask
+                        # the judge whether the turn satisfied it. If not, and
+                        # there's no real user message already queued, push the
+                        # continuation prompt back into _pending_input so the
+                        # next loop iteration picks it up naturally (and any
+                        # user input that arrives in between still preempts).
+                        try:
+                            self._maybe_continue_goal_after_turn()
+                        except Exception as _goal_exc:
+                            logging.debug("goal continuation hook failed: %s", _goal_exc)
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

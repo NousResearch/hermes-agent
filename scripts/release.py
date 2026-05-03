@@ -41,18 +41,25 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "leone.parise@gmail.com": "leoneparise",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "aludwin+gh@gmail.com": "adamludwin",
     "2093036+exiao@users.noreply.github.com": "exiao",
     "rylen.anil@gmail.com": "rylena",
+    "godnanijatin@gmail.com": "jatingodnani",
     "14046872+tmimmanuel@users.noreply.github.com": "tmimmanuel",
+    "657290301@qq.com": "IMHaoyan",
     "revar@users.noreply.github.com": "revaraver",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",
     "charles@cryptoassetrecovery.com": "charles-brooks",
+    # DeepSeek v4 + Kimi thinking-mode reasoning_content salvage (April 2026)
+    "luwinyang@deepseek.com": "lsdsjy",
+    "season.saw@gmail.com": "season179",
     "heathley@Heathley-MacBook-Air.local": "heathley",
     "vlad19@gmail.com": "dandaka",
     "adamrummer@gmail.com": "cyclingwithelephants",
@@ -65,6 +72,9 @@ AUTHOR_MAP = {
     "pty819@outlook.com": "pty819",
     "pty819@users.noreply.github.com": "pty819",
     "517024110@qq.com": "chennest",
+    # Curator fixes (Apr 30 2026)
+    "yuxiangl490@gmail.com": "y0shua1ee",
+    "manmit0x@gmail.com": "0xDevNinja",
     "aamirjawaid@microsoft.com": "heyitsaamir",
     "johnnncenaaa77@gmail.com": "johnncenae",
     "thomasjhon6666@gmail.com": "ThomassJonax",
@@ -86,6 +96,8 @@ AUTHOR_MAP = {
     "130918800+devorun@users.noreply.github.com": "devorun",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",
+    "mind-dragon@nous.research": "Mind-Dragon",
+    "juntingpublic@gmail.com": "JustinUssuri",
     "mtf201013@gmail.com": "ma-pony",
     "sonoyuncudmr@gmail.com": "Sonoyunchu",
     "43525405+yatesjalex@users.noreply.github.com": "yatesjalex",
@@ -94,6 +106,8 @@ AUTHOR_MAP = {
     "web3blind@users.noreply.github.com": "web3blind",
     "julia@alexland.us": "alexg0bot",
     "christian@scheid.tech": "scheidti",
+    # Moonshot schema anyOf+enum salvage (May 2026)
+    "git@local.invalid": "hendrixfreire",
     "1060770+benjaminsehl@users.noreply.github.com": "benjaminsehl",
     "nerijusn76@gmail.com": "Nerijusas",
     "itonov@proton.me": "Ito-69",
@@ -106,6 +120,7 @@ AUTHOR_MAP = {
     "foxion37@gmail.com": "foxion37",
     "bloodcarter@gmail.com": "bloodcarter",
     "scott@scotttrinh.com": "scotttrinh",
+    "quocanh261997@gmail.com": "quocanh261997",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
@@ -161,6 +176,7 @@ AUTHOR_MAP = {
     "sir_even@icloud.com": "sirEven",
     "36056348+sirEven@users.noreply.github.com": "sirEven",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
+    "jezzahehn@gmail.com": "JezzaHehn",
     "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "270082434+crayfish-ai@users.noreply.github.com": "crayfish-ai",
@@ -286,6 +302,7 @@ AUTHOR_MAP = {
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "12250313+Kailigithub@users.noreply.github.com": "Kailigithub",
     "mgparkprint@gmail.com": "vlwkaos",
+    "1317078257maroon@gmail.com": "Oxidane-bot",
     "tranquil_flow@protonmail.com": "Tranquil-Flow",
     "LyleLengyel@gmail.com": "mcndjxlefnd",
     "wangshengyang2004@163.com": "Wangshengyang2004",
@@ -324,6 +341,7 @@ AUTHOR_MAP = {
     "stefan@dimagents.ai": "dimitrovi",
     "hermes@noushq.ai": "benbarclay",
     "chinmingcock@gmail.com": "ChimingLiu",
+    "allard.quek@singtel.com": "AllardQuek",
     "openclaw@sparklab.ai": "openclaw",
     "semihcvlk53@gmail.com": "Himess",
     "erenkar950@gmail.com": "erenkarakus",
@@ -416,6 +434,8 @@ AUTHOR_MAP = {
     "ogzerber@users.noreply.github.com": "ogzerber",
     "cola-runner@users.noreply.github.com": "cola-runner",
     "ygd58@users.noreply.github.com": "ygd58",
+    "45554392+warabe1122@users.noreply.github.com": "warabe1122",
+    "187001140+willy-scr@users.noreply.github.com": "willy-scr",
     "vominh1919@users.noreply.github.com": "vominh1919",
     "iamagenius00@users.noreply.github.com": "iamagenius00",
     "9219265+cresslank@users.noreply.github.com": "cresslank",
@@ -440,6 +460,7 @@ AUTHOR_MAP = {
     "taosiyuan163@153.com": "taosiyuan163",
     "tesseracttars@gmail.com": "tesseracttars-creator",
     "tianliangjay@gmail.com": "xingkongliang",
+    "1317078257maroon@gmail.com": "Oxidane-bot",
     "tranquil_flow@protonmail.com": "Tranquil-Flow",
     "LyleLengyel@gmail.com": "mcndjxlefnd",
     "unayung@gmail.com": "Unayung",
@@ -485,9 +506,11 @@ AUTHOR_MAP = {
     "hubin_ll@qq.com": "LLQWQ",
     "memosr_email@gmail.com": "memosr",
     "jperlow@gmail.com": "perlowja",
+    "jasonpette1783@gmail.com": "web-dev0521",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "harryplusplus@gmail.com": "harryplusplus",
     "anthhub@163.com": "anthhub",
+    "allard.quek@singtel.com": "AllardQuek",
     "shenuu@gmail.com": "shenuu",
     "xiayh17@gmail.com": "xiayh0107",
     "zhujianxyz@gmail.com": "opriz",
@@ -623,6 +646,21 @@ AUTHOR_MAP = {
     "164839249+Joseph19820124@users.noreply.github.com": "Joseph19820124",
     "rugved@lmstudio.ai": "rugvedS07",
     "44333070+Heltman@users.noreply.github.com": "Heltman",
+    # v0.12.0 additions
+    "ching@kachingappz.com": "ching-kaching",
+    "codezhujr@gmail.com": "Zjianru",  # salvage chain: code by codez, PR #15749 author @Zjianru
+    "daimon@noreply.github.com": "Siddharth Balyan",  # co-author only
+    "i@zkl2333.com": "zkl2333",
+    "isaachuang@Isaacs-MacBook-Pro.local": "isaachuangGMICLOUD",
+    "isaachuang@Mac.localdomain": "isaachuangGMICLOUD",  # salvage of PR #11955 → #16663
+    "liyuan851277048@icloud.com": "Octopus",  # co-author only
+    "me+github7604@versun.org": "Versun",  # co-author only
+    "my.vesper.nine@gmail.com": "kevin-ho",  # salvage: PR #15488 author @kevin-ho
+    "noreply@paperclip.ing": "Paperclip",  # co-author only
+    "teknium@hermes-agent": "teknium1",
+    "web3blind@gmail.com": "web3blind",
+    "ztzheng@163.com": "chengoak",  # PR #17467
+    "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only
 }
 
 

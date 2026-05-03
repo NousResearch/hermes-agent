@@ -495,7 +495,11 @@ class WeComAdapter(BasePlatformAdapter):
 
         is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
-            if not self._is_group_allowed(chat_id, sender_id):
+            # Group file messages often have empty sender_id; bypass sender check in that case
+            msgtype_for_policy = str(body.get("msgtype") or "").lower()
+            if msgtype_for_policy == "file" and not sender_id:
+                logger.debug("[%s] Group file with empty sender_id, bypassing sender check", self.name)
+            elif not self._is_group_allowed(chat_id, sender_id):
                 logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
                 return
         elif not self._is_dm_allowed(sender_id):
@@ -520,9 +524,15 @@ class WeComAdapter(BasePlatformAdapter):
         if not text and reply_text and not media_urls:
             text = reply_text
 
-        if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
-            return
+        if not text:
+            # Don't silently drop file messages — let the agent know a file was sent
+            # so it can ask the user to re-send or handle the missing attachment.
+            msgtype_check = str(body.get("msgtype") or "").lower()
+            if msgtype_check == "file" and isinstance(body.get("file"), dict):
+                text = "[收到文件消息]"
+            elif not media_urls:
+                logger.debug("[%s] Empty WeCom message skipped", self.name)
+                return
 
         source = self.build_source(
             chat_id=chat_id,
@@ -711,6 +721,9 @@ class WeComAdapter(BasePlatformAdapter):
             refs.append(("file", quote["file"]))
 
         for kind, ref in refs:
+            # Inject response_url from body top-level into ref so _cache_media can use it as fallback
+            if "response_url" not in ref and "response_url" in body:
+                ref = {**ref, "response_url": body["response_url"]}
             cached = await self._cache_media(kind, ref)
             if cached:
                 path, content_type = cached
@@ -754,8 +767,20 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
-                return None
+                # Decryption failed — try response_url as fallback.
+                # response_url is a WeCom server endpoint that returns the decrypted
+                # file content via POST (not GET like _download_remote_bytes does).
+                response_url = str(media.get("response_url") or "").strip()
+                if response_url:
+                    try:
+                        raw, headers = await self._download_remote_bytes_post(
+                            response_url, max_bytes=ABSOLUTE_MAX_BYTES
+                        )
+                        logger.info("[%s] Decrypt failed, used response_url POST fallback successfully", self.name)
+                    except Exception as fallback_exc:
+                        logger.warning("[%s] Decrypt failed and response_url fallback also failed: %s from %s, fallback: %s", self.name, kind, url, fallback_exc)
+                else:
+                    logger.warning("[%s] Decrypt failed (will use raw bytes): %s from %s: %s", self.name, kind, url, exc)
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         if kind == "image":
@@ -1071,6 +1096,47 @@ class WeComAdapter(BasePlatformAdapter):
                         )
 
                 return bytes(data), headers
+        finally:
+            if created_client:
+                await client.aclose()
+
+
+    async def _download_remote_bytes_post(
+        self,
+        url: str,
+        max_bytes: int,
+    ) -> Tuple[bytes, Dict[str, str]]:
+        """POST version of _download_remote_bytes for WeCom response_url fallback."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+
+        if not HTTPX_AVAILABLE:
+            raise RuntimeError("httpx is required for WeCom media download")
+
+        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        created_client = client is not self._http_client
+        try:
+            response = await client.post(
+                url,
+                headers={
+                    "User-Agent": "HermesAgent/1.0",
+                    "Accept": "*/*",
+                },
+            )
+            response.raise_for_status()
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            content_length = headers.get("content-length")
+            if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+                raise ValueError(
+                    f"Remote media exceeds WeCom limit: {int(content_length)} bytes > {max_bytes} bytes"
+                )
+            data = bytearray(response.content)
+            if len(data) > max_bytes:
+                raise ValueError(
+                    f"Remote media exceeds WeCom limit while downloading: {len(data)} bytes > {max_bytes} bytes"
+                )
+            return bytes(data), headers
         finally:
             if created_client:
                 await client.aclose()

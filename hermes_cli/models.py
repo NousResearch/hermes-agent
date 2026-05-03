@@ -561,6 +561,64 @@ def partition_nous_models_by_tier(
 # ---------------------------------------------------------------------------
 _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
 _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+_FREE_TIER_DISK_CACHE_VERSION: int = 1
+
+
+def _normalize_nous_portal_url(portal_url: object | None) -> str:
+    value = str(portal_url or "").strip().rstrip("/")
+    return value or "https://portal.nousresearch.com"
+
+
+def _free_tier_disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "nous_free_tier_status.json"
+
+
+def _read_free_tier_disk_cache(portal_url: str, wall_now: float) -> bool | None:
+    try:
+        path = _free_tier_disk_cache_path()
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != _FREE_TIER_DISK_CACHE_VERSION:
+            return None
+        if payload.get("portal_base_url") != portal_url:
+            return None
+        checked_at = float(payload.get("checked_at", 0))
+        age = wall_now - checked_at
+        if age < 0 or age >= _FREE_TIER_CACHE_TTL:
+            return None
+        free_tier = payload.get("free_tier")
+        return free_tier if isinstance(free_tier, bool) else None
+    except Exception:
+        return None
+
+
+def _write_free_tier_disk_cache(
+    result: bool,
+    portal_url: str,
+    wall_now: float,
+) -> None:
+    try:
+        from utils import atomic_json_write
+
+        cache_path = _free_tier_disk_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(
+            cache_path,
+            {
+                "version": _FREE_TIER_DISK_CACHE_VERSION,
+                "portal_base_url": portal_url,
+                "free_tier": bool(result),
+                "checked_at": wall_now,
+            },
+            indent=None,
+            separators=(",", ":"),
+        )
+    except Exception:
+        pass
 
 
 def check_nous_free_tier() -> bool:
@@ -574,6 +632,7 @@ def check_nous_free_tier() -> bool:
     """
     global _free_tier_cache
     now = time.monotonic()
+    wall_now = time.time()
     if _free_tier_cache is not None:
         cached_result, cached_at = _free_tier_cache
         if now - cached_at < _FREE_TIER_CACHE_TTL:
@@ -582,22 +641,36 @@ def check_nous_free_tier() -> bool:
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
 
+        state = get_provider_auth_state("nous") or {}
+        if not state or not state.get("access_token"):
+            _free_tier_cache = (False, now)
+            return False
+        portal_url = _normalize_nous_portal_url(state.get("portal_base_url"))
+        disk_result = _read_free_tier_disk_cache(portal_url, wall_now)
+        if disk_result is not None:
+            _free_tier_cache = (disk_result, now)
+            return disk_result
+
         # Ensure we have a fresh token (triggers refresh if needed)
         resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
 
         state = get_provider_auth_state("nous")
         if not state:
             _free_tier_cache = (False, now)
+            _write_free_tier_disk_cache(False, portal_url, wall_now)
             return False
         access_token = state.get("access_token", "")
-        portal_url = state.get("portal_base_url", "")
+        portal_url = _normalize_nous_portal_url(state.get("portal_base_url"))
         if not access_token:
             _free_tier_cache = (False, now)
+            _write_free_tier_disk_cache(False, portal_url, wall_now)
             return False
 
         account_info = fetch_nous_account_tier(access_token, portal_url)
         result = is_nous_free_tier(account_info)
         _free_tier_cache = (result, now)
+        if account_info:
+            _write_free_tier_disk_cache(result, portal_url, wall_now)
         return result
     except Exception:
         _free_tier_cache = (False, now)

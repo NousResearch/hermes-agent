@@ -18,7 +18,13 @@ flowchart LR
     B -->|SSE streaming response| A
 ```
 
-Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Your agent handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.
+Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Hermes handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.
+
+:::important Runtime location
+The API server is a **Hermes agent runtime**, not a pure LLM proxy. For each request, Hermes creates a server-side `AIAgent` on the API-server host. Tool calls run where that API server is running.
+
+For example, if a laptop points Open WebUI or another OpenAI-compatible client at a Hermes API server on a remote machine, `pwd`, file tools, browser tools, local MCP tools, and other workspace tools run on the remote API-server host, not on the laptop.
+:::
 
 Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS_ORIGINS` for this integration.
 
@@ -205,13 +211,15 @@ Open WebUI currently manages conversation history client-side even in Responses 
 When you send a message in Open WebUI:
 
 1. Open WebUI sends a `POST /v1/chat/completions` request with your message and conversation history
-2. Hermes Agent creates an AIAgent instance with its full toolset
-3. The agent processes your request — it may call tools (terminal, file operations, web search, etc.)
+2. Hermes Agent creates a server-side `AIAgent` instance using the API server's profile, model/provider config, memory, skills, and configured API-server toolsets
+3. The agent processes your request — it may call tools (terminal, file operations, web search, etc.) on the API-server host
 4. As tools execute, **inline progress messages stream to the UI** so you can see what the agent is doing (e.g. `` `💻 ls -la` ``, `` `🔍 Python 3.12 release` ``)
 5. The agent's final text response streams back to Open WebUI
 6. Open WebUI displays the response in its chat interface
 
-Your agent has access to all the same tools and capabilities as when using the CLI or Telegram — the only difference is the frontend.
+Your agent has access to the same tools and capabilities as that API-server Hermes instance. If the API server is remote, those tools are remote too.
+
+If you need tools to run against your **local** workspace today, run Hermes locally and point it at a pure LLM provider or pure OpenAI-compatible model proxy (for example vLLM, LiteLLM, Ollama, llama.cpp, OpenAI, OpenRouter, etc.). A future split-runtime mode for "remote brain, local hands" is being tracked in [#18715](https://github.com/NousResearch/hermes-agent/issues/18715); it is not the behavior of the current API server.
 
 :::tip Tool Progress
 With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.

@@ -622,6 +622,7 @@ AUTHOR_MAP = {
     "2557058999@qq.com": "Disaster-Terminator",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
     "zyprothh@gmail.com": "Zyproth",
+    "amitgaur@gmail.com": "amitgaur",
     "leozeli@qq.com": "leozeli",
     "linlehao@cuhk.edu.cn": "LehaoLin",
     "liutong@isacas.ac.cn": "I3eg1nner",

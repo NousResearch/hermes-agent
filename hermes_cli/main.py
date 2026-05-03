@@ -4991,6 +4991,21 @@ def cmd_auth(args):
     auth_command(args)
 
 
+def cmd_file_safety(args):
+    """Diagnose why a path is read/write blocked by Hermes file-safety rules."""
+    action = getattr(args, "file_safety_action", None)
+    if action == "check":
+        from hermes_cli.file_safety_cmd import file_safety_command
+
+        file_safety_command(args)
+        return
+    print(
+        "Usage: hermes file-safety check <path> [--json]",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -8585,6 +8600,26 @@ def main():
     auth_spotify.add_argument("--no-browser", action="store_true", help="Do not attempt to open the browser automatically")
     auth_spotify.add_argument("--timeout", type=float, help="Callback/token exchange timeout in seconds")
     auth_parser.set_defaults(func=cmd_auth)
+
+    # =========================================================================
+    # file-safety command — diagnose write/read denial rules
+    # =========================================================================
+    file_safety_parser = subparsers.add_parser(
+        "file-safety",
+        help="Diagnose Hermes file-safety read/write rules for a given path",
+    )
+    file_safety_subparsers = file_safety_parser.add_subparsers(
+        dest="file_safety_action"
+    )
+    file_safety_check = file_safety_subparsers.add_parser(
+        "check",
+        help="Check whether a path is read/write blocked, and which rule matched",
+    )
+    file_safety_check.add_argument("path", help="Filesystem path to check")
+    file_safety_check.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    file_safety_parser.set_defaults(func=cmd_file_safety)
 
     # =========================================================================
     # status command

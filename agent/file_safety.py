@@ -72,22 +72,37 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
+def explain_write_denial(path: str) -> Optional[str]:
+    """Return a short reason string when *path* is write-blocked, else ``None``.
+
+    The reason is one of:
+      * ``"denylist:<resolved-path>"`` — exact match against the sensitive-file list
+      * ``"prefix:<resolved-prefix>"`` — under a sensitive-directory prefix
+      * ``"outside-safe-root:<safe-root>"`` — outside ``HERMES_WRITE_SAFE_ROOT``
+
+    Powers ``hermes file-safety check`` so users can see *which* rule
+    matched instead of just "denied".
+    """
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     if resolved in build_write_denied_paths(home):
-        return True
+        return f"denylist:{resolved}"
+
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
-            return True
+            return f"prefix:{prefix.rstrip(os.sep)}"
 
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-        return True
+        return f"outside-safe-root:{safe_root}"
 
-    return False
+    return None
+
+
+def is_write_denied(path: str) -> bool:
+    """Return True if path is blocked by the write denylist or safe root."""
+    return explain_write_denial(path) is not None
 
 
 def get_read_block_error(path: str) -> Optional[str]:

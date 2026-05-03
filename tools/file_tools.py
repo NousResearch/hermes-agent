@@ -1097,7 +1097,25 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "write_file: missing required field 'path'. Re-emit the tool call with "
+            "both 'path' and 'content' set."
+        )
+    if "content" not in args:
+        return tool_error(
+            "write_file: missing required field 'content'. The tool call included a "
+            "path but no content argument — this is almost always a dropped-arg bug "
+            "under context pressure. Re-emit the tool call with the full content "
+            "payload, or use execute_code with hermes_tools.write_file() for very "
+            "large files."
+        )
+    if not isinstance(args["content"], str):
+        return tool_error(
+            f"write_file: 'content' must be a string, got "
+            f"{type(args['content']).__name__}."
+        )
+    return write_file_tool(path=args["path"], content=args["content"], task_id=tid)
 
 
 def _handle_patch(args, **kw):

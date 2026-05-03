@@ -13,6 +13,7 @@ Spec-aligned behavior:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -57,6 +58,9 @@ class _PendingPrompt:
     session_key: str
     prompt: str
     created_at: float
+    platform: str = ""
+    chat_id: str = ""
+    thread_id: str = ""
 
 
 _PENDING: dict[str, _PendingPrompt] = {}
@@ -398,21 +402,34 @@ def _extract_tool_rule(text: str) -> str:
 
 
 def _claude_code_max_turns() -> int:
-    raw = os.environ.get("KAZE_CLAUDE_MODE_MAX_TURNS", "30").strip()
+    raw = os.environ.get("KAZE_CLAUDE_MODE_MAX_TURNS", "90").strip()
     try:
         value = int(raw)
     except Exception:
-        value = 30
-    return max(1, min(60, value))
+        value = 90
+    return max(1, min(180, value))
 
 
 def _claude_code_timeout_secs() -> int:
-    raw = os.environ.get("KAZE_CLAUDE_MODE_TIMEOUT", "240").strip()
+    raw = os.environ.get("KAZE_CLAUDE_MODE_TIMEOUT", "900").strip()
     try:
         value = int(raw)
     except Exception:
-        value = 240
-    return max(30, min(1800, value))
+        value = 900
+    return max(30, min(3600, value))
+
+
+def _claude_code_max_budget_usd() -> str:
+    raw = os.environ.get("KAZE_CLAUDE_MODE_MAX_BUDGET_USD", "").strip()
+    if not raw:
+        return ""
+    try:
+        value = float(raw)
+    except Exception:
+        return ""
+    if value <= 0:
+        return ""
+    return str(value)
 
 
 def _gc_pending(now: float | None = None) -> None:
@@ -422,7 +439,15 @@ def _gc_pending(now: float | None = None) -> None:
         _PENDING.pop(k, None)
 
 
-def _stash_pending_prompt(*, chat_key: str, session_key: str, prompt: str) -> str:
+def _stash_pending_prompt(
+    *,
+    chat_key: str,
+    session_key: str,
+    prompt: str,
+    platform: str = "",
+    chat_id: str = "",
+    thread_id: str = "",
+) -> str:
     _gc_pending()
     token = os.urandom(9).hex()
     _PENDING[token] = _PendingPrompt(
@@ -430,6 +455,9 @@ def _stash_pending_prompt(*, chat_key: str, session_key: str, prompt: str) -> st
         session_key=session_key,
         prompt=prompt,
         created_at=time.time(),
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
     )
     return token
 
@@ -562,7 +590,14 @@ def build_pre_dispatch_decision(event: Any, gateway: Any = None, session_store: 
             session_key = ""
         transcript = _format_recent_transcript(session_store, session_key)
         prompt = _build_claude_mode_prompt(user_text=text, transcript=transcript)
-        token = _stash_pending_prompt(chat_key=chat_key, session_key=session_key, prompt=prompt)
+        token = _stash_pending_prompt(
+            chat_key=chat_key,
+            session_key=session_key,
+            prompt=prompt,
+            platform=platform,
+            chat_id=str(getattr(source, "chat_id", "") or ""),
+            thread_id=str(getattr(source, "thread_id", "") or ""),
+        )
         return {"action": "rewrite", "text": f"/{INTERNAL_RUN} {token}"}
 
     return None
@@ -617,6 +652,7 @@ def _status_message(key: str) -> str:
         f"backend: {backend}\n"
         f"allowedTools: `{_effective_allowed_tools(key)}`\n"
         f"permission-mode: `{_effective_permission_mode(key)}`\n"
+        f"max-turns: `{_claude_code_max_turns()}`\n"
         f"yolo: {yolo}\n"
         f"{pending_line}\n"
         f"tool/edit: {tool_state}"
@@ -637,6 +673,117 @@ def _extract_terminal_text(payload: dict[str, Any]) -> str:
     return combined
 
 
+class _TelegramProgress:
+    """Best-effort single-message Telegram progress updater for Claude Code."""
+
+    def __init__(self, *, chat_id: str, thread_id: str = "") -> None:
+        self.chat_id = str(chat_id or "")
+        self.thread_id = str(thread_id or "")
+        self._bot = None
+        self._message_id = ""
+        self._last_edit = 0.0
+        self._last_text = ""
+        self.active = False
+
+    async def start(self, text: str) -> bool:
+        if not self.chat_id:
+            return False
+        try:
+            from hermes_cli.config import load_config
+            from telegram import Bot
+
+            cfg = load_config()
+            platforms = cfg.get("platforms", {}) if isinstance(cfg, dict) else {}
+            telegram_cfg = platforms.get("telegram", {}) if isinstance(platforms, dict) else {}
+            token = str(telegram_cfg.get("token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+            if not token:
+                return False
+            self._bot = Bot(token=token)
+            kwargs: dict[str, Any] = {"chat_id": int(self.chat_id), "text": text}
+            if self.thread_id:
+                kwargs["message_thread_id"] = int(self.thread_id)
+            msg = await self._bot.send_message(**kwargs)
+            self._message_id = str(getattr(msg, "message_id", "") or "")
+            self._last_text = text
+            self._last_edit = time.time()
+            self.active = bool(self._message_id)
+            return self.active
+        except Exception:
+            self.active = False
+            return False
+
+    async def edit(self, text: str, *, force: bool = False) -> None:
+        if not self.active or self._bot is None or not self._message_id:
+            return
+        text = _truncate_reply(text, 3900)
+        if not force and text == self._last_text:
+            return
+        now = time.time()
+        if not force and (now - self._last_edit) < 1.0:
+            return
+        try:
+            await self._bot.edit_message_text(
+                chat_id=int(self.chat_id),
+                message_id=int(self._message_id),
+                text=text,
+            )
+            self._last_text = text
+            self._last_edit = now
+        except Exception:
+            # Progress is auxiliary; never fail the Claude run because Telegram
+            # rejected an edit or rate-limited us.
+            return
+
+    async def typing(self) -> None:
+        if not self.active or self._bot is None:
+            return
+        try:
+            await self._bot.send_chat_action(chat_id=int(self.chat_id), action="typing")
+        except Exception:
+            return
+
+
+def _stream_status_text(*, status: str, assistant_text: str = "", detail: str = "") -> str:
+    parts = ["Claude mode: **running**", f"status: {status}"]
+    if detail:
+        parts.append(detail)
+    if assistant_text.strip():
+        parts.append("\n" + assistant_text.strip())
+    return _truncate_reply("\n".join(parts), 3900)
+
+
+def _summarize_stream_event(obj: dict[str, Any]) -> tuple[str, str]:
+    event = obj.get("event") if isinstance(obj.get("event"), dict) else {}
+    etype = str(event.get("type") or "")
+    if etype == "content_block_start":
+        block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
+        if block.get("type") == "tool_use":
+            return "tool", str(block.get("name") or "tool")
+    if etype == "content_block_delta":
+        delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+        if delta.get("type") == "text_delta":
+            return "text", str(delta.get("text") or "")
+    if etype == "message_stop":
+        return "status", "finalizing"
+    subtype = str(obj.get("subtype") or "")
+    if obj.get("type") == "system" and subtype == "status":
+        return "status", str(obj.get("status") or "working")
+    return "", ""
+
+
+def _result_text_from_stream_obj(obj: dict[str, Any]) -> str:
+    result = obj.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            parts.append(str(item.get("text") or ""))
+    return "".join(parts).strip()
+
+
 def _dispatch_tool(tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
     """Dispatch built-in Hermes tools from plugin command context.
 
@@ -650,6 +797,162 @@ def _dispatch_tool(tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
     return _CTX.dispatch_tool(tool_name, args, **kwargs)
 
 
+async def _run_claude_code_streaming(
+    *,
+    prompt: str,
+    chat_key: str,
+    session_key: str,
+    task_id: str,
+    chat_id: str,
+    thread_id: str = "",
+    workdir: str | None = None,
+) -> tuple[bool, str, bool]:
+    """Run Claude Code with stream-json and edit one Telegram progress message.
+
+    Returns (ok, text, delivered). When delivered=True, the final result/error was
+    already sent via the progress message and command dispatch should return None.
+    """
+    ok, info = _resolve_claude_code_cli_backend()
+    if not ok:
+        backend, _toolful = _format_backend_status()
+        return False, backend, False
+
+    progress = _TelegramProgress(chat_id=chat_id, thread_id=thread_id)
+    started = await progress.start(
+        _stream_status_text(status="starting Claude Code…", detail=f"max-turns: `{_claude_code_max_turns()}`")
+    )
+    if not started:
+        return False, "", False
+
+    allowed = _effective_allowed_tools(chat_key) if chat_key else _claude_code_allowed_tools()
+    tools_list = _tools_from_allowed_tools(allowed)
+    permission_mode = _effective_permission_mode(chat_key) if chat_key else _claude_code_permission_mode()
+    max_turns = _claude_code_max_turns()
+    budget = _claude_code_max_budget_usd()
+    cmd = [
+        str(info.get("cmd") or "claude"),
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--include-hook-events",
+        "--allowedTools",
+        allowed,
+        "--tools",
+        tools_list,
+        "--permission-mode",
+        permission_mode,
+        "--max-turns",
+        str(max_turns),
+    ]
+    if budget:
+        cmd.extend(["--max-budget-usd", budget])
+
+    assistant_text = ""
+    final_text = ""
+    stderr_text = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workdir or None,
+        )
+        assert proc.stdin is not None
+        proc.stdin.write((prompt or "").encode("utf-8"))
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+        async def _read_stderr() -> bytes:
+            assert proc.stderr is not None
+            return await proc.stderr.read()
+
+        stderr_task = asyncio.create_task(_read_stderr())
+
+        async def _read_stdout() -> None:
+            nonlocal assistant_text, final_text
+            assert proc.stdout is not None
+            while True:
+                raw_line = await proc.stdout.readline()
+                if not raw_line:
+                    break
+                try:
+                    obj = json.loads(raw_line.decode("utf-8", errors="replace"))
+                except Exception:
+                    continue
+                kind, value = _summarize_stream_event(obj)
+                if kind == "text" and value:
+                    assistant_text += value
+                    await progress.edit(_stream_status_text(status="answering…", assistant_text=assistant_text))
+                elif kind == "tool" and value:
+                    await progress.edit(
+                        _stream_status_text(status="working…", assistant_text=assistant_text, detail=f"tool: `{value}`"),
+                        force=False,
+                    )
+                elif kind == "status" and value:
+                    await progress.typing()
+                    await progress.edit(_stream_status_text(status=value, assistant_text=assistant_text), force=False)
+                if obj.get("type") == "result":
+                    final_text = _result_text_from_stream_obj(obj) or assistant_text
+
+        await asyncio.wait_for(_read_stdout(), timeout=_claude_code_timeout_secs())
+        exit_code = await asyncio.wait_for(proc.wait(), timeout=5)
+        stderr_bytes = await stderr_task
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+    except asyncio.TimeoutError:
+        with contextlib_suppress(Exception):
+            proc.kill()  # type: ignore[name-defined]
+        msg = f"Claude Code error:\nTimed out after `{_claude_code_timeout_secs()}` seconds."
+        await progress.edit(msg, force=True)
+        return False, msg, True
+    except Exception as e:
+        msg = f"Claude Code error:\n{e}"
+        await progress.edit(_truncate_reply(msg), force=True)
+        return False, msg, True
+
+    out = (final_text or assistant_text or stderr_text or "").strip()
+    if exit_code not in (0, None):
+        err = out or "Claude Code returned a non-zero exit code."
+        if chat_key and _looks_like_permission_block(err):
+            _clear_pending_approval(chat_key)
+            approval_id = _new_approval_id()
+            prompt_sha256 = hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()
+            prompt_disk_path = _approval_prompt_path(approval_id)
+            _write_private_text(prompt_disk_path, prompt or "")
+            tool_rule = _extract_tool_rule(err)
+            _update_chat(
+                chat_key,
+                extra={
+                    "pending_approval": {
+                        "id": approval_id,
+                        "tool_rule": tool_rule,
+                        "created_at": _now_iso(),
+                        "prompt_path": str(prompt_disk_path),
+                        "prompt_sha256": prompt_sha256,
+                        "session_key": session_key or "",
+                    }
+                },
+            )
+            safe_tool = tool_rule or "unknown"
+            msg = _truncate_reply(
+                "Claude mode: **approval pending**\n"
+                f"- id: `{approval_id}`\n"
+                f"- tool: `{safe_tool}`\n"
+                "Reply `/claude-mode approve` to allow and retry, or `/claude-mode deny` to cancel."
+            )
+            await progress.edit(msg, force=True)
+            return False, msg, True
+        msg = _truncate_reply(f"Claude Code error:\n{err}")
+        await progress.edit(msg, force=True)
+        return False, msg, True
+
+    final = _truncate_reply(out or "(Claude Code returned no output.)")
+    await progress.edit(final, force=True)
+    return True, final, True
+
+
 async def _run_claude_code_print(
     *,
     prompt: str,
@@ -657,6 +960,9 @@ async def _run_claude_code_print(
     session_key: str,
     task_id: str,
     workdir: str | None = None,
+    platform: str = "",
+    chat_id: str = "",
+    thread_id: str = "",
 ) -> tuple[bool, str]:
     """Run Claude Code CLI in headless print mode.
 
@@ -671,6 +977,19 @@ async def _run_claude_code_print(
     if not ok:
         backend, _toolful = _format_backend_status()
         return False, backend
+
+    if platform == "telegram" and chat_id and not workdir:
+        ok_stream, out_stream, delivered = await _run_claude_code_streaming(
+            prompt=prompt,
+            chat_key=chat_key,
+            session_key=session_key,
+            task_id=task_id,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            workdir=workdir,
+        )
+        if delivered:
+            return ok_stream, ""
 
     try:
         from tools.approval import reset_current_session_key, set_current_session_key
@@ -977,8 +1296,11 @@ async def handle_internal_run(raw_args: str) -> str:
         chat_key=pending.chat_key,
         session_key=pending.session_key,
         task_id="claude_mode_run",
+        platform=pending.platform,
+        chat_id=pending.chat_id,
+        thread_id=pending.thread_id,
     )
-    return out
+    return out or None
 
 
 async def handle_public_mode(raw_args: str) -> str:

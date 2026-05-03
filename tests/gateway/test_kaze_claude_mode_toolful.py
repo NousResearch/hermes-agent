@@ -321,6 +321,8 @@ async def test_claude_mode_status_reports_allowed_tools_permission_mode_yolo_and
     assert "**off**" in reply
     assert "pending:" in reply
     assert "**none**" in reply
+    assert "max-turns:" in reply
+    assert "`90`" in reply
 
 
 @pytest.mark.asyncio

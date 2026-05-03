@@ -11,10 +11,14 @@ and ``_trigger_stale_code_restart()`` triggers a graceful restart.
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gateway.config import Platform
+from gateway.platforms.base import MessageEvent
+from gateway.session import SessionSource
 from gateway.run import (
     GatewayRunner,
     _compute_repo_mtime,
@@ -182,6 +186,62 @@ def test_detect_stale_code_handles_disappearing_repo_root(tmp_path):
         (repo / rel).unlink(missing_ok=True)
 
     assert runner._detect_stale_code() is False
+
+
+@pytest.mark.asyncio
+async def test_stale_code_preserves_authorized_message_before_restart():
+    """A stale-code restart must not ACK-and-drop the triggering user request."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id="u1",
+        user_name="User",
+    )
+    event = MessageEvent(text="Please handle this after restart", source=source)
+    entry = SimpleNamespace(session_id="sid-1", session_key="agent:main:telegram:dm:123")
+
+    class FakeSessionStore:
+        def __init__(self):
+            self.messages = []
+            self.resume_marks = []
+
+        def get_or_create_session(self, src):
+            assert src is source
+            return entry
+
+        def append_to_transcript(self, session_id, message):
+            self.messages.append((session_id, message))
+
+        def mark_resume_pending(self, session_key, reason="restart_timeout"):
+            self.resume_marks.append((session_key, reason))
+            return True
+
+    store = FakeSessionStore()
+    runner.session_store = store
+    runner._update_prompt_pending = {}
+    runner._detect_stale_code = MagicMock(return_value=True)
+    runner._trigger_stale_code_restart = MagicMock()
+    runner._is_user_authorized = MagicMock(return_value=True)
+    runner._session_key_for_source = MagicMock(return_value=entry.session_key)
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        response = await runner._handle_message(event)
+
+    assert "preserved your message" in response
+    assert store.messages == [
+        (
+            "sid-1",
+            {
+                "role": "user",
+                "content": "Please handle this after restart",
+                "timestamp": store.messages[0][1]["timestamp"],
+            },
+        )
+    ]
+    assert store.resume_marks == [(entry.session_key, "stale_code_restart")]
+    runner._trigger_stale_code_restart.assert_called_once()
 
 
 def test_class_level_defaults_prevent_uninitialized_access():

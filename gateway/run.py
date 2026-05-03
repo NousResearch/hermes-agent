@@ -4544,27 +4544,6 @@ class GatewayRunner:
         """
         source = event.source
 
-        # Stale-code self-check (Issue #17648).  A gateway that survives
-        # ``hermes update`` keeps old modules cached in sys.modules; the
-        # first inbound message is our earliest safe chance to detect
-        # this and restart gracefully before we dispatch to the agent
-        # and hit ImportError on freshly-added names (e.g. cfg_get).
-        # Idempotent — runs the real check at most once per message, and
-        # request_restart() no-ops after the first call.
-        try:
-            if self._detect_stale_code():
-                self._trigger_stale_code_restart()
-                # Acknowledge to the user so they don't see a silent
-                # drop; the gateway will be back up in a moment via the
-                # service manager / profile-watcher respawn.
-                return (
-                    "⟳ Gateway code was updated in the background — "
-                    "restarting this gateway so your next message runs "
-                    "on the new code. Please retry in a moment."
-                )
-        except Exception as _stale_exc:
-            logger.debug("Stale-code self-check failed: %s", _stale_exc)
-
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
@@ -4663,6 +4642,46 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+
+        # Stale-code self-check (Issue #17648).  A gateway that survives
+        # ``hermes update`` keeps old modules cached in sys.modules.  Run
+        # this only after auth/plugin gates so unauthorized messages are not
+        # persisted, but before dispatching to the agent where stale imports
+        # can explode.  Preserve the triggering user message in the transcript
+        # and mark the session resumable; otherwise Telegram/Discord ACK the
+        # platform update and the actual user request is lost.
+        try:
+            if self._detect_stale_code():
+                try:
+                    _stale_entry = self.session_store.get_or_create_session(source)
+                    self.session_store.append_to_transcript(
+                        _stale_entry.session_id,
+                        {
+                            "role": "user",
+                            "content": event.text or "",
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                    )
+                    self.session_store.mark_resume_pending(
+                        _stale_entry.session_key,
+                        reason="stale_code_restart",
+                    )
+                except Exception as _persist_exc:
+                    logger.warning(
+                        "Failed to preserve stale-code triggering message for %s: %s",
+                        _quick_key,
+                        _persist_exc,
+                    )
+                self._trigger_stale_code_restart()
+                return (
+                    "⟳ Gateway code was updated in the background — "
+                    "restarting this gateway now. I preserved your message "
+                    "in the session transcript; send one follow-up after the "
+                    "restart and I will continue from it."
+                )
+        except Exception as _stale_exc:
+            logger.debug("Stale-code self-check failed: %s", _stale_exc)
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -12967,14 +12986,23 @@ class GatewayRunner:
                     if _reason == "restart_timeout"
                     else "a gateway shutdown"
                     if _reason == "shutdown_timeout"
+                    else "a gateway code update/restart before the agent could process the preserved user message"
+                    if _reason == "stale_code_restart"
                     else "a gateway interruption"
+                )
+                _resume_instruction = (
+                    "If the conversation history contains a user message that was preserved "
+                    "during the interruption but not answered yet, answer that preserved "
+                    "message first, then address the user's new message below."
+                    if _reason == "stale_code_restart"
+                    else "If it contains unfinished tool result(s), process them first and "
+                    "summarize what was accomplished, then address the user's new "
+                    "message below."
                 )
                 message = (
                     f"[System note: Your previous turn in this session was interrupted "
                     f"by {_reason_phrase}. The conversation history below is intact. "
-                    f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"{_resume_instruction}]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:

@@ -126,6 +126,20 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("extra_headers", {}).get("x-grok-conv-id") == "conv-123"
 
+    def test_xai_headers_preserve_request_override_headers(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-3", messages=messages, tools=[],
+            session_id="conv-123",
+            is_xai_responses=True,
+            request_overrides={"extra_headers": {"X-Test": "1", "X-Trace": "abc"}},
+        )
+        assert kw.get("extra_headers") == {
+            "X-Test": "1",
+            "X-Trace": "abc",
+            "x-grok-conv-id": "conv-123",
+        }
+
     def test_minimal_effort_clamped(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

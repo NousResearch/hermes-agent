@@ -2396,6 +2396,25 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+    def _get_session_db_for_recall(self):
+        """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
+
+        Most frontends pass ``session_db`` into ``AIAgent`` explicitly, but recall
+        is important enough that a missing constructor argument should degrade by
+        opening the default state DB instead of making the advertised
+        ``session_search`` tool unusable.
+        """
+        if self._session_db is not None:
+            return self._session_db
+        try:
+            from hermes_state import SessionDB
+
+            self._session_db = SessionDB()
+            return self._session_db
+        except Exception as exc:
+            logger.debug("SessionDB unavailable for recall", exc_info=True)
+            return None
+
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
@@ -9920,7 +9939,8 @@ class AIAgent:
                 store=self._todo_store,
             )
         elif function_name == "session_search":
-            if not self._session_db:
+            session_db = self._get_session_db_for_recall()
+            if not session_db:
                 from hermes_state import format_session_db_unavailable
                 return json.dumps({"success": False, "error": format_session_db_unavailable()})
             from tools.session_search_tool import session_search as _session_search
@@ -9928,7 +9948,7 @@ class AIAgent:
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
-                db=self._session_db,
+                db=session_db,
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
@@ -10544,7 +10564,8 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search":
-                if not self._session_db:
+                session_db = self._get_session_db_for_recall()
+                if not session_db:
                     from hermes_state import format_session_db_unavailable
                     function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
                 else:
@@ -10553,7 +10574,7 @@ class AIAgent:
                         query=function_args.get("query", ""),
                         role_filter=function_args.get("role_filter"),
                         limit=function_args.get("limit", 3),
-                        db=self._session_db,
+                        db=session_db,
                         current_session_id=self.session_id,
                     )
                 tool_duration = time.time() - tool_start_time

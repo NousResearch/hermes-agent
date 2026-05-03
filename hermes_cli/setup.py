@@ -1327,7 +1327,18 @@ def setup_terminal_backend(config: dict):
     if selected_backend == "local":
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
-        print_info("  CLI/TUI always uses your launch directory (wherever you run 'hermes').")
+
+        # CWD for messaging
+        print()
+        print_info("Working directory for messaging sessions:")
+        print_info("  When using Hermes via Telegram/Discord, this is where")
+        print_info(
+            "  the agent starts. CLI mode always starts in the current directory."
+        )
+        current_cwd = cfg_get(config, "terminal", "cwd", default="")
+        cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
+        if cwd:
+            config["terminal"]["cwd"] = cwd
 
         # Sudo support
         print()
@@ -2378,20 +2389,6 @@ def setup_gateway(config: dict):
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
-
-        # Gateway working directory — where the agent starts when you chat
-        # via Telegram/Discord/etc.  CLI/TUI ignores this (uses launch dir).
-        print()
-        print_info("Gateway working directory:")
-        print_info("  When using Hermes via messaging platforms, this is where")
-        print_info("  the agent's terminal commands start.")
-        print_info("  (CLI/TUI always uses wherever you launched 'hermes' from.)")
-        current_cwd = cfg_get(config, "terminal", "cwd", default="")
-        if current_cwd in (".", "auto", "cwd", ""):
-            current_cwd = ""
-        cwd = prompt("  Gateway working directory", current_cwd or str(Path.home()))
-        if cwd:
-            config.setdefault("terminal", {})["cwd"] = cwd
 
         # Check if any home channels are missing
         missing_home = []

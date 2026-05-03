@@ -367,6 +367,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`) |
 | `MATRIX_DM_MENTION_THREADS` | Create a thread when bot is `@mentioned` in a DM (default: `false`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
+| `TRUECONF_SERVER` | TrueConf server address (e.g., `trueconf.example.com`) |
+| `TRUECONF_USERNAME` | TrueConf bot username |
+| `TRUECONF_PASSWORD` | TrueConf bot password |
+| `TRUECONF_ALLOWED_USERS` | Comma-separated list of allowed user emails or chat IDs |
+| `TRUECONF_ALLOW_ALL_USERS` | Allow all users without an allowlist (`true`/`false`) |
+| `TRUECONF_HOME_CHANNEL` | Default chat ID for cron delivery and notifications |
+| `TRUECONF_VERIFY_SSL` | Disable SSL verification (`false`/`0`, default: `true`) |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |

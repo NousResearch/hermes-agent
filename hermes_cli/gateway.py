@@ -690,6 +690,32 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
     print("  can refuse to start another copy until this process stops.")
 
 
+def _print_other_profiles_gateway_status() -> None:
+    """Print a summary of gateway status across all profiles.
+
+    Shown at the bottom of ``hermes gateway status`` output so users with
+    multiple profiles can tell at a glance which gateways are running and
+    avoid confusing another profile's process with the current one.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        current = get_active_profile_name()
+        other_processes = [
+            p for p in find_profile_gateway_processes()
+            if p.profile != current
+        ]
+        if not other_processes:
+            return
+
+        print()
+        print("Other profiles:")
+        for proc in other_processes:
+            print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
+    except Exception:
+        pass
+
+
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
                            all_profiles: bool = False) -> int:
     """Kill any running gateway processes. Returns count killed.
@@ -4455,6 +4481,9 @@ def _gateway_command_inner(args):
                 else:
                     print("  hermes gateway install  # Install as user service")
                     print("  sudo hermes gateway install --system  # Install as boot-time system service")
+
+        # Show other profiles' gateway status for multi-profile awareness
+        _print_other_profiles_gateway_status()
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Hermes gateway unit files from

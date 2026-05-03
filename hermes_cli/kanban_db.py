@@ -9,8 +9,20 @@ board as the dispatcher that claimed the task. The same applies to
 
 In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
 deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
-``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Set ``HERMES_KANBAN_HOME``
-to override the resolution explicitly (tests, unusual deployments).
+``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Three env-var overrides
+are available (highest precedence first, all optional):
+
+* ``HERMES_KANBAN_DB`` — pin the database file path directly.
+* ``HERMES_KANBAN_WORKSPACES_ROOT`` — pin the workspaces root directly.
+* ``HERMES_KANBAN_HOME`` — pin the umbrella root that anchors all three
+  kanban paths (db + workspaces + logs). Useful for tests and unusual
+  deployments where a single override is enough.
+
+The dispatcher injects ``HERMES_KANBAN_DB`` and
+``HERMES_KANBAN_WORKSPACES_ROOT`` into the worker subprocess env as a
+defense-in-depth measure: even if the worker's ``get_default_hermes_root()``
+resolution somehow disagrees with the dispatcher's (unusual symlink or
+Docker layout), the two processes still converge on the same files.
 
 Schema is intentionally small: tasks, task_links, task_comments,
 task_events.  The ``workspace_kind`` field decouples coordination from git
@@ -87,7 +99,7 @@ def kanban_home() -> Path:
     """
     override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
     if override:
-        return Path(override)
+        return Path(override).expanduser()
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
 
@@ -97,8 +109,13 @@ def kanban_db_path() -> Path:
 
     Anchored at :func:`kanban_home`, not the active profile's
     ``HERMES_HOME``, so profile workers and the dispatcher converge on
-    the same board.
+    the same board.  ``HERMES_KANBAN_DB`` pins the path directly (highest
+    precedence) — the dispatcher injects this into worker subprocess env
+    as defense-in-depth.
     """
+    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if override:
+        return Path(override).expanduser()
     return kanban_home() / "kanban.db"
 
 
@@ -107,7 +124,13 @@ def workspaces_root() -> Path:
 
     Anchored at :func:`kanban_home` so workspace paths are stable across
     profile workers spawned by the dispatcher.
+    ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
+    precedence) — the dispatcher injects this into worker subprocess env
+    as defense-in-depth.
     """
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
     return kanban_home() / "kanban" / "workspaces"
 
 
@@ -2111,6 +2134,14 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Pin the shared board + workspaces root the dispatcher resolved, so
+    # that even when the worker activates a profile (`hermes -p <name>`
+    # rewrites HERMES_HOME), its kanban paths still match the
+    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
+    # resolution in `kanban_home()` — symmetric resolution is the norm,
+    # but unusual symlink / Docker layouts are caught here too.
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path())
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root())
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are

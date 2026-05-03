@@ -97,11 +97,22 @@ def _get_safe_write_root() -> Optional[str]:
 
 
 def _is_read_denied(path: str) -> bool:
-    """Return True if path targets a sensitive credential/key file.
+    """Return True if path targets a sensitive credential/key file or a
+    cross-user Artemis path.
 
-    Mirrors the write deny list for reads.  Without this, an agent can
-    ``read_file("~/.ssh/id_ed25519")`` and exfiltrate the key via any
-    outbound channel (web search query, tool parameter, message send).
+    Two layers:
+
+    1. Static credential deny list (ssh keys, aws creds, etc.). Without
+       this an agent can ``read_file("~/.ssh/id_ed25519")`` and exfiltrate
+       the key via any outbound channel.
+
+    2. Cross-user Artemis deny (G2, S-0429-01): when
+       ``HERMES_SESSION_USER_ID`` is set, deny any path under
+       ``~/.hermes/artemis/<other_user>/`` (sibling user data) and any
+       path under ``~/.hermes/memories/`` (global file by design — never
+       per-session injectable). When env is unset (CLI / test harness),
+       fall through to the static list only — preserves dev ergonomics
+       for legitimate cross-user inspection workflows.
     """
     resolved = os.path.realpath(os.path.expanduser(str(path)))
     if resolved in WRITE_DENIED_PATHS:
@@ -109,6 +120,23 @@ def _is_read_denied(path: str) -> bool:
     for prefix in WRITE_DENIED_PREFIXES:
         if resolved.startswith(prefix):
             return True
+
+    # G2: cross-user Artemis paths + global memories. Read at call time —
+    # ContextVar / env values are per-session and may shift between calls.
+    session_user = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    if session_user:
+        hermes_home = os.path.expanduser(
+            os.environ.get("HERMES_HOME", os.path.join(_HOME, ".hermes"))
+        )
+        artemis_root = os.path.realpath(os.path.join(hermes_home, "artemis"))
+        memories_root = os.path.realpath(os.path.join(hermes_home, "memories"))
+        if resolved == memories_root or resolved.startswith(memories_root + os.sep):
+            return True
+        if resolved.startswith(artemis_root + os.sep):
+            rel = resolved[len(artemis_root) + 1:]
+            first = rel.split(os.sep, 1)[0]
+            if first and first != session_user:
+                return True
     return False
 
 

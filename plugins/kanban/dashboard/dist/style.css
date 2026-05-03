@@ -376,6 +376,7 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.72rem;
   color: var(--color-foreground);
+  text-shadow: none;
 }
 
 .hermes-kanban-comment {
@@ -412,6 +413,8 @@
 }
 .hermes-kanban-event-payload {
   color: var(--color-muted-foreground);
+  background: transparent;
+  text-shadow: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -605,8 +608,11 @@
 /* ---- Markdown rendering -------------------------------------------- */
 
 .hermes-kanban-md {
+  font-family: inherit;
   font-size: 0.8rem;
   line-height: 1.55;
+  letter-spacing: normal;
+  text-transform: none;
   color: var(--color-foreground);
 }
 .hermes-kanban-md p  { margin: 0.25rem 0; }
@@ -636,6 +642,8 @@
   padding: 0.05rem 0.3rem;
   background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
   border-radius: 3px;
+  color: var(--color-foreground);
+  text-shadow: none;
 }
 .hermes-kanban-md-code {
   margin: 0.35rem 0;
@@ -644,12 +652,15 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   overflow-x: auto;
+  color: var(--color-foreground);
+  text-shadow: none;
 }
 .hermes-kanban-md-code code {
   background: transparent;
   padding: 0;
   font-size: 0.75rem;
   white-space: pre;
+  color: inherit;
 }
 .hermes-kanban-md strong { font-weight: 600; }
 
@@ -754,6 +765,8 @@
   font-size: 0.65rem;
   padding: 0.15rem 0 0;
   color: var(--color-muted-foreground);
+  background: transparent;
+  text-shadow: none;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);

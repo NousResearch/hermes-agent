@@ -122,6 +122,10 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_MARKDOWN_TABLE_BLOCK_RE = re.compile(
+    r"(?:^|\n)(\|[^\n]+\|)\n\|[-:\s|]+\|\n((?:\|[^\n]+\|\n?)+)",
+    re.MULTILINE,
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -3242,7 +3246,21 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    @staticmethod
+    def _wrap_markdown_tables(content: str) -> str:
+        """Wrap markdown table blocks in code fences so Feishu renders them.
+
+        Feishu's ``text`` message type strips markdown table syntax entirely,
+        and its ``post`` type ``md`` tag doesn't support tables either.
+        Wrapping in code fences preserves the table content for the reader.
+        """
+        return _MARKDOWN_TABLE_BLOCK_RE.sub(
+            lambda m: f"\n```\n{m.group(0).strip()}\n```\n",
+            content,
+        )
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        content = self._wrap_markdown_tables(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

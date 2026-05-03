@@ -40,6 +40,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
+    "FEISHU_USER_ACCESS_TOKEN",  # Lark OpenAPI MCP user token (HTTP headers or lark-mcp -u / OAuth)
     "WECOM_BOT_ID", "WECOM_SECRET",
     "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
     "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
@@ -823,7 +824,10 @@ DEFAULT_CONFIG = {
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
     "skills": {
-        "external_dirs": ["~/.agents/skills"],  # Cursor/agents shared skills; [] to disable
+        # ~/.agents/skills — host-user shared (Cursor/OpenClaw). ${HERMES_HOME}/.agents/skills —
+        # same Hermes volume in Docker (/opt/data/...) so gateway scans skills inside ~/.hermes
+        # without bind-mounting the host HOME. Nonexistent dirs are skipped at runtime.
+        "external_dirs": ["~/.agents/skills", "${HERMES_HOME}/.agents/skills"],
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
@@ -1976,6 +1980,20 @@ OPTIONAL_ENV_VARS = {
         "prompt": "API server model name",
         "url": None,
         "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "HERMES_DASHBOARD_SESSION_TOKEN": {
+        "description": (
+            "Fixed session secret for `hermes dashboard` REST/HTML auth (≥16 chars, "
+            "non-placeholder). When unset, a random token is generated each process start. "
+            "Hermes Workspace can set `HERMES_DASHBOARD_TOKEN` to the same value for stable "
+            "API access without scraping `/`. Treat like a password — use a long random "
+            "value and avoid exposing the dashboard on untrusted networks."
+        ),
+        "prompt": "Dashboard session token (optional; stable integrations)",
+        "url": None,
+        "password": True,
         "category": "messaging",
         "advanced": True,
     },

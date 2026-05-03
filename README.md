@@ -12,12 +12,10 @@ ss -tlnp | grep 8642
 
 nohup hermes dashboard --host 0.0.0.0 --port 9112 --insecure --no-open
 
+nohup hermes gateway run > ~/hermes-nohup.log 2>&1 &
+
 nohup npm run dev > dev.log 2>&1 &
 ```
-
-
-
-
 
 安装
 
@@ -29,13 +27,6 @@ cd hermes-agent
 # 一键脚本安装
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
-
-  
-
-
-
-
-
 
 **The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 

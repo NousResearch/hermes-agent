@@ -165,6 +165,24 @@ mcp_servers:
       prompts: false
 ```
 
+### Feishu / Lark (local stdio)
+
+Official OpenAPI MCP: **`@larksuiteoapi/lark-mcp`**. Keep **`FEISHU_APP_ID`** / **`FEISHU_APP_SECRET`** in **`~/.hermes/.env`** and reference them with **`${…}`** in **`args`** (same secret-handling idea as GitHub’s **`env`** token).
+
+```yaml
+mcp_servers:
+  lark_mcp:
+    command: "npx"
+    args:
+      - "-y"
+      - "@larksuiteoapi/lark-mcp"
+      - "mcp"
+      - "-a"
+      - "${FEISHU_APP_ID}"
+      - "-s"
+      - "${FEISHU_APP_SECRET}"
+```
+
 ### Stripe blacklist
 
 ```yaml
@@ -208,6 +226,7 @@ mcp_<server>_<tool>
 Examples:
 - `mcp_github_create_issue`
 - `mcp_filesystem_read_file`
+- `mcp_lark_mcp_<tool>` (Feishu/Lark OpenAPI MCP via local `npx`; server name from YAML key)
 - `mcp_my_api_query_data`
 
 Utility tools follow the same prefixing pattern:

@@ -1,0 +1,66 @@
+# Tag/name/description substring rules → shop category codes (first match wins per rule row).
+# Used by Skill catalog browse (Hub aggregation); extend without DB migrations.
+categories:
+  - code: all
+    name: "全部"
+    patterns: []
+
+  - code: web_frontend
+    name: "Web 与前端"
+    patterns: ["frontend", "react", "vue", "css", "html", "web"]
+
+  - code: coding_agents
+    name: "编程 Agent"
+    patterns: ["agent", "coding", "claude", "copilot", "sdk"]
+
+  - code: git_github
+    name: "Git 与 GitHub"
+    patterns: ["git", "github", "gitlab", "pr ", "pull request"]
+
+  - code: devops_cloud
+    name: "DevOps 与云"
+    patterns: ["docker", "kubernetes", "k8s", "aws", "azure", "gcp", "cloud", "ci/cd", "terraform"]
+
+  - code: browser_automation
+    name: "浏览器与自动化"
+    patterns: ["browser", "playwright", "puppeteer", "selenium", "scraping"]
+
+  - code: image_video
+    name: "图像与视频"
+    patterns: ["image", "video", "ffmpeg", "opencv", "diffusion"]
+
+  - code: search_research
+    name: "搜索与研究"
+    patterns: ["search", "research", "arxiv", "paper"]
+
+  - code: ai_llms
+    name: "AI 与 LLM"
+    patterns: ["llm", "gpt", "model", "embedding", "rag", "fine-tune"]
+
+  - code: productivity
+    name: "效率工具"
+    patterns: ["productivity", "todo", "note", "calendar"]
+
+  - code: marketing_sales
+    name: "市场与销售"
+    patterns: ["marketing", "sales", "seo", "newsletter"]
+
+  - code: communication
+    name: "沟通协作"
+    patterns: ["slack", "discord", "telegram", "email", "meeting"]
+
+  - code: data_analytics
+    name: "数据与分析"
+    patterns: ["sql", "pandas", "spark", "analytics", "dataset"]
+
+  - code: finance_crypto
+    name: "金融与加密"
+    patterns: ["finance", "crypto", "trading", "wallet", "defi"]
+
+  - code: office_efficiency
+    name: "办公效率"
+    patterns: ["ppt", "excel", "word", "office", "document"]
+
+  - code: system_tools
+    name: "系统工具"
+    patterns: ["shell", "linux", "macos", "windows", "filesystem"]

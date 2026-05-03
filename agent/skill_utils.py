@@ -176,7 +176,8 @@ def get_external_skills_dirs() -> List[Path]:
     """Read ``skills.external_dirs`` from merged Hermes config and return paths.
 
     Uses ``load_config()`` (defaults + ``~/.hermes/config.yaml``) so the default
-    ``~/.agents/skills`` entry applies even when the user omits ``external_dirs``.
+    ``external_dirs`` list applies when the user omits it: typically
+    ``~/.agents/skills`` and ``${HERMES_HOME}/.agents/skills`` (Docker-friendly).
 
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and

@@ -915,7 +915,7 @@ model:
 
 ---
 
-### LiteLLM Proxy — Multi-Provider Gateway
+### LiteLLM Proxy — Multi-Provider Gateway {#litellm-proxy-multi-provider-gateway}
 
 [LiteLLM](https://docs.litellm.ai/) is an OpenAI-compatible proxy that unifies 100+ LLM providers behind a single API. Best for: switching between providers without config changes, load balancing, fallback chains, budget controls.
 
@@ -944,6 +944,48 @@ model_list:
 router_settings:
   routing_strategy: "latency-based-routing"
 ```
+
+#### Auxiliary models (same proxy, cheaper models) {#litellm-auxiliary-same-proxy}
+
+Side tasks — session [title generation](/docs/user-guide/configuration#auxiliary-models), [context compression](/docs/user-guide/configuration#context-compression), vision, web extract, etc. — use the [`auxiliary`](/docs/user-guide/configuration#auxiliary-models) block in `config.yaml`. They resolve **independently** from your main `model:` section unless you wire them to match.
+
+**Client authentication:** Hermes sends OpenAI-compatible `Authorization: Bearer …` to whatever `base_url` you configure. When LiteLLM Proxy is deployed with the Virtual Key / database flow, client tokens are normally **issued Virtual Keys** that **start with `sk-`**. The **Master Key** (`LITELLM_MASTER_KEY` / `general_settings.master_key`) is primarily for **admin UI and management APIs**; some deployments also allow it as a caller token — follow your LiteLLM operator’s policy. If requests fail with *Virtual Key expected … expected to start with `sk-`*, set a proper **`sk-` Virtual Key** (or the key your proxy expects) on the auxiliary path, not placeholders like `no-key-required`.
+
+**Two recommended patterns** (same LiteLLM Proxy URL as the main agent, different **`model`** = different `model_name` in LiteLLM’s `model_list`):
+
+1. **`provider: main`** — Reuse the main agent’s resolved `base_url` and `api_key`. Override only **`auxiliary.<task>.model`** to pick a cheaper or faster route on the proxy (leave `base_url` / `api_key` empty on that task).
+2. **Explicit `base_url` + `api_key` + `model`** — Duplicate the proxy URL and Virtual Key under each auxiliary task you care about, and set **`model`** to the LiteLLM router name you want for that task.
+
+Apply the same pattern to other `auxiliary` tasks (`vision`, `web_extract`, `session_search`, etc.) when those calls should hit LiteLLM too.
+
+```yaml
+# Example: main model uses a strong model on LiteLLM; auxiliary uses cheaper models
+# on the SAME proxy (replace model_name values with yours).
+auxiliary:
+  title_generation:
+    provider: main
+    model: "google/gemini-2.5-flash"   # LiteLLM model_name — must exist on the proxy
+    # base_url / api_key omitted — inherited from main model runtime
+
+  compression:
+    provider: main
+    model: "google/gemini-2.5-flash"
+
+# Alternative: explicit proxy (same URL/key for every task you list)
+# auxiliary:
+#   title_generation:
+#     provider: custom
+#     base_url: "http://127.0.0.1:4000/v1"
+#     api_key: "sk-litellm-virtual-key"   # Virtual Key issued by LiteLLM / admin
+#     model: "cheap-router-name"
+#   compression:
+#     provider: custom
+#     base_url: "http://127.0.0.1:4000/v1"
+#     api_key: "sk-litellm-virtual-key"
+#     model: "cheap-router-name"
+```
+
+Messaging gateways (e.g. Feishu) still read `config.yaml` for auxiliary routing; **restart the gateway** after edits. Full task list and knobs: [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).
 
 ---
 

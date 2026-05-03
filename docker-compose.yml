@@ -26,6 +26,10 @@ services:
     container_name: hermes
     restart: unless-stopped
     network_mode: host
+    # Optional extra bind — only if external skills live on the host outside ~/.hermes
+    # (~/.agents/skills) and must appear at /opt/data/.agents/skills in the container.
+    # Otherwise use ~/.hermes/.agents/skills on the host (single volume is enough).
+    #   - ~/.agents/skills:/opt/data/.agents/skills
     volumes:
       - ~/.hermes:/opt/data
     environment:

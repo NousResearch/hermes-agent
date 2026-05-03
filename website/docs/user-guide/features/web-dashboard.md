@@ -191,7 +191,9 @@ This re-reads `~/.hermes/.env` into the running process's environment. Useful wh
 
 ## REST API
 
-The web dashboard exposes a REST API that the frontend consumes. You can also call these endpoints directly for automation:
+The web dashboard exposes a REST API that the frontend consumes. You can also call these endpoints directly for automation.
+
+Protected routes require session authentication: send `Authorization: Bearer <token>` or `X-Hermes-Session-Token: <token>`. By default the token is randomly generated each time the dashboard starts and is injected into the SPA shell (`window.__HERMES_SESSION_TOKEN__`). For a **stable** secret across restarts — for example when [Hermes Workspace](https://github.com/NousResearch/hermes-workspace) calls these APIs — set **`HERMES_DASHBOARD_SESSION_TOKEN`** in `~/.hermes/.env` to a long random string (≥16 characters; same value as Workspace `HERMES_DASHBOARD_TOKEN`). See [Environment variables](/docs/reference/environment-variables#messaging).
 
 ### GET /api/status
 

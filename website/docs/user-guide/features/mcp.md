@@ -72,6 +72,32 @@ Use stdio servers when:
 - you want low-latency access to local resources
 - you are following MCP server docs that show `command`, `args`, and `env`
 
+#### Feishu / Lark (local stdio, official OpenAPI MCP)
+
+Prefer **`npx -y @larksuiteoapi/lark-mcp`** ([npm](https://www.npmjs.com/package/@larksuiteoapi/lark-mcp)): Lark Open Platform publishes this MCP server with **stdio by default**, so Hermes spawns a local subprocess instead of calling a remote HTTP MCP endpoint.
+
+Store credentials in `~/.hermes/.env` (same **`FEISHU_APP_ID`** / **`FEISHU_APP_SECRET`** keys as the Feishu messaging gateway), then reference them from YAML — Hermes expands **`${VAR}`** placeholders the same way as other config sections (parity with keeping **`GITHUB_PERSONAL_ACCESS_TOKEN`** out of plaintext YAML on GitHub):
+
+```yaml
+mcp_servers:
+  lark_mcp:
+    command: "npx"
+    args:
+      - "-y"
+      - "@larksuiteoapi/lark-mcp"
+      - "mcp"
+      - "-a"
+      - "${FEISHU_APP_ID}"
+      - "-s"
+      - "${FEISHU_APP_SECRET}"
+```
+
+Optional **`env`** block: only needed if the server reads extra variables (see that package’s README). The official CLI primarily takes **`-a`** / **`-s`** on the command line; using **`${FEISHU_APP_ID}`** / **`${FEISHU_APP_SECRET}`** in **`args`** mirrors the GitHub pattern of **secrets in `.env`, templates in `config.yaml`**.
+
+User-context APIs (OAuth): run **`npx -y @larksuiteoapi/lark-mcp login -a … -s …`** once per the upstream docs, then add **`--oauth`** to **`args`**. Short-lived user tokens can be passed with **`-u ${FEISHU_USER_ACCESS_TOKEN}`** instead when applicable.
+
+This MCP integration is **separate** from the Hermes Feishu/Lark **gateway bot** — you can use both, either, or neither.
+
 ### HTTP servers
 
 HTTP MCP servers are remote endpoints Hermes connects to directly.
@@ -140,6 +166,7 @@ Examples:
 |---|---|---|
 | `filesystem` | `read_file` | `mcp_filesystem_read_file` |
 | `github` | `create-issue` | `mcp_github_create_issue` |
+| `lark_mcp` | _(server-native tool name)_ | `mcp_lark_mcp_<tool>` |
 | `my-api` | `query.data` | `mcp_my_api_query_data` |
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.

@@ -273,6 +273,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `FEISHU_VERIFICATION_TOKEN` | Optional verification token for webhook mode |
 | `FEISHU_ALLOWED_USERS` | Comma-separated Feishu user IDs allowed to message the bot |
 | `FEISHU_HOME_CHANNEL` | Feishu chat ID for cron delivery and notifications |
+| `FEISHU_USER_ACCESS_TOKEN` | Optional user access token for Lark OpenAPI MCP (`-u` / OAuth flows with `@larksuiteoapi/lark-mcp`); short-lived unless using `--oauth` |
 | `WECOM_BOT_ID` | WeCom AI Bot ID from admin console |
 | `WECOM_SECRET` | WeCom AI Bot secret |
 | `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
@@ -348,6 +349,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |
 | `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). Use `0.0.0.0` for network access — requires `API_SERVER_KEY` and a narrow `API_SERVER_CORS_ORIGINS` allowlist. |
 | `API_SERVER_MODEL_NAME` | Model name advertised on `/v1/models`. Defaults to the profile name (or `hermes-agent` for the default profile). Useful for multi-user setups where frontends like Open WebUI need distinct model names per connection. |
+| `HERMES_DASHBOARD_SESSION_TOKEN` | Optional fixed secret for [`hermes dashboard`](/docs/user-guide/features/web-dashboard) session auth (≥16 characters, non-placeholder). When unset, the dashboard generates a random token each startup. Use the same value as Hermes Workspace `HERMES_DASHBOARD_TOKEN` for stable machine-to-machine API access. Treat like a password; prefer localhost binding for the dashboard. |
 | `GATEWAY_PROXY_URL` | URL of a remote Hermes API server to forward messages to ([proxy mode](/docs/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Also configurable via `gateway.proxy_url` in `config.yaml`. |
 | `GATEWAY_PROXY_KEY` | Bearer token for authenticating with the remote API server in proxy mode. Must match `API_SERVER_KEY` on the remote host. |
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |

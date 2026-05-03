@@ -496,6 +496,110 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
+def _get_hermes_skill_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    hermes_meta = metadata.get("hermes")
+    return hermes_meta if isinstance(hermes_meta, dict) else {}
+
+
+def _category_lookup() -> Dict[str, str]:
+    try:
+        from hermes_cli.skill_catalog.categories import list_categories
+
+        return {
+            str(row.get("code", "")).strip().lower(): str(row.get("name", "")).strip()
+            for row in list_categories()
+            if row.get("code")
+        }
+    except Exception:
+        return {}
+
+
+def _category_item(value: Any, names_by_code: Dict[str, str]) -> Optional[Dict[str, str]]:
+    if isinstance(value, dict):
+        raw_code = str(value.get("code") or value.get("id") or value.get("name") or "").strip()
+        raw_name = str(value.get("name") or raw_code).strip()
+    else:
+        raw_code = str(value or "").strip()
+        raw_name = raw_code
+
+    if not raw_code:
+        return None
+
+    code = raw_code.lower().replace(" ", "_")
+    name = names_by_code.get(code) or raw_name
+    return {"code": code, "name": name}
+
+
+def _parse_category_values(value: Any, names_by_code: Dict[str, str]) -> List[Dict[str, str]]:
+    if value is None:
+        return []
+    raw_values = value if isinstance(value, list) else [value]
+    parsed: List[Dict[str, str]] = []
+    for raw in raw_values:
+        item = _category_item(raw, names_by_code)
+        if item:
+            parsed.append(item)
+    return parsed
+
+
+def _derive_skill_categories(
+    *,
+    name: str,
+    description: str,
+    tags: List[str],
+    directory_category: Optional[str],
+    frontmatter: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    """Return stable multi-category metadata for local scanned skills."""
+    names_by_code = _category_lookup()
+    hermes_meta = _get_hermes_skill_metadata(frontmatter)
+    explicit_categories = (
+        hermes_meta.get("categories")
+        or hermes_meta.get("category")
+        or frontmatter.get("categories")
+        or frontmatter.get("category")
+    )
+
+    categories = _parse_category_values(explicit_categories, names_by_code)
+
+    try:
+        from hermes_cli.skill_catalog.normalize import derive_categories
+        from tools.skills_hub import SkillMeta
+
+        derived = derive_categories(
+            SkillMeta(
+                name=name,
+                description=description,
+                source="installed",
+                identifier=name,
+                trust_level="builtin",
+                tags=tags,
+                extra={"category": directory_category or ""},
+            )
+        )
+        categories.extend(derived)
+    except Exception:
+        pass
+
+    if directory_category:
+        categories.append(_category_item(directory_category, names_by_code))
+
+    seen: Set[str] = set()
+    deduped: List[Dict[str, str]] = []
+    for item in categories:
+        if not item:
+            continue
+        code = item.get("code", "").strip().lower()
+        if not code or code == "all" or code in seen:
+            continue
+        seen.add(code)
+        deduped.append({"code": code, "name": item.get("name") or code})
+    return deduped or [{"code": "productivity", "name": names_by_code.get("productivity", "效率工具")}]
+
+
 
 def _get_disabled_skill_names() -> Set[str]:
     """Load disabled skill names from config.
@@ -600,12 +704,33 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
                 category = _get_category_from_path(skill_md)
+                hermes_meta = _get_hermes_skill_metadata(frontmatter)
+                tags = _parse_tags(hermes_meta.get("tags") or frontmatter.get("tags", ""))
+                categories = _derive_skill_categories(
+                    name=name,
+                    description=description,
+                    tags=tags,
+                    directory_category=category,
+                    frontmatter=frontmatter,
+                )
+                try:
+                    rel_path = str(skill_md.relative_to(SKILLS_DIR))
+                except ValueError:
+                    rel_path = str(skill_md)
 
                 seen_names.add(name)
                 skills.append({
+                    "id": name,
+                    "slug": skill_dir.name,
                     "name": name,
                     "description": description,
                     "category": category,
+                    "categoryLabel": categories[0]["name"] if categories else category,
+                    "categoryCode": categories[0]["code"] if categories else None,
+                    "categories": categories,
+                    "tags": tags,
+                    "path": rel_path,
+                    "sourcePath": rel_path,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

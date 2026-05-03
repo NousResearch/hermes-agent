@@ -105,6 +105,23 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 Never run two Hermes **gateway** containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent write access. Running a dashboard container alongside the gateway is safe since the dashboard only reads data.
 :::
 
+### External skill directories (`skills.external_dirs`)
+
+The default Hermes configuration lists two expandable paths for [`skills.external_dirs`](./configuration.md): ``~/.agents/skills`` and ``${HERMES_HOME}/.agents/skills``. Each must exist as a directory to be scanned.
+
+Inside this image the process user’s home directory is **`/opt/data`** (the bind mount). Therefore ``~/.agents/skills`` resolves to **`/opt/data/.agents/skills`** — i.e. **`~/.hermes/.agents/skills`** on the host — *not* your normal login user’s ``$HOME/.agents/skills``. If you keep shared skills next to Cursor on the host at ``~/.../.agents/skills`` **outside** ``~/.hermes``, either:
+
+1. Put or symlink them under **`~/.hermes/.agents/skills`** on the host so the single ``~/.hermes:/opt/data`` volume includes them (covers the `${HERMES_HOME}/.agents/skills` default), or  
+2. Add an optional second bind mount, for example (uncomment/adapt as needed):
+
+```yaml
+volumes:
+  - ~/.hermes:/opt/data
+  - ~/.agents/skills:/opt/data/.agents/skills   # expose host ~/.agents/skills in the volume
+```
+
+You only need one approach: duplicated paths are deduped once resolved.
+
 ## Multi-profile support
 
 Hermes supports [multiple profiles](../reference/profile-commands.md) — separate `~/.hermes/` directories that let you run independent agents (different SOUL, skills, memory, sessions, credentials) from a single installation. **When running under Docker, using Hermes' built-in multi-profile feature is not recommended.**

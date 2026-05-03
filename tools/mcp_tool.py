@@ -24,6 +24,16 @@ Example config::
         args: ["-y", "@modelcontextprotocol/server-github"]
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+      lark_mcp:
+        command: "npx"
+        args:
+          - "-y"
+          - "@larksuiteoapi/lark-mcp"
+          - "mcp"
+          - "-a"
+          - "${FEISHU_APP_ID}"
+          - "-s"
+          - "${FEISHU_APP_SECRET}"
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
         headers:

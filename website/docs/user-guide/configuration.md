@@ -677,6 +677,10 @@ Available providers for auxiliary tasks: `auto`, `main`, plus any provider in th
 The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/docs/integrations/providers) for all main model provider options.
 :::
 
+### LiteLLM Proxy
+
+If the main agent uses [LiteLLM Proxy](/docs/integrations/providers#litellm-proxy-multi-provider-gateway), point auxiliary tasks at the **same** OpenAI-compatible `base_url` (typically `http://HOST:4000/v1`) and use a **LiteLLM Virtual Key** (`sk-…`) for `api_key` when the proxy enforces virtual keys — or set `provider: main` and only override `auxiliary.<task>.model` to route title generation, compression, and other side tasks to cheaper `model_name` entries on the proxy. See [Auxiliary models (same proxy, cheaper models)](/docs/integrations/providers#litellm-auxiliary-same-proxy).
+
 ### Full auxiliary config reference
 
 ```yaml

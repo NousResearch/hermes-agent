@@ -90,7 +90,7 @@ class TestGetExternalSkillsDirs:
         assert result == []
 
     def test_default_agents_skills_dir_without_config_file(self, hermes_home):
-        """Merged DEFAULT_CONFIG lists ~/.agents/skills even when config.yaml is absent."""
+        """Merged DEFAULT_CONFIG includes ~/.agents/skills; isolated HOME resolves it."""
         agents_root = hermes_home.parent / ".agents" / "skills"
         agents_root.mkdir(parents=True)
         skill_dir = agents_root / "agents-default-skill"
@@ -104,6 +104,25 @@ class TestGetExternalSkillsDirs:
             result = get_external_skills_dirs()
         assert len(result) == 1
         assert result[0] == agents_root.resolve()
+
+    def test_default_hermes_home_agents_skills_dir_without_config_file(self, hermes_home):
+        """Second default path ${HERMES_HOME}/.agents/skills resolves when HOME/.agents/skills absent."""
+        hermes_agents_root = hermes_home / ".agents" / "skills"
+        hermes_agents_root.mkdir(parents=True)
+        skill_dir = hermes_agents_root / "hermes-home-dir-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: hermes-home-dir-skill\ndescription: under HERMES_HOME\n---\n\n# Skill\n"
+        )
+        assert not (hermes_home / "config.yaml").exists()
+        # No sibling ~/.agents/skills relative to HOME = hermes_home.parent
+        assert not (hermes_home.parent / ".agents" / "skills").exists()
+        with patch.dict(os.environ, _isolated_hermes_env(hermes_home)):
+            from agent.skill_utils import get_external_skills_dirs
+
+            result = get_external_skills_dirs()
+        assert len(result) == 1
+        assert result[0] == hermes_agents_root.resolve()
 
     def test_string_value_converted_to_list(self, hermes_home, external_skills_dir):
         (hermes_home / "config.yaml").write_text(

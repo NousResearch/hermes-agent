@@ -631,6 +631,52 @@ class TestNewEndpoints:
             },
         ]
 
+    def test_skills_list_supports_pagination_and_category_filter(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+        import hermes_cli.skills_config as skills_config
+        import hermes_cli.web_server as web_server
+
+        def _fake_find_all_skills(*, skip_disabled=False):
+            return [
+                {
+                    "name": "git-one",
+                    "description": "git helper",
+                    "category": "dev",
+                    "categories": [{"code": "git_github", "name": "Git 与 GitHub"}],
+                },
+                {
+                    "name": "git-two",
+                    "description": "another git helper",
+                    "category": "dev",
+                    "categories": [{"code": "git_github", "name": "Git 与 GitHub"}],
+                },
+                {
+                    "name": "web-one",
+                    "description": "frontend helper",
+                    "category": "web",
+                    "categories": [{"code": "web_frontend", "name": "Web 与前端"}],
+                },
+            ]
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+        monkeypatch.setattr(skills_config, "get_disabled_skills", lambda config: set())
+        monkeypatch.setattr(web_server, "load_config", lambda: {"skills": {"disabled": []}})
+
+        resp = self.client.get("/api/skills?category=git_github&page=1&pageSize=1")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert [row["name"] for row in payload["skills"]] == ["git-one"]
+        assert payload["pagination"] == {
+            "page": 1,
+            "pageSize": 1,
+            "total": 2,
+            "totalPages": 2,
+            "hasNext": True,
+            "hasPrev": False,
+        }
+        assert payload["total"] == 2
+
     def test_toolsets_list(self):
         resp = self.client.get("/api/tools/toolsets")
         assert resp.status_code == 200

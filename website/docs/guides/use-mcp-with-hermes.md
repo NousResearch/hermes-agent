@@ -109,6 +109,24 @@ mcp_servers:
 
 This is usually the best default for sensitive systems.
 
+### Example: Feishu / Lark (local `npx`, secrets in `.env`)
+
+[`@larksuiteoapi/lark-mcp`](https://www.npmjs.com/package/@larksuiteoapi/lark-mcp) reads **`-a`** / **`-s`** from the command line. Point them at **`${FEISHU_APP_ID}`** / **`${FEISHU_APP_SECRET}`** so values live in **`~/.hermes/.env`** (same keys as the Feishu gateway):
+
+```yaml
+mcp_servers:
+  lark_mcp:
+    command: "npx"
+    args:
+      - "-y"
+      - "@larksuiteoapi/lark-mcp"
+      - "mcp"
+      - "-a"
+      - "${FEISHU_APP_ID}"
+      - "-s"
+      - "${FEISHU_APP_SECRET}"
+```
+
 ### Example: blacklist dangerous actions
 
 ```yaml

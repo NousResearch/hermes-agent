@@ -56,8 +56,14 @@ model:
   #
   # -------------------------------------------------------------------------
   # LiteLLM proxy — OpenAI-compatible gateway (see LiteLLM docs). Use the same
-  # string ids as ``model_name`` in LiteLLM ``config.yaml``. The API key must
-  # match LiteLLM ``general_settings.master_key`` (e.g. ``LITELLM_MASTER_KEY``).
+  # string ids as ``model_name`` in LiteLLM ``model_list``. For Bearer auth,
+  # Hermes sends the key from ``key_env`` / ``api_key`` as ``Authorization: Bearer …``.
+  #
+  # Client keys: when the proxy uses Virtual Keys + DB, callers normally use an
+  # issued Virtual Key (string starts with ``sk-``). ``LITELLM_MASTER_KEY`` /
+  # ``general_settings.master_key`` is mainly for admin UI and management APIs;
+  # some deployments also accept it as a caller token — follow your operator.
+  # Put Virtual Keys in .env (e.g. ``LITELLM_VIRTUAL_KEY``) and reference via key_env.
   # The dashboard model picker probes ``GET {base_url}/models`` when the list
   # below is omitted; listing ``models`` explicitly avoids any network hop.
   # -------------------------------------------------------------------------
@@ -65,7 +71,7 @@ model:
   #   litellm-local:
   #     name: "LiteLLM Local"
   #     base_url: "http://127.0.0.1:4000/v1"
-  #     key_env: "LITELLM_MASTER_KEY"
+  #     key_env: "LITELLM_VIRTUAL_KEY"
   #     model: "deepseek-chat"
   #     models:
   #       deepseek-chat: {}
@@ -414,6 +420,28 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#
+#   # --- LiteLLM (same base_url as providers.litellm-local; optional cheaper model) ---
+#   # Reuses main model credentials when provider is "main"; override only ``model``.
+#   # Or set base_url + api_key (sk- Virtual Key) explicitly per task — see docs:
+#   # website/docs/integrations/providers.md → LiteLLM → Auxiliary models
+#   title_generation:
+#     provider: "main"
+#     model: "google/gemini-2.5-flash"   # LiteLLM model_name; adjust to your proxy
+#   compression:
+#     provider: "main"
+#     model: "google/gemini-2.5-flash"
+#   # Explicit duplicate (uncomment if you do not use provider: main):
+#   # title_generation:
+#   #   provider: "custom"
+#   #   base_url: "http://127.0.0.1:4000/v1"
+#   #   api_key: "sk-litellm-virtual-key"
+#   #   model: "cheap-model-name"
+#   # compression:
+#   #   provider: "custom"
+#   #   base_url: "http://127.0.0.1:4000/v1"
+#   #   api_key: "sk-litellm-virtual-key"
+#   #   model: "cheap-model-name"
 
 # =============================================================================
 # Persistent Memory
@@ -738,6 +766,19 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#
+#   # Feishu / Lark OpenAPI via local stdio (official @larksuiteoapi/lark-mcp).
+#   # Put FEISHU_APP_ID / FEISHU_APP_SECRET in ~/.hermes/.env (same as gateway).
+#   lark_mcp:
+#     command: npx
+#     args:
+#       - "-y"
+#       - "@larksuiteoapi/lark-mcp"
+#       - "mcp"
+#       - "-a"
+#       - "${FEISHU_APP_ID}"
+#       - "-s"
+#       - "${FEISHU_APP_SECRET}"
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

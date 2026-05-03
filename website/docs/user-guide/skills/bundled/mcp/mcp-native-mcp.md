@@ -299,6 +299,26 @@ mcp_servers:
 
 Registers tools like `mcp_github_list_issues`, `mcp_github_create_pull_request`, etc.
 
+### Feishu / Lark OpenAPI Server (local npx)
+
+Official package **`@larksuiteoapi/lark-mcp`** uses stdio by default. Put **`FEISHU_APP_ID`** / **`FEISHU_APP_SECRET`** in **`~/.hermes/.env`** and reference them from **`args`** with **`${…}`** so secrets stay out of plaintext YAML (same idea as GitHub’s **`env`** token):
+
+```yaml
+mcp_servers:
+  lark_mcp:
+    command: "npx"
+    args:
+      - "-y"
+      - "@larksuiteoapi/lark-mcp"
+      - "mcp"
+      - "-a"
+      - "${FEISHU_APP_ID}"
+      - "-s"
+      - "${FEISHU_APP_SECRET}"
+```
+
+User-context flows: see the package README for **`login`** / **`--oauth`** / **`-u`** (optional **`FEISHU_USER_ACCESS_TOKEN`** in **`.env`**).
+
 ### Remote HTTP Server
 
 ```yaml
@@ -329,6 +349,17 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
+
+  lark_mcp:
+    command: "npx"
+    args:
+      - "-y"
+      - "@larksuiteoapi/lark-mcp"
+      - "mcp"
+      - "-a"
+      - "${FEISHU_APP_ID}"
+      - "-s"
+      - "${FEISHU_APP_SECRET}"
 
   company_api:
     url: "https://mcp.internal.company.com/mcp"

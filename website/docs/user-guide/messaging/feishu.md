@@ -125,6 +125,10 @@ FEISHU_HOME_CHANNEL=oc_xxx
 - `feishu` for Feishu China
 - `lark` for Lark international
 
+### Optional: Lark OpenAPI via MCP (local `npx`, not remote HTTP)
+
+The messaging gateway above is separate from **MCP**. To give Hermes Feishu/Lark Open Platform tools as **local stdio** MCP (recommended upstream package **`@larksuiteoapi/lark-mcp`**), add `mcp_servers` in `config.yaml` and reuse **`FEISHU_APP_ID`** / **`FEISHU_APP_SECRET`** from **`~/.hermes/.env`** via **`${FEISHU_APP_ID}`** / **`${FEISHU_APP_SECRET}`** in **`args`**. Full snippet and OAuth notes: [MCP — Feishu / Lark (local stdio)](/docs/user-guide/features/mcp#feishu--lark-local-stdio-official-openapi-mcp).
+
 ## Step 4: Start the Gateway
 
 ```bash

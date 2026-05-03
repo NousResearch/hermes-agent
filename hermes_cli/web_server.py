@@ -49,7 +49,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -67,10 +67,22 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
-# Injected into the SPA HTML so only the legitimate web UI can use it.
+# Default: ephemeral URL-safe token generated on each server start.
+# Override with HERMES_DASHBOARD_SESSION_TOKEN (≥16 chars, non-placeholder)
+# so integrations (e.g. Hermes Workspace) can use a stable Bearer without
+# scraping HTML. Injected into the SPA HTML for first-party UI auth.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+def _resolve_dashboard_session_token() -> str:
+    """Return fixed dashboard session token from env or a fresh URL-safe secret."""
+    from hermes_cli.auth import has_usable_secret
+
+    raw = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN", "").strip()
+    if has_usable_secret(raw, min_length=16):
+        return raw
+    return secrets.token_urlsafe(32)
+
+
+_SESSION_TOKEN = _resolve_dashboard_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -2111,16 +2123,164 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
+def _skill_matches_category(skill: Dict[str, Any], category: str) -> bool:
+    from hermes_cli.skill_catalog.categories import normalize_category_key
+
+    cat = normalize_category_key(category)
+    if cat in ("", "all"):
+        return True
+
+    categories = skill.get("categories") or []
+    if isinstance(categories, list):
+        for item in categories:
+            if not isinstance(item, dict):
+                continue
+            code = normalize_category_key(str(item.get("code", "")))
+            name = normalize_category_key(str(item.get("name", "")))
+            if cat in (code, name):
+                return True
+
+    return cat in (
+        normalize_category_key(str(skill.get("category") or "")),
+        normalize_category_key(str(skill.get("categoryCode") or "")),
+        normalize_category_key(str(skill.get("categoryLabel") or "")),
+    )
+
+
+def _skill_matches_search(skill: Dict[str, Any], query: str) -> bool:
+    needle = (query or "").strip().lower()
+    if not needle:
+        return True
+
+    categories = skill.get("categories") or []
+    category_text = " ".join(
+        str(item.get("name") or item.get("code") or "")
+        for item in categories
+        if isinstance(item, dict)
+    )
+    haystack = "\n".join(
+        [
+            str(skill.get("id") or ""),
+            str(skill.get("name") or ""),
+            str(skill.get("description") or ""),
+            str(skill.get("category") or ""),
+            str(skill.get("categoryLabel") or ""),
+            " ".join(str(tag) for tag in (skill.get("tags") or [])),
+            category_text,
+        ]
+    ).lower()
+    return needle in haystack
+
+
+def _sort_skill_rows(skills: List[Dict[str, Any]], sort: str) -> List[Dict[str, Any]]:
+    key = (sort or "name").strip().lower()
+    rows = [dict(skill) for skill in skills]
+    if key == "category":
+        rows.sort(
+            key=lambda skill: (
+                str(skill.get("categoryLabel") or skill.get("category") or "").lower(),
+                str(skill.get("name") or "").lower(),
+            )
+        )
+    else:
+        rows.sort(key=lambda skill: str(skill.get("name") or "").lower())
+    return rows
+
+
 @app.get("/api/skills")
-async def get_skills():
+async def get_skills(
+    request: Request,
+    category: str = "all",
+    page: int = 1,
+    page_size: int = Query(20, alias="pageSize", ge=1, le=60),
+    limit: Optional[int] = Query(None, ge=1, le=60),
+    q: str = "",
+    search: str = "",
+    sort: str = "name",
+):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
+    from hermes_cli.skill_catalog import list_categories
     config = load_config()
     disabled = get_disabled_skills(config)
     skills = _find_all_skills(skip_disabled=True)
     for s in skills:
         s["enabled"] = s["name"] not in disabled
-    return skills
+
+    paged_query_keys = {"category", "page", "pageSize", "limit", "q", "search", "sort"}
+    wants_paged_response = any(key in request.query_params for key in paged_query_keys)
+    if not wants_paged_response:
+        return skills
+
+    effective_limit = limit if limit is not None else page_size
+    effective_limit = max(1, min(effective_limit, 60))
+    page = max(1, page)
+    query = q or search
+
+    filtered = [
+        skill
+        for skill in skills
+        if _skill_matches_category(skill, category) and _skill_matches_search(skill, query)
+    ]
+    sorted_rows = _sort_skill_rows(filtered, sort)
+    total = len(sorted_rows)
+    total_pages = (total + effective_limit - 1) // effective_limit if total else 0
+    start = (page - 1) * effective_limit
+    rows = sorted_rows[start : start + effective_limit]
+    pagination = {
+        "page": page,
+        "pageSize": effective_limit,
+        "total": total,
+        "totalPages": total_pages,
+        "hasNext": start + effective_limit < total,
+        "hasPrev": page > 1,
+    }
+    return {
+        "items": rows,
+        "skills": rows,
+        "pagination": pagination,
+        "total": total,
+        "page": page,
+        "categories": list_categories(),
+    }
+
+
+@app.get("/api/skill-categories")
+async def get_skill_categories():
+    """Skill shop tabs — static mapping + YAML (Hermes dashboard / Workspace BFF)."""
+    from hermes_cli.skill_catalog import list_categories
+
+    return {"categories": list_categories()}
+
+
+@app.get("/api/skills/catalog")
+async def get_skills_catalog(
+    category: str = "all",
+    page: int = 1,
+    page_size: int = Query(20, alias="pageSize", ge=1, le=60),
+    limit: Optional[int] = Query(None, ge=1, le=60),
+    q: str = "",
+    sort: str = "relevance",
+    source: str = "all",
+):
+    """Paginated Hub browse (aggregates Skills Hub sources; TTL-cached)."""
+    from hermes_cli.skill_catalog import build_catalog_page
+
+    effective_limit = limit if limit is not None else page_size
+    effective_limit = max(1, min(effective_limit, 60))
+    page = max(1, page)
+
+    def _run():
+        return build_catalog_page(
+            category=category,
+            page=page,
+            page_size=effective_limit,
+            q=q,
+            sort=sort,
+            source_filter=source,
+        )
+
+    return await asyncio.to_thread(_run)
 
 
 @app.put("/api/skills/toggle")
@@ -2614,8 +2774,9 @@ def mount_spa(application: FastAPI):
         """Return index.html with the session token injected."""
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
+        token_js = json.dumps(_SESSION_TOKEN)
         token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+            f"<script>window.__HERMES_SESSION_TOKEN__={token_js};"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};</script>"
         )
         html = html.replace("</head>", f"{token_script}</head>", 1)

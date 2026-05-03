@@ -198,11 +198,13 @@ class TestAppendToTranscriptSkipDb:
         parsed = json.loads(lines[0])
         assert parsed["content"] == "hello world"
 
-    def test_skip_db_prevents_sqlite_write(self, tmp_path):
-        """With skip_db=True and a real DB, message does NOT appear in SQLite."""
+    def test_skip_db_prevents_sqlite_write(self, tmp_path, monkeypatch):
+        """With skip_db=True and legacy mirroring on, message does NOT appear in SQLite."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
         from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_GATEWAY_LEGACY_TRANSCRIPT_MODE", "on")
 
         db_path = tmp_path / "test_skip.db"
         db = SessionDB(db_path=db_path)
@@ -229,8 +231,8 @@ class TestAppendToTranscriptSkipDb:
             lines = f.readlines()
         assert len(lines) == 1
 
-    def test_default_writes_both(self, tmp_path):
-        """Without skip_db, message appears in both JSONL and SQLite."""
+    def test_default_auto_prefers_sqlite_only_for_new_sessions(self, tmp_path):
+        """Auto mode should avoid creating new JSONL mirrors when SQLite exists."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
         from hermes_state import SessionDB
@@ -250,15 +252,61 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "user", "content": "test message"}
         store.append_to_transcript(session_id, msg)
 
-        # JSONL should have the message
+        # New SQLite-backed sessions no longer create a legacy mirror by default.
         jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
+        assert not jsonl_path.exists()
 
-        # SQLite should also have the message
+        # SQLite should still have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 1
+
+    def test_auto_mode_preserves_existing_jsonl_mirror(self, tmp_path):
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+
+        db_path = tmp_path / "test_auto_existing.db"
+        db = SessionDB(db_path=db_path)
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        session_id = "test-auto-existing"
+        db.create_session(session_id=session_id, source="test")
+        store.get_transcript_path(session_id).write_text('{"role":"user","content":"legacy"}\n', encoding="utf-8")
+
+        msg = {"role": "assistant", "content": "new reply"}
+        store.append_to_transcript(session_id, msg)
+
+        with open(store.get_transcript_path(session_id), encoding="utf-8") as f:
+            lines = f.readlines()
+        assert len(lines) == 2
+        assert json.loads(lines[-1])["content"] == "new reply"
+
+    def test_off_mode_disables_jsonl_even_for_skip_db(self, tmp_path, monkeypatch):
+        """Explicit off mode should force SQLite-primary behavior."""
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_GATEWAY_LEGACY_TRANSCRIPT_MODE", "off")
+        db_path = tmp_path / "test_off_mode.db"
+        db = SessionDB(db_path=db_path)
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        session_id = "test-off-mode"
+        db.create_session(session_id=session_id, source="test")
+        store.append_to_transcript(session_id, {"role": "assistant", "content": "hello"}, skip_db=True)
+
+        assert not store.get_transcript_path(session_id).exists()
 
 
 # ---------------------------------------------------------------------------

@@ -8,11 +8,13 @@ Handles:
 - Dynamic system prompt injection (agent knows its context)
 """
 
+import atexit
 import hashlib
 import logging
 import os
 import json
 import threading
+import time
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -20,6 +22,40 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _session_index_debounce_seconds() -> float:
+    """Return debounce interval for sessions.json rewrites."""
+    raw = os.getenv("HERMES_GATEWAY_SESSION_INDEX_DEBOUNCE_SECS")
+    if raw is None:
+        return 0.25
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.debug(
+            "Invalid HERMES_GATEWAY_SESSION_INDEX_DEBOUNCE_SECS=%r; using default",
+            raw,
+        )
+        return 0.25
+
+
+def _legacy_transcript_mode() -> str:
+    """Return how aggressively to maintain legacy JSONL transcript mirrors.
+
+    Modes:
+      - auto  (default): mirror only when SQLite is unavailable or a legacy
+        JSONL transcript already exists for that session.
+      - on    : always mirror JSONL writes.
+      - off   : never mirror when SQLite is available.
+    """
+    raw = (os.getenv("HERMES_GATEWAY_LEGACY_TRANSCRIPT_MODE") or "auto").strip().lower()
+    if raw in {"auto", "on", "off"}:
+        return raw
+    logger.debug(
+        "Invalid HERMES_GATEWAY_LEGACY_TRANSCRIPT_MODE=%r; using auto",
+        raw,
+    )
+    return "auto"
 
 
 def _now() -> datetime:
@@ -675,6 +711,12 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        self._save_debounce_seconds = _session_index_debounce_seconds()
+        self._legacy_transcript_mode = _legacy_transcript_mode()
+        self._dirty_index = False
+        self._last_index_save_monotonic = 0.0
+        self._save_force_requested = False
+        atexit.register(self._flush_pending_index_save)
         
         # Initialize SQLite session database
         self._db = None
@@ -712,8 +754,8 @@ class SessionStore:
 
         self._loaded = True
     
-    def _save(self) -> None:
-        """Save sessions index to disk (kept for session key -> ID mapping)."""
+    def _write_sessions_index_locked(self) -> None:
+        """Write sessions.json to disk. Must be called with self._lock held."""
         import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
@@ -728,12 +770,46 @@ class SessionStore:
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, sessions_file)
+            self._dirty_index = False
+            self._last_index_save_monotonic = time.monotonic()
         except BaseException:
             try:
                 os.unlink(tmp_path)
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
+
+    def _flush_pending_index_save(self) -> None:
+        """Best-effort atexit flush for debounced sessions.json updates."""
+        try:
+            with self._lock:
+                if self._dirty_index:
+                    self._write_sessions_index_locked()
+        except Exception as exc:
+            logger.debug("Failed to flush pending gateway session index: %s", exc)
+
+    def _save(self, *, force: bool = False) -> None:
+        """Persist sessions index, debouncing hot-path metadata-only rewrites.
+
+        Must be called with ``self._lock`` held.
+        """
+        if not force and self._save_force_requested:
+            force = True
+            self._save_force_requested = False
+        self._dirty_index = True
+        if not force and self._save_debounce_seconds > 0:
+            now = time.monotonic()
+            if (
+                self._last_index_save_monotonic > 0
+                and (now - self._last_index_save_monotonic) < self._save_debounce_seconds
+            ):
+                return
+        self._write_sessions_index_locked()
+
+    def _save_immediately(self) -> None:
+        """Compatibility wrapper for callers/tests that patch ``_save()``."""
+        self._save_force_requested = True
+        self._save()
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
@@ -926,7 +1002,7 @@ class SessionStore:
             )
 
             self._entries[session_key] = entry
-            self._save()
+            self._save_immediately()
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": source.platform.value,
@@ -975,7 +1051,7 @@ class SessionStore:
             self._ensure_loaded_locked()
             if session_key in self._entries:
                 self._entries[session_key].suspended = True
-                self._save()
+                self._save_immediately()
                 return True
         return False
 
@@ -1004,7 +1080,7 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
-                self._save()
+                self._save_immediately()
                 return True
         return False
 
@@ -1025,7 +1101,7 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-            self._save()
+            self._save_immediately()
             return True
 
     def prune_old_entries(self, max_age_days: int) -> int:
@@ -1076,7 +1152,7 @@ class SessionStore:
             for key in removed_keys:
                 self._entries.pop(key, None)
             if removed_keys:
-                self._save()
+                self._save_immediately()
 
         if removed_keys:
             logger.info(
@@ -1113,7 +1189,7 @@ class SessionStore:
                     entry.suspended = True
                     count += 1
             if count:
-                self._save()
+                self._save_immediately()
         return count
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
@@ -1147,7 +1223,7 @@ class SessionStore:
             )
 
             self._entries[session_key] = new_entry
-            self._save()
+            self._save_immediately()
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
@@ -1207,7 +1283,7 @@ class SessionStore:
             )
 
             self._entries[session_key] = new_entry
-            self._save()
+            self._save_immediately()
 
         if self._db and db_end_session_id:
             try:
@@ -1240,7 +1316,18 @@ class SessionStore:
     def get_transcript_path(self, session_id: str) -> Path:
         """Get the path to a session's legacy transcript file."""
         return self.sessions_dir / f"{session_id}.jsonl"
-    
+
+    def _should_write_legacy_transcript(self, session_id: str) -> bool:
+        """Return whether this session should maintain a JSONL mirror."""
+        mode = self._legacy_transcript_mode
+        if mode == "on":
+            return True
+        if mode == "off":
+            return self._db is None
+        if self._db is None:
+            return True
+        return self.get_transcript_path(session_id).exists()
+
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite + legacy JSONL).
 
@@ -1268,8 +1355,12 @@ class SessionStore:
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-        
-        # Also write legacy JSONL (keeps existing tooling working during transition)
+
+        if not self._should_write_legacy_transcript(session_id):
+            return
+
+        # Also write legacy JSONL when explicitly enabled or preserving an
+        # existing pre-SQLite transcript file.
         transcript_path = self.get_transcript_path(session_id)
         with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
@@ -1288,11 +1379,12 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
         
-        # JSONL: overwrite the file
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        # JSONL: overwrite only when mirroring is enabled for this session.
+        if self._should_write_legacy_transcript(session_id):
+            transcript_path = self.get_transcript_path(session_id)
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                for msg in messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""

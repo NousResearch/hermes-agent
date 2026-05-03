@@ -543,6 +543,7 @@ class TestLoadTranscriptPreferLongerSource:
     def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
         """Legacy session: JSONL has full history, SQLite has only recent turn."""
         sid = "legacy_session"
+        store_with_db._legacy_transcript_mode = "on"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
         # JSONL has 10 messages (legacy history — written before SQLite existed)
         for i in range(10):
@@ -561,6 +562,7 @@ class TestLoadTranscriptPreferLongerSource:
     def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
         """Fully migrated session: SQLite has more (JSONL stopped growing)."""
         sid = "migrated_session"
+        store_with_db._legacy_transcript_mode = "on"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
         # JSONL has 2 old messages
         store_with_db.append_to_transcript(
@@ -581,6 +583,7 @@ class TestLoadTranscriptPreferLongerSource:
     def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
         """No SQLite rows — falls back to JSONL (original behavior preserved)."""
         sid = "no_db_rows"
+        store_with_db._legacy_transcript_mode = "on"
         store_with_db.append_to_transcript(
             sid, {"role": "user", "content": "hello"}, skip_db=True,
         )
@@ -600,6 +603,7 @@ class TestLoadTranscriptPreferLongerSource:
     def test_equal_length_prefers_sqlite(self, store_with_db):
         """When both have same count, SQLite wins (has richer fields like reasoning)."""
         sid = "equal_session"
+        store_with_db._legacy_transcript_mode = "on"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
         # Write 2 messages to JSONL only
         store_with_db.append_to_transcript(
@@ -1284,3 +1288,81 @@ class TestRewriteTranscriptPreservesReasoning:
             "before user",
             "before assistant",
         ]
+
+
+class TestSessionIndexPersistenceDebounce:
+    def _make_store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        return store
+
+    def test_update_session_debounces_repeated_sessions_json_writes(self, tmp_path, monkeypatch):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        store = self._make_store(tmp_path)
+        store._save_debounce_seconds = 0.25
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        writes = []
+        clock = {"now": 100.0}
+
+        def fake_write():
+            writes.append(clock["now"])
+            store._dirty_index = False
+            store._last_index_save_monotonic = clock["now"]
+
+        monkeypatch.setattr("gateway.session.time.monotonic", lambda: clock["now"])
+        monkeypatch.setattr(store, "_write_sessions_index_locked", fake_write)
+
+        store.update_session("k1", last_prompt_tokens=10)
+        clock["now"] = 100.10
+        store.update_session("k1", last_prompt_tokens=20)
+        clock["now"] = 100.40
+        store.update_session("k1", last_prompt_tokens=30)
+
+        assert writes == [100.0, 100.4]
+        assert entry.last_prompt_tokens == 30
+        assert store._dirty_index is False
+
+    def test_flush_pending_index_save_persists_debounced_updates(self, tmp_path, monkeypatch):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        store = self._make_store(tmp_path)
+        store._save_debounce_seconds = 0.25
+        store._last_index_save_monotonic = 100.0
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        writes = []
+        monkeypatch.setattr("gateway.session.time.monotonic", lambda: 100.1)
+
+        def fake_write():
+            writes.append("flush")
+            store._dirty_index = False
+            store._last_index_save_monotonic = 100.1
+
+        monkeypatch.setattr(store, "_write_sessions_index_locked", fake_write)
+
+        store.update_session("k1", last_prompt_tokens=77)
+        assert writes == []
+        assert store._dirty_index is True
+
+        store._flush_pending_index_save()
+        assert writes == ["flush"]
+        assert store._dirty_index is False

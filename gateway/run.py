@@ -13476,8 +13476,17 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
-            _want_stream_deltas = _streaming_enabled
-            _want_interim_messages = interim_assistant_messages_enabled
+            # When silence is a valid response (#13248), don't stream and don't
+            # show interim drafts. Both code paths bypass the post-agent [SILENT]
+            # suppression in gateway/platforms/base.py: the streaming consumer
+            # creates a placeholder via send() and edits it during generation,
+            # so any interim draft (and a final response of the literal token
+            # "[SILENT]") leaks into the channel before suppression runs. Real
+            # symptom: a non-@mention WhatsApp group message produced visible
+            # mid-deliberation drafts, with the final "[SILENT]" token landing
+            # as plain text. Gating on `not silence_allowed` prevents both.
+            _want_stream_deltas = _streaming_enabled and not silence_allowed
+            _want_interim_messages = interim_assistant_messages_enabled and not silence_allowed
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:

@@ -18,6 +18,56 @@ Multi-source structured research with strict citation discipline. Use this when 
 
 The skill is **pure methodology**. It teaches the agent to compose existing tools (`web_search`, `web_extract`, optionally `delegate`) into a research pipeline. No new tools required, but works just as well with the free-tier counterparts (`local_web_search`, `local_web_extract`) for users without paid API keys.
 
+## Quickstart — full local-first agentic stack (5 commands)
+
+Drop-in setup with **zero paid API keys** using:
+- ✅ Latest Qwen3.5 / Qwen3.6 (Apache 2.0, Feb-Apr 2026 releases)
+- ✅ llama.cpp (no daemon, runs anywhere)
+- ✅ SearXNG (self-hosted free search) + ddgr fallback (no key)
+- ✅ Hermes Agent's `web_search` / `web_extract` swap-in compatibility
+
+```bash
+# 1. Get llama.cpp (Linux x86_64 prebuilt — see release page for macOS/CUDA/Vulkan/ROCm)
+curl -fsSL "https://github.com/ggerganov/llama.cpp/releases/download/b9010/llama-b9010-bin-ubuntu-x64.tar.gz" | tar xz
+export PATH="$(pwd)/llama-b9010:$PATH"
+export LD_LIBRARY_PATH="$(pwd)/llama-b9010:$LD_LIBRARY_PATH"
+
+# 2. Pull a Qwen3.5 GGUF (Q4_K_M — 4B = 2.5 GB, 9B = 5.5 GB)
+mkdir -p ~/models && cd ~/models
+curl -fLO "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+
+# 3. Boot llama-server with deep-research-friendly defaults
+~/.hermes/skills/research/deep-research/scripts/start-llama-server.sh ~/models/Qwen3.5-4B-Q4_K_M.gguf
+
+# 4. (Optional) self-host SearXNG for free internet search
+docker run -d --name searxng -p 8888:8080 searxng/searxng
+
+# 5. Configure Hermes to use the local backends
+export LLM_BASE_URL=http://127.0.0.1:8088
+export LLM_DEFAULT_MODEL=qwen3.5-4b-q4_k_m
+export SEARXNG_URL=http://127.0.0.1:8888
+# Optional API alternatives if SearXNG isn't an option:
+#   export BRAVE_SEARCH_API_KEY=...   (free 2K/mo)
+#   export TAVILY_API_KEY=...         (free 1K/mo)
+```
+
+That's the whole stack. Now from inside a Hermes session (or any agent calling these tools):
+
+```python
+# Use local_web_search instead of web_search; same JSON shape
+result = local_web_search(query="UAE brass lighting market 2026", limit=8)
+
+# Use local_web_extract instead of web_extract
+pages = local_web_extract(urls=[r["url"] for r in result["data"]["web"][:3]])
+
+# Or invoke the deep-research methodology end-to-end via skill_view
+skill_view(name="deep-research")   # reads this file, follows the 5-phase pipeline
+```
+
+Performance note: Qwen3.5-4B at Q4 on a 12-thread Intel/AMD CPU = ~12 tok/s. A typical research run (8 fetches + synthesis) finishes in 3-6 min, **at zero per-query cost**.
+
+---
+
 ## When to use
 
 | Use case | Reason |
@@ -162,6 +212,91 @@ Mark every claim with the appropriate confidence star. If only one secondary blo
 ### 5. Synthesize
 
 Write the report following the skeleton above. Cite every claim. Be specific.
+
+
+## Recommended models (Qwen3.5 / Qwen3.6 family — first-class support)
+
+The Qwen3.5 (Feb 2026) and Qwen3.6 (Apr 2026) families are the recommended local models for this skill. They have native tool-calling, 200+ language coverage, and a 262K-token native context window that comfortably holds 10+ fetched pages without summarization.
+
+| Model | Params | VRAM @ Q4_K_M | Context (native) | Best for |
+|---|---|---|---|---|
+| `Qwen/Qwen3.5-4B` | 4B dense | ~2.5 GB | 262K | Cheapest first-class option; CPU-runs at ~12 tok/s on 8-core |
+| `Qwen/Qwen3.5-9B` | 9B dense | ~5.5 GB | 262K | Single-GPU sweet spot for 8 GB cards |
+| `Qwen/Qwen3.5-27B` | 27B dense | ~16 GB | 262K | High-quality synthesis on a single 24 GB GPU |
+| `Qwen/Qwen3.6-27B` | 27B dense | ~16 GB | 262K | Latest dense (Apr 2026) |
+| `Qwen/Qwen3.6-35B-A3B` | 35B / 3B active | ~21 GB | 262K | Best speed/quality on bigger hardware (MoE) |
+| `Qwen/Qwen3.5-122B-A10B` | 122B / 10B active | ~70 GB | 262K | Multi-GPU; rivals frontier on tool-use benchmarks |
+
+GGUF quants from `unsloth/<model>-GGUF`, `bartowski/Qwen_<model>-GGUF`, or `lmstudio-community/<model>-GGUF`.
+
+### Critical Qwen3.5/3.6 operational notes (read before deploying)
+
+The Qwen3 family had a `/think` and `/no_think` soft-switch convention. **Qwen3.5 and Qwen3.6 explicitly DO NOT honor those directives.** From the official model card:
+
+> "Qwen3.5 does not officially support the soft switch of Qwen3, i.e., `/think` and `/nothink`."
+
+**Thinking mode is on by default** — the model emits `<think>...\n</think>\n\n` blocks before its final answer. To disable for tool-call workflows where reasoning trace would interfere:
+
+```python
+# In your /v1/chat/completions request body:
+{
+  "model": "qwen3.5-4b",
+  "messages": [...],
+  "tools": [...],
+  "chat_template_kwargs": {"enable_thinking": False}   # ← THIS, not /no_think
+}
+```
+
+This is `chat_template_kwargs` — passed at the request level, picked up by the Jinja chat template that llama-server / vLLM / SGLang load with the model.
+
+### Tool-call parser flags (server-side)
+
+Qwen3.5/3.6 use a specific tool-call format. When starting llama-server / vLLM / SGLang, pass:
+
+```bash
+# llama.cpp (with --jinja for chat template support)
+llama-server -m Qwen3.5-4B-Q4_K_M.gguf --jinja --port 8088
+
+# vLLM
+vllm serve Qwen/Qwen3.5-4B \
+  --reasoning-parser qwen3 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder
+
+# SGLang
+python -m sglang.launch_server \
+  --model-path Qwen/Qwen3.5-4B \
+  --reasoning-parser qwen3 \
+  --tool-call-parser qwen3_coder
+```
+
+The `qwen3_coder` parser is correct for Qwen3.5/3.6 (despite the name — it's the official Qwen3.5+ tool-call format).
+
+### Recommended sampling for this skill
+
+Per the official model card, Qwen3.5/3.6 expect mode-specific sampling:
+
+```python
+# Instruct / non-thinking mode (recommended for this skill — predictable tool output)
+{"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+ "presence_penalty": 1.5, "repetition_penalty": 1.0}
+
+# Thinking mode (when you DO want chain-of-thought before tool calls)
+{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+ "presence_penalty": 1.5, "repetition_penalty": 1.0}
+```
+
+The default `temperature: 0.3` we use for stable tool-call generation works fine on Qwen3.5/3.6 too, but if you want max-quality synthesis switch to 0.7 + the presence penalty.
+
+### Multilingual research (a real Qwen3.5/3.6 advantage)
+
+Qwen3.5/3.6 cover **201 languages and dialects** with strong multilingual reasoning benchmarks (MMMLU, MMLU-ProX, NOVA-63, INCLUDE, Global PIQA, PolyMATH, MAXIFE, WMT24++).
+
+For research that should produce reports in non-English (Hindi, Arabic, Spanish, Mandarin, etc.), append a single line to the report skeleton in your system prompt:
+
+> "Output the final report in <language>. Sources may be in any language; preserve named entities and numbers verbatim."
+
+The model handles this cleanly without further prompting.
 
 ## Backend choice — paid vs free
 

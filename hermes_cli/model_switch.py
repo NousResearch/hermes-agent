@@ -1057,6 +1057,45 @@ def list_authenticated_providers(
         if normed:
             _builtin_endpoints.add(normed)
 
+    def _has_fast_aws_sdk_signal() -> bool:
+        """Return True when explicit AWS auth config is present.
+
+        This intentionally avoids botocore's full credential chain. Provider
+        picker/model-switch discovery can run for non-Bedrock providers, and
+        botocore may otherwise probe EC2 IMDS (169.254.169.254) on local
+        machines before returning no credentials.
+        """
+        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip():
+            return True
+        if (
+            os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+            and os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        ):
+            return True
+        return any(
+            os.environ.get(name, "").strip()
+            for name in (
+                "AWS_PROFILE",
+                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "AWS_WEB_IDENTITY_TOKEN_FILE",
+            )
+        )
+
+    def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
+        """Credential check for AWS SDK providers in non-runtime discovery."""
+        slug_norm = str(slug or "").strip().lower()
+        current_norm = str(current_provider or "").strip().lower()
+        if _has_fast_aws_sdk_signal():
+            return True
+        if slug_norm != current_norm:
+            return False
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return bool(has_aws_credentials())
+        except Exception:
+            return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1184,7 +1223,9 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.extra_env_vars:
+        if overlay.auth_type == "aws_sdk":
+            has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
@@ -1324,11 +1365,7 @@ def list_authenticated_providers(
         # credentials come from the boto3 credential chain (env vars,
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
-            try:
-                from agent.bedrock_adapter import has_aws_credentials
-                _cp_has_creds = has_aws_credentials()
-            except Exception:
-                pass
+            _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
         if not _cp_has_creds:
             continue

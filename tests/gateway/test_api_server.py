@@ -240,6 +240,12 @@ class TestAdapterInit:
             "http://127.0.0.1:3000",
         )
 
+    def test_invalid_port_from_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_PORT", "not-a-port")
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        assert adapter._port == 8642
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

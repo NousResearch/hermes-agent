@@ -123,9 +123,19 @@ _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, preserving any extra routing metadata."""
+    """Extract origin info from a job, preserving any extra routing metadata.
+
+    Treats non-dict origins (free-form provenance strings, ints, lists from
+    migration scripts or hand-edited jobs.json) as missing instead of
+    crashing with ``AttributeError`` on ``origin.get(...)``. Without this
+    guard, a job tagged with e.g. ``"combined-digest-replaces-x-and-y"``
+    crashed every fire attempt with
+    ``'str' object has no attribute 'get'`` — ``mark_job_run`` recorded the
+    failure, but the next tick re-loaded the same poisoned origin and
+    crashed identically until the field was patched manually (#18722).
+    """
     origin = job.get("origin")
-    if not origin:
+    if not isinstance(origin, dict):
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")
@@ -145,6 +155,19 @@ def _get_home_target_chat_id(platform_name: str) -> str:
         if legacy:
             value = os.getenv(legacy, "")
     return value
+
+
+def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
+    """Return the optional thread/topic ID for a platform home target."""
+    env_var = _HOME_TARGET_ENV_VARS.get(platform_name.lower())
+    if not env_var:
+        return None
+    value = os.getenv(f"{env_var}_THREAD_ID", "").strip()
+    if not value:
+        legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+        if legacy:
+            value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
+    return value or None
 
 
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
@@ -175,7 +198,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 return {
                     "platform": platform_name,
                     "chat_id": chat_id,
-                    "thread_id": None,
+                    "thread_id": _get_home_target_thread_id(platform_name),
                 }
         return None
 
@@ -229,7 +252,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     return {
         "platform": platform_name,
         "chat_id": chat_id,
-        "thread_id": None,
+        "thread_id": _get_home_target_thread_id(platform_name),
     }
 
 

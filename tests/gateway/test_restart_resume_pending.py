@@ -32,7 +32,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.platforms.base import SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
@@ -376,8 +377,8 @@ class TestSuspendRecentlyActiveSkipsResumePending:
         assert e.suspended is False
         assert e.resume_pending is True
 
-    def test_non_resume_pending_still_suspended(self, tmp_path):
-        """Non-resume sessions still get the old crash-recovery suspension."""
+    def test_non_resume_pending_gets_resume_pending(self, tmp_path):
+        """Non-resume sessions are now marked resume_pending (not suspended)."""
         store = _make_store(tmp_path)
         source_a = _make_source(chat_id="a")
         source_b = _make_source(chat_id="b")
@@ -386,9 +387,11 @@ class TestSuspendRecentlyActiveSkipsResumePending:
         store.mark_resume_pending(entry_a.session_key)
 
         count = store.suspend_recently_active()
+        # entry_a is already resume_pending → skipped. entry_b gets marked.
         assert count == 1
         assert store._entries[entry_a.session_key].suspended is False
-        assert store._entries[entry_b.session_key].suspended is True
+        assert store._entries[entry_b.session_key].resume_pending is True
+        assert store._entries[entry_b.session_key].suspended is False
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +930,84 @@ async def test_restart_banner_uses_try_to_resume_wording():
     msg = adapter.sent[0]
     assert "restarting" in msg
     assert "try to resume" in msg
+
+
+@pytest.mark.asyncio
+async def test_restart_notifies_home_channel_even_without_active_sessions():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == [
+        "⚠️ Gateway restarting — Your current task will be interrupted. "
+        "Send any message after restart and I'll try to resume where you left off."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restart_home_channel_notification_dedupes_active_chat():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="999",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_home_channel_notification_not_deduped_across_threads():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    session_key = "agent:main:telegram:group:999"
+    runner.session_store._entries[session_key] = MagicMock(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="999",
+            chat_type="group",
+            user_id="u1",
+            thread_id="topic-7",
+        )
+    )
+    runner._running_agents[session_key] = MagicMock()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="999",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 2
+    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
+    assert adapter.sent_calls[1][2] is None
+
+
+@pytest.mark.asyncio
+async def test_restart_home_channel_notification_ignores_false_send_result():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=False, error="network down"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

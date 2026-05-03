@@ -1258,6 +1258,10 @@ class AIAgent:
         # after each API call.  Accessed by /usage slash command.
         self._rate_limit_state: Optional["RateLimitState"] = None
 
+        # OpenRouter response cache hit counter — incremented when
+        # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.
+        self._or_cache_hits: int = 0
+
         # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
         # (which creates a new AIAgent per message) won't duplicate handlers.
@@ -1421,11 +1425,8 @@ class AIAgent:
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
-                    client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                        "X-OpenRouter-Title": "Hermes Agent",
-                        "X-OpenRouter-Categories": "productivity,cli-agent",
-                    }
+                    from agent.auxiliary_client import build_or_headers
+                    client_kwargs["default_headers"] = build_or_headers()
                 elif base_url_host_matches(effective_base, "api.routermint.com"):
                     client_kwargs["default_headers"] = _routermint_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
@@ -1473,17 +1474,49 @@ class AIAgent:
                                 _env_hint = _pcfg.api_key_env_vars[0]
                         except Exception:
                             pass
+                        # --- Init-time fallback (#17929) ---
+                        _fb_entries = []
+                        if isinstance(fallback_model, list):
+                            _fb_entries = [
+                                f for f in fallback_model
+                                if isinstance(f, dict) and f.get("provider") and f.get("model")
+                            ]
+                        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+                            _fb_entries = [fallback_model]
+                        _fb_resolved = False
+                        for _fb in _fb_entries:
+                            _fb_client, _fb_model = resolve_provider_client(
+                                _fb["provider"], model=_fb["model"], raw_codex=True,
+                                explicit_base_url=_fb.get("base_url"),
+                                explicit_api_key=_fb.get("api_key"),
+                            )
+                            if _fb_client is not None:
+                                self.provider = _fb["provider"]
+                                self.model = _fb_model or _fb["model"]
+                                self._fallback_activated = True
+                                client_kwargs = {
+                                    "api_key": _fb_client.api_key,
+                                    "base_url": str(_fb_client.base_url),
+                                }
+                                if _provider_timeout is not None:
+                                    client_kwargs["timeout"] = _provider_timeout
+                                if hasattr(_fb_client, "_default_headers") and _fb_client._default_headers:
+                                    client_kwargs["default_headers"] = dict(_fb_client._default_headers)
+                                _fb_resolved = True
+                                break
+                        if not _fb_resolved:
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key "
+                                f"was found. Set the {_env_hint} environment "
+                                f"variable, or switch to a different provider with `hermes model`."
+                            )
+                    if not getattr(self, "_fallback_activated", False):
+                        # No provider configured — reject with a clear message.
                         raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            "No LLM provider configured. Run `hermes model` to "
+                            "select a provider, or run `hermes setup` for first-time "
+                            "configuration."
                         )
-                    # No provider configured — reject with a clear message.
-                    raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
-                        "configuration."
-                    )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -1536,7 +1569,7 @@ class AIAgent:
         else:
             self._fallback_chain = []
         self._fallback_index = 0
-        self._fallback_activated = False
+        self._fallback_activated = getattr(self, "_fallback_activated", False)
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -4548,6 +4581,28 @@ class AIAgent:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
+    def _check_openrouter_cache_status(self, http_response: Any) -> None:
+        """Read X-OpenRouter-Cache-Status from response headers and log it.
+
+        Increments ``_or_cache_hits`` on HIT so callers can report savings.
+        """
+        if http_response is None:
+            return
+        headers = getattr(http_response, "headers", None)
+        if not headers:
+            return
+        try:
+            status = headers.get("x-openrouter-cache-status")
+            if not status:
+                return
+            if status.upper() == "HIT":
+                self._or_cache_hits += 1
+                logger.info("OpenRouter response cache HIT (total: %d)", self._or_cache_hits)
+            else:
+                logger.debug("OpenRouter response cache %s", status.upper())
+        except Exception:
+            pass  # Never let header parsing break the agent loop
+
     def get_activity_summary(self) -> dict:
         """Return a snapshot of the agent's current activity for diagnostics.
 
@@ -6125,10 +6180,10 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
+        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, build_or_headers
 
         if base_url_host_matches(base_url, "openrouter.ai"):
-            self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+            self._client_kwargs["default_headers"] = build_or_headers()
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "api.routermint.com"):
@@ -6747,6 +6802,9 @@ class AIAgent:
             # The OpenAI SDK Stream object exposes the underlying httpx
             # response via .response before any chunks are consumed.
             self._capture_rate_limits(getattr(stream, "response", None))
+
+            # Log OpenRouter response cache status when present.
+            self._check_openrouter_cache_status(getattr(stream, "response", None))
 
             content_parts: list = []
             tool_calls_acc: dict = {}

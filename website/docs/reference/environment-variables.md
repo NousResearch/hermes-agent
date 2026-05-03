@@ -14,6 +14,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `OPENROUTER_BASE_URL` | Override the OpenRouter-compatible base URL |
+| `HERMES_OPENROUTER_CACHE` | Enable OpenRouter response caching (`1`/`true`/`yes`/`on`). Overrides `openrouter.response_cache` in config.yaml. See [Response Caching](https://openrouter.ai/docs/guides/features/response-caching). |
+| `HERMES_OPENROUTER_CACHE_TTL` | Cache TTL in seconds (1-86400). Overrides `openrouter.response_cache_ttl` in config.yaml. |
 | `NOUS_BASE_URL` | Override Nous Portal base URL (rarely needed; development/testing only) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference endpoint directly |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key ([ai-gateway.vercel.sh](https://ai-gateway.vercel.sh)) |
@@ -86,6 +88,9 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language passed to `HERMES_LOCAL_STT_COMMAND` or auto-detected local `whisper` CLI fallback (default: `en`) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
+| `HERMES_KANBAN_HOME` | Override the shared Hermes root that anchors the kanban board (db + workspaces + worker logs). Falls back to `get_default_hermes_root()` (the parent of any active profile). Useful for tests and unusual deployments |
+| `HERMES_KANBAN_DB` | Pin the kanban database file path directly (highest precedence; beats `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env so profile workers converge on the dispatcher's board |
+| `HERMES_KANBAN_WORKSPACES_ROOT` | Pin the kanban workspaces root directly (highest precedence for workspaces; beats `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env |
 
 ## Provider Auth (OAuth)
 

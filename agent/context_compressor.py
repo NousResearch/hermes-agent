@@ -569,6 +569,8 @@ class ContextCompressor(ContextEngine):
             # Skip multimodal content (list of content blocks)
             if isinstance(content, list):
                 continue
+            if not isinstance(content, str):
+                continue
             if len(content) < 200:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]

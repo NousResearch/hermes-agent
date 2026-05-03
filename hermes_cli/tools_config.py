@@ -56,6 +56,7 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
+    ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
@@ -78,7 +79,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -1822,7 +1823,7 @@ def _reconfigure_tool(config: dict):
         cat = TOOL_CATEGORIES.get(ts_key)
         reqs = TOOLSET_ENV_REQUIREMENTS.get(ts_key)
         if cat or reqs:
-            if _toolset_has_keys(ts_key, config):
+            if _toolset_has_keys(ts_key, config) or _toolset_enabled_for_reconfigure(ts_key, config):
                 configurable.append((ts_key, ts_label))
 
     if not configurable:
@@ -1846,6 +1847,28 @@ def _reconfigure_tool(config: dict):
         _reconfigure_simple_requirements(ts_key)
 
     save_config(config)
+
+
+def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
+    """Return True if a configurable toolset is enabled anywhere.
+
+    Reconfigure must include enabled-but-unconfigured categories so users can
+    finish provider/API-key setup without disabling and re-enabling the toolset.
+    """
+    for platform in PLATFORMS:
+        if not _toolset_allowed_for_platform(ts_key, platform):
+            continue
+        try:
+            enabled = _get_platform_tools(
+                config,
+                platform,
+                include_default_mcp_servers=False,
+            )
+        except Exception:
+            continue
+        if ts_key in enabled:
+            return True
+    return False
 
 
 def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):

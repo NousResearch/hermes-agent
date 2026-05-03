@@ -46,6 +46,7 @@ AUTHOR_MAP = {
     "leone.parise@gmail.com": "leoneparise",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "159539633+MottledShadow@users.noreply.github.com": "MottledShadow",
     "aludwin+gh@gmail.com": "adamludwin",
     "2093036+exiao@users.noreply.github.com": "exiao",
     "rylen.anil@gmail.com": "rylena",
@@ -67,6 +68,7 @@ AUTHOR_MAP = {
     "274096618+hermes-agent-dhabibi@users.noreply.github.com": "dhabibi",
     "dejie.guo@gmail.com": "JayGwod",
     "maxence@groine.fr": "MaxyMoos",
+    "61830395+leprincep35700@users.noreply.github.com": "leprincep35700",
     # OpenViking viking_read salvage (April 2026)
     "hitesh@gmail.com": "htsh",
     "pty819@outlook.com": "pty819",
@@ -370,6 +372,10 @@ AUTHOR_MAP = {
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
     "e.silacandmr@gmail.com": "Es1la",
+    "h3057183414@gmail.com": "CoreyNoDream",
+    "franksong2702@gmail.com": "franksong2702",
+    "673088860@qq.com": "ambition0802",
+    "beibei1988@proton.me": "beibi9966",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
     "1115117931@qq.com": "aaronagent",
@@ -500,6 +506,10 @@ AUTHOR_MAP = {
     "michel.belleau@malaiwah.com": "malaiwah",
     "gnanasekaran.sekareee@gmail.com": "gnanam1990",
     "jz.pentest@gmail.com": "0xyg3n",
+    "7093928+0xyg3n@users.noreply.github.com": "0xyg3n",
+    "nftpoetrist@gmail.com": "nftpoetrist",  # PR #18982
+    "millerc79@users.noreply.github.com": "millerc79",  # PR #19033
+    "hermes@example.com": "shellybotmoyer",  # PR #18915 (bot-committed)
     "hypnosis.mda@gmail.com": "Hypn0sis",
     "ywt000818@gmail.com": "OwenYWT",
     "dhandhalyabhavik@gmail.com": "v1k22",
@@ -611,6 +621,9 @@ AUTHOR_MAP = {
     "2114364329@qq.com": "cuyua9",
     "2557058999@qq.com": "Disaster-Terminator",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
+    "zyprothh@gmail.com": "Zyproth",
+    "amitgaur@gmail.com": "amitgaur",
+    "albuquerque.abner@gmail.com": "mrbob-git",
     "leozeli@qq.com": "leozeli",
     "linlehao@cuhk.edu.cn": "LehaoLin",
     "liutong@isacas.ac.cn": "I3eg1nner",
@@ -668,6 +681,9 @@ AUTHOR_MAP = {
     "web3blind@gmail.com": "web3blind",
     "ztzheng@163.com": "chengoak",  # PR #17467
     "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only
+    "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
+    # Debug share upload-time redaction (May 2026)
+    "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
 }
 
 

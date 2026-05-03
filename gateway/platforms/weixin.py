@@ -2028,32 +2028,44 @@ async def send_weixin_direct(
     token_store.restore(account_id)
     context_token = token_store.get(account_id, chat_id)
 
+    # Attempt to reuse the cached live adapter's session (same event loop).
+    # When called from cron's standalone path (different event loop), aiohttp's
+    # TimerContext will raise RuntimeError because asyncio.current_task(loop=gateway_loop)
+    # returns None.  Catch that and fall through to create a fresh session.
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
     if live_adapter is not None and send_session is not None and not send_session.closed:
-        last_result: Optional[SendResult] = None
-        cleaned = live_adapter.format_message(message)
-        if cleaned:
-            last_result = await live_adapter.send(chat_id, cleaned)
-            if not last_result.success:
-                return {"error": f"Weixin send failed: {last_result.error}"}
+        try:
+            last_result: Optional[SendResult] = None
+            cleaned = live_adapter.format_message(message)
+            if cleaned:
+                last_result = await live_adapter.send(chat_id, cleaned)
+                if not last_result.success:
+                    return {"error": f"Weixin send failed: {last_result.error}"}
 
-        for media_path, _is_voice in media_files or []:
-            ext = Path(media_path).suffix.lower()
-            if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
-                last_result = await live_adapter.send_image_file(chat_id, media_path)
-            else:
-                last_result = await live_adapter.send_document(chat_id, media_path)
-            if not last_result.success:
-                return {"error": f"Weixin media send failed: {last_result.error}"}
+            for media_path, _is_voice in media_files or []:
+                ext = Path(media_path).suffix.lower()
+                if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+                    last_result = await live_adapter.send_image_file(chat_id, media_path)
+                else:
+                    last_result = await live_adapter.send_document(chat_id, media_path)
+                if not last_result.success:
+                    return {"error": f"Weixin media send failed: {last_result.error}"}
 
-        return {
-            "success": True,
-            "platform": "weixin",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id if last_result else None,
-            "context_token_used": bool(context_token),
-        }
+            return {
+                "success": True,
+                "platform": "weixin",
+                "chat_id": chat_id,
+                "message_id": last_result.message_id if last_result else None,
+                "context_token_used": bool(context_token),
+            }
+        except RuntimeError:
+            logger.info(
+                "send_weixin_direct: live adapter session on different loop, "
+                "falling through to create a fresh session for %s",
+                _safe_id(chat_id),
+            )
+            # Fall through to fresh-session path below
 
     async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
         adapter = WeixinAdapter(

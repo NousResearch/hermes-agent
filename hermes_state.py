@@ -199,6 +199,11 @@ class SessionDB:
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL + NORMAL is the SQLite-recommended durability/performance
+        # tradeoff for concurrent app databases: readers still see committed
+        # data, while writers avoid the extra FULL fsync that increases lock
+        # hold time and gateway/TUI stalls under contention.
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._init_schema()

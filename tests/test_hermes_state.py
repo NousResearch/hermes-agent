@@ -1,5 +1,7 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
+import threading
 import time
 import pytest
 from pathlib import Path
@@ -2291,17 +2293,48 @@ class TestConcurrentWriteSafety:
         assert len(msgs) == 1
         assert msgs[0]["content"] == "hello after lock"
 
-    def test_sqlite_timeout_is_at_least_30s(self, db):
-        """Connection timeout should be >= 30s to survive CLI/gateway contention."""
-        # Access the underlying connection timeout via sqlite3 introspection.
-        # There is no public API, so we check the kwarg via the module default.
-        import sqlite3
-        import inspect
-        from hermes_state import SessionDB as _SessionDB
-        src = inspect.getsource(_SessionDB.__init__)
-        assert "30" in src, (
-            "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
-        )
+    def test_connection_uses_wal_with_synchronous_normal(self, db):
+        """State DB should use WAL plus NORMAL sync for lower writer stall risk."""
+        journal_mode = db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+        synchronous = db._conn.execute("PRAGMA synchronous").fetchone()[0]
+
+        assert journal_mode == "wal"
+        assert synchronous == 1  # SQLITE_SYNC_NORMAL
+
+    def test_init_retries_when_another_connection_temporarily_holds_write_lock(self, tmp_path):
+        """Startup/schema init must survive short cross-process writer contention."""
+        db_path = tmp_path / "locked_startup.db"
+        first = SessionDB(db_path=db_path)
+        first.create_session(session_id="existing", source="cli")
+
+        locker = sqlite3.connect(str(db_path), isolation_level=None, timeout=1.0)
+        locker.execute("PRAGMA journal_mode=WAL")
+        locker.execute("BEGIN IMMEDIATE")
+
+        created = []
+        errors = []
+
+        def open_second_db():
+            try:
+                second = SessionDB(db_path=db_path)
+                created.append(second)
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=open_second_db)
+        worker.start()
+        time.sleep(1.2)
+        locker.rollback()
+        worker.join(timeout=5)
+
+        for session_db in created:
+            session_db.close()
+        locker.close()
+        first.close()
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert len(created) == 1
 
 
 # =========================================================================

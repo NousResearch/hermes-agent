@@ -277,7 +277,7 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
 
 
 def test_list_authenticated_providers_prefers_full_live_catalog_for_zshenv_provider(monkeypatch):
-    """Built-in provider rows should use the live /models list, not the curated subset."""
+    """Built-in provider rows should use the live /models list, not append fallbacks."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setattr(
@@ -313,7 +313,8 @@ def test_list_authenticated_providers_prefers_full_live_catalog_for_zshenv_provi
     assert row is not None
     assert calls == [("sk-test", "https://openrouter.ai/api/v1", {"timeout": 4.0, "api_mode": None})]
     assert row["models"][:3] == ["live-a", "live-b", "moonshotai/kimi-k2.6"]
-    assert row["total_models"] >= 3
+    assert row["models"] == ["live-a", "live-b", "moonshotai/kimi-k2.6"]
+    assert row["total_models"] == 3
 
 
 def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):
@@ -628,6 +629,85 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
         f"Custom entry matching env-overridden built-in endpoint should be "
         f"dedup'd, got: {slugs}"
     )
+
+
+def test_list_authenticated_providers_mistral_uses_overlay_and_hides_shadow(monkeypatch):
+    """Mistral's models.dev entry has no API URL, so Hermes must use its overlay.
+
+    Without the overlay endpoint and built-in endpoint dedup, the picker shows a
+    second ``custom:mistral`` row from config.yaml; that stale row can contain
+    short aliases like ``vibe-tools`` that the Mistral API rejects.
+    """
+    from hermes_cli.providers import HermesOverlay
+
+    monkeypatch.setenv("MISTRAL_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "mistral": {
+                "name": "Mistral",
+                "env": ["MISTRAL_API_KEY"],
+                "api": "",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.providers.HERMES_OVERLAYS",
+        {
+            "mistral": HermesOverlay(
+                transport="openai_chat",
+                base_url_override="https://api.mistral.ai/v1",
+                base_url_env_var="MISTRAL_BASE_URL",
+            )
+        },
+    )
+    monkeypatch.setattr("agent.models_dev.list_agentic_models", lambda provider: [])
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return [
+            "mistral-medium-latest",
+            "mistral-vibe-cli-with-tools",
+        ]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="mistral",
+        user_providers={
+            "mistral": {
+                "name": "Mistral",
+                "api": "https://api.mistral.ai/v1",
+                "api_key": "${MISTRAL_API_KEY}",
+                "default_model": "mistral-medium-latest",
+                "models": ["mistral-medium-latest", "vibe-tools"],
+            }
+        },
+        custom_providers=[
+            {
+                "name": "Mistral",
+                "base_url": "https://api.mistral.ai/v1",
+                "api_key": "sk-test",
+                "model": "vibe-tools",
+            }
+        ],
+        max_models=50,
+    )
+
+    assert calls == [
+        (
+            "sk-test",
+            "https://api.mistral.ai/v1",
+            {"timeout": 4.0, "api_mode": None},
+        )
+    ]
+    assert [p["slug"] for p in providers].count("mistral") == 1
+    assert not any(p["slug"] == "custom:mistral" for p in providers)
+    mistral = next(p for p in providers if p["slug"] == "mistral")
+    assert "mistral-vibe-cli-with-tools" in mistral["models"]
+    assert "vibe-tools" not in mistral["models"]
 
 
 # =============================================================================

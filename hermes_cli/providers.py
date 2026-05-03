@@ -166,6 +166,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://integrate.api.nvidia.com/v1",
         base_url_env_var="NVIDIA_BASE_URL",
     ),
+    "mistral": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.mistral.ai/v1",
+        base_url_env_var="MISTRAL_BASE_URL",
+    ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",

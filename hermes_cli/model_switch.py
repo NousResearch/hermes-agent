@@ -1097,7 +1097,9 @@ def _live_catalog_for_provider(
         live = fetch_api_models(api_key, base_url, timeout=4.0, api_mode=api_mode)
     except Exception:
         live = None
-    return _merge_model_lists(live, fallback)
+    if live:
+        return _merge_model_lists(live, [])
+    return list(fallback)
 
 
 def list_authenticated_providers(
@@ -1163,12 +1165,21 @@ def list_authenticated_providers(
         except Exception:
             return
         pcfg = _reg.get(slug)
-        if not pcfg:
-            return
         urls: list[str] = []
-        if getattr(pcfg, "base_url_env_var", ""):
+        if pcfg and getattr(pcfg, "base_url_env_var", ""):
             urls.append(_env_value(pcfg.base_url_env_var) or "")
-        urls.append(getattr(pcfg, "inference_base_url", "") or "")
+        if pcfg:
+            urls.append(getattr(pcfg, "inference_base_url", "") or "")
+        try:
+            from hermes_cli.providers import get_provider
+
+            pdef = get_provider(slug)
+        except Exception:
+            pdef = None
+        if pdef is not None:
+            if getattr(pdef, "base_url_env_var", ""):
+                urls.append(_env_value(pdef.base_url_env_var) or "")
+            urls.append(getattr(pdef, "base_url", "") or "")
         for url in urls:
             normed = _norm_url(url)
             if normed:

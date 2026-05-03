@@ -440,6 +440,8 @@ async def vision_analyze_tool(
         - For local file paths, the file is used directly and NOT deleted
         - Supports common image formats (JPEG, PNG, GIF, WebP, etc.)
     """
+    if not isinstance(user_prompt, str):
+        user_prompt = str(user_prompt) if user_prompt is not None else ""
     debug_call_data = {
         "parameters": {
             "image_url": image_url,

@@ -2752,6 +2752,17 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
+                # Agent is done — stop the typing indicator *before* sending.
+                # If we wait until the finally block, _keep_typing keeps
+                # refreshing sendChatAction("typing") during the entire
+                # media-extraction / TTS / message-sending phase below.
+                # Telegram's client then toggles: incoming message clears
+                # typing, but _keep_typing's next tick re-triggers it 2s
+                # later, making it look like the bot is perpetually "typing".
+                # Stop here so the outgoing message naturally clears the
+                # indicator per Telegram's documented behavior.
+                await _stop_typing_task()
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
                 

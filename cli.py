@@ -5295,12 +5295,19 @@ class HermesCLI:
 
         if self.agent is not None:
             try:
+                # Propagate resolved credential pool so 429/402 rotation
+                # survives the in-place swap; mirror it on the CLI so any
+                # later code that reads ``self._credential_pool`` (e.g. on
+                # next-turn re-resolution) sees the new pool.
+                if result.credential_pool is not None:
+                    self._credential_pool = result.credential_pool
                 self.agent.switch_model(
                     new_model=result.new_model,
                     new_provider=result.target_provider,
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    credential_pool=result.credential_pool,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -5516,12 +5523,19 @@ class HermesCLI:
         # Apply to running agent (in-place swap)
         if self.agent is not None:
             try:
+                # Propagate resolved credential pool so 429/402 rotation
+                # survives the in-place swap; mirror it on the CLI so any
+                # later code that reads ``self._credential_pool`` (e.g. on
+                # next-turn re-resolution) sees the new pool.
+                if result.credential_pool is not None:
+                    self._credential_pool = result.credential_pool
                 self.agent.switch_model(
                     new_model=result.new_model,
                     new_provider=result.target_provider,
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    credential_pool=result.credential_pool,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")

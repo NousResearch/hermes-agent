@@ -2094,7 +2094,7 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', credential_pool=None):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -2102,6 +2102,14 @@ class AIAgent:
         validated the model.  This method performs the actual runtime
         swap: rebuilding clients, updating caching flags, and refreshing
         the context compressor.
+
+        ``credential_pool`` is the optional pool resolved by the /model
+        pipeline (e.g. when switching to a ``custom:<name>`` provider that
+        is backed by a CredentialPool).  When provided, the agent's
+        ``_credential_pool`` is swapped so 429/402 rotation continues to
+        work after a mid-session switch — without it, the new provider's
+        pool is silently dropped and the agent falls back to single-key
+        behaviour.
 
         The implementation mirrors ``_try_activate_fallback()`` for the
         client-swap logic but also updates ``_primary_runtime`` so the
@@ -2140,6 +2148,15 @@ class AIAgent:
             self._transport_cache.clear()
         if api_key:
             self.api_key = api_key
+
+        # ── Swap credential pool if provided ──
+        # The /model pipeline resolves pools via load_pool() and surfaces
+        # them on ModelSwitchResult.credential_pool.  Callers that pass it
+        # through here keep the agent's per-provider rotation working after
+        # an in-place swap; without this the new provider would lose its
+        # 429/402 rotation and fall back to single-key behaviour.
+        if credential_pool is not None:
+            self._credential_pool = credential_pool
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":

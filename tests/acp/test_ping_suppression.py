@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from io import StringIO
 
 import pytest
@@ -125,6 +126,13 @@ async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
     """A bare ``ping`` must get a JSON-RPC -32601 back AND leave stderr clean
     when the filter is installed on the handler.
     """
+    if sys.platform == "win32":
+        pytest.skip(
+            "asyncio os.pipe wiring for this JSON-RPC probe is unreliable on Windows "
+            "(Proactor connect_write_pipe / IOCP vs Selector connect_read_pipe gaps). "
+            "Covered on Linux CI."
+        )
+
     import acp
 
     # Attach the filter to a fresh stream handler that mirrors entry._setup_logging.

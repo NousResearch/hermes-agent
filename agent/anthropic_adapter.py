@@ -231,33 +231,30 @@ def _supports_fast_mode(model: str) -> bool:
     return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
 
-# Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
+# Beta headers for enhanced features that are safe on ordinary/native Anthropic
+# requests. As of Opus 4.7 (2026-04-16), these are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
-# here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
-# that still gate on the headers continue to get the enhanced features.
+# here so older Claude (4.5, 4.1) + compatible endpoints that still gate on
+# the headers continue to get the enhanced features.
 #
-# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
-# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
-# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
-# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
-# at 200K even though model_metadata.py advertises 1M. The header is a harmless
-# no-op on endpoints where 1M is GA.
+# Do NOT include ``context-1m-2025-08-07`` here. Anthropic returns HTTP 400
+# ("long context beta is not yet available for this subscription") for
+# accounts without the long-context beta, which breaks normal short auxiliary
+# calls like title generation/session summarization.
 #
-# Migration guide: remove these if you no longer support ≤4.5 models or once
-# Bedrock/Azure promote 1M to GA.
+# ``context-1m-2025-08-07`` is still required to unlock the 1M context window
+# on Claude Opus 4.6/4.7 and Sonnet 4.6 when served via AWS Bedrock or Azure
+# AI Foundry. Add it only for those endpoint-specific paths below.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
-    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
-# Bearer-auth (MiniMax) endpoints since they host their own models and
-# unknown Anthropic beta headers risk request rejection.
+# 1M context beta. Native Anthropic does not get this by default because some
+# subscriptions reject it, but Bedrock/Azure still need it for 1M context.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
@@ -476,6 +473,14 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
+def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
+    """Return True for endpoints that still gate 1M context behind a beta."""
+    normalized = _normalize_base_url_text(base_url).lower()
+    if not normalized:
+        return False
+    return "azure.com" in normalized
+
+
 def _common_betas_for_base_url(
     base_url: str | None,
     *,
@@ -485,27 +490,25 @@ def _common_betas_for_base_url(
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error.  Strip that beta for
-    Bearer-auth endpoints while keeping all other betas intact.
+    tool-use message triggers a connection error.
 
-    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
-    endpoints — MiniMax hosts its own models, not Claude, so the header is
-    irrelevant at best and risks request rejection at worst.
+    The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
+    default because some subscriptions reject it. Add it only for endpoint
+    families that still require it for 1M context, currently Azure AI Foundry.
+    Bedrock uses its own client helper below and opts in explicitly.
 
-    ``drop_context_1m_beta=True`` additionally strips the 1M-context beta on
-    otherwise-unrelated endpoints. The OAuth retry path flips this flag after
-    a subscription rejects the beta with
-    "The long context beta is not yet available for this subscription" so
-    subsequent requests in the same session don't repeat the probe. See the
-    reactive recovery loop in ``run_agent.py`` and issue-comment history on
-    PR #17680 for the full rationale.
+    ``drop_context_1m_beta=True`` strips the 1M-context beta from any path that
+    would otherwise include it after a subscription/endpoint rejects the beta.
     """
+    betas = list(_COMMON_BETAS)
+    if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
+        betas.append(_CONTEXT_1M_BETA)
     if _requires_bearer_auth(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
-        return [b for b in _COMMON_BETAS if b not in _stripped]
+        return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
-        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-    return _COMMON_BETAS
+        return [b for b in betas if b != _CONTEXT_1M_BETA]
+    return betas
 
 
 def build_anthropic_client(
@@ -642,7 +645,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
-        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
 
 

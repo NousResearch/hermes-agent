@@ -1025,8 +1025,8 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+def load_soul_md(cwd: Optional[str] = None) -> Optional[str]:
+    """Load SOUL.md — check cwd first, then fall back to HERMES_HOME.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
@@ -1038,6 +1038,20 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
+    # Check cwd first
+    if cwd:
+        cwd_soul = Path(cwd).resolve() / "SOUL.md"
+        if cwd_soul.exists():
+            try:
+                content = cwd_soul.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, "SOUL.md")
+                    content = _truncate_content(content, "SOUL.md")
+                    return content
+            except Exception as e:
+                logger.debug("Could not read SOUL.md from %s: %s", cwd_soul, e)
+
+    # Fall back to HERMES_HOME
     soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
@@ -1077,7 +1091,11 @@ def _load_hermes_md(cwd_path: Path) -> str:
 
 
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
+    """AGENTS.md — top-level first, then recursive subdirectory walk."""
+    top_level = ""
+    section = ""
+    
+    # Top-level first
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
         if candidate.exists():
@@ -1085,11 +1103,33 @@ def _load_agents_md(cwd_path: Path) -> str:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
+                    top_level = f"## {name}\n\n{content}"
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+    
+    # Recursive subdirectory walk (rglob, skip top-level)
+    sub_sections = []
+    for name in ["AGENTS.md", "agents.md"]:
+        for found in sorted(cwd_path.rglob(name)):
+            if found.parent == cwd_path:
+                continue  # already handled as top-level
+            try:
+                content = found.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, name)
+                    try:
+                        rel = str(found.relative_to(cwd_path))
+                    except ValueError:
+                        rel = found.name
+                    sub_sections.append(f"## {rel}\n\n{content}")
+            except Exception as e:
+                logger.debug("Could not read %s: %s", found, e)
+    
+    parts = [top_level] + sub_sections
+    result = "\n\n".join(p for p in parts if p)
+    if not result:
+        return ""
+    return _truncate_content(result, "AGENTS.md")
 
 
 def _load_claude_md(cwd_path: Path) -> str:
@@ -1143,15 +1183,19 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
+      2. AGENTS.md / agents.md   (cwd + recursive subdirectories)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
+    SOUL.md from cwd first, then HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
+
+    .. note::
+       For messaging platforms, set ``terminal.cwd`` in config.yaml to point
+       at your project directory for context file discovery.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -1169,9 +1213,9 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     if project_context:
         sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    # SOUL.md from cwd first, then HERMES_HOME — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md()
+        soul_content = load_soul_md(cwd=cwd)
         if soul_content:
             sections.append(soul_content)
 

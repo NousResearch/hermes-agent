@@ -49,6 +49,10 @@ export const api = {
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessionLatestDescendant: (id: string) =>
+    fetchJSON<SessionLatestDescendantResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+    ),
   deleteSession: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -373,6 +377,14 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+  parent_session_id?: string | null;
+}
+
+export interface SessionLatestDescendantResponse {
+  requested_session_id: string;
+  session_id: string;
+  path: string[];
+  changed: boolean;
 }
 
 export interface PaginatedSessions {

@@ -843,3 +843,15 @@ async def stream_events(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+    def validate_kanban_payload(payload):
+    """
+    BlueTuba: Validates the incoming kanban data to prevent 
+    dashboard crashes during multi-agent handoffs.
+    """
+    try:
+        if not payload or not isinstance(payload, dict):
+            return False
+        return True
+    except Exception as e:
+        print(f"Error validating payload: {e}")
+        return False

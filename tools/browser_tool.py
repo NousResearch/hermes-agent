@@ -2354,9 +2354,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     import uuid as uuid_mod
     effective_task_id = _last_session_key(task_id or "default")
     
-    # Save screenshot to persistent location so it can be shared with users
-    from hermes_constants import get_hermes_dir
-    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+    # Save screenshot to workspace so it can be shared via workspace API
+    from hermes_constants import get_hermes_home
+    screenshots_dir = get_hermes_home() / "workspace" / "screenshots"
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     
     try:
@@ -2484,10 +2484,18 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)
+        # Derive workspace-relative URL for frontend access
+        _hermes_home = get_hermes_home()
+        try:
+            _rel = str(screenshot_path.relative_to(_hermes_home / "workspace"))
+            _ws_url = f"screenshots/{_rel}" if _rel != screenshot_path.name else str(screenshot_path.name)
+        except ValueError:
+            _ws_url = str(screenshot_path)
         response_data = {
             "success": True,
             "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
+            "screenshot_url": _ws_url,
         }
         # Include annotation data if annotated screenshot was taken
         if annotate and result.get("data", {}).get("annotations"):

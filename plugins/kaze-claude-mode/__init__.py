@@ -48,6 +48,10 @@ _APPROVAL_ID_LEN = 5
 _APPROVAL_ID_ALPHABET = "".join([c for c in ascii_lowercase if c != "l"])
 _TRANSCRIPT_MAX_MESSAGES = 40
 _TRANSCRIPT_MAX_CHARS = 12000
+# Claude Code stream-json can emit very large one-line JSON events when tool
+# output is embedded. asyncio's default StreamReader limit is 64 KiB; exceeding
+# that raises LimitOverrunError("Separator is found, but chunk is longer than limit").
+_CLAUDE_STREAM_READER_LIMIT = 4 * 1024 * 1024
 
 _CTX = None  # set by register()
 
@@ -864,6 +868,7 @@ async def _run_claude_code_streaming(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir or None,
+            limit=_CLAUDE_STREAM_READER_LIMIT,
         )
         assert proc.stdin is not None
         proc.stdin.write((prompt or "").encode("utf-8"))

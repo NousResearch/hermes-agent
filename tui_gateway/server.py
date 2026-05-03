@@ -5038,6 +5038,16 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+
+        if _cmd_base.lower() in get_plugin_commands():
+            return _err(
+                rid, 4018, f"plugin command: use command.dispatch for /{_cmd_base}"
+            )
+    except Exception:
+        pass
+
     worker = session.get("slash_worker")
     if not worker:
         try:

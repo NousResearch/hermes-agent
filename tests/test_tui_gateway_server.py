@@ -1891,6 +1891,36 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_slash_exec_rejects_plugin_commands_for_live_dispatch(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: {"lcm": {"description": "LCM diagnostics"}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_SlashWorker",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("plugin command should not start slash worker")
+        ),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "lcm doctor", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "plugin command: use command.dispatch for /lcm" in resp["error"]["message"]
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(

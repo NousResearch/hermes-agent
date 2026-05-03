@@ -1740,6 +1740,9 @@ class AIAgent:
                             "platform": platform or "cli",
                             "hermes_home": str(get_hermes_home()),
                             "agent_context": "primary",
+                            # Pass provider-specific config keys through so plugins
+                            # can read custom flags (e.g. fido's lazy: true).
+                            "lazy": bool(mem_config.get("lazy", False)),
                         }
                         # Thread session title for memory provider scoping
                         # (e.g. honcho uses this to derive chat-scoped session keys)
@@ -1805,11 +1808,13 @@ class AIAgent:
                     self.valid_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
 
-        # Skills config: nudge interval for skill creation reminders
+        # Skills config: nudge interval for skill creation reminders and lazy-load flag
         self._skill_nudge_interval = 10
+        self._skills_lazy = False
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            self._skills_lazy = bool(skills_config.get("lazy", False))
         except Exception:
             pass
 
@@ -4973,7 +4978,7 @@ class AIAgent:
                 pass
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-        if has_skills_tools:
+        if has_skills_tools and not self._skills_lazy:
             avail_toolsets = {
                 toolset
                 for toolset in (
@@ -4984,6 +4989,13 @@ class AIAgent:
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
+            )
+        elif has_skills_tools and self._skills_lazy:
+            skills_prompt = (
+                "## Skills (lazy mode)\n"
+                "Skills are available but not pre-loaded. Use skill_view(name) to load a specific skill "
+                "when you need it, or skills_list() to browse available skills. "
+                "Load skills proactively when the user's request matches a known workflow.\n"
             )
         else:
             skills_prompt = ""

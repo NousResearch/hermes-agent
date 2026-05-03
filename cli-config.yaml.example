@@ -519,6 +519,13 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Lazy skill loading: when true, the full skills index is NOT injected into
+  # the system prompt at startup. Instead, a short notice instructs the agent
+  # to call skill_view()/skills_list() on demand. This significantly reduces
+  # token usage for agents with large skill libraries (100+ skills).
+  # Default: false (full index injected at startup, existing behavior).
+  # lazy: false
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

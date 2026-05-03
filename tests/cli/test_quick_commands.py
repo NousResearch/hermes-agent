@@ -119,6 +119,22 @@ class TestCLIQuickCommands:
             printed = " ".join(str(c) for c in mock_cprint.call_args_list)
             assert "unknown command" in printed.lower()
 
+    def test_loads_live_quick_command_when_config_snapshot_is_stale(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "quick_commands:\n"
+            "  live:\n"
+            "    type: exec\n"
+            "    command: echo live-ok\n",
+            encoding="utf-8",
+        )
+        cli = self._make_cli({})
+        with patch("cli.get_hermes_home", return_value=tmp_path):
+            result = cli.process_command("/live")
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "live-ok"
+
     def test_timeout_shows_error(self):
         cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("sleep", 30)):
@@ -189,6 +205,24 @@ class TestGatewayQuickCommands:
         assert result is not None
         assert "timed out" in result.lower()
 
+
+    @pytest.mark.asyncio
+    async def test_gateway_quick_command_runs_while_session_has_running_agent(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"tk1": {"type": "exec", "command": "echo midrun-ok"}}}
+        runner._running_agents = {"telegram:123": object()}
+        runner._running_agents_ts = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._session_key_for_source = MagicMock(return_value="telegram:123")
+        runner._draining = False
+
+        event = self._make_event("tk1")
+        result = await runner._handle_message(event)
+        assert result == "midrun-ok"
+
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):
         from gateway.config import GatewayConfig
@@ -205,3 +239,25 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_gateway_loads_live_quick_command_when_config_snapshot_is_stale(self, tmp_path):
+        from gateway.run import GatewayRunner
+
+        (tmp_path / "config.yaml").write_text(
+            "quick_commands:\n"
+            "  livegw:\n"
+            "    type: exec\n"
+            "    command: echo live-gw-ok\n",
+            encoding="utf-8",
+        )
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("livegw")
+        with patch("gateway.run._hermes_home", tmp_path):
+            result = await runner._handle_message(event)
+        assert result == "live-gw-ok"

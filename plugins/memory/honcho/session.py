@@ -556,9 +556,8 @@ class HonchoSessionManager:
         if target_peer_id is None:
             return ""
 
-        # Guard: truncate query to Honcho's dialectic input limit
-        if len(query) > self._dialectic_max_input_chars:
-            query = query[:self._dialectic_max_input_chars].rsplit(" ", 1)[0]
+        # Guard: truncate query to Honcho's dialectic input limit.
+        query = self._truncate_with_suffix(query, self._dialectic_max_input_chars, suffix="")
 
         if self._dialectic_dynamic and reasoning_level:
             level = reasoning_level
@@ -582,13 +581,14 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
 
-            # Apply Hermes-side char cap before caching
-            if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
-                result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
+            # Apply Hermes-side char cap before caching.
+            result = self._truncate_with_suffix(result, self._dialectic_max_chars, suffix=" …")
             return result
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
-            return ""
+            fallback = self._fetch_conclusion_context(session, peer=peer, query=query)
+            result = fallback.get("representation") or "\n".join(fallback.get("card") or [])
+            return self._truncate_with_suffix(result, self._dialectic_max_chars, suffix=" …")
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
         """
@@ -659,17 +659,27 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
+            user_ctx = self._fetch_peer_context(observer_peer_id, target=target_peer_id)
+            user_ctx = self._merge_context_backfill(
+                user_ctx,
+                self._fetch_conclusion_context(session, peer="user"),
+            )
             result["representation"] = user_ctx["representation"]
-            result["card"] = "\n".join(user_ctx["card"])
+            result["card"] = "\n".join(user_ctx["card"]) if isinstance(user_ctx["card"], list) else str(user_ctx["card"])
         except Exception as e:
             logger.warning("Failed to fetch user context from Honcho: %s", e)
 
         # Also fetch AI peer's own representation so Hermes knows itself.
         try:
-            ai_ctx = self._fetch_peer_context(session.assistant_peer_id, target=session.assistant_peer_id)
+            ai_observer_peer_id, ai_target_peer_id = self._resolve_observer_target(session, "ai")
+            ai_ctx = self._fetch_peer_context(ai_observer_peer_id, target=ai_target_peer_id)
+            ai_ctx = self._merge_context_backfill(
+                ai_ctx,
+                self._fetch_conclusion_context(session, peer="ai"),
+            )
             result["ai_representation"] = ai_ctx["representation"]
-            result["ai_card"] = "\n".join(ai_ctx["card"])
+            result["ai_card"] = "\n".join(ai_ctx["card"]) if isinstance(ai_ctx["card"], list) else str(ai_ctx["card"])
         except Exception as e:
             logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
 
@@ -855,6 +865,143 @@ class HonchoSessionManager:
             return [str(item) for item in card if item]
         return [str(card)]
 
+    @staticmethod
+    def _truncate_with_suffix(text: str, limit: int, suffix: str = " …") -> str:
+        """Truncate text while keeping any suffix inside the configured cap."""
+        if not text or not limit or len(text) <= limit:
+            return text
+        if suffix and limit > len(suffix):
+            head = text[: limit - len(suffix)].rstrip()
+            # Prefer not to cut a western word in half when possible, but never
+            # let that preference erase the whole string for CJK / long tokens.
+            if " " in head:
+                head = head.rsplit(" ", 1)[0] or head
+            return (head + suffix)[:limit]
+        return text[:limit]
+
+    @staticmethod
+    def _conclusion_contents(items: Any) -> list[str]:
+        """Extract unique conclusion contents from SDK pages/lists/objects."""
+        if not items:
+            return []
+        if hasattr(items, "items"):
+            iterable = getattr(items, "items") or []
+        elif isinstance(items, (list, tuple, set)):
+            iterable = items
+        else:
+            try:
+                iterable = list(items)
+            except TypeError:
+                iterable = [items]
+
+        contents: list[str] = []
+        seen: set[str] = set()
+        for item in iterable:
+            content = getattr(item, "content", None)
+            if content is None and isinstance(item, dict):
+                content = item.get("content")
+            if content is None:
+                content = str(item) if item else ""
+            content = str(content).strip()
+            if content and content not in seen:
+                seen.add(content)
+                contents.append(content)
+        return contents
+
+    @staticmethod
+    def _context_payload_digest(result: dict[str, Any]) -> tuple[Any, ...]:
+        """Stable-ish digest for detecting ignored query filters."""
+        card = result.get("card") or ""
+        if isinstance(card, list):
+            card = "\n".join(str(x) for x in card)
+        recent = result.get("recent_messages") or []
+        recent_digest = tuple(
+            (
+                str(m.get("role", "")) if isinstance(m, dict) else "",
+                str(m.get("content", "")) if isinstance(m, dict) else str(m),
+            )
+            for m in recent
+        )
+        return (
+            str(result.get("summary") or ""),
+            str(result.get("representation") or ""),
+            str(card),
+            recent_digest,
+        )
+
+    def _conclusions_scope_for(self, session: HonchoSession, peer: str = "user") -> Any | None:
+        """Return the observer→target conclusions scope for a requested peer."""
+        target_peer_id = self._resolve_peer_id(session, peer)
+        try:
+            if target_peer_id == session.assistant_peer_id:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                return observer.conclusions_of(session.assistant_peer_id)
+            if self._ai_observe_others:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                return observer.conclusions_of(target_peer_id)
+            target_peer = self._get_or_create_peer(target_peer_id)
+            return target_peer.conclusions_of(target_peer_id)
+        except Exception as e:
+            logger.debug("Failed to resolve conclusions scope for peer '%s': %s", peer, e)
+            return None
+
+    def _fetch_conclusion_context(
+        self,
+        session: HonchoSession,
+        peer: str = "user",
+        query: str | None = None,
+        *,
+        size: int = 10,
+    ) -> dict[str, Any]:
+        """Fetch representation/card-like facts from the conclusions layer.
+
+        This is the durable fallback when peer-card/session-context synthesis is
+        empty or when the session.context(search_query=...) surface ignores a
+        focused query.
+        """
+        scope = self._conclusions_scope_for(session, peer)
+        if scope is None:
+            return {"representation": "", "card": []}
+
+        representation = ""
+        try:
+            if query:
+                representation = scope.representation(
+                    search_query=query,
+                    search_top_k=8,
+                    max_conclusions=8,
+                ) or ""
+            else:
+                representation = scope.representation(max_conclusions=max(size, 10)) or ""
+        except TypeError:
+            try:
+                representation = scope.representation(search_query=query) if query else scope.representation()
+            except Exception as e:
+                logger.debug("Conclusion representation fallback failed: %s", e)
+        except Exception as e:
+            logger.debug("Conclusion representation fallback failed: %s", e)
+
+        contents: list[str] = []
+        try:
+            if query:
+                contents = self._conclusion_contents(scope.query(query, top_k=min(max(size, 1), 20)))
+            else:
+                contents = self._conclusion_contents(scope.list(size=min(max(size, 1), 100), reverse=True))
+        except Exception as e:
+            logger.debug("Conclusion list/query fallback failed: %s", e)
+
+        return {"representation": representation, "card": contents}
+
+    @staticmethod
+    def _merge_context_backfill(result: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+        """Backfill missing representation/card fields without discarding summary/messages."""
+        if not result.get("representation") and fallback.get("representation"):
+            result["representation"] = fallback["representation"]
+        if not result.get("card") and fallback.get("card"):
+            card = fallback["card"]
+            result["card"] = "\n".join(card) if isinstance(card, list) else str(card)
+        return result
+
     def _fetch_peer_card(self, peer_id: str, *, target: str | None = None) -> list[str]:
         """Fetch a peer card directly from the peer object.
 
@@ -917,56 +1064,120 @@ class HonchoSessionManager:
 
         return {"representation": representation, "card": card}
 
-    def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
+    def get_session_context(
+        self,
+        session_key: str,
+        peer: str = "user",
+        query: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch full session context from Honcho including summary.
 
-        Uses the session-level context() API which returns summary,
-        peer_representation, peer_card, and messages.
+        Uses the session-level context() API, routing user reads through the
+        assistant→user observer-target view when AI observation of others is
+        enabled. Optional ``query`` is forwarded as ``search_query`` and guarded
+        with peer/conclusion fallback if the downstream API returns an unfocused
+        snapshot.
         """
         session = self._cache.get(session_key)
         if not session:
             return {}
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
-            # Fall back to peer-level context, respecting the requested peer
-            peer_id = self._resolve_peer_id(session, peer)
-            if peer_id is None:
-                peer_id = session.user_peer_id
-            return self._fetch_peer_context(peer_id, target=peer_id)
+        target_peer_id = self._resolve_peer_id(session, peer)
+        observer_peer_id, observer_target = self._resolve_observer_target(session, peer)
+        perspective_peer_id = observer_peer_id if observer_target is not None else target_peer_id
 
-        try:
-            peer_id = self._resolve_peer_id(session, peer)
-            ctx = honcho_session.context(
-                summary=True,
-                peer_target=peer_id,
-                peer_perspective=session.user_peer_id if peer == "user" else session.assistant_peer_id,
-            )
+        def _fetch_session_payload(search_query: str | None) -> dict[str, Any]:
+            honcho_session = self._sessions_cache.get(session.honcho_session_id)
+            if not honcho_session:
+                peer_ctx = self._fetch_peer_context(
+                    observer_peer_id,
+                    search_query=search_query,
+                    target=observer_target,
+                )
+                return self._merge_context_backfill(
+                    {"representation": peer_ctx.get("representation", ""), "card": peer_ctx.get("card", [])},
+                    self._fetch_conclusion_context(session, peer=peer, query=search_query),
+                )
+
+            kwargs: dict[str, Any] = {
+                "summary": True,
+                "peer_target": target_peer_id,
+                "peer_perspective": perspective_peer_id,
+            }
+            if self._context_tokens:
+                kwargs["tokens"] = self._context_tokens
+            if search_query:
+                kwargs.update({
+                    "search_query": search_query,
+                    "search_top_k": 8,
+                    "max_conclusions": 8,
+                })
+
+            try:
+                ctx = honcho_session.context(**kwargs)
+            except TypeError:
+                # Older SDK/server builds may not accept the narrowing params.
+                kwargs.pop("search_top_k", None)
+                kwargs.pop("max_conclusions", None)
+                ctx = honcho_session.context(**kwargs)
 
             result: dict[str, Any] = {}
 
-            # Summary
-            if ctx.summary:
-                result["summary"] = ctx.summary.content
+            summary = getattr(ctx, "summary", None)
+            summary_content = getattr(summary, "content", None) if summary else None
+            if summary_content:
+                result["summary"] = summary_content
 
-            # Peer representation and card
-            if ctx.peer_representation:
-                result["representation"] = ctx.peer_representation
-            if ctx.peer_card:
-                result["card"] = "\n".join(ctx.peer_card)
+            representation = getattr(ctx, "peer_representation", None) or getattr(ctx, "representation", None)
+            if representation:
+                result["representation"] = representation
 
-            # Messages (last N for context)
-            if ctx.messages:
-                recent = ctx.messages[-10:]  # last 10 messages
+            card = self._normalize_card(getattr(ctx, "peer_card", None))
+            if card:
+                result["card"] = "\n".join(card)
+
+            messages = getattr(ctx, "messages", None)
+            if messages:
+                recent = messages[-10:]
                 result["recent_messages"] = [
-                    {"role": getattr(m, "peer_id", "unknown"), "content": (m.content or "")[:500]}
+                    {"role": getattr(m, "peer_id", "unknown"), "content": (getattr(m, "content", "") or "")[:500]}
                     for m in recent
                 ]
 
+            peer_ctx = self._fetch_peer_context(
+                observer_peer_id,
+                search_query=search_query,
+                target=observer_target,
+            )
+            result = self._merge_context_backfill(result, peer_ctx)
+            result = self._merge_context_backfill(
+                result,
+                self._fetch_conclusion_context(session, peer=peer, query=search_query),
+            )
+            return result
+
+        try:
+            result = _fetch_session_payload(query)
+            if query:
+                baseline = _fetch_session_payload(None)
+                if self._context_payload_digest(result) == self._context_payload_digest(baseline):
+                    # Downstream session.context(search_query=...) ignored the
+                    # query. Overlay focused peer-level context, then conclusions.
+                    focused_peer_ctx = self._fetch_peer_context(
+                        observer_peer_id,
+                        search_query=query,
+                        target=observer_target,
+                    )
+                    result = self._merge_context_backfill({}, focused_peer_ctx)
+                    result = self._merge_context_backfill(
+                        result,
+                        self._fetch_conclusion_context(session, peer=peer, query=query),
+                    )
             return result
         except Exception as e:
             logger.debug("Session context fetch failed: %s", e)
-            return {}
+            fallback = self._fetch_conclusion_context(session, peer=peer, query=query)
+            return self._merge_context_backfill({}, fallback)
 
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
         """Resolve a peer alias or explicit peer ID to a concrete Honcho peer ID.
@@ -1016,7 +1227,16 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            if card:
+                return card
+            fallback = self._fetch_conclusion_context(session, peer=peer)
+            if fallback.get("card"):
+                return self._normalize_card(fallback.get("card"))
+            representation = (fallback.get("representation") or "").strip()
+            if representation:
+                return [line.strip("-• ") for line in representation.splitlines() if line.strip()][:10]
+            return []
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
@@ -1051,18 +1271,27 @@ class HonchoSessionManager:
         try:
             observer_peer_id, target = self._resolve_observer_target(session, peer)
 
-            ctx = self._fetch_peer_context(
+            peer_ctx = self._fetch_peer_context(
                 observer_peer_id,
                 search_query=query,
                 target=target,
             )
+            conclusion_ctx = self._fetch_conclusion_context(session, peer=peer, query=query)
+            if query and (conclusion_ctx.get("representation") or conclusion_ctx.get("card")):
+                ctx = self._merge_context_backfill(conclusion_ctx, peer_ctx)
+            else:
+                ctx = self._merge_context_backfill(peer_ctx, conclusion_ctx)
             parts = []
             if ctx["representation"]:
                 parts.append(ctx["representation"])
             card = ctx["card"] or []
             if card:
-                parts.append("\n".join(f"- {f}" for f in card))
-            return "\n\n".join(parts)
+                if isinstance(card, list):
+                    parts.append("\n".join(f"- {f}" for f in card))
+                else:
+                    parts.append(str(card))
+            result = "\n\n".join(parts)
+            return self._truncate_with_suffix(result, max_tokens * 4, suffix=" …")
         except Exception as e:
             logger.debug("Honcho search_context failed: %s", e)
             return ""

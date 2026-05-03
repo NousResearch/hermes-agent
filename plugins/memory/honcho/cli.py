@@ -5,9 +5,11 @@ Handles: hermes honcho setup | status | sessions | map | peer
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -699,6 +701,13 @@ def cmd_status(args) -> None:
         try:
             client = get_honcho_client(hcfg)
             _show_peer_cards(hcfg, client)
+            if getattr(args, "drift_audit", False) or getattr(args, "write_audit", False):
+                _run_status_audits(
+                    hcfg,
+                    client,
+                    drift_query=getattr(args, "drift_query", None) or "billing risk",
+                    write_audit=getattr(args, "write_audit", False),
+                )
             print("OK")
         except Exception as e:
             print(f"FAILED ({e})\n")
@@ -744,6 +753,133 @@ def _show_peer_cards(hcfg, client) -> None:
         print()
     except Exception as e:
         print(f"\n  Peer data unavailable: {e}\n")
+
+
+def _audit_digest(obj) -> str:
+    """Short stable digest for status drift-audit payload comparisons."""
+    try:
+        text = json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        text = str(obj)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _audit_context_payload(ctx) -> dict:
+    summary = getattr(ctx, "summary", None)
+    messages = getattr(ctx, "messages", None) or []
+    return {
+        "summary": getattr(summary, "content", None) if summary else None,
+        "representation": getattr(ctx, "peer_representation", None) or getattr(ctx, "representation", None),
+        "card": getattr(ctx, "peer_card", None),
+        "messages": [
+            {
+                "peer_id": getattr(m, "peer_id", "unknown"),
+                "content": (getattr(m, "content", "") or "")[:500],
+            }
+            for m in messages[-10:]
+        ],
+    }
+
+
+def _audit_term_counts(text: str, query: str) -> dict[str, int]:
+    terms = {t.lower() for t in query.split() if t.strip()}
+    if "billing" in terms or "risk" in terms:
+        terms.update({"billing", "risk", "invoice", "cashflow", "财务", "商务", "风险", "发票", "账单"})
+    lowered = text.lower()
+    return {term: lowered.count(term) for term in sorted(terms) if lowered.count(term)}
+
+
+def _run_status_audits(hcfg, client, *, drift_query: str, write_audit: bool) -> None:
+    """Print live Honcho drift/search/write audit lines for cron smoke checks."""
+    from plugins.memory.honcho.session import HonchoSessionManager
+
+    mgr = HonchoSessionManager(honcho=client, config=hcfg)
+    session_key = hcfg.resolve_session_name()
+    session = mgr.get_or_create(session_key)
+    noise_query = "完全无关词 柴犬火箭"
+
+    print("\n  Drift/search audit")
+
+    def manager_payload(query: str | None) -> dict:
+        return mgr.get_session_context(session_key, peer="user", query=query)
+
+    mgr_base = manager_payload(None)
+    mgr_focus = manager_payload(drift_query)
+    mgr_noise = manager_payload(noise_query)
+    mgr_hashes = [_audit_digest(x) for x in (mgr_base, mgr_focus, mgr_noise)]
+    mitigation_ok = len(set(mgr_hashes)) > 1 and mgr_hashes[1] != mgr_hashes[2]
+
+    raw_hashes: list[str] = []
+    raw_ok = False
+    try:
+        honcho_session = mgr._sessions_cache.get(session.honcho_session_id)
+        target_peer_id = session.user_peer_id
+        observer_peer_id = session.assistant_peer_id if mgr._ai_observe_others else target_peer_id
+        raw_payloads = []
+        for query in (None, drift_query, noise_query):
+            kwargs = {
+                "summary": True,
+                "tokens": hcfg.context_tokens,
+                "peer_target": target_peer_id,
+                "peer_perspective": observer_peer_id,
+            }
+            if query:
+                kwargs.update({"search_query": query, "search_top_k": 8, "max_conclusions": 8})
+            try:
+                ctx = honcho_session.context(**kwargs)
+            except TypeError:
+                kwargs.pop("search_top_k", None)
+                kwargs.pop("max_conclusions", None)
+                ctx = honcho_session.context(**kwargs)
+            raw_payloads.append(_audit_context_payload(ctx))
+        raw_hashes = [_audit_digest(x) for x in raw_payloads]
+        raw_ok = len(set(raw_hashes)) > 1 and raw_hashes[1] != raw_hashes[2]
+    except Exception as e:
+        print(f"  Raw drift audit: WARN error={type(e).__name__}: {e}")
+    else:
+        print(
+            "  Raw drift audit: "
+            f"{'PASS' if raw_ok else 'WARN'} baseline={raw_hashes[0]} focused={raw_hashes[1]} noise={raw_hashes[2]}"
+        )
+
+    print(
+        "  Hermes mitigation: "
+        f"{'PASS' if mitigation_ok else 'WARN'} baseline={mgr_hashes[0]} focused={mgr_hashes[1]} noise={mgr_hashes[2]}"
+    )
+
+    search = mgr.search_context(session_key, drift_query, max_tokens=800, peer="user")
+    terms = _audit_term_counts(search, drift_query)
+    search_status = "PASS" if search.strip() and terms else ("WARN" if search.strip() else "FAIL")
+    print(
+        "  Search evidence: "
+        f"{search_status} len={len(search)} terms={terms}"
+    )
+
+    if not write_audit:
+        return
+
+    marker = f"HERMES_HONCHO_STATUS_WRITE_AUDIT_TEMP_{int(time.time())}"
+    created_ids: list[str] = []
+    try:
+        scope = mgr._conclusions_scope_for(session, "user")
+        created = scope.create([{"content": marker, "session_id": session.honcho_session_id}])
+        created_ids = [getattr(item, "id", "") for item in created if getattr(item, "id", "")]
+        found = bool(created_ids)
+        deleted = False
+        for conclusion_id in created_ids:
+            scope.delete(conclusion_id)
+            deleted = True
+        print(
+            "  Write audit: "
+            f"{'PASS' if found and deleted else 'WARN'} created={found} deleted={deleted} ids={len(created_ids)}"
+        )
+    except Exception as e:
+        print(f"  Write audit: FAIL error={type(e).__name__}: {e}")
+        for conclusion_id in created_ids:
+            try:
+                scope.delete(conclusion_id)
+            except Exception:
+                pass
 
 
 def _cmd_status_all() -> None:
@@ -1374,6 +1510,18 @@ def register_cli(subparser) -> None:
     )
     status_parser.add_argument(
         "--all", action="store_true", help="Show config overview across all profiles",
+    )
+    status_parser.add_argument(
+        "--drift-audit", action="store_true",
+        help="Compare raw and Hermes-mitigated context for focused/noise query drift",
+    )
+    status_parser.add_argument(
+        "--drift-query", default="billing risk",
+        help="Focused query to use with --drift-audit (default: billing risk)",
+    )
+    status_parser.add_argument(
+        "--write-audit", action="store_true",
+        help="Create and delete a temporary conclusion to verify write-path health",
     )
 
     subs.add_parser("peers", help="Show peer identities across all profiles")

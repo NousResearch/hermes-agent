@@ -481,9 +481,9 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "msg 1"},
             {"role": "assistant", "content": "msg 2"},
-            {"role": "user", "content": "msg 3"},
-            {"role": "assistant", "content": "msg 4"},
-            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": "msg 3 CRITICAL_DATA=/tmp/important.py"},
+            {"role": "assistant", "content": "msg 4 ran pytest -q"},
+            {"role": "user", "content": "msg 5 fix the context compression 502 issue"},
             {"role": "assistant", "content": "msg 6"},
             {"role": "user", "content": "msg 7"},
         ]
@@ -496,11 +496,19 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count > 0
         assert c._last_summary_error is not None
-        # Result must still be well-formed (fallback summary present).
-        assert any(
-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+        # Result must still be well-formed and must preserve concrete details
+        # from the compressed middle instead of inserting a content-free marker.
+        fallback_contents = [
+            m.get("content", "")
             for m in result
-        )
+            if isinstance(m.get("content"), str) and m["content"].startswith(SUMMARY_PREFIX)
+        ]
+        assert fallback_contents
+        fallback = "\n".join(fallback_contents)
+        assert "deterministic extractive fallback" in fallback
+        assert "CRITICAL_DATA=/tmp/important.py" in fallback
+        assert "ran pytest -q" in fallback
+        assert "Summary generation was unavailable" not in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
@@ -1430,3 +1438,122 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestResponsesApiCompression:
+    """Regression coverage for Codex/OpenAI Responses API history entries."""
+
+    def _compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+
+    def test_prune_responses_function_call_output_preserves_pair(self):
+        c = self._compressor()
+        messages = [
+            {"role": "user", "content": "start"},
+            {"type": "function_call", "call_id": "call_1", "name": "skill_view", "arguments": '{"name":"hermes-agent"}'},
+            {"type": "function_call_output", "call_id": "call_1", "output": "X" * 90000},
+            {"role": "user", "content": "latest"},
+        ]
+
+        result, pruned = c._prune_old_tool_results(messages, protect_tail_count=1, protect_tail_tokens=1000)
+
+        assert pruned >= 1
+        assert result[1]["type"] == "function_call"
+        assert result[2]["type"] == "function_call_output"
+        assert result[1]["call_id"] == result[2]["call_id"] == "call_1"
+        assert len(result[2]["output"]) < 2000
+        assert "skill_view" in result[2]["output"]
+
+    def test_prune_responses_protected_tail_large_output_is_clipped(self):
+        c = self._compressor()
+        messages = [
+            {"role": "user", "content": "start"},
+            {"type": "function_call", "call_id": "call_tail", "name": "skill_view", "arguments": '{"name":"claude-code"}'},
+            {"type": "function_call_output", "call_id": "call_tail", "output": "Y" * 50000},
+            {"role": "user", "content": "latest"},
+        ]
+
+        result, pruned = c._prune_old_tool_results(messages, protect_tail_count=4)
+
+        assert pruned >= 1
+        assert result[2]["type"] == "function_call_output"
+        assert result[2]["call_id"] == "call_tail"
+        assert len(result[2]["output"]) < 2000
+        assert "protected-tail output clipped" in result[2]["output"]
+
+    def test_prune_responses_function_call_arguments_keeps_valid_json(self):
+        import json as _json
+        c = self._compressor()
+        args_payload = _json.dumps({"path": "x.md", "content": "A" * 50000})
+        messages = [
+            {"type": "function_call", "call_id": "call_1", "name": "write_file", "arguments": args_payload},
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+            {"role": "user", "content": "tail"},
+        ]
+
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=1)
+        parsed = _json.loads(result[0]["arguments"])
+
+        assert result[0]["call_id"] == "call_1"
+        assert result[0]["name"] == "write_file"
+        assert parsed["path"] == "x.md"
+        assert parsed["content"].endswith("...[truncated]")
+        assert len(result[0]["arguments"]) < len(args_payload)
+
+    def test_tail_budget_counts_responses_function_call_output(self):
+        c = self._compressor()
+        c.tail_token_budget = 80  # soft ceiling = 120 tokens
+        messages = [
+            {"role": "user", "content": "head"},
+            {"type": "function_call_output", "call_id": "orphan", "output": "Z" * 80000},
+            {"role": "assistant", "content": "tail1"},
+            {"role": "user", "content": "tail2"},
+            {"role": "assistant", "content": "tail3"},
+        ]
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=0)
+
+        assert cut == 2
+        assert messages[cut]["content"] == "tail1"
+
+    def test_serialize_for_summary_includes_responses_entries(self):
+        c = self._compressor()
+        rendered = c._serialize_for_summary([
+            {"type": "function_call", "call_id": "call_1", "name": "skill_view", "arguments": '{"name":"hermes-agent"}'},
+            {"type": "function_call_output", "call_id": "call_1", "output": "tool output detail"},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "reasoning summary"}]},
+        ])
+
+        assert "[FUNCTION CALL call_1]: skill_view" in rendered
+        assert "[FUNCTION CALL OUTPUT call_1]: tool output detail" in rendered
+        assert "[REASONING]: reasoning summary" in rendered
+
+    def test_sanitize_responses_pairs_adds_stub_and_removes_orphan(self):
+        c = self._compressor()
+        result = c._sanitize_tool_pairs([
+            {"type": "function_call", "call_id": "missing", "name": "read_file", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "orphan", "output": "bad"},
+        ])
+
+        call_ids = [m.get("call_id") for m in result]
+        assert "orphan" not in call_ids
+        assert result[0]["type"] == "function_call"
+        assert result[1]["type"] == "function_call_output"
+        assert result[1]["call_id"] == "missing"
+
+    def test_estimate_messages_tokens_rough_counts_responses_entries(self):
+        from agent.model_metadata import estimate_messages_tokens_rough
+        messages = [
+            {"type": "function_call", "call_id": "c1", "name": "x", "arguments": "A" * 4000},
+            {"type": "function_call_output", "call_id": "c1", "output": "B" * 40000},
+            {"type": "reasoning", "summary": [{"text": "C" * 8000}]},
+        ]
+
+        assert estimate_messages_tokens_rough(messages) > 10000

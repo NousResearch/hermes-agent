@@ -600,6 +600,29 @@ def load_cli_config() -> Dict[str, Any]:
 CLI_CONFIG = load_cli_config()
 
 
+def _load_live_quick_commands(fallback: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Return quick commands with on-disk config merged over in-memory state.
+
+    Long-lived CLI/gateway processes can keep a stale config snapshot after
+    `~/.hermes/config.yaml` is edited. Quick commands are intentionally cheap
+    local dispatch, so reload just this small mapping at dispatch time instead
+    of forcing a full process restart for every alias addition.
+    """
+    merged: Dict[str, Any] = {}
+    if isinstance(fallback, dict):
+        merged.update(fallback)
+    try:
+        cfg_path = get_hermes_home() / "config.yaml"
+        if cfg_path.exists():
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            live = data.get("quick_commands")
+            if isinstance(live, dict):
+                merged.update(live)
+    except Exception as exc:
+        logger.debug("Could not reload live quick_commands: %s", exc)
+    return merged
+
+
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
@@ -6578,7 +6601,7 @@ class HermesCLI:
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
-            quick_commands = self.config.get("quick_commands", {})
+            quick_commands = _load_live_quick_commands(self.config.get("quick_commands", {}))
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":

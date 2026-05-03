@@ -1262,7 +1262,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
             elif tool_name == "honcho_context":
                 peer = args.get("peer", "user")
-                ctx = self._manager.get_session_context(self._session_key, peer=peer)
+                query = args.get("query")
+                ctx = self._manager.get_session_context(self._session_key, peer=peer, query=query)
                 if not ctx:
                     return json.dumps({"result": "No context available yet."})
                 parts = []

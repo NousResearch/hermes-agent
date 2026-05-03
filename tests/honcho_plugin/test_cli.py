@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/cli.py."""
 
 from types import SimpleNamespace
+import argparse
 
 
 class TestResolveApiKey:
@@ -154,3 +155,82 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+    def test_status_parser_accepts_drift_and_write_audit_flags(self):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers(dest="command")
+        honcho_parser = subs.add_parser("honcho")
+        honcho_cli.register_cli(honcho_parser)
+
+        args = parser.parse_args([
+            "honcho",
+            "status",
+            "--drift-audit",
+            "--drift-query",
+            "billing risk",
+            "--write-audit",
+        ])
+
+        assert args.honcho_command == "status"
+        assert args.drift_audit is True
+        assert args.drift_query == "billing risk"
+        assert args.write_audit is True
+
+    def test_cmd_status_runs_audits_when_requested(self, monkeypatch, capsys, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{}")
+
+        class FakeConfig:
+            enabled = True
+            api_key = "root-key"
+            workspace_id = "hermes"
+            host = "hermes"
+            base_url = None
+            ai_peer = "hermes"
+            peer_name = "eri"
+            recall_mode = "tools"
+            user_observe_me = True
+            user_observe_others = True
+            ai_observe_me = True
+            ai_observe_others = True
+            write_frequency = "async"
+            session_strategy = "global"
+            context_tokens = 2000
+            dialectic_reasoning_level = "minimal"
+            reasoning_level_cap = "minimal"
+            reasoning_heuristic = False
+            raw = {"dialecticCadence": 999999}
+
+            def resolve_session_name(self):
+                return "hermes"
+
+        audit_calls = []
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {"apiKey": "***"})
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: FakeConfig(),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.get_honcho_client",
+            lambda cfg: object(),
+        )
+        monkeypatch.setattr(honcho_cli, "_show_peer_cards", lambda hcfg, client: None)
+        monkeypatch.setattr(
+            honcho_cli,
+            "_run_status_audits",
+            lambda hcfg, client, *, drift_query, write_audit: audit_calls.append((drift_query, write_audit)),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
+
+        honcho_cli.cmd_status(SimpleNamespace(all=False, drift_audit=True, drift_query="billing risk", write_audit=True))
+
+        out = capsys.readouterr().out
+        assert "Connection... OK" in out
+        assert audit_calls == [("billing risk", True)]

@@ -130,6 +130,42 @@ def _content_text_for_contains(content: Any) -> str:
     return str(content)
 
 
+def _responses_payload_for_budget(msg: Dict[str, Any]) -> Any:
+    """Return the primary text payload for Responses API history entries.
+
+    Codex/OpenAI Responses mode stores tool history as typed input entries
+    instead of ChatCompletions `role=tool` messages.  Treating those entries
+    as empty lets 50-100KB tool outputs hide inside the protected tail and
+    survive compression.  This helper gives pruning/tail budgeting a single
+    view over both shapes without mutating the entry.
+    """
+    mtype = msg.get("type")
+    if mtype == "function_call_output":
+        return msg.get("output") or ""
+    if mtype == "function_call":
+        return msg.get("arguments") or ""
+    if mtype == "reasoning":
+        return msg.get("summary") or msg.get("content") or msg.get("text") or ""
+    return msg.get("content") or ""
+
+
+def _message_length_for_budget(msg: Dict[str, Any]) -> int:
+    """Effective char length for compression token budgeting.
+
+    Includes both ChatCompletions (`content`, `tool_calls[].arguments`) and
+    Responses API (`function_call.arguments`, `function_call_output.output`,
+    `reasoning.summary`) payloads.
+    """
+    total = _content_length_for_budget(_responses_payload_for_budget(msg))
+    if msg.get("type") == "function_call":
+        total += len(str(msg.get("name") or "")) + len(str(msg.get("call_id") or ""))
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            args = tc.get("function", {}).get("arguments", "")
+            total += len(args)
+    return total
+
+
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
     """Append or prepend plain text to message content safely.
 
@@ -517,9 +553,15 @@ class ContextCompressor(ContextEngine):
         result = [m.copy() for m in messages]
         pruned = 0
 
-        # Build index: tool_call_id -> (tool_name, arguments_json)
+        # Build index: tool_call_id -> (tool_name, arguments_json).  Support
+        # both ChatCompletions assistant.tool_calls and Responses API typed
+        # function_call entries.
         call_id_to_tool: Dict[str, tuple] = {}
         for msg in result:
+            if msg.get("type") == "function_call":
+                cid = msg.get("call_id", "")
+                if cid:
+                    call_id_to_tool[cid] = (msg.get("name", "unknown"), msg.get("arguments", ""))
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
@@ -533,21 +575,26 @@ class ContextCompressor(ContextEngine):
                         args_str = getattr(fn, "arguments", "") if fn else ""
                         call_id_to_tool[cid] = (name, args_str)
 
+        def _tool_result_payload(msg: Dict[str, Any]) -> tuple[Optional[str], str, str]:
+            """Return (payload_field, call_id, text) for tool result shapes."""
+            if msg.get("role") == "tool":
+                raw = msg.get("content") or ""
+                return "content", msg.get("tool_call_id", ""), _content_text_for_contains(raw)
+            if msg.get("type") == "function_call_output":
+                raw = msg.get("output") or ""
+                return "output", msg.get("call_id", ""), _content_text_for_contains(raw)
+            return None, "", ""
+
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
-            # Token-budget approach: walk backward accumulating tokens
+            # Token-budget approach: walk backward accumulating tokens.  Count
+            # Responses API output/arguments as real payload, not as zero-sized
+            # metadata; otherwise huge function_call_output entries survive.
             accumulated = 0
             boundary = len(result)
             min_protect = min(protect_tail_count, len(result))
             for i in range(len(result) - 1, -1, -1):
-                msg = result[i]
-                raw_content = msg.get("content") or ""
-                content_len = _content_length_for_budget(raw_content)
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                msg_tokens = _message_length_for_budget(result[i]) // _CHARS_PER_TOKEN + 10
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -558,59 +605,64 @@ class ContextCompressor(ContextEngine):
             prune_boundary = len(result) - protect_tail_count
 
         # Pass 1: Deduplicate identical tool results.
-        # When the same file is read multiple times, keep only the most recent
-        # full copy and replace older duplicates with a back-reference.
+        # When the same file/skill output is read multiple times, keep only the
+        # most recent full copy and replace older duplicates with a back-reference.
         content_hashes: dict = {}  # hash -> (index, tool_call_id)
         for i in range(len(result) - 1, -1, -1):
             msg = result[i]
-            if msg.get("role") != "tool":
-                continue
-            content = msg.get("content") or ""
-            # Skip multimodal content (list of content blocks)
-            if isinstance(content, list):
-                continue
-            if len(content) < 200:
+            field, call_id, content = _tool_result_payload(msg)
+            if not field or len(content) < 200:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
-                # This is an older duplicate — replace with back-reference
-                result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
+                result[i] = {**msg, field: "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1
             else:
-                content_hashes[h] = (i, msg.get("tool_call_id", "?"))
+                content_hashes[h] = (i, call_id or "?")
 
-        # Pass 2: Replace old tool results with informative summaries
-        for i in range(prune_boundary):
+        def _replace_tool_output_with_summary(i: int, *, protected_tail: bool = False) -> bool:
             msg = result[i]
-            if msg.get("role") != "tool":
-                continue
-            content = msg.get("content", "")
-            # Skip multimodal content (list of content blocks)
-            if isinstance(content, list):
-                continue
-            if not content or content == _PRUNED_TOOL_PLACEHOLDER:
-                continue
-            # Skip already-deduplicated or previously-summarized results
+            field, call_id, content = _tool_result_payload(msg)
+            if not field or not content or content == _PRUNED_TOOL_PLACEHOLDER:
+                return False
             if content.startswith("[Duplicate tool output"):
-                continue
-            # Only prune if the content is substantial (>200 chars)
-            if len(content) > 200:
-                call_id = msg.get("tool_call_id", "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
-                summary = _summarize_tool_result(tool_name, tool_args, content)
-                result[i] = {**msg, "content": summary}
+                return False
+            threshold = self._PROTECTED_TOOL_OUTPUT_MAX if protected_tail else 200
+            if len(content) <= threshold:
+                return False
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            summary = _summarize_tool_result(tool_name, tool_args, content)
+            if protected_tail:
+                summary = f"{summary} [protected-tail output clipped from {len(content):,} chars]"
+            result[i] = {**msg, field: summary}
+            return True
+
+        # Pass 2: Replace old tool results with informative summaries.
+        for i in range(max(0, prune_boundary)):
+            if _replace_tool_output_with_summary(i):
                 pruned += 1
 
-        # Pass 3: Truncate large tool_call arguments in assistant messages
-        # outside the protected tail. write_file with 50KB content, for
-        # example, survives pruning entirely without this.
-        #
-        # The shrinking is done inside the parsed JSON structure so the
-        # result remains valid JSON — otherwise downstream providers 400
-        # on every subsequent turn until the broken call falls out of
-        # the window. See ``_truncate_tool_call_args_json`` docstring.
-        for i in range(prune_boundary):
+        # Pass 2b: Even protected-tail tool outputs cannot be unbounded.  A
+        # single recent `skill_view hermes-agent` result can be 90KB+ and make
+        # the post-compression Responses request 100K+ tokens.  Keep the
+        # call/output entry and call_id, but shrink the payload.
+        for i in range(max(0, prune_boundary), len(result)):
+            if _replace_tool_output_with_summary(i, protected_tail=True):
+                pruned += 1
+
+        # Pass 3: Truncate large tool-call arguments.  Historical arguments are
+        # provider payload, not executable state; shrinking string leaves keeps
+        # JSON valid while preventing write_file/execute_code args from bloating
+        # every future request.  Support ChatCompletions and Responses entries.
+        for i in range(len(result)):
             msg = result[i]
+            if msg.get("type") == "function_call":
+                args = msg.get("arguments", "") or ""
+                if len(args) > 500:
+                    new_args = _truncate_tool_call_args_json(args)
+                    if new_args != args:
+                        result[i] = {**msg, "arguments": new_args}
+                continue
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
                 continue
             new_tcs = []
@@ -652,6 +704,7 @@ class ContextCompressor(ContextEngine):
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+    _PROTECTED_TOOL_OUTPUT_MAX = 12000  # cap huge recent tool outputs too
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -667,7 +720,34 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            mtype = msg.get("type")
+
+            # Responses API typed history entries (Codex/Responses mode).  If
+            # these are serialized as unknown empty messages, the summarizer
+            # loses exactly the tool details compression is supposed to retain.
+            if mtype == "function_call":
+                name = msg.get("name", "?")
+                call_id = msg.get("call_id", "")
+                args = redact_sensitive_text(_content_text_for_contains(msg.get("arguments") or ""))
+                if len(args) > self._TOOL_ARGS_MAX:
+                    args = args[:self._TOOL_ARGS_HEAD] + "..."
+                parts.append(f"[FUNCTION CALL {call_id}]: {name}({args})")
+                continue
+            if mtype == "function_call_output":
+                call_id = msg.get("call_id", "")
+                output = redact_sensitive_text(_content_text_for_contains(msg.get("output") or ""))
+                if len(output) > self._CONTENT_MAX:
+                    output = output[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + output[-self._CONTENT_TAIL:]
+                parts.append(f"[FUNCTION CALL OUTPUT {call_id}]: {output}")
+                continue
+            if mtype == "reasoning":
+                reasoning = redact_sensitive_text(_content_text_for_contains(_responses_payload_for_budget(msg)))
+                if len(reasoning) > self._CONTENT_MAX:
+                    reasoning = reasoning[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + reasoning[-self._CONTENT_TAIL:]
+                parts.append(f"[REASONING]: {reasoning}" if reasoning else "[REASONING]: [summary omitted]")
+                continue
+
+            content = redact_sensitive_text(_content_text_for_contains(msg.get("content") or ""))
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -708,6 +788,179 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    _FALLBACK_EXTRACT_MAX_MESSAGES = 28
+    _FALLBACK_EXTRACT_HEAD_MESSAGES = 6
+    _FALLBACK_EXTRACT_TAIL_MESSAGES = 22
+    _FALLBACK_EXTRACT_MESSAGE_CHARS = 900
+    _FALLBACK_PREVIOUS_SUMMARY_CHARS = 4000
+
+    @staticmethod
+    def _clip_fallback_text(text: Any, limit: int) -> str:
+        """Redact and bound text included in deterministic fallback summaries."""
+        rendered = redact_sensitive_text(_content_text_for_contains(text))
+        rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
+        if len(rendered) <= limit:
+            return rendered
+        head = max(0, int(limit * 0.65))
+        tail = max(0, limit - head - 40)
+        clipped = rendered[:head].rstrip()
+        if tail:
+            clipped += "\n...[truncated]...\n" + rendered[-tail:].lstrip()
+        else:
+            clipped += "\n...[truncated]"
+        return clipped
+
+    def _fallback_message_excerpt(self, msg: Dict[str, Any], ordinal: int) -> str:
+        """Render one compact, redacted message/tool-call excerpt for local fallback."""
+        role = msg.get("role", "unknown")
+        mtype = msg.get("type")
+        chunks: list[str] = []
+        if mtype == "function_call":
+            role = "function_call"
+            name = msg.get("name", "?")
+            args = self._clip_fallback_text(msg.get("arguments") or "", 260)
+            chunks.append(f"{name}({args})" if args else f"{name}(...)")
+        elif mtype == "function_call_output":
+            role = "function_call_output"
+            chunks.append(self._clip_fallback_text(msg.get("output") or "", self._FALLBACK_EXTRACT_MESSAGE_CHARS))
+        elif mtype == "reasoning":
+            role = "reasoning"
+            chunks.append(self._clip_fallback_text(_responses_payload_for_budget(msg), self._FALLBACK_EXTRACT_MESSAGE_CHARS))
+        else:
+            content = self._clip_fallback_text(msg.get("content") or "", self._FALLBACK_EXTRACT_MESSAGE_CHARS)
+
+            if content:
+                chunks.append(content)
+
+        tool_calls = msg.get("tool_calls") or []
+        if tool_calls:
+            tc_parts: list[str] = []
+            for tc in tool_calls[:8]:
+                if isinstance(tc, dict):
+                    fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
+                    name = fn.get("name", "?")
+                    args = self._clip_fallback_text(fn.get("arguments", ""), 220)
+                    tc_parts.append(f"{name}({args})" if args else f"{name}(...)")
+                else:
+                    fn = getattr(tc, "function", None)
+                    name = getattr(fn, "name", "?") if fn else "?"
+                    tc_parts.append(f"{name}(...)")
+            if len(tool_calls) > 8:
+                tc_parts.append(f"... +{len(tool_calls) - 8} more tool call(s)")
+            chunks.append("Tool calls: " + "; ".join(tc_parts))
+
+        if role == "tool":
+            tool_id = msg.get("tool_call_id", "")
+            prefix = f"{ordinal}. [tool result {tool_id}]"
+        else:
+            prefix = f"{ordinal}. [{role}]"
+        body = " | ".join(chunk for chunk in chunks if chunk) or "[no text content]"
+        return f"{prefix} {body}"
+
+    def _generate_extractive_fallback_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        *,
+        focus_topic: str = None,
+    ) -> str:
+        """Build a deterministic local handoff when the summary LLM is unavailable.
+
+        The previous behavior inserted only a generic "summary unavailable"
+        marker.  That prevented silent API failure from crashing compression,
+        but it still destroyed the middle of long tool-heavy sessions when a
+        relay returned 502/504.  This fallback is intentionally extractive and
+        bounded: no provider call, redacted content, recent turns preserved with
+        exact tool/file/error snippets where possible.
+        """
+        total = len(turns_to_summarize)
+        indexed = list(enumerate(turns_to_summarize, start=1))
+        if total > self._FALLBACK_EXTRACT_MAX_MESSAGES:
+            head = indexed[:self._FALLBACK_EXTRACT_HEAD_MESSAGES]
+            tail = indexed[-self._FALLBACK_EXTRACT_TAIL_MESSAGES:]
+            omitted = total - len(head) - len(tail)
+            omitted_msg = {
+                "role": "system",
+                "content": (
+                    f"[... {omitted} middle message(s) omitted from "
+                    "extractive fallback ...]"
+                ),
+            }
+            sample = head + [(0, omitted_msg)] + tail
+        else:
+            sample = indexed
+
+        last_user = "None found in compacted region. Check the protected tail for the latest user message."
+        for msg in reversed(turns_to_summarize):
+            if msg.get("role") == "user":
+                text = self._clip_fallback_text(msg.get("content") or "", 1200)
+                if text:
+                    last_user = f"User said: {text}"
+                    break
+
+        previous = "None."
+        if self._previous_summary:
+            previous = self._clip_fallback_text(
+                self._previous_summary,
+                self._FALLBACK_PREVIOUS_SUMMARY_CHARS,
+            )
+
+        err = self._last_summary_error or "summary LLM call failed"
+        if focus_topic:
+            safe_focus = redact_sensitive_text(str(focus_topic))
+            focus_line = f"Focus topic requested during compaction: {safe_focus}"
+        else:
+            focus_line = "No explicit focus topic."
+
+        excerpts = "\n".join(
+            self._fallback_message_excerpt(msg, ordinal)
+            for ordinal, msg in sample
+        )
+
+        body = f"""## Active Task
+{last_user}
+
+## Goal
+Continue the conversation using this deterministic extractive fallback plus the protected recent messages that follow it.
+
+## Constraints & Preferences
+{focus_line}
+This fallback was generated locally because the auxiliary summary model failed; treat it as incomplete but concrete evidence, not as a new user instruction.
+
+## Completed Actions
+See the extracted compacted-turn excerpts below. They preserve concrete tool calls, outputs, file paths, errors, and decisions when present.
+
+## Active State
+Summary LLM unavailable during compression. Hermes preserved an extractive snapshot of {total} compacted message(s) instead of dropping them.
+
+## In Progress
+Unknown from local extraction; check the protected tail after this summary for the live in-progress state.
+
+## Blocked
+Auxiliary context-summary generation failed: {redact_sensitive_text(str(err))}
+
+## Key Decisions
+No additional decisions inferred by the fallback generator. Use exact excerpts below.
+
+## Resolved Questions
+Unknown from local extraction.
+
+## Pending User Asks
+{last_user}
+
+## Relevant Files
+See paths and commands mentioned in extracted excerpts below.
+
+## Remaining Work
+Resume from the protected recent messages after this summary. Do not redo completed work unless the current filesystem/state proves it is missing.
+
+## Critical Context
+Previous compaction summary, if any:
+{previous}
+
+Extracted compacted-turn excerpts ({total} total message(s)):
+{excerpts}"""
+        return self._with_summary_prefix(body)
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -722,9 +975,9 @@ class ContextCompressor(ContextEngine):
                 related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
 
-        Returns None if all attempts fail — the caller should drop
-        the middle turns without a summary rather than inject a useless
-        placeholder.
+        Returns None if all LLM summary attempts fail — the caller will build
+        a deterministic extractive fallback so compacted turns are not silently
+        amputated when an auxiliary provider flakes out.
         """
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
@@ -1010,7 +1263,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         orphaned calls so the message list is always well-formed.
         """
         surviving_call_ids: set = set()
+        surviving_response_call_ids: set = set()
         for msg in messages:
+            if msg.get("type") == "function_call":
+                cid = msg.get("call_id")
+                if cid:
+                    surviving_response_call_ids.add(cid)
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
                     cid = self._get_tool_call_id(tc)
@@ -1018,28 +1276,49 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         surviving_call_ids.add(cid)
 
         result_call_ids: set = set()
+        response_result_call_ids: set = set()
         for msg in messages:
+            if msg.get("type") == "function_call_output":
+                cid = msg.get("call_id")
+                if cid:
+                    response_result_call_ids.add(cid)
             if msg.get("role") == "tool":
                 cid = msg.get("tool_call_id")
                 if cid:
                     result_call_ids.add(cid)
 
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
+        # 1. Remove tool results whose call_id has no matching tool call.
         orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
+        orphaned_response_results = response_result_call_ids - surviving_response_call_ids
+        if orphaned_results or orphaned_response_results:
             messages = [
                 m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                if not (
+                    (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                    or (m.get("type") == "function_call_output" and m.get("call_id") in orphaned_response_results)
+                )
             ]
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
+                logger.info(
+                    "Compression sanitizer: removed %d orphaned tool result(s), %d orphaned Responses output(s)",
+                    len(orphaned_results), len(orphaned_response_results),
+                )
 
-        # 2. Add stub results for assistant tool_calls whose results were dropped
+        # 2. Add stub results for tool calls whose results were dropped.
         missing_results = surviving_call_ids - result_call_ids
-        if missing_results:
+        missing_response_results = surviving_response_call_ids - response_result_call_ids
+        if missing_results or missing_response_results:
             patched: List[Dict[str, Any]] = []
             for msg in messages:
                 patched.append(msg)
+                if msg.get("type") == "function_call":
+                    cid = msg.get("call_id")
+                    if cid in missing_response_results:
+                        patched.append({
+                            "type": "function_call_output",
+                            "call_id": cid,
+                            "output": "[Result from earlier conversation — see context summary above]",
+                        })
                 if msg.get("role") == "assistant":
                     for tc in msg.get("tool_calls") or []:
                         cid = self._get_tool_call_id(tc)
@@ -1051,7 +1330,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                             })
             messages = patched
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
+                logger.info(
+                    "Compression sanitizer: added %d stub tool result(s), %d stub Responses output(s)",
+                    len(missing_results), len(missing_response_results),
+                )
 
         return messages
 
@@ -1088,6 +1370,32 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
             idx = check
         return idx
+
+    def _align_responses_boundary_backward(
+        self,
+        messages: List[Dict[str, Any]],
+        idx: int,
+        head_end: int,
+    ) -> int:
+        """Avoid leaving Responses function_call_output entries orphaned in tail."""
+        if idx <= 0 or idx >= len(messages):
+            return idx
+        call_index: dict[str, int] = {}
+        for i, msg in enumerate(messages):
+            if msg.get("type") == "function_call":
+                cid = msg.get("call_id")
+                if cid:
+                    call_index[cid] = i
+        adjusted = idx
+        for j in range(idx, len(messages)):
+            msg = messages[j]
+            if msg.get("type") != "function_call_output":
+                continue
+            cid = msg.get("call_id")
+            call_idx = call_index.get(cid or "")
+            if call_idx is not None and head_end <= call_idx < adjusted:
+                adjusted = call_idx
+        return adjusted
 
     # ------------------------------------------------------------------
     # Tail protection by token budget
@@ -1179,15 +1487,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         cut_idx = n  # start from beyond the end
 
         for i in range(n - 1, head_end - 1, -1):
-            msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = _message_length_for_budget(messages[i]) // _CHARS_PER_TOKEN + 10
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -1206,10 +1506,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
+        cut_idx = self._align_responses_boundary_backward(messages, cut_idx, head_end)
 
         # Ensure the most recent user message is always in the tail so the
         # active task is never lost to compression (fixes #10896).
         cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        cut_idx = self._align_responses_boundary_backward(messages, cut_idx, head_end)
 
         return max(cut_idx, head_end + 1)
 
@@ -1330,20 +1632,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, insert a deterministic extractive fallback so
+        # transient provider failures (502/504, timeouts, bad relays) do not
+        # turn compaction into blind context amputation.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
+                logger.warning("Summary generation failed — inserting extractive fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+            summary = self._generate_extractive_fallback_summary(
+                turns_to_summarize,
+                focus_topic=focus_topic,
             )
 
         _merge_summary_into_tail = False

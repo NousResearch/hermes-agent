@@ -1026,6 +1026,15 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Inherit the parent's *runtime* model configuration, not just the static
+    # config.yaml defaults. This is what keeps subagents aligned after live
+    # /model switches, fallback-chain pruning, service-tier changes, or
+    # provider-routing tweaks in the already-running parent session. Explicit
+    # delegation.provider/base_url/model config still wins via override_* above.
+    parent_fallback_chain = getattr(parent_agent, "_fallback_chain", [])
+    if not isinstance(parent_fallback_chain, list):
+        parent_fallback_chain = []
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1037,6 +1046,8 @@ def _build_child_agent(
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
+        service_tier=getattr(parent_agent, "service_tier", None),
+        request_overrides=getattr(parent_agent, "request_overrides", None),
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
@@ -1053,6 +1064,9 @@ def _build_child_agent(
         providers_ignored=parent_agent.providers_ignored,
         providers_order=parent_agent.providers_order,
         provider_sort=parent_agent.provider_sort,
+        provider_require_parameters=getattr(parent_agent, "provider_require_parameters", False),
+        provider_data_collection=getattr(parent_agent, "provider_data_collection", None),
+        fallback_model=list(parent_fallback_chain),
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )

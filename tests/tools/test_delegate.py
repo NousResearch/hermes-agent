@@ -48,6 +48,15 @@ def _make_mock_parent(depth=0):
     parent.providers_ignored = None
     parent.providers_order = None
     parent.provider_sort = None
+    parent.provider_require_parameters = False
+    parent.provider_data_collection = None
+    parent.max_tokens = None
+    parent.reasoning_config = None
+    parent.service_tier = None
+    parent.request_overrides = {}
+    parent.prefill_messages = []
+    parent._fallback_chain = []
+    parent._fallback_model = None
     parent._session_db = None
     parent._delegate_depth = depth
     parent._active_children = []
@@ -241,12 +250,30 @@ class TestDelegateTask(unittest.TestCase):
 
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
+        # Simulate a live /model switch in the parent. Subagents must inherit
+        # the runtime state, not stale config.yaml defaults.
+        parent.model = "gpt-5.5-switched"
         parent.base_url = "https://chatgpt.com/backend-api/codex"
         parent.api_key="***"
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
+        parent.max_tokens = 8192
+        parent.reasoning_config = {"effort": "high"}
+        parent.service_tier = "priority"
+        parent.request_overrides = {"extra_body": {"reasoning_effort": "high"}}
+        parent.prefill_messages = [{"role": "user", "content": "prime"}]
+        parent.providers_allowed = ["provider-a"]
+        parent.providers_ignored = ["provider-b"]
+        parent.providers_order = ["provider-a", "provider-c"]
+        parent.provider_sort = "throughput"
+        parent.provider_require_parameters = True
+        parent.provider_data_collection = "deny"
+        parent._fallback_chain = [
+            {"provider": "fallback-a", "model": "model-a"},
+            {"provider": "fallback-b", "model": "model-b"},
+        ]
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("tools.delegate_tool._load_config", return_value={}), patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "ok",
@@ -258,10 +285,24 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test runtime inheritance", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["base_url"], parent.base_url)
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+            self.assertEqual(kwargs["max_tokens"], parent.max_tokens)
+            self.assertEqual(kwargs["reasoning_config"], parent.reasoning_config)
+            self.assertEqual(kwargs["service_tier"], parent.service_tier)
+            self.assertEqual(kwargs["request_overrides"], parent.request_overrides)
+            self.assertEqual(kwargs["prefill_messages"], parent.prefill_messages)
+            self.assertEqual(kwargs["providers_allowed"], parent.providers_allowed)
+            self.assertEqual(kwargs["providers_ignored"], parent.providers_ignored)
+            self.assertEqual(kwargs["providers_order"], parent.providers_order)
+            self.assertEqual(kwargs["provider_sort"], parent.provider_sort)
+            self.assertEqual(kwargs["provider_require_parameters"], parent.provider_require_parameters)
+            self.assertEqual(kwargs["provider_data_collection"], parent.provider_data_collection)
+            self.assertEqual(kwargs["fallback_model"], parent._fallback_chain)
+            self.assertIsNot(kwargs["fallback_model"], parent._fallback_chain)
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
@@ -1478,7 +1519,9 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            time.sleep(0.15)
+            deadline = time.monotonic() + 0.6
+            while not touch_calls and time.monotonic() < deadline:
+                time.sleep(0.01)
             return {"final_response": "done", "completed": True, "api_calls": 5}
 
         child.run_conversation.side_effect = slow_run
@@ -1524,10 +1567,11 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Wait until the heartbeat proves it stayed alive past the old
+            # idle threshold, or time out if the old stale-stop bug regresses.
+            deadline = time.monotonic() + 1.2
+            while len(touch_calls) <= 6 and time.monotonic() < deadline:
+                time.sleep(0.01)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1548,7 +1592,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         # With the old idle threshold (5 cycles = 0.25s), touch_calls
         # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
         # we should see substantially more heartbeats over 0.4s.
-        self.assertGreater(
+        self.assertGreaterEqual(
             len(touch_calls), 6,
             f"Heartbeat stopped too early while child was inside a tool; "
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",

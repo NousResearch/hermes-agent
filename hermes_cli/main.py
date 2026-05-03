@@ -8891,6 +8891,7 @@ Examples:
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
     hermes debug share --local      Print report locally (no upload)
+    hermes debug share --no-redact  Disable upload-time secret redaction
     hermes debug delete <url>       Delete a previously uploaded paste
 """,
     )
@@ -8915,6 +8916,16 @@ Examples:
         "--local",
         action="store_true",
         help="Print the report locally instead of uploading",
+    )
+    share_parser.add_argument(
+        "--no-redact",
+        action="store_true",
+        help=(
+            "Disable upload-time secret redaction (default: redact). Logs "
+            "are normally run through agent.redact.redact_sensitive_text "
+            "with force=True before upload so credentials are not leaked "
+            "into the public paste service."
+        ),
     )
     delete_parser = debug_sub.add_parser(
         "delete",

@@ -12,7 +12,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.main import _cmd_update_impl
+from hermes_cli.main import _cmd_update_impl, _invalidate_update_cache
 
 
 def _make_run_side_effect(
@@ -71,6 +71,7 @@ class TestUpdateYesConfigMigration:
         )
         mock_migrate.return_value = {"env_added": [], "config_added": []}
 
+        _invalidate_update_cache()
         args = SimpleNamespace(yes=True)
 
         with patch("builtins.input") as mock_input:
@@ -111,6 +112,7 @@ class TestUpdateYesConfigMigration:
         )
         mock_migrate.return_value = {"env_added": [], "config_added": []}
 
+        _invalidate_update_cache()
         args = SimpleNamespace(yes=False)
 
         with patch("builtins.input", return_value="n") as mock_input, patch(
@@ -154,6 +156,7 @@ class TestUpdateYesStashRestore:
             branch="feature-branch", verify_ok=True, commit_count="1", dirty=True
         )
 
+        _invalidate_update_cache()
         args = SimpleNamespace(yes=True)
 
         _cmd_update_impl(args, gateway_mode=False)

@@ -2403,5 +2403,52 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         self.assertIsNone(_get_approval_callback())
 
 
+class TestFallbackModelInheritance(unittest.TestCase):
+    """Subagents must inherit the parent's fallback provider chain."""
+
+    def test_child_inherits_fallback_chain(self):
+        """_build_child_agent passes parent._fallback_chain as fallback_model."""
+        parent = _make_mock_parent(depth=0)
+        fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
+        parent._fallback_chain = [fallback_entry]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test fallback inheritance",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
+    def test_child_gets_no_fallback_when_parent_chain_empty(self):
+        """When parent._fallback_chain is empty, fallback_model is None."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = []
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test no fallback",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+
 if __name__ == "__main__":
     unittest.main()

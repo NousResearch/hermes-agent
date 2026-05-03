@@ -217,6 +217,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
+    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -251,6 +252,25 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # "Fatal whatsapp adapter error" plus dispatch a fatal-error
         # notification before the normal "✓ whatsapp disconnected" fires.
         self._shutting_down: bool = False
+
+    def _effective_reply_prefix(self) -> str:
+        """Return the prefix the Node bridge will add in self-chat mode."""
+        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        if whatsapp_mode != "self-chat":
+            return ""
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
+        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
+        if env_prefix is not None:
+            return env_prefix.replace("\\n", "\n")
+        return self.DEFAULT_REPLY_PREFIX
+
+    def _outgoing_chunk_limit(self) -> int:
+        """Reserve room for the bridge-side prefix so final WhatsApp text fits."""
+        prefix_len = len(self._effective_reply_prefix())
+        # Keep enough space for truncate_message's pagination indicator and
+        # code-fence repair even if a user configures a very long prefix.
+        return max(1024, self.MAX_MESSAGE_LENGTH - prefix_len)
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -780,7 +800,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             # Format and chunk the message
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             last_message_id = None
             for chunk in chunks:

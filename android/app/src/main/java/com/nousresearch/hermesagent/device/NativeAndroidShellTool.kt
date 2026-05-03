@@ -16,12 +16,24 @@ object NativeAndroidShellTool {
         val state = HermesLinuxSubsystemBridge.ensureInstalled(context.applicationContext)
         val homeDir = File(state.getString("home_path")).apply { mkdirs() }
         val tmpDir = File(state.getString("tmp_path")).apply { mkdirs() }
-        val shellPath = state.optString("shell_path", "/system/bin/sh").ifBlank { "/system/bin/sh" }
+        val shellPath = "/system/bin/sh"
+        val environment = HermesLinuxSubsystemBridge.buildRunEnvironment(state).toMutableMap().apply {
+            this["HOME"] = homeDir.absolutePath
+            this["TMPDIR"] = tmpDir.absolutePath
+            this["PATH"] = listOf(
+                "/system/bin",
+                "/system/xbin",
+                state.optString("bin_path"),
+            )
+                .filter { it.isNotBlank() }
+                .distinct()
+                .joinToString(":")
+        }
 
         val process = ProcessBuilder(shellPath, "-c", command)
             .directory(homeDir)
             .apply {
-                environment().putAll(HermesLinuxSubsystemBridge.buildRunEnvironment(state))
+                environment().putAll(environment)
             }
             .start()
 

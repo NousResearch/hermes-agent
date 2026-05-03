@@ -53,7 +53,7 @@ def _normalize_link_target(source: Path, target: str, termux_root: Path) -> str 
         return None
     resolved = (source.parent / target_path).resolve(strict=False)
     try:
-        return str(resolved.relative_to(termux_root))
+        return resolved.relative_to(termux_root).as_posix()
     except ValueError:
         return None
 

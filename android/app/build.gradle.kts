@@ -12,6 +12,7 @@ val hermesVersionFile = repoRoot.resolve("hermes_cli/__init__.py")
 val releaseTag = System.getenv("HERMES_RELEASE_TAG").orEmpty().trim()
 val hermesWheelDir = layout.buildDirectory.dir("hermes-wheel")
 val generatedHermesLinuxAssetsDir = layout.buildDirectory.dir("generated/hermes-linux-assets")
+val generatedHermesNativeLibsDir = layout.buildDirectory.dir("generated/hermes-native-libs")
 val skipHermesAndroidLinuxAssets = providers.gradleProperty("skipHermesAndroidLinuxAssets")
     .map { it.equals("true", ignoreCase = true) }
     .getOrElse(false)
@@ -160,11 +161,15 @@ android {
         getByName("main") {
             if (!skipHermesAndroidLinuxAssets) {
                 assets.srcDir(generatedHermesLinuxAssetsDir)
+                jniLibs.srcDir(generatedHermesNativeLibsDir)
             }
         }
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
@@ -227,9 +232,29 @@ val prepareHermesAndroidLinuxAssets = tasks.register<Exec>("prepareHermesAndroid
     )
 }
 
+val prepareHermesAndroidNativeLibs = tasks.register<Exec>("prepareHermesAndroidNativeLibs") {
+    group = "android"
+    description = "Expose embedded Linux launchers through Android's executable native-library directory."
+    dependsOn(prepareHermesAndroidLinuxAssets)
+    val outputDir = generatedHermesNativeLibsDir.get().asFile
+    outputs.dir(outputDir)
+    doFirst {
+        outputDir.mkdirs()
+    }
+    commandLine(
+        resolvedBuildPython(),
+        repoRoot.resolve("scripts/prepare_android_native_libs.py").absolutePath,
+        "--linux-assets-dir",
+        generatedHermesLinuxAssetsDir.get().asFile.absolutePath,
+        "--output-dir",
+        outputDir.absolutePath,
+    )
+}
+
 if (!skipHermesAndroidLinuxAssets) {
     tasks.named("preBuild") {
         dependsOn(prepareHermesAndroidLinuxAssets)
+        dependsOn(prepareHermesAndroidNativeLibs)
     }
 }
 

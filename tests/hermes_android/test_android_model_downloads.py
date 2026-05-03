@@ -153,7 +153,12 @@ def test_native_tool_loop_allows_long_file_generation_prompts():
     native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
 
     assert '.put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)' in native_client
+    assert '.put("temperature", 0.0)' in native_client
+    assert '.put("max_tokens", maxTokens)' in native_client
+    assert '.put("chat_template_kwargs", JSONObject().put("enable_thinking", false))' in native_client
     assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
+    assert 'private const val NATIVE_TOOL_MAX_TOKENS = 512' in native_client
+    assert 'toolCompletionReply(latestToolResult)' in native_client
 
 
 def test_native_tool_loop_has_structured_file_write_tool():
@@ -164,6 +169,14 @@ def test_native_tool_loop_has_structured_file_write_tool():
     assert 'prefer file_write_tool so multiline content is written exactly' in native_client
     assert 'file_write_tool can only write inside the Hermes app workspace' in native_client
     assert 'target.writeText(content, Charsets.UTF_8)' in native_client
+
+
+def test_native_android_shell_tool_prefers_system_commands_over_noexec_prefix():
+    shell_tool = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/NativeAndroidShellTool.kt").read_text(encoding="utf-8")
+
+    assert 'val shellPath = "/system/bin/sh"' in shell_tool
+    assert '"/system/bin",' in shell_tool
+    assert 'state.optString("bin_path")' in shell_tool
 
 
 def test_release_build_recovers_existing_model_files_without_run_as_access():

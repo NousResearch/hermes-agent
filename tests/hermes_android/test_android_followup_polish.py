@@ -104,7 +104,7 @@ def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached
 
     assert 'markExecutableTree(File(prefixDir, "bin"))' in cached_state_block
     assert 'markExecutableTree(File(prefixDir, "libexec"))' in cached_state_block
-    assert 'canLaunchShell(shellPath, homeDir, buildRunEnvironment(state))' in cached_state_block
+    assert 'launchShellProbe(shellPath, homeDir, buildRunEnvironment(state)).ready' in cached_state_block
     assert 'reset(context)' in cached_state_block
 
 

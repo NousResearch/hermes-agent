@@ -26,6 +26,7 @@ Usage in run_agent.py:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import inspect
 from typing import Any, Dict, List, Optional
@@ -34,6 +35,10 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MEMORY_CONTEXT_MAX_CHARS = 24_000
+MIN_MEMORY_CONTEXT_MAX_CHARS = 2_000
+MAX_MEMORY_CONTEXT_MAX_CHARS = 200_000
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +62,41 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def memory_context_max_chars() -> int:
+    """Return the hard cap for recalled memory injected into a prompt."""
+    raw = os.getenv("HERMES_MEMORY_CONTEXT_MAX_CHARS", "").strip()
+    if not raw:
+        return DEFAULT_MEMORY_CONTEXT_MAX_CHARS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid HERMES_MEMORY_CONTEXT_MAX_CHARS=%r; using default %d",
+            raw,
+            DEFAULT_MEMORY_CONTEXT_MAX_CHARS,
+        )
+        return DEFAULT_MEMORY_CONTEXT_MAX_CHARS
+    return max(MIN_MEMORY_CONTEXT_MAX_CHARS, min(value, MAX_MEMORY_CONTEXT_MAX_CHARS))
+
+
+def bound_memory_context(text: str, *, max_chars: int | None = None) -> str:
+    """Sanitize and cap recalled memory before prompt injection.
+
+    External memory systems such as Hindsight can return ranked recall blocks.
+    Hermes preserves that ordering and keeps the highest-ranked prefix when a
+    small local model cannot safely accept the full memory context.
+    """
+    clean = sanitize_context(text).strip()
+    if not clean:
+        return ""
+    limit = max_chars if max_chars is not None else memory_context_max_chars()
+    if limit <= 0 or len(clean) <= limit:
+        return clean
+    marker = f"\n\n[Memory context truncated to {limit} characters to fit the model context budget.]"
+    keep = max(0, limit - len(marker))
+    return clean[:keep].rstrip() + marker
 
 
 class StreamingContextScrubber:
@@ -174,8 +214,8 @@ def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
-    clean = sanitize_context(raw_context)
-    if clean != raw_context:
+    clean = bound_memory_context(raw_context)
+    if sanitize_context(raw_context).strip() != raw_context.strip():
         logger.warning("memory provider returned pre-wrapped context; stripped")
     return (
         "<memory-context>\n"

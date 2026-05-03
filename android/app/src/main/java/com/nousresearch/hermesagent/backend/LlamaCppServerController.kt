@@ -12,9 +12,9 @@ import java.util.concurrent.TimeUnit
 
 object LlamaCppServerController {
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(2, TimeUnit.SECONDS)
-        .writeTimeout(2, TimeUnit.SECONDS)
+        .connectTimeout(750, TimeUnit.MILLISECONDS)
+        .readTimeout(750, TimeUnit.MILLISECONDS)
+        .writeTimeout(750, TimeUnit.MILLISECONDS)
         .build()
 
     @Volatile private var process: Process? = null
@@ -44,16 +44,20 @@ object LlamaCppServerController {
         stop()
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(context)
         if (linuxState.optString("execution_mode") == "android_system_shell") {
+            val fallbackReason = linuxState.optString("fallback_reason").ifBlank {
+                "embedded Linux shell could not be launched"
+            }
             return LocalBackendStatus(
                 backendKind = BackendKind.LLAMA_CPP,
                 started = false,
                 sourceModelPath = modelPath,
-                statusMessage = "llama.cpp is not available in native Android shell mode. Use LiteRT-LM .litertlm models for fully native local inference.",
+                statusMessage = "llama.cpp is not available in native Android shell mode: $fallbackReason. Use LiteRT-LM .litertlm models for fully native local inference.",
             )
         }
         val bashPath = linuxState.optString("bash_path")
         val prefixPath = linuxState.optString("prefix_path")
         val homePath = linuxState.optString("home_path")
+        val llamaServerPath = linuxState.optString("native_llama_server_path").ifBlank { "llama-server" }
         if (bashPath.isBlank() || prefixPath.isBlank()) {
             return LocalBackendStatus(
                 backendKind = BackendKind.LLAMA_CPP,
@@ -64,7 +68,9 @@ object LlamaCppServerController {
         }
 
         val command = buildString {
-            append("exec llama-server ")
+            append("exec ")
+            append(shellQuote(llamaServerPath))
+            append(" ")
             append("--model ")
             append(shellQuote(modelPath))
             append(" --host 127.0.0.1 --port ")
@@ -152,7 +158,7 @@ object LlamaCppServerController {
     }
 
     private fun waitUntilReady(port: Int): Boolean {
-        repeat(80) {
+        repeat(360) {
             if (checkReady(port)) {
                 return true
             }

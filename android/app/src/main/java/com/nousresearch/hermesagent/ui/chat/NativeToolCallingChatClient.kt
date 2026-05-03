@@ -59,42 +59,48 @@ class NativeToolCallingChatClient(
             sessionId = sessionId,
             messages = messages,
             includeTools = true,
+            maxTokens = NATIVE_TOOL_MAX_TOKENS,
         )
 
-        repeat(MAX_TOOL_ROUNDS) {
-            if (assistant.toolCalls.isEmpty()) {
-                val content = assistant.content.ifBlank {
-                    latestToolResult.ifBlank { "Done." }
-                }
-                return Result(content = content, executedToolCalls = executedToolCalls)
+        if (assistant.toolCalls.isEmpty()) {
+            val content = assistant.content.ifBlank {
+                latestToolResult.ifBlank { "Done." }
             }
+            return Result(content = content, executedToolCalls = executedToolCalls)
+        }
 
-            messages.put(assistant.toJsonMessage())
-            assistant.toolCalls.forEach { toolCall ->
-                val toolResult = executeToolCall(toolCall)
-                executedToolCalls += 1
-                latestToolResult = toolResult
-                messages.put(
-                    JSONObject()
-                        .put("role", "tool")
-                        .put("tool_call_id", toolCall.id)
-                        .put("name", toolCall.name)
-                        .put("content", toolResult)
-                )
-            }
-            assistant = postChatCompletion(
-                normalizedBaseUrl = normalizedBaseUrl,
-                modelName = modelName,
-                sessionId = sessionId,
-                messages = messages,
-                includeTools = true,
+        messages.put(assistant.toJsonMessage())
+        assistant.toolCalls.forEach { toolCall ->
+            val toolResult = executeToolCall(toolCall)
+            executedToolCalls += 1
+            latestToolResult = toolResult
+            messages.put(
+                JSONObject()
+                    .put("role", "tool")
+                    .put("tool_call_id", toolCall.id)
+                    .put("name", toolCall.name)
+                    .put("content", toolResult)
             )
         }
+        return Result(content = toolCompletionReply(latestToolResult), executedToolCalls = executedToolCalls)
 
-        val content = assistant.content.ifBlank {
-            latestToolResult.ifBlank { "Tool call completed." }
+    }
+
+    private fun toolCompletionReply(toolResult: String): String {
+        val parsed = runCatching { JSONObject(toolResult) }.getOrNull() ?: return toolResult.ifBlank { "Tool call completed." }
+        val output = parsed.optString("output").trim()
+        if (output.isNotBlank()) {
+            return output
         }
-        return Result(content = content, executedToolCalls = executedToolCalls)
+        val error = parsed.optString("error").trim()
+        if (parsed.optInt("exit_code", 0) != 0 && error.isNotBlank()) {
+            return error
+        }
+        val path = parsed.optString("path").trim()
+        if (path.isNotBlank()) {
+            return "Tool call completed: $path"
+        }
+        return toolResult.ifBlank { "Tool call completed." }
     }
 
     private fun postChatCompletion(
@@ -103,11 +109,15 @@ class NativeToolCallingChatClient(
         sessionId: String,
         messages: JSONArray,
         includeTools: Boolean,
+        maxTokens: Int,
     ): AssistantMessage {
         val payload = JSONObject()
             .put("model", modelName)
             .put("stream", false)
+            .put("temperature", 0.0)
+            .put("max_tokens", maxTokens)
             .put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)
+            .put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
             .put("messages", messages)
         if (includeTools) {
             payload.put("tools", toolSpecs())
@@ -429,9 +439,9 @@ class NativeToolCallingChatClient(
 
     private companion object {
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
-        private const val MAX_TOOL_ROUNDS = 2
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
+        private const val NATIVE_TOOL_MAX_TOKENS = 512
         private const val MAX_TOOL_RESULT_CHARS = 12_000
     }
 }

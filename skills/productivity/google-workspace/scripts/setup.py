@@ -131,7 +131,7 @@ def _ensure_deps():
 
 
 def check_auth_live():
-    """Check auth with a real API call to detect disabled_client/account issues.""""
+    """Check auth with a real API call to detect disabled_client/account issues."""
     if not check_auth():
         return False
     _ensure_deps()

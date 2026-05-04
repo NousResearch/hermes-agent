@@ -120,7 +120,19 @@ SEND_MESSAGE_SCHEMA = {
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
         "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "to the home channel without listing first.\n\n"
+        "MEDIA ATTACHMENTS (images / videos / audio / voice):\n"
+        "This tool CAN send media files — do not tell the user it is text-only.\n"
+        "Embed local files in the `message` using either form:\n"
+        "  • `MEDIA:/absolute/path/to/file.png` tag anywhere in the message, OR\n"
+        "  • a bare absolute path like `/Users/me/pic.jpg` (auto-detected).\n"
+        "Supported extensions: .png .jpg .jpeg .gif .webp (image);\n"
+        ".mp4 .mov .avi .mkv .webm (video); .mp3 .wav .m4a .ogg .opus (audio).\n"
+        "Add `[[audio_as_voice]]` to deliver audio as a voice message where "
+        "the platform supports it (DingTalk/Telegram/Feishu/WhatsApp/Signal).\n"
+        "Multiple attachments: include multiple MEDIA tags or paths.\n"
+        "Works on: DingTalk, Feishu, Telegram, Discord, Slack, WhatsApp, Signal, "
+        "WeCom, Weixin, BlueBubbles, Matrix, QQBot, Email."
     ),
     "parameters": {
         "type": "object",
@@ -136,7 +148,14 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": (
+                    "The message body. Plain text, markdown, or text with "
+                    "embedded media. To attach a local file, include either "
+                    "`MEDIA:/absolute/path/to/file.ext` OR a bare absolute "
+                    "path (e.g. `/Users/me/photo.jpg`) anywhere in the string. "
+                    "The file is uploaded and sent as a native attachment "
+                    "(image/video/audio) by the platform adapter."
+                )
             }
         },
         "required": []
@@ -241,7 +260,16 @@ def _handle_send(args):
 
     from gateway.platforms.base import BasePlatformAdapter
 
+    # Two-stage media extraction (mirrors what inbound-reply rendering does):
+    #   1. `MEDIA:<path>` tags + `[[audio_as_voice]]` directive
+    #   2. bare absolute paths (e.g. "/Users/me/pic.jpg") auto-detected
+    #      outside of fenced code blocks.
+    # Stage 2 matters for the common case where the agent just pastes the
+    # file path it already knows (what the user asked about in this flow).
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    bare_paths, cleaned_message = BasePlatformAdapter.extract_local_files(cleaned_message)
+    for _p in bare_paths:
+        media_files.append((_p, False))
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -592,7 +620,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, feishu, and dingtalk; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -600,7 +628,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, feishu, and dingtalk"
         )
 
     last_result = None
@@ -621,10 +649,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
-        elif platform == Platform.DINGTALK:
-            result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
@@ -1472,23 +1496,79 @@ async def _send_homeassistant(token, extra, chat_id, message):
         return _error(f"Home Assistant send failed: {e}")
 
 
-async def _send_dingtalk(extra, chat_id, message):
-    """Send via DingTalk robot webhook.
+async def _send_dingtalk(extra, chat_id, message, media_files=None):
+    """Send via DingTalk Robot OpenAPI (proactive), matching the Feishu path.
 
-    Note: The gateway's DingTalk adapter uses per-session webhook URLs from
-    incoming messages (dingtalk-stream SDK).  For cross-platform send_message
-    delivery we use a static robot webhook URL instead, which must be
-    configured via ``DINGTALK_WEBHOOK_URL`` env var or ``webhook_url`` in the
-    platform's extra config.
+    Routes on ``chat_id`` shape:
+    - ``cidXXXX==`` (openConversationId) → ``/v1.0/robot/groupMessages/send``
+    - plain staffId                      → ``/v1.0/robot/oToMessages/batchSend``
+
+    Falls back to the legacy ``DINGTALK_WEBHOOK_URL`` static robot webhook
+    ONLY when AppKey/Secret are not configured.
+
+    ``media_files`` is a list of ``(local_path, is_voice_hint)`` tuples.
     """
     try:
         import httpx
     except ImportError:
         return {"error": "httpx not installed"}
+
+    client_id = extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID", "")
+    client_secret = extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET", "")
+    robot_code = extra.get("robot_code") or client_id
+
+    if client_id and client_secret:
+        try:
+            from gateway.platforms.dingtalk import dingtalk_send_proactive
+        except ImportError:
+            return {"error": "DingTalk adapter not available"}
+        try:
+            result = await dingtalk_send_proactive(
+                client_id=client_id,
+                client_secret=client_secret,
+                robot_code=robot_code,
+                chat_id=chat_id,
+                content=message,
+                media_files=media_files,
+            )
+        except Exception as e:
+            return _error(f"DingTalk send failed: {e}")
+        if result.get("error") and not result.get("success"):
+            return _error(result["error"])
+        payload = {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": chat_id,
+            "message_id": result.get("request_id", ""),
+            "route": result.get("route", ""),
+        }
+        media_results = result.get("media_results") or []
+        failed_media = [r for r in media_results if r.get("error")]
+        if failed_media:
+            payload["warnings"] = [
+                f"Media delivery failure: {m.get('error')}" for m in failed_media
+            ]
+        if media_results:
+            payload["media_results"] = media_results
+        return payload
+
+    # Legacy single-group custom robot webhook fallback.
+    webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
+    if not webhook_url:
+        return {
+            "error": (
+                "DingTalk not configured. Set DINGTALK_CLIENT_ID + "
+                "DINGTALK_CLIENT_SECRET (Robot OpenAPI, routed by chat_id) or "
+                "DINGTALK_WEBHOOK_URL (legacy single-group custom robot)."
+            )
+        }
+    warnings = []
+    if media_files:
+        warnings.append(
+            "Media attachments omitted for legacy webhook mode; "
+            "configure DINGTALK_CLIENT_ID + DINGTALK_CLIENT_SECRET for media support"
+        )
     try:
-        webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
-        if not webhook_url:
-            return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 webhook_url,
@@ -1498,7 +1578,15 @@ async def _send_dingtalk(extra, chat_id, message):
             data = resp.json()
             if data.get("errcode", 0) != 0:
                 return _error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
-        return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
+        payload = {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": chat_id,
+            "route": "webhook-legacy",
+        }
+        if warnings:
+            payload["warnings"] = warnings
+        return payload
     except Exception as e:
         return _error(f"DingTalk send failed: {e}")
 

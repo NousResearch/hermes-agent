@@ -1,0 +1,36 @@
+# Draft fdroiddata metadata for Hermes Agent.
+# Copy this to fdroiddata/metadata/com.nousresearch.hermesagent.yml, then
+# remove Disabled only after the dependency and reproducibility audit passes.
+
+Disabled: Needs F-Droid review of Chaquopy, LiteRT-LM, generated native assets, and pip/Maven dependency licensing before official submission.
+Categories:
+  - Internet
+  - Science & Education
+License: MIT
+AuthorName: Nous Research
+WebSite: https://nousresearch.com/
+SourceCode: https://github.com/adybag14-cyber/hermes-agent
+IssueTracker: https://github.com/adybag14-cyber/hermes-agent/issues
+Changelog: https://github.com/adybag14-cyber/hermes-agent/releases
+
+AutoName: Hermes Agent
+RepoType: git
+Repo: https://github.com/adybag14-cyber/hermes-agent.git
+
+Builds:
+  - versionName: 0.13.9
+    versionCode: 130990
+    commit: v0.13.9
+    subdir: android
+    gradle:
+      - yes
+    prebuild:
+      - echo "Review generated Android Linux assets and Python packaging before enabling this recipe."
+    rm:
+      - artifacts
+      - build
+
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags
+CurrentVersion: 0.13.9
+CurrentVersionCode: 130990

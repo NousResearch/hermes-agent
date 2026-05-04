@@ -1,0 +1,5 @@
+Hermes Agent is a mobile-first AI agent app from Nous Research. It can run local on-device models, connect to remote OpenAI-compatible providers, use chat, voice, files, and native Android tool bridges, and keep model downloads resumable through Android DownloadManager.
+
+The Android app focuses on local runtime setup for tested small mobile models. Settings offers one-tap downloads for Qwen GGUF and Gemma LiteRT-LM models, marks completed models as preferred, and starts the local Hermes runtime automatically when a compatible file is ready.
+
+Hermes also includes a remote fallback provider configuration for users who want API-backed chat while local models are downloading or unavailable.

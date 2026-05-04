@@ -18,7 +18,7 @@ import os
 import tempfile
 import time
 from typing import Any, Mapping, Optional
-from utils import atomic_replace
+from hermes_cli.shared_utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 

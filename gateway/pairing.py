@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_dir
-from utils import atomic_replace
+from hermes_cli.shared_utils import atomic_replace
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion

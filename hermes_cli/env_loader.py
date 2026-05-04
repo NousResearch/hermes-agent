@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from utils import atomic_replace
+from hermes_cli.shared_utils import atomic_replace
 
 
 def _parse_env_lines(text: str) -> list[tuple[str, str]]:

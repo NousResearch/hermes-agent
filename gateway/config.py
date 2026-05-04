@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
-from utils import is_truthy_value
+from hermes_cli.shared_utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 

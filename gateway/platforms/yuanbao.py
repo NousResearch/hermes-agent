@@ -1587,7 +1587,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             if _should_set:
                 try:
                     from hermes_constants import get_hermes_home
-                    from utils import atomic_yaml_write
+                    from hermes_cli.shared_utils import atomic_yaml_write
                     import yaml
 
                     _home = get_hermes_home()

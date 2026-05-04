@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
-from utils import atomic_json_write
+from hermes_cli.shared_utils import atomic_json_write
 
 if sys.platform == "win32":
     import msvcrt

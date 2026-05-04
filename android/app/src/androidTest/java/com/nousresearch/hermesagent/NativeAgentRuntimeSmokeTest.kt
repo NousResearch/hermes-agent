@@ -44,7 +44,10 @@ class NativeAgentRuntimeSmokeTest {
             executionMode == "embedded_termux" || executionMode == "android_system_shell",
         )
         if (executionMode == "embedded_termux") {
-            assertTrue("shell must be embedded bash", shellPath.endsWith("/bin/bash"))
+            assertTrue(
+                "shell must be APK-packaged embedded bash",
+                shellPath.endsWith("/libhermes_android_bash.so") || shellPath.endsWith("/bin/bash"),
+            )
         } else {
             assertEquals("/system/bin/sh", shellPath)
         }
@@ -67,7 +70,7 @@ class NativeAgentRuntimeSmokeTest {
 
         assertTrue("command suite process timed out", process.waitFor(20, TimeUnit.SECONDS))
         val output = process.inputStream.bufferedReader().readText()
-        assertEquals("command suite process exit", 0, process.exitValue())
+        assertEquals("command suite process exit: $output", 0, process.exitValue())
         assertTrue(output, output.contains("hermes-native-ok"))
         assertTrue(output, output.contains("/ls"))
         assertEquals("hermes-native-ok", probeFile.readText())

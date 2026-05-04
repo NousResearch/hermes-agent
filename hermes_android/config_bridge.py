@@ -3,6 +3,10 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from hermes_android.python_path import prefer_hermes_package_root
+
+prefer_hermes_package_root()
+
 from hermes_cli.config import load_config, save_config
 
 

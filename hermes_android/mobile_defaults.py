@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_android.python_path import prefer_hermes_package_root
+
+prefer_hermes_package_root()
+
 from hermes_cli.config import load_config, save_config
 from toolsets import validate_toolset
 

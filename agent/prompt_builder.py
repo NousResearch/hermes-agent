@@ -24,7 +24,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
-from utils import atomic_json_write
+from hermes_cli.shared_utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 

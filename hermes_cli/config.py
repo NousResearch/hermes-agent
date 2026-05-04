@@ -355,7 +355,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home  # noqa: F811,E402
-from utils import atomic_replace
+from hermes_cli.shared_utils import atomic_replace
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -4450,7 +4450,7 @@ def save_config(config: Dict[str, Any]):
         if is_managed():
             managed_error("save configuration")
             return
-        from utils import atomic_yaml_write
+        from hermes_cli.shared_utils import atomic_yaml_write
 
         ensure_hermes_home()
         config_path = get_config_path()
@@ -5181,7 +5181,7 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    from utils import atomic_yaml_write
+    from hermes_cli.shared_utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.

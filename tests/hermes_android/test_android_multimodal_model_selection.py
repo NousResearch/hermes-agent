@@ -19,23 +19,33 @@ def test_android_embedded_python_runtime_is_upgraded_to_312_in_ci_and_gradle():
     assert 'command -v python3.12' in release_workflow
 
 
-def test_settings_model_selection_uses_real_dropdown_card_with_gemma3_and_gemma4_options():
+def test_settings_model_selection_uses_one_tap_cards_without_dropdowns():
     settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
     presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
+    downloads = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
-    assert 'ModelSelectionCard(' in settings
-    assert 'ExposedDropdownMenuBox(expanded = expanded' in settings
-    assert 'HermesModelDropdown' in settings
+    assert 'ExposedDropdownMenuBox' not in settings
+    assert 'DropdownMenu' not in settings
+    assert 'HermesModelDropdown' not in settings
+    assert 'HermesProviderDropdown' not in settings
+    assert 'RemoteFallbackCard(' in settings
     assert 'localizedOnDeviceSummary(summary, strings)' in settings
     assert 'trimmed.startsWith("No preferred local model")' in settings
-    assert 'ProviderPresets.modelSelections(providerId)' in settings
+    assert 'LocalModelDownloadsSection(' in settings
+    assert 'recommendedModelPresets' in downloads_section
+    assert 'startRecommendedModelDownload(' in downloads
+    assert 'Gemma 4 E2B (LiteRT-LM)' in downloads
+    assert 'Qwen3.5 0.8B Q4_K_M (GGUF)' in downloads
+    assert 'bartowski/Qwen_Qwen3.5-0.8B-GGUF' in downloads
     assert 'Gemma 4 E2B (LiteRT-LM)' in presets
     assert 'Gemma 4 E4B (LiteRT-LM)' in presets
     assert 'Gemma 3 1B IT INT4 (LiteRT-LM)' in presets
     assert 'Gemma 3 4B IT Vision (.task)' in presets
     assert 'Gemma 3n E2B IT Vision (LiteRT-LM)' in presets
-    assert 'modelSelectionTitle' in strings
+    assert 'quickLocalModelsTitle' in strings
+    assert 'downloadAndStart' in strings
     assert 'first-class local Gemma 4, Gemma 3, and Gemma 3n models' in strings
     assert 'Aún no hay un modelo local compatible seleccionado' in strings
 

@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from hermes_android.python_path import prefer_hermes_package_root
+
+prefer_hermes_package_root()
+
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_android.bootstrap import bootstrap_android_runtime

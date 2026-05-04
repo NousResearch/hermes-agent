@@ -41,6 +41,10 @@ object HermesLinuxSubsystemBridge {
                 reset(context)
                 return@let
             }
+            if (state.optString("execution_mode") == SYSTEM_SHELL_MODE) {
+                reset(context)
+                return@let
+            }
             val shellPath = state.optString("shell_path", state.optString("bash_path"))
             val bashFile = File(state.optString("bash_path", shellPath))
             val prefixDirPath = state.optString("prefix_path").ifBlank {
@@ -149,7 +153,7 @@ object HermesLinuxSubsystemBridge {
         return mapOf(
             "PREFIX" to prefixPath,
             "TERMUX_PREFIX" to prefixPath,
-            "PATH" to listOf(binPath, "/system/bin", "/system/xbin", System.getenv("PATH").orEmpty())
+            "PATH" to listOf("/system/bin", "/system/xbin", System.getenv("PATH").orEmpty())
                 .filter { it.isNotBlank() }
                 .distinct()
                 .joinToString(":"),

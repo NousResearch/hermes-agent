@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from utils import safe_json_loads
+from hermes_cli.shared_utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
 
 

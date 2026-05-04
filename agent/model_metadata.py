@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from utils import base_url_host_matches, base_url_hostname
+from hermes_cli.shared_utils import base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 

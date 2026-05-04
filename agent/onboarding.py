@@ -152,7 +152,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
     """
     try:
         import yaml
-        from utils import atomic_yaml_write
+        from hermes_cli.shared_utils import atomic_yaml_write
     except Exception as e:  # pragma: no cover — dependency issue
         logger.debug("onboarding: failed to import yaml/utils: %s", e)
         return False

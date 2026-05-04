@@ -75,6 +75,7 @@ def test_android_linux_subsystem_retries_after_app_update():
     assert 'put("app_version_code", currentAppVersionCode)' in bridge
     assert 'state.optString("asset_manifest_sha256") != currentAssetFingerprint' in bridge
     assert 'put("asset_manifest_sha256", currentAssetFingerprint)' in bridge
+    assert 'state.optString("execution_mode") == SYSTEM_SHELL_MODE' in bridge
     assert "private fun appVersionCode(context: Context): Long" in bridge
 
 

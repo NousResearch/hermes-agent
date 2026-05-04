@@ -27,7 +27,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from hermes_cli.shared_utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
@@ -750,7 +750,7 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    from utils import atomic_yaml_write
+                    from hermes_cli.shared_utils import atomic_yaml_write
                     atomic_yaml_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1

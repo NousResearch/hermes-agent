@@ -39,7 +39,7 @@ from toolsets import TOOLSETS
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import base_url_hostname, is_truthy_value
+from hermes_cli.shared_utils import base_url_hostname, is_truthy_value
 
 
 # Tools that children must never have access to

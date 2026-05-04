@@ -33,7 +33,7 @@ from hermes_cli.auth import (
 from hermes_cli.chatgpt_web import resolve_chatgpt_web_runtime_credentials
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname
+from hermes_cli.shared_utils import base_url_host_matches, base_url_hostname
 
 
 def _normalize_custom_provider_name(value: str) -> str:

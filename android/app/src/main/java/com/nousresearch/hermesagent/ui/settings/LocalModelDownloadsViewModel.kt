@@ -38,6 +38,17 @@ data class LocalModelDownloadItemUi(
     val canOpenSystemDownloads: Boolean,
 )
 
+data class RecommendedLocalModelPreset(
+    val id: String,
+    val title: String,
+    val description: String,
+    val repoOrUrl: String,
+    val filePath: String,
+    val revision: String = "main",
+    val runtimeFlavor: String,
+    val testedLabel: String,
+)
+
 data class LocalModelDownloadsUiState(
     val repoOrUrl: String = "",
     val filePath: String = "",
@@ -47,6 +58,7 @@ data class LocalModelDownloadsUiState(
     val inspectionStatus: String = "",
     val candidateSummary: String = "",
     val candidateRamWarning: String = "",
+    val pendingAutoStartRecordId: String = "",
     val downloads: List<LocalModelDownloadItemUi> = emptyList(),
 )
 
@@ -157,6 +169,63 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                     "Saved Hugging Face token for private or gated model downloads"
                 },
             )
+        }
+    }
+
+    fun startRecommendedModelDownload(presetId: String, dataSaverMode: Boolean) {
+        val preset = recommendedModelPresets.firstOrNull { it.id == presetId } ?: return
+        val context = getApplication<Application>()
+        _uiState.update {
+            it.copy(
+                repoOrUrl = preset.repoOrUrl,
+                filePath = preset.filePath,
+                revision = preset.revision,
+                runtimeFlavor = preset.runtimeFlavor,
+                inspectionStatus = "Preparing ${preset.title}…",
+                candidateSummary = preset.description,
+                candidateRamWarning = "",
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val refreshed = HermesModelDownloadManager.refreshDownloads(context, downloadStore)
+                    val existing = refreshed.firstOrNull { record -> record.matchesPreset(preset) && record.status == "completed" }
+                    if (existing != null) {
+                        HermesModelDownloadManager.setPreferredDownload(downloadStore, existing.id)
+                        existing
+                    } else {
+                        HermesModelDownloadManager.enqueueDownload(
+                            context = context,
+                            store = downloadStore,
+                            draft = preset.toDraft(),
+                            hfToken = _uiState.value.huggingFaceToken,
+                            dataSaverMode = dataSaverMode,
+                        )
+                    }
+                }
+            }.onSuccess { record ->
+                refreshDownloads()
+                _uiState.update {
+                    it.copy(
+                        pendingAutoStartRecordId = record.id,
+                        inspectionStatus = if (record.status == "completed") {
+                            "${record.title} is already downloaded. Starting runtime…"
+                        } else {
+                            "Queued ${record.title}; Hermes will start it when Android finishes the download."
+                        },
+                        candidateSummary = it.candidateSummary.ifBlank { record.statusMessage },
+                        candidateRamWarning = record.ramWarning,
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        inspectionStatus = error.message ?: error.javaClass.simpleName,
+                        pendingAutoStartRecordId = "",
+                    )
+                }
+            }
         }
     }
 
@@ -299,6 +368,17 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         _uiState.update { it.copy(inspectionStatus = "Marked this model as the preferred local runtime candidate") }
     }
 
+    fun promoteDownloadedModelForAutoStart(recordId: String) {
+        HermesModelDownloadManager.setPreferredDownload(downloadStore, recordId)
+        refreshDownloads()
+        _uiState.update {
+            it.copy(
+                pendingAutoStartRecordId = "",
+                inspectionStatus = "Preferred model is ready. Starting Hermes runtime…",
+            )
+        }
+    }
+
     private fun candidateSummary(context: Application, inspection: ModelDownloadInspection): String {
         val resumeText = if (inspection.supportsResume) {
             "HTTP range resume is available"
@@ -321,6 +401,25 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                 append(inspection.compatibilityHint)
             }
         }
+    }
+
+    private fun RecommendedLocalModelPreset.toDraft(): ModelDownloadDraft {
+        return ModelDownloadDraft(
+            repoOrUrl = repoOrUrl,
+            filePath = filePath,
+            revision = revision,
+            runtimeFlavor = runtimeFlavor,
+        )
+    }
+
+    private fun LocalModelDownloadRecord.matchesPreset(preset: RecommendedLocalModelPreset): Boolean {
+        val exactFileMatches = preset.filePath.isNotBlank() &&
+            (filePath.equals(preset.filePath, ignoreCase = true) ||
+                destinationFileName.equals(preset.filePath.substringAfterLast('/'), ignoreCase = true) ||
+                destinationPath.substringAfterLast('/').equals(preset.filePath.substringAfterLast('/'), ignoreCase = true))
+        val repoMatches = repoOrUrl.equals(preset.repoOrUrl, ignoreCase = true)
+        return runtimeFlavor.equals(preset.runtimeFlavor, ignoreCase = true) &&
+            (exactFileMatches || repoMatches)
     }
 
     private fun List<LocalModelDownloadRecord>.toUiItems(
@@ -357,5 +456,37 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                 canOpenSystemDownloads = transientStatus,
             )
         }
+    }
+
+    companion object {
+        val recommendedModelPresets = listOf(
+            RecommendedLocalModelPreset(
+                id = "qwen35-08b-q4km-gguf",
+                title = "Qwen3.5 0.8B Q4_K_M (GGUF)",
+                description = "Small GGUF model validated on the physical Hermes test phone for visible chat replies, file creation, deletion, and native tool calling.",
+                repoOrUrl = "bartowski/Qwen_Qwen3.5-0.8B-GGUF",
+                filePath = "Qwen_Qwen3.5-0.8B-Q4_K_M.gguf",
+                runtimeFlavor = "GGUF",
+                testedLabel = "Tested phone tool-calling",
+            ),
+            RecommendedLocalModelPreset(
+                id = "gemma4-e2b-litert-lm",
+                title = "Gemma 4 E2B (LiteRT-LM)",
+                description = "First-class Gemma 4 local runtime target for Hermes mobile chat, image-capable runtime plumbing, and Android agent tools.",
+                repoOrUrl = "litert-community/gemma-4-E2B-it-litert-lm",
+                filePath = "",
+                runtimeFlavor = "LiteRT-LM",
+                testedLabel = "Gemma 4 mobile path",
+            ),
+            RecommendedLocalModelPreset(
+                id = "gemma3-1b-litert-lm",
+                title = "Gemma 3 1B IT INT4 (LiteRT-LM)",
+                description = "Small Gemma 3 compatibility target for lower-memory devices and fast local runtime bring-up.",
+                repoOrUrl = "litert-community/Gemma3-1B-IT",
+                filePath = "",
+                runtimeFlavor = "LiteRT-LM",
+                testedLabel = "Small compatibility path",
+            ),
+        )
     }
 }

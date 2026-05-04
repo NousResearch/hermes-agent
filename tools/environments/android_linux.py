@@ -1,8 +1,8 @@
 """Android shell execution environment for the native Android app.
 
-Android 15 and recent target SDKs do not allow executing binaries copied into
-app-private writable storage. This backend therefore runs commands through the
-platform shell and toybox command set instead of a Termux-style extracted bash.
+The Kotlin bridge prefers APK-packaged executable native launchers for the
+embedded Linux suite, then falls back to Android's platform shell if that probe
+fails. This backend mirrors whichever mode the bridge selected.
 """
 
 from __future__ import annotations
@@ -43,8 +43,11 @@ class AndroidLinuxEnvironment(BaseEnvironment):
             or "/system/bin/sh"
         )
         self.bin_path = os.environ.get("HERMES_ANDROID_LINUX_BIN", "").strip()
+        self.lib_path = os.environ.get("HERMES_ANDROID_LINUX_LIB", "").strip()
+        self.native_library_dir = os.environ.get("HERMES_ANDROID_NATIVE_LIB", "").strip()
         self.home_path = os.environ.get("HERMES_ANDROID_LINUX_HOME", "").strip()
         self.tmp_path = os.environ.get("HERMES_ANDROID_LINUX_TMP", "").strip()
+        self.execution_mode = os.environ.get("HERMES_ANDROID_EXECUTION_MODE", "android_system_shell").strip()
 
         if not self.shell_path:
             raise ValueError("Android shell environment is not configured")
@@ -68,7 +71,11 @@ class AndroidLinuxEnvironment(BaseEnvironment):
         path_parts = [system_path]
         if existing_path:
             path_parts.append(existing_path)
-        if self.bin_path and run_env.get("HERMES_ANDROID_ALLOW_PREFIX_BIN") == "1":
+        if (
+            self.bin_path
+            and run_env.get("HERMES_ANDROID_ALLOW_PREFIX_BIN") == "1"
+            and self.bin_path not in path_parts
+        ):
             path_parts.append(self.bin_path)
         run_env["PATH"] = ":".join(path_parts)
 
@@ -77,7 +84,13 @@ class AndroidLinuxEnvironment(BaseEnvironment):
         run_env["HOME"] = self.home_path or self.prefix_path
         run_env["TMPDIR"] = self.tmp_path or self.get_temp_dir()
         run_env["HERMES_ANDROID_SHELL"] = self.shell_path
-        run_env["HERMES_ANDROID_EXECUTION_MODE"] = "android_system_shell"
+        run_env["HERMES_ANDROID_EXECUTION_MODE"] = self.execution_mode or "android_system_shell"
+        ld_parts = [
+            self.native_library_dir,
+            self.lib_path,
+            run_env.get("LD_LIBRARY_PATH", ""),
+        ]
+        run_env["LD_LIBRARY_PATH"] = ":".join(item for item in ld_parts if item)
         run_env.setdefault("TERM", "xterm-256color")
         run_env.setdefault("LANG", "C.UTF-8")
         return run_env

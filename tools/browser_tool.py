@@ -67,7 +67,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
+from hermes_cli.shared_utils import is_truthy_value
 from hermes_cli.config import cfg_get
 
 try:

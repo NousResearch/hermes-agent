@@ -58,12 +58,16 @@ def test_settings_backend_toggles_sync_with_download_runtime_target_controls():
 
     assert 'selectedBackend = uiState.onDeviceBackend' in settings
     assert 'onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor' in settings
+    assert 'onCompletedDownloadReady = viewModel::startLocalRuntimeForFlavor' in settings
     assert 'LaunchedEffect(selectedBackend)' in downloads_section
-    assert 'effectiveRuntimeFlavor' in downloads_section
-    assert 'onRuntimeFlavorSelected("GGUF")' in downloads_section
-    assert 'onRuntimeFlavorSelected("LiteRT-LM")' in downloads_section
+    assert 'pendingAutoStartRecordId' in downloads_section
+    assert 'onRuntimeFlavorSelected(completed.runtimeFlavor)' in downloads_section
+    assert 'onCompletedDownloadReady(completed.runtimeFlavor)' in downloads_section
     assert 'fun syncOnDeviceBackendWithRuntimeFlavor(' in settings_view_model
+    assert 'fun startLocalRuntimeForFlavor(' in settings_view_model
     assert 'fun syncSelectedBackend(' in downloads_view_model
+    assert 'fun startRecommendedModelDownload(' in downloads_view_model
+    assert 'fun promoteDownloadedModelForAutoStart(' in downloads_view_model
     assert 'AppSettingsStore(application)' in downloads_view_model
 
 
@@ -75,12 +79,16 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
     assert 'strings.localDownloadsExampleGuidance()' in downloads_section
-    assert 'runtimeFlavorOverride = effectiveRuntimeFlavor' in downloads_section
+    assert 'strings.quickLocalModelsTitle()' in downloads_section
+    assert 'strings.downloadAndStart()' in downloads_section
     assert 'inspectionStatus = ""' in downloads_view_model
     assert 'candidateSummary = ""' in downloads_view_model
     assert 'runtimeFlavorOverride' in downloads_view_model
+    assert 'RecommendedLocalModelPreset' in downloads_view_model
+    assert 'qwen35-08b-q4km-gguf' in downloads_view_model
     assert 'restartDownloadOnMobileData(' in downloads_view_model
     assert 'Enter any Hugging Face repo' in strings
+    assert 'One-tap local models' in strings
     assert 'selectRepoFileForDownload(' in download_manager
     assert 'findCompatibleRepoFile' in download_manager
     assert 'findFallbackRepoFile' in download_manager
@@ -99,13 +107,45 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
 
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt").read_text(encoding="utf-8")
+    linux_subsystem = (REPO_ROOT / "hermes_android/linux_subsystem.py").read_text(encoding="utf-8")
+    android_environment = (REPO_ROOT / "tools/environments/android_linux.py").read_text(encoding="utf-8")
 
     cached_state_block = bridge.split('readState(context)?.let { state ->', 1)[1]
 
+    assert 'state.optString("execution_mode") == SYSTEM_SHELL_MODE' in cached_state_block
     assert 'markExecutableTree(File(prefixDir, "bin"))' in cached_state_block
     assert 'markExecutableTree(File(prefixDir, "libexec"))' in cached_state_block
     assert 'launchShellProbe(shellPath, homeDir, buildRunEnvironment(state)).ready' in cached_state_block
     assert 'reset(context)' in cached_state_block
+    assert '"HERMES_ANDROID_NATIVE_LIB"' in linux_subsystem
+    assert '"HERMES_ANDROID_ALLOW_PREFIX_BIN": ""' in linux_subsystem
+    assert '"LD_LIBRARY_PATH": ld_library_path' in linux_subsystem
+    assert 'self.execution_mode = os.environ.get("HERMES_ANDROID_EXECUTION_MODE", "android_system_shell").strip()' in android_environment
+    assert 'run_env["LD_LIBRARY_PATH"]' in android_environment
+    assert 'path_parts = [system_path]' in android_environment
+
+
+def test_android_python_import_path_prefers_hermes_utils_before_chaquopy_requirements():
+    python_path = (REPO_ROOT / "hermes_android/python_path.py").read_text(encoding="utf-8")
+    config_bridge = (REPO_ROOT / "hermes_android/config_bridge.py").read_text(encoding="utf-8")
+    server = (REPO_ROOT / "hermes_android/server.py").read_text(encoding="utf-8")
+    bundled_assets = (REPO_ROOT / "hermes_android/bundled_assets.py").read_text(encoding="utf-8")
+    gateway_config = (REPO_ROOT / "gateway/config.py").read_text(encoding="utf-8")
+    shared_utils = (REPO_ROOT / "hermes_cli/shared_utils.py").read_text(encoding="utf-8")
+    native_smoke = (
+        REPO_ROOT
+        / "android/app/src/androidTest/java/com/nousresearch/hermesagent/NativeAgentRuntimeSmokeTest.kt"
+    ).read_text(encoding="utf-8")
+
+    assert "def prefer_hermes_package_root()" in python_path
+    assert 'not hasattr(loaded_utils, "atomic_replace")' in python_path
+    assert 'sys.modules.pop("utils", None)' in python_path
+    assert "prefer_hermes_package_root()" in config_bridge
+    assert "prefer_hermes_package_root()" in server
+    assert "prefer_hermes_package_root()" in bundled_assets
+    assert "def atomic_replace(" in shared_utils
+    assert "from hermes_cli.shared_utils import is_truthy_value" in gateway_config
+    assert 'shellPath.endsWith("/libhermes_android_bash.so")' in native_smoke
 
 
 def test_hugging_face_inspect_download_flow_runs_off_main_thread_and_supports_repo_page_resolution():

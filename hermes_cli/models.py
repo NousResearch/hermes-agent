@@ -3264,7 +3264,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
 def _save_ollama_cloud_cache(models: list[str]) -> None:
     """Persist the merged Ollama Cloud model list to disk."""
     try:
-        from utils import atomic_json_write
+        from hermes_cli.shared_utils import atomic_json_write
         cache_path = _ollama_cloud_cache_path()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)

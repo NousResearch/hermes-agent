@@ -31,6 +31,9 @@ def configure_skill_env() -> dict[str, str]:
 
 def sync_bundled_skills(*, quiet: bool = True) -> dict[str, Any]:
     configure_skill_env()
+    from hermes_android.python_path import prefer_hermes_package_root
+
+    prefer_hermes_package_root()
     import tools.skills_sync as skills_sync
 
     skills_sync = importlib.reload(skills_sync)

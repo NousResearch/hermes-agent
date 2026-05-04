@@ -44,7 +44,7 @@ class DeepAppUiVisualInstrumentedTest {
     }
 
     @Test
-    fun settingsDropdownTypingNavigationAndTranslationFlowCapturesScreenshots() {
+    fun settingsOneTapModelNavigationAndTranslationFlowCapturesScreenshots() {
         LocalModelDownloadStore(app).apply {
             saveDownloads(emptyList())
             setPreferredDownloadId("")
@@ -79,11 +79,10 @@ class DeepAppUiVisualInstrumentedTest {
         composeRule.onNodeWithTag("HermesNavSettings").performClick()
         composeRule.onAllNodesWithText("Settings")[0].assertIsDisplayed()
         capture("03-settings")
-        composeRule.onNodeWithTag("HermesModelDropdown").performScrollTo().performClick()
-        composeRule.onNodeWithText("Gemma 4 E2B (LiteRT-LM)").assertIsDisplayed()
-        capture("04-model-dropdown")
-        composeRule.onNodeWithText("Gemma 4 E2B (LiteRT-LM)").performClick()
-        composeRule.onNodeWithText("Model selection").assertIsDisplayed()
+        composeRule.onNodeWithText("One-tap local models").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Qwen3.5 0.8B Q4_K_M (GGUF)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Gemma 4 E2B (LiteRT-LM)").performScrollTo().assertIsDisplayed()
+        capture("04-one-tap-models")
 
         composeRule.onNodeWithText("🇪🇸 Español").performScrollTo().performClick()
         assertTrue(composeRule.onAllNodesWithText("Idioma de la app").fetchSemanticsNodes().isNotEmpty())
@@ -92,8 +91,8 @@ class DeepAppUiVisualInstrumentedTest {
                 "Aún no hay un modelo local compatible seleccionado. Descárgalo y márcalo como preferido primero."
             ).fetchSemanticsNodes().isNotEmpty()
         )
-        composeRule.onNodeWithTag("HermesModelDropdown").performScrollTo()
-        assertTrue(composeRule.onAllNodesWithText("Selección de modelo").fetchSemanticsNodes().isNotEmpty())
+        composeRule.onNodeWithText("Modelos locales con un toque").performScrollTo()
+        assertTrue(composeRule.onAllNodesWithText("Descargar e iniciar").fetchSemanticsNodes().isNotEmpty())
         capture("05-settings-spanish")
 
         composeRule.onNodeWithTag("HermesNavAccounts").performClick()

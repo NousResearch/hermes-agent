@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from hermes_android.python_path import prefer_hermes_package_root
+
+prefer_hermes_package_root()
+
 from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL, get_nous_auth_status
 
 

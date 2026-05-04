@@ -87,6 +87,25 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         updateOnDeviceBackend(backendValue)
     }
 
+    fun startLocalRuntimeForFlavor(runtimeFlavor: String) {
+        val backendValue = when (runtimeFlavor) {
+            "GGUF" -> BackendKind.LLAMA_CPP.persistedValue
+            "LiteRT-LM" -> BackendKind.LITERT_LM.persistedValue
+            else -> BackendKind.NONE.persistedValue
+        }
+        _uiState.update {
+            it.copy(
+                provider = "custom",
+                baseUrl = "",
+                model = "",
+                onDeviceBackend = backendValue,
+                onDeviceSummary = OnDeviceBackendManager.preferredDownloadSummary(getApplication(), backendValue),
+                status = "Starting local Hermes runtime…",
+            )
+        }
+        save()
+    }
+
     fun selectLanguage(language: AppLanguage) {
         val normalized = language.tag
         settingsStore.save(settingsStore.load().copy(languageTag = normalized))

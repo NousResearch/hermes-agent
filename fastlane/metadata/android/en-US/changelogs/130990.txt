@@ -1,0 +1,1 @@
+Simplified Settings with no dropdowns, one-tap local model downloads, automatic preferred model selection, automatic local runtime start, and F-Droid preparation metadata.

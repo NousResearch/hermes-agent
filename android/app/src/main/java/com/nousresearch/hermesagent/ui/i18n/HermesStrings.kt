@@ -677,6 +677,78 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Open system Downloads"
     }
 
+    fun quickLocalModelsTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "一键本地模型"
+        AppLanguage.SPANISH -> "Modelos locales con un toque"
+        AppLanguage.GERMAN -> "Lokale Modelle mit einem Tipp"
+        AppLanguage.PORTUGUESE -> "Modelos locais com um toque"
+        AppLanguage.FRENCH -> "Modèles locaux en un geste"
+        AppLanguage.ENGLISH -> "One-tap local models"
+    }
+
+    fun quickLocalModelsDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "选择已验证的移动模型。Hermes 会下载、设为首选，并在文件准备好后自动启动本地运行时。"
+        AppLanguage.SPANISH -> "Elige un modelo móvil validado. Hermes lo descarga, lo marca como preferido e inicia el runtime local cuando el archivo está listo."
+        AppLanguage.GERMAN -> "Wähle ein validiertes Mobilmodell. Hermes lädt es, markiert es als bevorzugt und startet die lokale Laufzeit, sobald die Datei bereit ist."
+        AppLanguage.PORTUGUESE -> "Escolha um modelo móvel validado. O Hermes baixa, marca como preferido e inicia o runtime local quando o arquivo estiver pronto."
+        AppLanguage.FRENCH -> "Choisissez un modèle mobile validé. Hermes le télécharge, le marque comme préféré et démarre le runtime local dès que le fichier est prêt."
+        AppLanguage.ENGLISH -> "Choose a validated mobile model. Hermes downloads it, marks it preferred, and starts the local runtime when the file is ready."
+    }
+
+    fun downloadAndStart(): String = when (language) {
+        AppLanguage.CHINESE -> "下载并启动"
+        AppLanguage.SPANISH -> "Descargar e iniciar"
+        AppLanguage.GERMAN -> "Herunterladen und starten"
+        AppLanguage.PORTUGUESE -> "Baixar e iniciar"
+        AppLanguage.FRENCH -> "Télécharger et démarrer"
+        AppLanguage.ENGLISH -> "Download and start"
+    }
+
+    fun useAndStart(): String = when (language) {
+        AppLanguage.CHINESE -> "使用并启动"
+        AppLanguage.SPANISH -> "Usar e iniciar"
+        AppLanguage.GERMAN -> "Verwenden und starten"
+        AppLanguage.PORTUGUESE -> "Usar e iniciar"
+        AppLanguage.FRENCH -> "Utiliser et démarrer"
+        AppLanguage.ENGLISH -> "Use and start"
+    }
+
+    fun startRuntime(): String = when (language) {
+        AppLanguage.CHINESE -> "启动运行时"
+        AppLanguage.SPANISH -> "Iniciar runtime"
+        AppLanguage.GERMAN -> "Laufzeit starten"
+        AppLanguage.PORTUGUESE -> "Iniciar runtime"
+        AppLanguage.FRENCH -> "Démarrer le runtime"
+        AppLanguage.ENGLISH -> "Start runtime"
+    }
+
+    fun remoteFallbackTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "远程备用"
+        AppLanguage.SPANISH -> "Respaldo remoto"
+        AppLanguage.GERMAN -> "Remote-Fallback"
+        AppLanguage.PORTUGUESE -> "Fallback remoto"
+        AppLanguage.FRENCH -> "Secours distant"
+        AppLanguage.ENGLISH -> "Remote fallback"
+    }
+
+    fun remoteFallbackDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "本地模型不可用时，Hermes 可以使用远程 OpenAI 兼容提供商。点一个提供商即可填入常用默认值。"
+        AppLanguage.SPANISH -> "Cuando no haya un modelo local disponible, Hermes puede usar un proveedor remoto compatible con OpenAI. Toca un proveedor para rellenar valores comunes."
+        AppLanguage.GERMAN -> "Wenn kein lokales Modell verfügbar ist, kann Hermes einen OpenAI-kompatiblen Remote-Anbieter nutzen. Tippe auf einen Anbieter, um Standardwerte einzutragen."
+        AppLanguage.PORTUGUESE -> "Quando não houver modelo local disponível, o Hermes pode usar um provedor remoto compatível com OpenAI. Toque em um provedor para preencher padrões comuns."
+        AppLanguage.FRENCH -> "Quand aucun modèle local n’est disponible, Hermes peut utiliser un fournisseur distant compatible OpenAI. Touchez un fournisseur pour remplir les valeurs courantes."
+        AppLanguage.ENGLISH -> "When no local model is available, Hermes can use a remote OpenAI-compatible provider. Tap a provider to fill common defaults."
+    }
+
+    fun remoteOnly(): String = when (language) {
+        AppLanguage.CHINESE -> "仅远程"
+        AppLanguage.SPANISH -> "Solo remoto"
+        AppLanguage.GERMAN -> "Nur remote"
+        AppLanguage.PORTUGUESE -> "Somente remoto"
+        AppLanguage.FRENCH -> "Distant uniquement"
+        AppLanguage.ENGLISH -> "Remote only"
+    }
+
     fun authBaseUrlMustBeValid(): String = when (language) {
         AppLanguage.CHINESE -> "Corr3xt 基础 URL 必须是有效的 http(s) 地址"
         AppLanguage.SPANISH -> "La URL base de Corr3xt debe ser una URL http(s) válida"

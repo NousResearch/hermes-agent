@@ -105,7 +105,7 @@ from agent.credential_pool import load_pool
 from hermes_cli.chatgpt_web import resolve_chatgpt_web_runtime_credentials, stream_chatgpt_web_completion
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from hermes_cli.shared_utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 

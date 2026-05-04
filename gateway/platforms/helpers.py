@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict
 
-from utils import atomic_json_write
+from hermes_cli.shared_utils import atomic_json_write
 
 if TYPE_CHECKING:
     from gateway.platforms.base import MessageEvent

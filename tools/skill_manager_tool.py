@@ -42,7 +42,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
-from utils import atomic_replace, is_truthy_value
+from hermes_cli.shared_utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)

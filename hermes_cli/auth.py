@@ -49,7 +49,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from hermes_cli.shared_utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 

@@ -20,8 +20,10 @@ def test_apply_linux_subsystem_env_sets_terminal_backend_markers(tmp_path):
         "bash_path": str(state_dir / "prefix" / "bin" / "bash"),
         "bin_path": str(state_dir / "prefix" / "bin"),
         "lib_path": str(state_dir / "prefix" / "lib"),
+        "native_library_dir": str(state_dir / "native-lib"),
         "home_path": str(state_dir / "prefix" / "home"),
         "tmp_path": str(state_dir / "prefix" / "tmp"),
+        "execution_mode": "embedded_termux",
         "packages": [{"name": "bash"}],
     }
     (state_dir / "linux-subsystem-state.json").write_text(json.dumps(state), encoding="utf-8")
@@ -31,5 +33,9 @@ def test_apply_linux_subsystem_env_sets_terminal_backend_markers(tmp_path):
     assert env_updates["TERMINAL_ENV"] == "android_linux"
     assert env_updates["HERMES_ANDROID_LINUX_PREFIX"] == state["prefix_path"]
     assert env_updates["HERMES_ANDROID_LINUX_BASH"] == state["bash_path"]
+    assert env_updates["HERMES_ANDROID_NATIVE_LIB"] == state["native_library_dir"]
+    assert env_updates["HERMES_ANDROID_ALLOW_PREFIX_BIN"] == ""
+    assert state["native_library_dir"] in env_updates["LD_LIBRARY_PATH"]
+    assert state["lib_path"] in env_updates["LD_LIBRARY_PATH"]
     assert env_updates["HERMES_ANDROID_LINUX_HOME"] == state["home_path"]
     assert env_updates["HERMES_ANDROID_LINUX_TMP"] == state["tmp_path"]

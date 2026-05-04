@@ -22,7 +22,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from hermes_cli.shared_utils import atomic_replace
 
 try:
     from croniter import croniter

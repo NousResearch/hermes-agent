@@ -32,18 +32,28 @@ fun LocalModelDownloadsSection(
     onDataSaverModeChange: (Boolean) -> Unit,
     selectedBackend: String,
     onRuntimeFlavorSelected: (String) -> Unit,
+    onCompletedDownloadReady: (String) -> Unit,
     viewModel: LocalModelDownloadsViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
-    val effectiveRuntimeFlavor = when (selectedBackend) {
-        "llama.cpp" -> "GGUF"
-        "litert-lm" -> "LiteRT-LM"
-        else -> uiState.runtimeFlavor
-    }
 
     LaunchedEffect(selectedBackend) {
         viewModel.syncSelectedBackend(selectedBackend)
+    }
+
+    LaunchedEffect(uiState.pendingAutoStartRecordId, uiState.downloads) {
+        val pendingId = uiState.pendingAutoStartRecordId
+        if (pendingId.isNotBlank()) {
+            val completed = uiState.downloads.firstOrNull { item ->
+                item.id == pendingId && item.statusLabel == "completed"
+            }
+            if (completed != null) {
+                viewModel.promoteDownloadedModelForAutoStart(completed.id)
+                onRuntimeFlavorSelected(completed.runtimeFlavor)
+                onCompletedDownloadReady(completed.runtimeFlavor)
+            }
+        }
     }
 
     Surface(
@@ -102,57 +112,43 @@ fun LocalModelDownloadsSection(
                 }
             }
             HorizontalDivider()
-            OutlinedTextField(
-                value = uiState.repoOrUrl,
-                onValueChange = viewModel::updateRepoOrUrl,
-                label = { Text(strings.repoIdOrDirectUrl.ifBlank { "Repo ID or direct URL" }) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = uiState.filePath,
-                onValueChange = viewModel::updateFilePath,
-                label = { Text(strings.filePathInsideRepo.ifBlank { "File path inside repo" }) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = uiState.revision,
-                onValueChange = viewModel::updateRevision,
-                label = { Text(strings.revision.ifBlank { "Revision" }) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(strings.runtimeTarget.ifBlank { "Runtime target" }, style = MaterialTheme.typography.titleSmall)
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(onClick = {
-                    viewModel.updateRuntimeFlavor("GGUF")
-                    onRuntimeFlavorSelected("GGUF")
-                }, enabled = effectiveRuntimeFlavor != "GGUF") {
-                    Text("GGUF")
-                }
-                Button(onClick = {
-                    viewModel.updateRuntimeFlavor("LiteRT-LM")
-                    onRuntimeFlavorSelected("LiteRT-LM")
-                }, enabled = effectiveRuntimeFlavor != "LiteRT-LM") {
-                    Text("LiteRT-LM")
+            Text(strings.quickLocalModelsTitle(), style = MaterialTheme.typography.titleSmall)
+            Text(strings.quickLocalModelsDescription(), style = MaterialTheme.typography.bodySmall)
+            LocalModelDownloadsViewModel.recommendedModelPresets.forEach { preset ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(preset.title, style = MaterialTheme.typography.titleSmall)
+                        Text(preset.description, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "${preset.runtimeFlavor} · ${preset.testedLabel}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                        Button(
+                            onClick = {
+                                onRuntimeFlavorSelected(preset.runtimeFlavor)
+                                viewModel.startRecommendedModelDownload(preset.id, dataSaverMode)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(strings.downloadAndStart())
+                        }
+                    }
                 }
             }
             Text(
                 strings.localDownloadsExampleGuidance(),
                 style = MaterialTheme.typography.bodySmall,
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(onClick = { viewModel.inspectCandidate(runtimeFlavorOverride = effectiveRuntimeFlavor) }) {
-                    Text(strings.inspect.ifBlank { "Inspect" })
-                }
-                Button(onClick = { viewModel.startDownload(dataSaverMode, runtimeFlavorOverride = effectiveRuntimeFlavor) }) {
-                    Text(strings.download.ifBlank { "Download" })
-                }
-            }
             if (uiState.inspectionStatus.isNotBlank()) {
                 Text(uiState.inspectionStatus, style = MaterialTheme.typography.bodySmall)
             }
@@ -210,9 +206,15 @@ fun LocalModelDownloadsSection(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                if (!item.isPreferred && item.statusLabel == "completed") {
-                                    Button(onClick = { viewModel.setPreferredDownload(item.id) }) {
-                                        Text(strings.setPreferred.ifBlank { "Set preferred" })
+                                if (item.statusLabel == "completed") {
+                                    Button(
+                                        onClick = {
+                                            viewModel.setPreferredDownload(item.id)
+                                            onRuntimeFlavorSelected(item.runtimeFlavor)
+                                            onCompletedDownloadReady(item.runtimeFlavor)
+                                        },
+                                    ) {
+                                        Text(if (item.isPreferred) strings.startRuntime() else strings.useAndStart())
                                     }
                                 }
                                 if (item.canRestartOnMobileData) {

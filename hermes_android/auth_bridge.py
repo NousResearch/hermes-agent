@@ -7,6 +7,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from hermes_android.python_path import prefer_hermes_package_root
+
+prefer_hermes_package_root()
+
 from hermes_cli.config import load_env, save_env_value
 
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"

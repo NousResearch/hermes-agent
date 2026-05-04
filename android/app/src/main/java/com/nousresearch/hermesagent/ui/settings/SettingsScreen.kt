@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -15,35 +14,25 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.backend.BackendKind
+import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
@@ -53,8 +42,6 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
-    var expanded by remember { mutableStateOf(false) }
-    var modelExpanded by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
     val selectedPreset = ProviderPresets.find(uiState.provider)
 
@@ -87,160 +74,39 @@ fun SettingsScreen(
                     OnDeviceInferenceCard(
                         onDeviceBackend = uiState.onDeviceBackend,
                         onSelectBackend = viewModel::updateOnDeviceBackend,
+                        onStartRuntime = viewModel::startLocalRuntimeForFlavor,
                         summary = uiState.onDeviceSummary,
                         strings = strings,
                     )
-
-                    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
-                        OutlinedTextField(
-                            value = uiState.provider,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text(strings.providerLabel()) },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor()
-                                .testTag("HermesProviderDropdown"),
-                        )
-                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                            ProviderPresets.defaults.forEach { preset ->
-                                DropdownMenuItem(
-                                    text = { Text(preset.label) },
-                                    onClick = {
-                                        viewModel.updateProvider(preset.id)
-                                        if (uiState.baseUrl.isBlank()) {
-                                            viewModel.updateBaseUrl(preset.baseUrl)
-                                        }
-                                        if (uiState.model.isBlank()) {
-                                            viewModel.updateModel(preset.modelHint)
-                                        }
-                                        expanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Text(
-                        strings.providerDirectCallHelp(),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-
-                    OutlinedTextField(
-                        value = uiState.baseUrl,
-                        onValueChange = viewModel::updateBaseUrl,
-                        label = { Text(strings.baseUrlLabel()) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        strings.defaultBaseUrlSummary(
-                            selectedPreset?.label ?: uiState.provider,
-                            selectedPreset?.baseUrl?.ifBlank { "provider default / optional" } ?: "provider default / optional",
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-
-                    ModelSelectionCard(
-                        expanded = modelExpanded,
-                        onExpandedChange = { modelExpanded = !modelExpanded },
-                        selectedModel = uiState.model,
-                        providerId = uiState.provider,
-                        suggestedModel = selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" }
-                            ?: "choose a provider-supported model",
-                        onSelectModel = { modelId ->
-                            viewModel.updateModel(modelId)
-                            modelExpanded = false
-                        },
-                        onModelTextChange = viewModel::updateModel,
-                        strings = strings,
-                    )
-
-                    OutlinedTextField(
-                        value = uiState.apiKey,
-                        onValueChange = viewModel::updateApiKey,
-                        label = { Text(strings.apiKeyLabel()) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        strings.apiKeyHelp(),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-
-                    ToolProfileCard()
                     LocalModelDownloadsSection(
                         dataSaverMode = uiState.dataSaverMode,
                         onDataSaverModeChange = viewModel::updateDataSaverMode,
                         selectedBackend = uiState.onDeviceBackend,
                         onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor,
+                        onCompletedDownloadReady = viewModel::startLocalRuntimeForFlavor,
                     )
 
-                    Button(onClick = viewModel::save) {
-                        Text(strings.saveLabel())
-                    }
+                    RemoteFallbackCard(
+                        providerId = uiState.provider,
+                        providerLabel = selectedPreset?.label ?: uiState.provider,
+                        baseUrl = uiState.baseUrl,
+                        model = uiState.model,
+                        apiKey = uiState.apiKey,
+                        onSelectProvider = viewModel::updateProvider,
+                        onBaseUrlChange = viewModel::updateBaseUrl,
+                        onModelChange = viewModel::updateModel,
+                        onApiKeyChange = viewModel::updateApiKey,
+                        onSave = viewModel::save,
+                        strings = strings,
+                    )
+
+                    ToolProfileCard()
 
                     if (uiState.status.isNotBlank()) {
                         Text(uiState.status)
                     }
                 }
             }
-        }
-    }
-}
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun ModelSelectionCard(
-    expanded: Boolean,
-    onExpandedChange: () -> Unit,
-    selectedModel: String,
-    providerId: String,
-    suggestedModel: String,
-    onSelectModel: (String) -> Unit,
-    onModelTextChange: (String) -> Unit,
-    strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
-) {
-    val options = ProviderPresets.modelSelections(providerId)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(strings.modelSelectionTitle(), style = MaterialTheme.typography.titleMedium)
-            Text(strings.modelSelectionDescription(), style = MaterialTheme.typography.bodySmall)
-            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { onExpandedChange() }) {
-                OutlinedTextField(
-                    value = selectedModel,
-                    onValueChange = onModelTextChange,
-                    label = { Text(strings.modelLabel()) },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .menuAnchor()
-                        .testTag("HermesModelDropdown"),
-                    singleLine = true,
-                )
-                DropdownMenu(expanded = expanded, onDismissRequest = onExpandedChange) {
-                    options.forEach { model ->
-                        DropdownMenuItem(
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(model.label)
-                                    Text(model.description, style = MaterialTheme.typography.bodySmall)
-                                }
-                            },
-                            onClick = { onSelectModel(model.id) },
-                        )
-                    }
-                }
-            }
-            Text(strings.suggestedModelSummary(suggestedModel), style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -273,9 +139,87 @@ private fun SettingsHelpCard(
 }
 
 @Composable
+private fun RemoteFallbackCard(
+    providerId: String,
+    providerLabel: String,
+    baseUrl: String,
+    model: String,
+    apiKey: String,
+    onSelectProvider: (String) -> Unit,
+    onBaseUrlChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+    onApiKeyChange: (String) -> Unit,
+    onSave: () -> Unit,
+    strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
+) {
+    val providerPreset = ProviderPresets.find(providerId)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(strings.remoteFallbackTitle(), style = MaterialTheme.typography.titleMedium)
+            Text(strings.remoteFallbackDescription(), style = MaterialTheme.typography.bodySmall)
+            Text(strings.providerLabel(), style = MaterialTheme.typography.titleSmall)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ProviderPresets.defaults.forEach { preset ->
+                    Button(
+                        onClick = { onSelectProvider(preset.id) },
+                        enabled = preset.id != providerId,
+                    ) {
+                        Text(preset.label)
+                    }
+                }
+            }
+            Text(strings.currentProviderProfile(providerLabel), style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(
+                value = baseUrl,
+                onValueChange = onBaseUrlChange,
+                label = { Text(strings.baseUrlLabel()) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            providerPreset?.modelHint?.takeIf { it.isNotBlank() }?.let { modelHint ->
+                Button(onClick = { onModelChange(modelHint) }) {
+                    Text(strings.suggestedModelSummary(modelHint))
+                }
+            }
+            OutlinedTextField(
+                value = model,
+                onValueChange = onModelChange,
+                label = { Text(strings.modelLabel()) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = onApiKeyChange,
+                label = { Text(strings.apiKeyLabel()) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(strings.apiKeyHelp(), style = MaterialTheme.typography.bodySmall)
+            Button(onClick = onSave) {
+                Text(strings.saveLabel())
+            }
+        }
+    }
+}
+
+@Composable
 private fun OnDeviceInferenceCard(
     onDeviceBackend: String,
     onSelectBackend: (String) -> Unit,
+    onStartRuntime: (String) -> Unit,
     summary: String,
     strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
 ) {
@@ -293,22 +237,38 @@ private fun OnDeviceInferenceCard(
         ) {
             Text(strings.onDeviceInferenceTitle.ifBlank { "On-device inference" }, style = MaterialTheme.typography.titleMedium)
             Text(strings.onDeviceInferenceDescription, style = MaterialTheme.typography.bodySmall)
-            BackendSwitchRow(
-                title = strings.llamaCppLabel.ifBlank { "llama.cpp (GGUF)" },
-                description = strings.llamaCppDescription,
-                checked = onDeviceBackend == BackendKind.LLAMA_CPP.persistedValue,
-                onCheckedChange = { enabled ->
-                    onSelectBackend(if (enabled) BackendKind.LLAMA_CPP.persistedValue else BackendKind.NONE.persistedValue)
-                },
-            )
-            BackendSwitchRow(
-                title = strings.liteRtLmLabel.ifBlank { "LiteRT-LM" },
-                description = strings.liteRtLmDescription,
-                checked = onDeviceBackend == BackendKind.LITERT_LM.persistedValue,
-                onCheckedChange = { enabled ->
-                    onSelectBackend(if (enabled) BackendKind.LITERT_LM.persistedValue else BackendKind.NONE.persistedValue)
-                },
-            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = {
+                        onSelectBackend(BackendKind.LLAMA_CPP.persistedValue)
+                        onStartRuntime("GGUF")
+                    },
+                    enabled = onDeviceBackend != BackendKind.LLAMA_CPP.persistedValue,
+                ) {
+                    Text(strings.llamaCppLabel.ifBlank { "llama.cpp (GGUF)" })
+                }
+                Button(
+                    onClick = {
+                        onSelectBackend(BackendKind.LITERT_LM.persistedValue)
+                        onStartRuntime("LiteRT-LM")
+                    },
+                    enabled = onDeviceBackend != BackendKind.LITERT_LM.persistedValue,
+                ) {
+                    Text(strings.liteRtLmLabel.ifBlank { "LiteRT-LM" })
+                }
+                Button(
+                    onClick = { onSelectBackend(BackendKind.NONE.persistedValue) },
+                    enabled = onDeviceBackend != BackendKind.NONE.persistedValue,
+                ) {
+                    Text(strings.remoteOnly())
+                }
+            }
+            Text(strings.llamaCppDescription, style = MaterialTheme.typography.bodySmall)
+            Text(strings.liteRtLmDescription, style = MaterialTheme.typography.bodySmall)
             Text(localizedOnDeviceSummary(summary, strings), style = MaterialTheme.typography.bodySmall)
         }
     }
@@ -325,29 +285,6 @@ private fun localizedOnDeviceSummary(
         trimmed.startsWith("Preferred local model:") ->
             "${strings.preferredLocalModel}: ${trimmed.substringAfter(':').trim()}"
         else -> trimmed
-    }
-}
-
-@Composable
-private fun BackendSwitchRow(
-    title: String,
-    description: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(description, style = MaterialTheme.typography.bodySmall)
-        }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

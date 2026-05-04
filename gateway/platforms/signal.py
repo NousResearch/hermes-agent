@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
 import httpx
@@ -31,6 +31,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
@@ -38,6 +39,17 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.signal_rate_limit import (
+    SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
+    SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+    SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+    SignalRateLimitError,
+    _extract_retry_after_seconds,
+    _format_wait,
+    _is_signal_rate_limit_error,
+    _signal_send_timeout,
+    get_scheduler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +63,7 @@ SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,6 +175,10 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
+    # Signal has no real edit API for already-sent messages. Mark it explicitly
+    # so streaming suppresses the visible cursor instead of leaving a stale tofu
+    # square behind in chat clients when edit attempts fail.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -231,7 +248,9 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
@@ -488,6 +507,11 @@ class SignalAdapter(BasePlatformAdapter):
         if text and mentions:
             text = _render_mentions(text, mentions)
 
+        # Extract quote (reply-to) context from Signal dataMessage
+        quote_data = data_message.get("quote") or {}
+        reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
+        reply_to_text = quote_data.get("text")
+
         # Process attachments
         attachments_data = data_message.get("attachments", [])
         media_urls = []
@@ -511,6 +535,18 @@ class SignalAdapter(BasePlatformAdapter):
                         media_types.append(content_type)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
+
+        # Skip envelopes with no meaningful content (no text, no attachments).
+        # Catches profile key updates, empty messages, and other metadata-only
+        # envelopes that still carry a dataMessage wrapper but have nothing
+        # worth processing. See issue: signal-cli logs "Profile key update" +
+        # Hermes receives msg='' triggering a full agent turn for nothing.
+        if (not text or not text.strip()) and not media_urls:
+            logger.debug(
+                "Signal: skipping contentless envelope from %s (%d attachments)",
+                redact_phone(sender), len(media_urls) if media_urls else 0,
+            )
+            return
 
         # Build session source
         source = self.build_source(
@@ -541,7 +577,9 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             timestamp = datetime.now(tz=timezone.utc)
 
-        # Build and dispatch event
+        # Build and dispatch event.
+        # Store raw envelope data in raw_message so on_processing_start/complete
+        # can extract targetAuthor + targetTimestamp for sendReaction.
         event = MessageEvent(
             source=source,
             text=text or "",
@@ -549,6 +587,9 @@ class SignalAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             timestamp=timestamp,
+            raw_message={"sender": sender, "timestamp_ms": ts_ms},
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
         )
 
         logger.debug("Signal: message from %s in %s: %s",
@@ -659,6 +700,8 @@ class SignalAdapter(BasePlatformAdapter):
         rpc_id: str = None,
         *,
         log_failures: bool = True,
+        raise_on_rate_limit: bool = False,
+        timeout: float = 30.0,
     ) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli daemon.
 
@@ -667,6 +710,11 @@ class SignalAdapter(BasePlatformAdapter):
         repeated NETWORK_FAILURE spam for unreachable recipients while
         still preserving visibility for the first occurrence and for
         unrelated RPCs.
+
+        When ``raise_on_rate_limit=True``, a Signal ``[429]`` /
+        ``RateLimitException`` response raises ``SignalRateLimitError``
+        instead of being swallowed — lets callers (multi-attachment send)
+        opt into backoff-retry without changing default behaviour.
         """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
@@ -686,26 +734,187 @@ class SignalAdapter(BasePlatformAdapter):
             resp = await self.client.post(
                 f"{self.http_url}/api/v1/rpc",
                 json=payload,
-                timeout=30.0,
+                timeout=timeout,
             )
             resp.raise_for_status()
             data = resp.json()
 
             if "error" in data:
+                err = data["error"]
+                if raise_on_rate_limit:
+                    if _is_signal_rate_limit_error(err):
+                        err_msg = str(err.get("message", "")) if isinstance(err, dict) else str(err)
+                        retry_after = _extract_retry_after_seconds(err)
+                        raise SignalRateLimitError(err_msg, retry_after=retry_after)
                 if log_failures:
-                    logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                    logger.warning("Signal RPC error (%s): %s", method, err)
                 else:
-                    logger.debug("Signal RPC error (%s): %s", method, data["error"])
+                    logger.debug("Signal RPC error (%s): %s", method, err)
                 return None
 
             return data.get("result")
 
+        except SignalRateLimitError:
+            raise
         except Exception as e:
             if log_failures:
                 logger.warning("Signal RPC %s failed: %s", method, e)
             else:
                 logger.debug("Signal RPC %s failed: %s", method, e)
             return None
+
+    # ------------------------------------------------------------------
+    # Formatting — markdown → Signal body ranges
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _markdown_to_signal(text: str) -> tuple:
+        """Convert markdown to plain text + Signal textStyles list.
+
+        Signal doesn't render markdown.  Instead it uses ``bodyRanges``
+        (exposed by signal-cli as ``textStyle`` / ``textStyles`` params)
+        with the format ``start:length:STYLE``.
+
+        Positions are measured in **UTF-16 code units** (not Python code
+        points) because that's what the Signal protocol uses.
+
+        Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE.
+        (Signal's SPOILER style is not currently mapped — no standard
+        markdown syntax for it; would need ``||spoiler||`` parsing.)
+
+        Returns ``(plain_text, styles_list)`` where *styles_list* may be
+        empty if there's nothing to format.
+        """
+        import re
+
+        def _utf16_len(s: str) -> int:
+            """Length of *s* in UTF-16 code units."""
+            return len(s.encode("utf-16-le")) // 2
+
+        # Pre-process: normalize whitespace before any position tracking
+        # so later operations don't invalidate recorded offsets.
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = text.strip()
+
+        styles: list = []
+
+        # --- Phase 1: fenced code blocks  ```...``` → MONOSPACE ---
+        _CB = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
+        while m := _CB.search(text):
+            inner = m.group(1).rstrip("\n")
+            start = m.start()
+            text = text[: m.start()] + inner + text[m.end() :]
+            styles.append((start, len(inner), "MONOSPACE"))
+
+        # --- Phase 2: heading markers  # Foo → Foo (BOLD) ---
+        _HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+        new_text = ""
+        last_end = 0
+        for m in _HEADING.finditer(text):
+            new_text += text[last_end : m.start()]
+            last_end = m.end()
+            eol = text.find("\n", m.end())
+            if eol == -1:
+                eol = len(text)
+            heading_text = text[m.end() : eol]
+            start = len(new_text)
+            new_text += heading_text
+            styles.append((start, len(heading_text), "BOLD"))
+            last_end = eol
+        new_text += text[last_end:]
+        text = new_text
+
+        # --- Phase 3: inline patterns (single-pass to avoid offset drift) ---
+        # The old code processed each pattern sequentially, stripping markers
+        # and recording positions per-pass.  Later passes shifted text without
+        # adjusting earlier positions → bold/italic landed mid-word.
+        #
+        # Fix: collect ALL non-overlapping matches first, then strip every
+        # marker in one pass so positions are computed against the final text.
+        _PATTERNS = [
+            (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), "BOLD"),
+            (re.compile(r"__(.+?)__", re.DOTALL), "BOLD"),
+            (re.compile(r"~~(.+?)~~", re.DOTALL), "STRIKETHROUGH"),
+            (re.compile(r"`(.+?)`"), "MONOSPACE"),
+            (re.compile(r"(?<!\*)\*(?!\*| )(.+?)(?<!\*)\*(?!\*)"), "ITALIC"),
+            (re.compile(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)"), "ITALIC"),
+        ]
+
+        # Collect all non-overlapping matches (earlier patterns win ties).
+        all_matches: list = []  # (start, end, g1_start, g1_end, style)
+        occupied: list = []     # (start, end) intervals already claimed
+        for pat, style in _PATTERNS:
+            for m in pat.finditer(text):
+                ms, me = m.start(), m.end()
+                if not any(ms < oe and me > os for os, oe in occupied):
+                    all_matches.append((ms, me, m.start(1), m.end(1), style))
+                    occupied.append((ms, me))
+        all_matches.sort()
+
+        # Build removal list so we can adjust Phase 1/2 styles.
+        # Each match removes its prefix markers (start..g1_start) and
+        # suffix markers (g1_end..end).
+        removals: list = []  # (position, length) sorted
+        for ms, me, g1s, g1e, _ in all_matches:
+            if g1s > ms:
+                removals.append((ms, g1s - ms))
+            if me > g1e:
+                removals.append((g1e, me - g1e))
+        removals.sort()
+
+        # Adjust Phase 1/2 styles for characters about to be removed.
+        def _adj(pos: int) -> int:
+            shift = 0
+            for rp, rl in removals:
+                if rp < pos:
+                    shift += min(rl, pos - rp)
+                else:
+                    break
+            return pos - shift
+
+        adjusted_prior: list = []
+        for s, l, st in styles:
+            ns = _adj(s)
+            ne = _adj(s + l)
+            if ne > ns:
+                adjusted_prior.append((ns, ne - ns, st))
+
+        # Strip all inline markers in one pass → positions are correct.
+        result = ""
+        last_end = 0
+        inline_styles: list = []
+        for ms, me, g1s, g1e, sty in all_matches:
+            result += text[last_end:ms]
+            pos = len(result)
+            inner = text[g1s:g1e]
+            result += inner
+            inline_styles.append((pos, len(inner), sty))
+            last_end = me
+        result += text[last_end:]
+        text = result
+
+        styles = adjusted_prior + inline_styles
+
+        # Convert code-point offsets → UTF-16 code-unit offsets
+        style_strings = []
+        for cp_start, cp_len, stype in sorted(styles):
+            # Safety: skip any out-of-bounds styles
+            if cp_start < 0 or cp_start + cp_len > len(text):
+                continue
+            u16_start = _utf16_len(text[:cp_start])
+            u16_len = _utf16_len(text[cp_start : cp_start + cp_len])
+            style_strings.append(f"{u16_start}:{u16_len}:{stype}")
+
+        return text, style_strings
+
+    def format_message(self, content: str) -> str:
+        """Strip markdown for plain-text fallback (used by base class).
+
+        The actual rich formatting happens in send() via _markdown_to_signal().
+        """
+        # This is only called if someone uses the base-class send path.
+        # Our send() override bypasses this entirely.
+        return content
 
     # ------------------------------------------------------------------
     # Sending
@@ -718,13 +927,21 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text message."""
+        """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
+
+        plain_text, text_styles = self._markdown_to_signal(content)
 
         params: Dict[str, Any] = {
             "account": self.account,
-            "message": content,
+            "message": plain_text,
         }
+
+        if text_styles:
+            if len(text_styles) == 1:
+                params["textStyle"] = text_styles[0]
+            else:
+                params["textStyles"] = text_styles
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
@@ -735,11 +952,10 @@ class SignalAdapter(BasePlatformAdapter):
 
         if result is not None:
             self._track_sent_timestamp(result)
-            # Use the timestamp from the RPC result as a pseudo message_id.
-            # Signal doesn't have real message IDs, but the stream consumer
-            # needs a truthy value to follow its edit→fallback path correctly.
-            _msg_id = str(result.get("timestamp", "")) if isinstance(result, dict) else None
-            return SendResult(success=True, message_id=_msg_id or None)
+            # Signal has no editable message identifier. Returning None keeps the
+            # stream consumer on the non-edit fallback path instead of pretending
+            # future edits can remove an in-progress cursor from the chat thread.
+            return SendResult(success=True, message_id=None)
         return SendResult(success=False, error="RPC send failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:
@@ -802,6 +1018,178 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             self._typing_failures.pop(chat_id, None)
             self._typing_skip_until.pop(chat_id, None)
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images via chunked Signal RPC calls.
+
+        Per-image alt texts are dropped — Signal's send RPC only carries
+        one shared message body. Bad images (download failure, missing
+        file, oversize) are skipped with a warning so one bad URL
+        doesn't lose the rest of the batch. ``human_delay`` is ignored:
+        the rate-limit scheduler handles inter-batch pacing.
+        """
+        if not images:
+            return
+
+        scheduler = get_scheduler()
+        logger.info(
+            "Signal send_multiple_images: received %d image(s) for %s — "
+            "scheduler state: %s",
+            len(images), chat_id[:30], scheduler.state(),
+        )
+
+        await self._stop_typing_indicator(chat_id)
+
+        attachments: List[str] = []
+        skipped_download = 0
+        skipped_missing = 0
+        skipped_oversize = 0
+        for image_url, _alt_text in images:
+            if image_url.startswith("file://"):
+                file_path = unquote(image_url[7:])
+            else:
+                try:
+                    file_path = await cache_image_from_url(image_url)
+                except Exception as e:
+                    logger.warning("Signal: failed to download image %s: %s", image_url, e)
+                    skipped_download += 1
+                    continue
+
+            if not file_path or not Path(file_path).exists():
+                logger.warning("Signal: image file not found for %s", image_url)
+                skipped_missing += 1
+                continue
+
+            file_size = Path(file_path).stat().st_size
+            if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
+                logger.warning(
+                    "Signal: image too large (%d bytes), skipping %s", file_size, image_url
+                )
+                skipped_oversize += 1
+                continue
+
+            attachments.append(file_path)
+
+        if not attachments:
+            logger.error(
+                "Signal: no valid images in batch of %d "
+                "(download=%d missing=%d oversize=%d)",
+                len(images), skipped_download, skipped_missing, skipped_oversize,
+            )
+            return
+
+        logger.info(
+            "Signal send_multiple_images: %d/%d images valid, sending in chunks",
+            len(attachments), len(images),
+        )
+
+        base_params: Dict[str, Any] = {
+            "account": self.account,
+            "message": "",
+        }
+        if chat_id.startswith("group:"):
+            base_params["groupId"] = chat_id[6:]
+        else:
+            base_params["recipient"] = [await self._resolve_recipient(chat_id)]
+
+        att_batches = [
+            attachments[i:i + SIGNAL_MAX_ATTACHMENTS_PER_MSG]
+            for i in range(0, len(attachments), SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+        ]
+
+        for idx, att_batch in enumerate(att_batches):
+            n = len(att_batch)
+            estimated = scheduler.estimate_wait(n)
+            logger.debug(
+                "Signal batch %d/%d: %d attachments, estimated wait=%.1fs",
+                idx + 1, len(att_batches), n, estimated,
+            )
+            if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
+                await self._notify_batch_pacing(
+                    chat_id, idx + 1, len(att_batches), estimated
+                )
+
+            params = dict(base_params, attachments=att_batch)
+            send_timeout = _signal_send_timeout(n)
+
+            for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
+                await scheduler.acquire(n)
+                try:
+                    _rpc_t0 = time.monotonic()
+                    result = await self._rpc(
+                        "send", params, raise_on_rate_limit=True, timeout=send_timeout,
+                    )
+                    _rpc_duration = time.monotonic() - _rpc_t0
+                    if result is not None:
+                        self._track_sent_timestamp(result)
+                        await scheduler.report_rpc_duration(_rpc_duration, n)
+                        logger.info(
+                            "Signal batch %d/%d: %d attachments sent in %.1fs "
+                            "(attempt %d/%d)",
+                            idx + 1, len(att_batches), n, _rpc_duration,
+                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        )
+                    else:
+                        # Assume the server didn't accept the batch, don't deduce tokens
+                        logger.error(
+                            "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                            "attempt %d/%d, rpc_duration=%.1fs)",
+                            idx + 1, len(att_batches), n,
+                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                            _rpc_duration,
+                        )
+                        # Retry transient (non-rate-limit) failures once
+                        if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                            backoff = 2.0 ** attempt
+                            logger.info(
+                                "Signal: retrying batch %d/%d after %.1fs backoff",
+                                idx + 1, len(att_batches), backoff,
+                            )
+                            await asyncio.sleep(backoff)
+                            continue
+                    break
+                except SignalRateLimitError as e:
+                    scheduler.feedback(e.retry_after, n)
+                    if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                        logger.error(
+                            "Signal: rate-limit retries exhausted on batch %d/%d "
+                            "(%d attachments lost, server retry_after=%s)",
+                            idx + 1, len(att_batches), n,
+                            f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
+                        )
+                        break
+                    logger.warning(
+                        "Signal: rate-limited on batch %d/%d "
+                        "(attempt %d/%d, server retry_after=%s); "
+                        "scheduler will pace the retry",
+                        idx + 1, len(att_batches),
+                        attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
+                    )
+
+    async def _notify_batch_pacing(
+        self,
+        chat_id: str,
+        next_batch_idx: int,
+        total_batches: int,
+        wait_s: float,
+    ) -> None:
+        """Inform the user when an inter-batch pacing wait crosses the
+        notice threshold. Best-effort; logs and continues on failure."""
+        try:
+            await self.send(
+                chat_id,
+                f"(More images coming — pausing ~{_format_wait(wait_s)} "
+                f"for Signal rate limit, batch {next_batch_idx}/{total_batches}.)",
+            )
+        except Exception as e:
+            logger.warning("Signal: failed to send pacing notice: %s", e)
 
     async def send_image(
         self,
@@ -962,6 +1350,110 @@ class SignalAdapter(BasePlatformAdapter):
         """Public interface for stopping typing — called by base adapter's
         _keep_typing finally block to clean up platform-level typing tasks."""
         await self._stop_typing_indicator(chat_id)
+
+    # ------------------------------------------------------------------
+    # Reactions
+    # ------------------------------------------------------------------
+
+    async def send_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        target_author: str,
+        target_timestamp: int,
+    ) -> bool:
+        """Send a reaction emoji to a specific message via signal-cli RPC.
+
+        Args:
+            chat_id: The chat (phone number or "group:<id>")
+            emoji: Reaction emoji string (e.g. "👀", "✅")
+            target_author: Phone number / UUID of the message author
+            target_timestamp: Signal timestamp (ms) of the message to react to
+        """
+        params: Dict[str, Any] = {
+            "account": self.account,
+            "emoji": emoji,
+            "targetAuthor": target_author,
+            "targetTimestamp": target_timestamp,
+        }
+
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [chat_id]
+
+        result = await self._rpc("sendReaction", params)
+        if result is not None:
+            return True
+        logger.debug("Signal: sendReaction failed (chat=%s, emoji=%s)", chat_id[:20], emoji)
+        return False
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        target_author: str,
+        target_timestamp: int,
+    ) -> bool:
+        """Remove a reaction by sending an empty-string emoji."""
+        params: Dict[str, Any] = {
+            "account": self.account,
+            "emoji": "",
+            "targetAuthor": target_author,
+            "targetTimestamp": target_timestamp,
+            "remove": True,
+        }
+
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [chat_id]
+
+        result = await self._rpc("sendReaction", params)
+        return result is not None
+
+    # ------------------------------------------------------------------
+    # Processing Lifecycle Hooks (reactions as progress indicators)
+    # ------------------------------------------------------------------
+
+    def _extract_reaction_target(self, event: MessageEvent) -> Optional[tuple]:
+        """Extract (target_author, target_timestamp) from a MessageEvent.
+
+        Returns None if the event doesn't carry the raw Signal envelope data
+        needed for sendReaction.
+        """
+        raw = event.raw_message
+        if not isinstance(raw, dict):
+            return None
+        author = raw.get("sender")
+        ts = raw.get("timestamp_ms")
+        if not author or not ts:
+            return None
+        return (author, ts)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React with 👀 when processing begins."""
+        target = self._extract_reaction_target(event)
+        if target:
+            await self.send_reaction(event.source.chat_id, "👀", *target)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: "ProcessingOutcome") -> None:
+        """Swap the 👀 reaction for ✅ (success) or ❌ (failure).
+
+        On CANCELLED we leave the 👀 in place — no terminal outcome means
+        the reaction should keep reflecting "in progress" (matches Telegram).
+        """
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
+        target = self._extract_reaction_target(event)
+        if not target:
+            return
+        chat_id = event.source.chat_id
+        # Remove the in-progress reaction, then add the final one
+        await self.remove_reaction(chat_id, *target)
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self.send_reaction(chat_id, "✅", *target)
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self.send_reaction(chat_id, "❌", *target)
 
     # ------------------------------------------------------------------
     # Chat Info

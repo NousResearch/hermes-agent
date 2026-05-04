@@ -21,6 +21,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from utils import atomic_replace
 
 try:
     from croniter import croniter
@@ -312,13 +313,21 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
             logger.warning(
-                "Cannot compute next run for cron schedule %r: 'croniter' "
-                "is not installed. Install the 'cron' extra (pip install "
-                "'hermes-agent[cron]') to re-enable recurring cron jobs.",
+                "Cannot compute next run for cron schedule %r: 'croniter' is "
+                "not installed. croniter is a core dependency as of v0.9.x; "
+                "reinstall hermes-agent or run 'pip install croniter' in your "
+                "runtime env.",
                 schedule.get("expr"),
             )
             return None
-        cron = croniter(schedule["expr"], now)
+        # Use last_run_at as the croniter base when available, consistent
+        # with interval jobs.  This ensures that after a crash/restart,
+        # the next run is anchored to the actual last execution time
+        # rather than to an arbitrary restart time.
+        base_time = now
+        if last_run_at:
+            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+        cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 
@@ -367,7 +376,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, JOBS_FILE)
+        atomic_replace(tmp_path, JOBS_FILE)
         _secure_file(JOBS_FILE)
     except BaseException:
         try:
@@ -863,7 +872,7 @@ def save_job_output(job_id: str, output: str):
             f.write(output)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, output_file)
+        atomic_replace(tmp_path, output_file)
         _secure_file(output_file)
     except BaseException:
         try:
@@ -873,3 +882,121 @@ def save_job_output(job_id: str, output: str):
         raise
     
     return output_file
+
+
+# =============================================================================
+# Skill reference rewriting (curator integration)
+# =============================================================================
+
+def rewrite_skill_refs(
+    consolidated: Optional[Dict[str, str]] = None,
+    pruned: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Rewrite cron job skill references after a curator consolidation pass.
+
+    When the curator consolidates a skill X into umbrella Y (or archives X
+    as pruned), any cron job that lists ``X`` in its ``skills`` field will
+    fail to load ``X`` at run time — the scheduler logs a warning and
+    skips the skill, so the job runs without the instructions it was
+    scheduled to follow. See cron/scheduler.py where ``skill_view`` is
+    called per skill name.
+
+    This function repairs cron jobs in-place:
+
+    - A skill listed in ``consolidated`` is replaced with its umbrella
+      target (the ``into`` value). If the umbrella is already in the
+      job's skill list, the stale name is dropped without duplication.
+    - A skill listed in ``pruned`` is dropped outright — there is no
+      forwarding target.
+    - Ordering and other skills in the list are preserved.
+    - The legacy ``skill`` field is realigned via ``_apply_skill_fields``.
+
+    Args:
+        consolidated: mapping of ``old_skill_name -> umbrella_skill_name``.
+        pruned: list of skill names that were archived with no forwarding
+            target.
+
+    Returns a report dict::
+
+        {
+            "rewrites": [
+                {
+                    "job_id": ...,
+                    "job_name": ...,
+                    "before": [...],
+                    "after": [...],
+                    "mapped": {"old": "new", ...},
+                    "dropped": ["old", ...],
+                },
+                ...
+            ],
+            "jobs_updated": N,
+            "jobs_scanned": M,
+        }
+
+    Best-effort: exceptions from loading/saving propagate to the caller so
+    tests can assert behaviour; the curator invocation site wraps this
+    call in a try/except so a failure here never breaks the curator.
+    """
+    consolidated = dict(consolidated or {})
+    pruned_set = set(pruned or [])
+    # A skill listed in both wins as "consolidated" — it has a target,
+    # which is the more useful of the two outcomes.
+    pruned_set -= set(consolidated.keys())
+
+    if not consolidated and not pruned_set:
+        return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        rewrites: List[Dict[str, Any]] = []
+        changed = False
+
+        for job in jobs:
+            skills_before = _normalize_skill_list(job.get("skill"), job.get("skills"))
+            if not skills_before:
+                continue
+
+            mapped: Dict[str, str] = {}
+            dropped: List[str] = []
+            new_skills: List[str] = []
+
+            for name in skills_before:
+                if name in consolidated:
+                    target = consolidated[name]
+                    mapped[name] = target
+                    if target and target not in new_skills:
+                        new_skills.append(target)
+                elif name in pruned_set:
+                    dropped.append(name)
+                else:
+                    if name not in new_skills:
+                        new_skills.append(name)
+
+            if not mapped and not dropped:
+                continue
+
+            job["skills"] = new_skills
+            job["skill"] = new_skills[0] if new_skills else None
+            changed = True
+
+            rewrites.append({
+                "job_id": job.get("id"),
+                "job_name": job.get("name") or job.get("id"),
+                "before": list(skills_before),
+                "after": list(new_skills),
+                "mapped": mapped,
+                "dropped": dropped,
+            })
+
+        if changed:
+            save_jobs(jobs)
+            logger.info(
+                "Curator rewrote skill references in %d cron job(s)", len(rewrites)
+            )
+
+        return {
+            "rewrites": rewrites,
+            "jobs_updated": len(rewrites),
+            "jobs_scanned": len(jobs),
+        }

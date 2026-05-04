@@ -14,8 +14,15 @@ from gateway.run import GatewayRunner
 class StubAdapter(BasePlatformAdapter):
     """Adapter whose connect() result can be controlled."""
 
-    def __init__(self, *, succeed=True, fatal_error=None, fatal_retryable=True):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(
+        self,
+        *,
+        platform=Platform.TELEGRAM,
+        succeed=True,
+        fatal_error=None,
+        fatal_retryable=True,
+    ):
+        super().__init__(PlatformConfig(enabled=True, token="test"), platform)
         self._succeed = succeed
         self._fatal_error = fatal_error
         self._fatal_retryable = fatal_retryable
@@ -64,6 +71,85 @@ def _make_runner():
 
 
 # --- Startup queueing ---
+
+class TestStartupPlatformIsolation:
+    """Verify one blocked platform cannot prevent later platforms from starting."""
+
+    @pytest.mark.asyncio
+    async def test_start_continues_after_platform_connect_timeout(self, tmp_path):
+        """A timeout on Telegram should queue it and still connect Feishu."""
+        runner = _make_runner()
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="test"),
+                Platform.FEISHU: PlatformConfig(enabled=True, token="test"),
+            },
+            sessions_dir=tmp_path,
+        )
+        runner.hooks = MagicMock()
+        runner.hooks.loaded_hooks = []
+        runner.hooks.emit = AsyncMock()
+        runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
+        runner._update_runtime_status = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._send_update_notification = AsyncMock(return_value=True)
+        runner._send_restart_notification = AsyncMock()
+
+        adapters = {
+            Platform.TELEGRAM: StubAdapter(platform=Platform.TELEGRAM),
+            Platform.FEISHU: StubAdapter(platform=Platform.FEISHU),
+        }
+        runner._create_adapter = MagicMock(
+            side_effect=lambda platform, _config: adapters[platform]
+        )
+        runner._connect_adapter_with_timeout = AsyncMock(
+            side_effect=[
+                TimeoutError("telegram connect timed out after 30s"),
+                True,
+            ]
+        )
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch("gateway.status.write_runtime_status"):
+            with patch("hermes_cli.plugins.discover_plugins"):
+                with patch("hermes_cli.config.load_config", return_value={}):
+                    with patch("agent.shell_hooks.register_from_config"):
+                        with patch(
+                            "tools.process_registry.process_registry.recover_from_checkpoint",
+                            return_value=0,
+                        ):
+                            with patch(
+                                "gateway.channel_directory.build_channel_directory",
+                                new=AsyncMock(return_value={"platforms": {}}),
+                            ):
+                                with patch("gateway.run.asyncio.create_task", side_effect=fake_create_task):
+                                    assert await runner.start() is True
+
+        assert Platform.TELEGRAM in runner._failed_platforms
+        assert Platform.FEISHU in runner.adapters
+        assert Platform.TELEGRAM not in runner.adapters
+        assert runner._create_adapter.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_connect_adapter_timeout_raises_retryable_exception(self, monkeypatch):
+        """The timeout helper turns a hanging connect into a caught startup error."""
+        runner = _make_runner()
+        adapter = StubAdapter()
+
+        async def hang():
+            await asyncio.sleep(60)
+            return True
+
+        adapter.connect = hang
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "0.001")
+
+        with pytest.raises(TimeoutError, match="telegram connect timed out"):
+            await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
+
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""

@@ -107,6 +107,10 @@ def adapter():
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    # Slash auth is exercised in test_discord_slash_auth.py — bypass it here
+    # so registration / dispatch / thread behavior tests don't have to
+    # construct a full auth context (allowlist / channel scope).
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
 
 
@@ -117,6 +121,10 @@ def adapter():
 
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
+    # The /thread slash closure now delegates ALL the work — including
+    # defer() — to _handle_thread_create_slash so the auth gate can send
+    # an ephemeral rejection on the still-unresponded interaction. The
+    # closure should just forward.
     adapter._handle_thread_create_slash = AsyncMock()
     adapter._register_slash_commands()
 
@@ -127,7 +135,9 @@ async def test_registers_native_thread_slash_command(adapter):
 
     await command(interaction, name="Planning", message="", auto_archive_duration=1440)
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    # defer is now performed inside _handle_thread_create_slash, AFTER the
+    # auth check passes — not by the closure.
+    interaction.response.defer.assert_not_awaited()
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
@@ -298,6 +308,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -326,6 +337,7 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -348,6 +360,7 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -371,6 +384,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -395,6 +409,7 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "", 1440)

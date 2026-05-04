@@ -46,6 +46,13 @@ def test_is_session_expired_detects_session_not_found():
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
+def test_is_session_expired_detects_session_terminated():
+    """Remote Playwright MCP reports transport loss as ``Session terminated``."""
+    from tools.mcp_tool import _is_session_expired_error
+
+    assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+
+
 def test_is_session_expired_is_case_insensitive():
     """Match uses lower-cased comparison so servers that emit the
     message in different cases (SDK formatter quirks) still trigger."""

@@ -319,6 +319,23 @@ class TestSanitizeEnvLines:
         assert result[0].startswith("OPENROUTER_API_KEY=")
         assert result[1].startswith("OPENAI_BASE_URL=")
 
+    def test_glm_suffix_collision_not_split(self):
+        """GLM_API_KEY / GLM_BASE_URL must not be mangled by LM_API_KEY / LM_BASE_URL suffixes (#17138)."""
+        lines = [
+            "GLM_API_KEY=glm-secret\n",
+            "GLM_BASE_URL=https://api.z.ai/api/paas/v4\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"GLM_* lines were corrupted by suffix collision: {result}"
+
+    def test_suffix_collision_does_not_break_real_concatenation(self):
+        """A genuine concatenation that happens to start with a suffix-superset key still splits."""
+        lines = ["GLM_API_KEY=glmLM_API_KEY=lm-key\n"]
+        result = _sanitize_env_lines(lines)
+        assert len(result) == 2
+        assert result[0].startswith("GLM_API_KEY=")
+        assert result[1].startswith("LM_API_KEY=")
+
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"

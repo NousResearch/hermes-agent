@@ -30,10 +30,12 @@ def generate_title(
     assistant_response: str,
     timeout: float = 30.0,
     failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
 ) -> Optional[str]:
     """Generate a session title from the first exchange.
 
-    Uses the auxiliary LLM client (cheapest/fastest available model).
+    Uses the main runtime's model when available, falling back to the
+    auxiliary LLM client (cheapest/fastest available model).
     Returns the title string or None on failure.
 
     ``failure_callback`` is invoked with ``(task, exception)`` when the
@@ -57,6 +59,7 @@ def generate_title(
             max_tokens=500,
             temperature=0.3,
             timeout=timeout,
+            main_runtime=main_runtime,
         )
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
@@ -86,6 +89,7 @@ def auto_title_session(
     user_message: str,
     assistant_response: str,
     failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -107,7 +111,7 @@ def auto_title_session(
         return
 
     title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback
+        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
     )
     if not title:
         return
@@ -126,6 +130,7 @@ def maybe_auto_title(
     assistant_response: str,
     conversation_history: list,
     failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -147,7 +152,7 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
-        kwargs={"failure_callback": failure_callback},
+        kwargs={"failure_callback": failure_callback, "main_runtime": main_runtime},
         daemon=True,
         name="auto-title",
     )

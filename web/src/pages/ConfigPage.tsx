@@ -33,10 +33,12 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -45,7 +47,10 @@ import { PluginSlot } from "@/plugins";
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+const CATEGORY_ICONS: Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> = {
   general: Settings,
   agent: Bot,
   terminal: Monitor,
@@ -63,7 +68,13 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>
   auxiliary: Wrench,
 };
 
-function CategoryIcon({ category, className }: { category: string; className?: string }) {
+function CategoryIcon({
+  category,
+  className,
+}: {
+  category: string;
+  className?: string;
+}) {
   const Icon = CATEGORY_ICONS[category] ?? FileQuestion;
   return <Icon className={className ?? "h-4 w-4"} />;
 }
@@ -74,9 +85,14 @@ function CategoryIcon({ category, className }: { category: string; className?: s
 
 export default function ConfigPage() {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [schema, setSchema] = useState<Record<string, Record<string, unknown>> | null>(null);
+  const [schema, setSchema] = useState<Record<
+    string,
+    Record<string, unknown>
+  > | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
-  const [defaults, setDefaults] = useState<Record<string, unknown> | null>(null);
+  const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [yamlMode, setYamlMode] = useState(false);
@@ -104,18 +120,20 @@ export default function ConfigPage() {
           onChange={(e) => setSearchQuery(e.target.value)}
         />
         {searchQuery && (
-          <button
-            type="button"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          <Button
+            ghost
+            size="xs"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearchQuery("")}
+            aria-label={t.common.clear}
           >
-            <X className="h-3 w-3" />
-          </button>
+            <X />
+          </Button>
         )}
       </div>,
     );
     return () => setEnd(null);
-  }, [config, schema, searchQuery, setEnd, t.common.search]);
+  }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
@@ -124,7 +142,10 @@ export default function ConfigPage() {
   }
 
   useEffect(() => {
-    api.getConfig().then(setConfig).catch(() => {});
+    api
+      .getConfig()
+      .then(setConfig)
+      .catch(() => {});
     api
       .getSchema()
       .then((resp) => {
@@ -132,7 +153,10 @@ export default function ConfigPage() {
         setCategoryOrder(resp.category_order ?? []);
       })
       .catch(() => {});
-    api.getDefaults().then(setDefaults).catch(() => {});
+    api
+      .getDefaults()
+      .then(setDefaults)
+      .catch(() => {});
   }, []);
 
   // Set active category when categories load
@@ -157,7 +181,11 @@ export default function ConfigPage() {
   /* ---- Categories ---- */
   const categories = useMemo(() => {
     if (!schema) return [];
-    const allCats = [...new Set(Object.values(schema).map((s) => String(s.category ?? "general")))];
+    const allCats = [
+      ...new Set(
+        Object.values(schema).map((s) => String(s.category ?? "general")),
+      ),
+    ];
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
@@ -186,8 +214,12 @@ export default function ConfigPage() {
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
-        String(s.category ?? "").toLowerCase().includes(lowerSearch) ||
-        String(s.description ?? "").toLowerCase().includes(lowerSearch)
+        String(s.category ?? "")
+          .toLowerCase()
+          .includes(lowerSearch) ||
+        String(s.description ?? "")
+          .toLowerCase()
+          .includes(lowerSearch)
       );
     });
   }, [isSearching, lowerSearch, schema]);
@@ -196,7 +228,7 @@ export default function ConfigPage() {
   const activeFields = useMemo(() => {
     if (!schema || isSearching) return [];
     return Object.entries(schema).filter(
-      ([, s]) => String(s.category ?? "general") === activeCategory
+      ([, s]) => String(s.category ?? "general") === activeCategory,
     );
   }, [schema, activeCategory, isSearching]);
 
@@ -219,7 +251,10 @@ export default function ConfigPage() {
     try {
       await api.saveConfigRaw(yamlText);
       showToast(t.config.yamlConfigSaved, "success");
-      api.getConfig().then(setConfig).catch(() => {});
+      api
+        .getConfig()
+        .then(setConfig)
+        .catch(() => {});
     } catch (e) {
       showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
     } finally {
@@ -247,12 +282,17 @@ export default function ConfigPage() {
       next = setNestedValue(next, key, getNestedValue(defaults, key));
     }
     setConfig(next);
-    showToast(t.config.resetScopeToast.replace("{scope}", scopeLabel), "success");
+    showToast(
+      t.config.resetScopeToast.replace("{scope}", scopeLabel),
+      "success",
+    );
   };
 
   const handleExport = () => {
     if (!config) return;
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(config, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -281,13 +321,16 @@ export default function ConfigPage() {
   if (!config || !schema) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
 
   /* ---- Render field list (shared between search & normal) ---- */
-  const renderFields = (fields: [string, Record<string, unknown>][], showCategory = false) => {
+  const renderFields = (
+    fields: [string, Record<string, unknown>][],
+    showCategory = false,
+  ) => {
     let lastSection = "";
     let lastCat = "";
     return fields.map(([key, s]) => {
@@ -295,7 +338,11 @@ export default function ConfigPage() {
       const section = parts.length > 1 ? parts[0] : "";
       const cat = String(s.category ?? "general");
       const showCatBadge = showCategory && cat !== lastCat;
-      const showSection = !showCategory && section && section !== lastSection && section !== activeCategory;
+      const showSection =
+        !showCategory &&
+        section &&
+        section !== lastSection &&
+        section !== activeCategory;
       lastSection = section;
       lastCat = cat;
 
@@ -303,7 +350,10 @@ export default function ConfigPage() {
         <div key={key}>
           {showCatBadge && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
-              <CategoryIcon category={cat} className="h-4 w-4 text-muted-foreground" />
+              <CategoryIcon
+                category={cat}
+                className="h-4 w-4 text-muted-foreground"
+              />
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
               </span>
@@ -336,7 +386,6 @@ export default function ConfigPage() {
       <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
-      {/* ═══════════════ Header Bar ═══════════════ */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <Settings2 className="h-4 w-4 text-muted-foreground" />
@@ -345,61 +394,86 @@ export default function ConfigPage() {
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig}>
-            <Download className="h-3.5 w-3.5" />
+          <Button
+            ghost
+            size="icon"
+            onClick={handleExport}
+            title={t.config.exportConfig}
+            aria-label={t.config.exportConfig}
+          >
+            <Download />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig}>
-            <Upload className="h-3.5 w-3.5" />
+          <Button
+            ghost
+            size="icon"
+            onClick={() => fileInputRef.current?.click()}
+            title={t.config.importConfig}
+            aria-label={t.config.importConfig}
+          >
+            <Upload />
           </Button>
-          <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
-          {!yamlMode && (() => {
-            const resetScopeLabel = isSearching
-              ? t.config.searchResults
-              : prettyCategoryName(activeCategory);
-            const resetTitle = t.config.resetScopeTooltip.replace("{scope}", resetScopeLabel);
-            return (
-              <Button variant="ghost" size="sm" onClick={handleReset} title={resetTitle} aria-label={resetTitle}>
-                <RotateCcw className="h-3.5 w-3.5" />
-              </Button>
-            );
-          })()}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
+          {!yamlMode &&
+            (() => {
+              const resetScopeLabel = isSearching
+                ? t.config.searchResults
+                : prettyCategoryName(activeCategory);
+              const resetTitle = t.config.resetScopeTooltip.replace(
+                "{scope}",
+                resetScopeLabel,
+              );
+              return (
+                <Button
+                  ghost
+                  size="icon"
+                  onClick={handleReset}
+                  title={resetTitle}
+                  aria-label={resetTitle}
+                >
+                  <RotateCcw />
+                </Button>
+              );
+            })()}
 
           <div className="w-px h-5 bg-border mx-1" />
 
           <Button
-            variant={yamlMode ? "default" : "outline"}
             size="sm"
+            outlined={!yamlMode}
             onClick={() => setYamlMode(!yamlMode)}
-            className="gap-1.5"
+            prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? (
-              <>
-                <FormInput className="h-3.5 w-3.5" />
-                {t.common.form}
-              </>
-            ) : (
-              <>
-                <Code className="h-3.5 w-3.5" />
-                YAML
-              </>
-            )}
+            {yamlMode ? t.common.form : "YAML"}
           </Button>
 
           {yamlMode ? (
-            <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
-              <Save className="h-3.5 w-3.5" />
+            <Button
+              size="sm"
+              onClick={handleYamlSave}
+              disabled={yamlSaving}
+              prefix={<Save />}
+            >
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
-            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
-              <Save className="h-3.5 w-3.5" />
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving}
+              prefix={<Save />}
+            >
               {saving ? t.common.saving : t.common.save}
             </Button>
           )}
         </div>
       </div>
 
-      {/* ═══════════════ YAML Mode ═══════════════ */}
       {yamlMode ? (
         <Card>
           <CardHeader className="py-3 px-4">
@@ -411,7 +485,7 @@ export default function ConfigPage() {
           <CardContent className="p-0">
             {yamlLoading ? (
               <div className="flex items-center justify-center py-12">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <Spinner className="text-xl text-primary" />
               </div>
             ) : (
               <textarea
@@ -424,13 +498,10 @@ export default function ConfigPage() {
           </CardContent>
         </Card>
       ) : (
-        /* ═══════════════ Form Mode ═══════════════ */
         <div className="flex flex-col sm:flex-row gap-4">
-          {/* ---- Filter panel ---- */}
           <aside aria-label={t.config.filters} className="sm:w-56 sm:shrink-0">
             <div className="sm:sticky sm:top-4">
               <div className="flex flex-col border border-border bg-muted/20">
-                {/* Panel heading */}
                 <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
                   <Filter className="h-3 w-3 text-muted-foreground" />
                   <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
@@ -438,37 +509,31 @@ export default function ConfigPage() {
                   </span>
                 </div>
 
-                {/* Sections heading (hidden on mobile since it becomes a horizontal scroll) */}
                 <div className="hidden sm:block px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
                   {t.config.sections}
                 </div>
 
-                {/* Category nav — horizontal scroll on mobile, pill list on sm+ */}
                 <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
                   {categories.map((cat) => {
                     const isActive = !isSearching && activeCategory === cat;
 
                     return (
-                      <button
+                      <ListItem
                         key={cat}
-                        type="button"
+                        active={isActive}
                         onClick={() => {
                           setSearchQuery("");
                           setActiveCategory(cat);
                         }}
-                        className={`
-                          group flex items-center gap-2 px-2 py-1
-                          rounded-sm text-left text-[11px] cursor-pointer whitespace-nowrap
-                          transition-colors
-                          ${
-                            isActive
-                              ? "bg-foreground/10 text-foreground"
-                              : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-                          }
-                        `}
+                        className="rounded-sm whitespace-nowrap px-2 py-1 text-[11px]"
                       >
-                        <CategoryIcon category={cat} className="h-3.5 w-3.5 shrink-0" />
-                        <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
+                        <CategoryIcon
+                          category={cat}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
+                        <span className="flex-1 truncate">
+                          {prettyCategoryName(cat)}
+                        </span>
                         <span
                           className={`text-[10px] tabular-nums ${
                             isActive
@@ -478,7 +543,7 @@ export default function ConfigPage() {
                         >
                           {categoryCounts[cat] || 0}
                         </span>
-                      </button>
+                      </ListItem>
                     );
                   })}
                 </div>
@@ -486,10 +551,8 @@ export default function ConfigPage() {
             </div>
           </aside>
 
-          {/* ---- Content ---- */}
           <div className="flex-1 min-w-0">
             {isSearching ? (
-              /* Search results */
               <Card>
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
@@ -497,8 +560,12 @@ export default function ConfigPage() {
                       <Search className="h-4 w-4" />
                       {t.config.searchResults}
                     </CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">
-                      {searchMatchedFields.length} {t.config.fields.replace("{s}", searchMatchedFields.length !== 1 ? "s" : "")}
+                    <Badge tone="secondary" className="text-[10px]">
+                      {searchMatchedFields.length}{" "}
+                      {t.config.fields.replace(
+                        "{s}",
+                        searchMatchedFields.length !== 1 ? "s" : "",
+                      )}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -518,11 +585,18 @@ export default function ConfigPage() {
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <CategoryIcon category={activeCategory} className="h-4 w-4" />
+                      <CategoryIcon
+                        category={activeCategory}
+                        className="h-4 w-4"
+                      />
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">
-                      {activeFields.length} {t.config.fields.replace("{s}", activeFields.length !== 1 ? "s" : "")}
+                    <Badge tone="secondary" className="text-[10px]">
+                      {activeFields.length}{" "}
+                      {t.config.fields.replace(
+                        "{s}",
+                        activeFields.length !== 1 ? "s" : "",
+                      )}
                     </Badge>
                   </div>
                 </CardHeader>

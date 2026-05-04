@@ -35,4 +35,20 @@ describe('viewportStore', () => {
     })
     expect(viewportSnapshotKey(snap)).toBe('0:16:5:40:3')
   })
+
+  it('uses fresh scroll height to clear stale non-bottom state', () => {
+    const handle = {
+      getFreshScrollHeight: () => 20,
+      getPendingDelta: () => 0,
+      getScrollHeight: () => 40,
+      getScrollTop: () => 15,
+      getViewportHeight: () => 5,
+      isSticky: () => false
+    }
+
+    const snap = getViewportSnapshot(handle as any)
+
+    expect(snap.atBottom).toBe(true)
+    expect(snap.scrollHeight).toBe(20)
+  })
 })

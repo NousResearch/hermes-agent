@@ -1,0 +1,8 @@
+Job Application
+Applicant Name: Avery Stone
+Role Applied For: Staff Platform Engineer
+Experience: 11 years in distributed systems, Python, Go, Postgres, observability
+Key Achievement: led incident response automation and internal developer tools
+Location Preference: Remote or New York
+Work Authorization: United States
+Instructions: use this applicant data to complete the hiring form

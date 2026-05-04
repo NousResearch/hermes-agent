@@ -71,6 +71,7 @@ from agent.usage_pricing import (
 # NOTE: `from agent.account_usage import ...` is deliberately NOT at module
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
 # needed when the user runs `/limits`. Lazy-imported inside the handler below.
+from agent.camel_guard import normalize_camel_guard_mode
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -1789,7 +1790,25 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 
 
 
-def _build_compact_banner() -> str:
+def _camel_runtime_badge(mode: str) -> tuple[str, str]:
+    normalized = normalize_camel_guard_mode(mode, default="enforce")
+    if normalized == "off":
+        return "Legacy Runtime", "CaMeL guard disabled"
+    if normalized == "monitor":
+        return "CaMeL Monitor", "observe-only trust boundary"
+    return "CaMeL Guard", "runtime trust boundary active"
+
+
+def _camel_runtime_welcome(agent_name: str, mode: str) -> str:
+    normalized = normalize_camel_guard_mode(mode, default="enforce")
+    if normalized == "off":
+        return f"Welcome to {agent_name}! Type your message or /help for commands."
+    if normalized == "monitor":
+        return f"Welcome to {agent_name}! CaMeL Monitor active. Type your message or /help for commands."
+    return f"Welcome to {agent_name}! CaMeL Guard active. Type your message or /help for commands."
+
+
+def _build_compact_banner(camel_guard_mode: str = "enforce") -> str:
     """Build a compact banner that fits the current terminal width."""
     try:
         from hermes_cli.skin_engine import get_active_skin
@@ -1811,6 +1830,8 @@ def _build_compact_banner() -> str:
         tiny_line = agent_name
 
     version_line = format_banner_version_label()
+    runtime_label, runtime_detail = _camel_runtime_badge(camel_guard_mode)
+    runtime_line = f"{runtime_label} - {runtime_detail}"
 
     w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
@@ -1823,11 +1844,13 @@ def _build_compact_banner() -> str:
     # Truncate and pad to fit
     line1 = line1[:content_width].ljust(content_width)
     line2 = version_line[:content_width].ljust(content_width)
+    line3 = runtime_line[:content_width].ljust(content_width)
 
     return (
         f"\n[bold {border_color}]╔{bar}╗[/]\n"
         f"[bold {border_color}]║[/] [{title_color}]{line1}[/] [bold {border_color}]║[/]\n"
         f"[bold {border_color}]║[/] [dim {dim_color}]{line2}[/] [bold {border_color}]║[/]\n"
+        f"[bold {border_color}]║[/] [#CD7F32]{line3}[/] [bold {border_color}]║[/]\n"
         f"[bold {border_color}]╚{bar}╝[/]\n"
     )
 
@@ -1985,6 +2008,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        camel_guard: str = None,
         ignore_rules: bool = False,
     ):
         """
@@ -2001,6 +2025,7 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            camel_guard: Runtime mode override ("on", "off", "monitor", or "enforce")
         """
         # Initialize Rich console
         self.console = Console()
@@ -2150,6 +2175,12 @@ class HermesCLI:
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
+        camel_cfg = self.config.get("camel_guard", {}) if isinstance(self.config, dict) else {}
+        config_mode = normalize_camel_guard_mode(
+            camel_cfg.get("mode", "monitor") if camel_cfg.get("enabled", False) else "off",
+            default="monitor",
+        )
+        self.camel_guard_mode = normalize_camel_guard_mode(camel_guard, default=config_mode)
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
         # pass skip_context_files=True and skip_memory=True to AIAgent so
@@ -3616,6 +3647,7 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                camel_guard_mode=self.camel_guard_mode,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
                 tool_progress_callback=self._on_tool_progress,
@@ -3637,6 +3669,7 @@ class HermesCLI:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                self.camel_guard_mode,
             )
 
             # Force-create DB row on /title intent, then apply title.
@@ -3672,7 +3705,7 @@ class HermesCLI:
         use_compact = self.compact or term_width < 80
         
         if use_compact:
-            self._console_print(_build_compact_banner())
+            self._console_print(_build_compact_banner(self.camel_guard_mode))
             self._show_status()
         else:
             # Get tools for display
@@ -9853,10 +9886,11 @@ class HermesCLI:
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _agent_name = _welcome_skin.get_branding("agent_name", "Hermes Agent")
+            _welcome_text = _camel_runtime_welcome(_agent_name, self.camel_guard_mode)
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_text = _camel_runtime_welcome("Hermes Agent", self.camel_guard_mode)
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
         # First-time OpenClaw-residue banner — fires once if ~/.openclaw/ exists
@@ -11781,6 +11815,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    camel_guard: str = None,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -11805,6 +11840,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        camel_guard: Runtime mode override ("on", "off", "monitor", or "enforce")
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -11892,6 +11928,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        camel_guard=camel_guard,
         ignore_rules=ignore_rules,
     )
 

@@ -195,6 +195,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--camel-guard",
+        choices=["off", "legacy", "on", "monitor", "enforce"],
+        default=None,
+        help="Opt in to CaMeL runtime guard mode for this invocation",
+    )
+    _inherited_flag(
+        parser,
         "--ignore-user-config",
         action="store_true",
         default=False,
@@ -334,6 +341,13 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Include the session ID in the agent's system prompt",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--camel-guard",
+        choices=["off", "legacy", "on", "monitor", "enforce"],
+        default=argparse.SUPPRESS,
+        help="Opt in to CaMeL runtime guard mode for this invocation",
     )
     _inherited_flag(
         chat_parser,

@@ -99,3 +99,51 @@ def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
         "skills": ["hermes-agent-dev"],
         "command": "chat",
     }
+
+
+def test_chat_subcommand_accepts_camel_guard_flag(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["camel_guard"] = args.camel_guard
+        captured["query"] = args.query
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "chat", "--camel-guard", "off", "-q", "hello"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "camel_guard": "off",
+        "query": "hello",
+    }
+
+
+def test_top_level_camel_guard_flag_defaults_to_chat(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["camel_guard"] = args.camel_guard
+        captured["command"] = args.command
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "--camel-guard", "monitor"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "camel_guard": "monitor",
+        "command": None,
+    }

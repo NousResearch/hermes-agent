@@ -221,7 +221,7 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
+from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,134 @@ def _relative_time(ts) -> str:
     if delta < 604800:
         return f"{int(delta / 86400)}d ago"
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def _camel_trace_dir() -> Path:
+    return get_hermes_home() / "camel_traces"
+
+
+def _list_camel_trace_files() -> list[Path]:
+    trace_dir = _camel_trace_dir()
+    if not trace_dir.exists():
+        return []
+    return sorted(
+        trace_dir.glob("camel_trace_*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def _load_camel_trace(session_id: Optional[str] = None) -> dict:
+    files = _list_camel_trace_files()
+    if not files:
+        raise FileNotFoundError("No CaMeL trace files found.")
+
+    if not session_id:
+        return json.loads(files[0].read_text(encoding="utf-8"))
+
+    normalized = session_id.strip()
+    exact = _camel_trace_dir() / f"camel_trace_{normalized}.json"
+    if exact.exists():
+        return json.loads(exact.read_text(encoding="utf-8"))
+
+    matches: list[dict] = []
+    for path in files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        candidate = str(payload.get("session_id") or "")
+        if candidate == normalized or candidate.startswith(normalized):
+            matches.append(payload)
+    if not matches:
+        raise FileNotFoundError(f"No CaMeL trace found for session '{session_id}'.")
+    if len(matches) > 1:
+        raise ValueError(
+            f"Session id prefix '{session_id}' is ambiguous across {len(matches)} traces. Use a longer id."
+        )
+    return matches[0]
+
+
+def _camel_trace_tool_status(runtime_mode: str, allowed: bool) -> str:
+    if allowed:
+        return "allowed"
+    if runtime_mode == "monitor":
+        return "monitor-only"
+    if runtime_mode == "enforce":
+        return "blocked"
+    return "blocked"
+
+
+def _render_camel_trace_summary(trace: dict) -> str:
+    summary = trace.get("summary") or {}
+    turns = trace.get("turns") or []
+    lines = [
+        "CaMeL Trace",
+        f"Session: {trace.get('session_id') or '[unknown]'}",
+        f"Runtime mode: {trace.get('runtime_mode') or '[unknown]'}",
+        f"Turns: {summary.get('turn_count', len(turns))}",
+        f"Policy alerts: {summary.get('policy_alert_count', 0)}",
+        f"Response alerts: {summary.get('response_alert_count', 0)}",
+        f"Untrusted sources: {', '.join(summary.get('unique_untrusted_sources') or []) or 'none'}",
+    ]
+
+    for turn in turns:
+        lines.extend(
+            [
+                "",
+                f"Turn {turn.get('turn_index', '?')}",
+                f"  Request: {turn.get('operator_request') or '[none]'}",
+                f"  Goal: {turn.get('goal_summary') or '[none]'}",
+                f"  Sources: {', '.join(turn.get('untrusted_sources') or []) or 'none'}",
+            ]
+        )
+        for decision in turn.get("tool_decisions") or []:
+            status = _camel_trace_tool_status(
+                turn.get("runtime_mode") or trace.get("runtime_mode"),
+                bool(decision.get("allowed")),
+            )
+            lines.append(
+                f"  Tool {decision.get('tool_name')} [{decision.get('capability') or 'read_only'}]: {status} - {decision.get('reason')}"
+            )
+
+    return "\n".join(lines) + "\n"
+
+
+def _render_camel_trace_markdown(trace: dict) -> str:
+    summary = trace.get("summary") or {}
+    turns = trace.get("turns") or []
+    lines = [
+        "# CaMeL Trace",
+        "",
+        f"- Session: `{trace.get('session_id') or '[unknown]'}`",
+        f"- Runtime mode: `{trace.get('runtime_mode') or '[unknown]'}`",
+        f"- Turns: `{summary.get('turn_count', len(turns))}`",
+        f"- Policy alerts: `{summary.get('policy_alert_count', 0)}`",
+        f"- Response alerts: `{summary.get('response_alert_count', 0)}`",
+        "",
+    ]
+    for turn in turns:
+        lines.extend(
+            [
+                f"## Turn {turn.get('turn_index', '?')}",
+                "",
+                f"- Request: {turn.get('operator_request') or '[none]'}",
+                f"- Goal: {turn.get('goal_summary') or '[none]'}",
+                "",
+                "| Tool | Capability | Result | Reason |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        for decision in turn.get("tool_decisions") or []:
+            status = _camel_trace_tool_status(
+                turn.get("runtime_mode") or trace.get("runtime_mode"),
+                bool(decision.get("allowed")),
+            )
+            lines.append(
+                f"| `{decision.get('tool_name')}` | `{decision.get('capability') or 'read_only'}` | `{status}` | {decision.get('reason')} |"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _has_any_provider_configured() -> bool:
@@ -1326,6 +1454,7 @@ def cmd_chat(args):
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
+        "camel_guard": getattr(args, "camel_guard", None),
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
@@ -9845,6 +9974,86 @@ Examples:
         db.close()
 
     sessions_parser.set_defaults(func=cmd_sessions)
+
+    # =========================================================================
+    # camel command
+    # =========================================================================
+    camel_parser = subparsers.add_parser(
+        "camel",
+        help="Inspect CaMeL trace artifacts and benchmarks",
+        description="Inspect persisted CaMeL traces or rerun the bundled benchmark suite",
+    )
+    camel_subparsers = camel_parser.add_subparsers(dest="camel_action")
+
+    camel_trace = camel_subparsers.add_parser("trace", help="Show a persisted CaMeL trace")
+    camel_trace.add_argument("--session", dest="session_id", help="Session ID or unique prefix to inspect")
+    camel_trace.add_argument("--format", choices=["summary", "json", "markdown"], default="summary")
+    camel_trace.add_argument("--output", help="Write the rendered trace to a file instead of stdout")
+
+    camel_benchmark = camel_subparsers.add_parser("benchmark", help="Run the bundled CaMeL benchmark suite")
+    camel_benchmark.add_argument("--json", action="store_true", help="Print JSON instead of markdown")
+    camel_benchmark.add_argument(
+        "--write-doc",
+        action="store_true",
+        help="Write the benchmark markdown report to docs/camel-runtime-comparison.md",
+    )
+    camel_subparsers.add_parser(
+        "update", help="Update Hermes/CaMeL code to the latest version"
+    )
+
+    def cmd_camel(args):
+        action = args.camel_action or "trace"
+
+        if action == "trace":
+            try:
+                trace = _load_camel_trace(getattr(args, "session_id", None))
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"Error: {exc}")
+                return
+
+            if args.format == "json":
+                rendered = json.dumps(trace, indent=2, ensure_ascii=False)
+            elif args.format == "markdown":
+                rendered = _render_camel_trace_markdown(trace)
+            else:
+                rendered = _render_camel_trace_summary(trace)
+
+            if args.output:
+                Path(args.output).write_text(rendered, encoding="utf-8")
+            else:
+                print(rendered, end="")
+            return
+
+        if action == "benchmark":
+            from agent.camel_benchmark import (
+                DOC_PATH,
+                render_markdown,
+                results_as_dicts,
+                run_policy_comparison,
+                run_response_comparison,
+                write_default_fixtures,
+            )
+
+            write_default_fixtures()
+            response_outcomes = run_response_comparison()
+            tool_outcomes = run_policy_comparison()
+
+            if args.json:
+                print(json.dumps(results_as_dicts(response_outcomes, tool_outcomes), indent=2))
+            elif args.write_doc:
+                DOC_PATH.write_text(render_markdown(response_outcomes, tool_outcomes), encoding="utf-8")
+                print(f"Wrote {DOC_PATH}")
+            else:
+                print(render_markdown(response_outcomes, tool_outcomes), end="")
+            return
+
+        if action == "update":
+            cmd_update(args)
+            return
+
+        camel_parser.print_help()
+
+    camel_parser.set_defaults(func=cmd_camel)
 
     # =========================================================================
     # insights command

@@ -638,6 +638,14 @@ DEFAULT_CONFIG = {
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
     },
 
+    "camel_guard": {
+        "enabled": False,
+        "mode": "monitor",  # off | monitor | enforce
+        "wrap_untrusted_tool_results": False,
+        "trace_enabled": True,
+        "trace_preview_chars": 220,
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {

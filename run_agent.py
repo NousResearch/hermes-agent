@@ -107,12 +107,23 @@ else:
     logger.info("No .env file found. Using system environment variables.")
 
 
+def terminal_cwd() -> str:
+    return os.getenv("TERMINAL_CWD") or os.getcwd()
+
+
 # Import our tool system
 from model_tools import (
     get_tool_definitions,
     get_toolset_for_tool,
     handle_function_call,
     check_toolset_requirements,
+)
+from agent.camel_guard import (
+    CamelDecision,
+    CamelGuard,
+    CamelGuardConfig,
+    normalize_camel_guard_mode,
+    sanitize_message_for_api,
 )
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.terminal_tool import (
@@ -174,7 +185,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config
 
 
 
@@ -956,6 +967,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        camel_guard_mode: str | None = None,
     ):
         """
         Initialize the AI Agent.
@@ -1031,6 +1043,16 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
+        try:
+            _camel_cfg = load_config().get("camel_guard", {})
+        except Exception:
+            _camel_cfg = {}
+        if camel_guard_mode is not None:
+            resolved_mode = normalize_camel_guard_mode(camel_guard_mode, default="monitor")
+            _camel_cfg = dict(_camel_cfg or {})
+            _camel_cfg["mode"] = resolved_mode
+            _camel_cfg["enabled"] = resolved_mode != "off"
+        self._camel_guard = CamelGuard(CamelGuardConfig.from_dict(_camel_cfg))
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -1645,6 +1667,10 @@ class AIAgent:
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        self.camel_trace_dir = hermes_home / "camel_traces"
+        self.camel_trace_dir.mkdir(parents=True, exist_ok=True)
+        self.camel_trace_file = self.camel_trace_dir / f"camel_trace_{self.session_id}.json"
+        self._camel_guard.set_session_id(self.session_id)
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
@@ -4325,6 +4351,10 @@ class AIAgent:
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
+            trace_summary = self._camel_guard.trace_summary()
+            if trace_summary.get("turn_count"):
+                entry["camel_trace_file"] = str(self.camel_trace_file)
+                entry["camel_trace_summary"] = trace_summary
 
             atomic_json_write(
                 self.session_log_file,
@@ -4332,10 +4362,36 @@ class AIAgent:
                 indent=2,
                 default=str,
             )
+            self._save_camel_trace()
 
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
+
+    def _save_camel_trace(self) -> None:
+        if not self._camel_guard.config.trace_enabled:
+            return
+
+        payload = self._camel_guard.trace_payload()
+        summary = payload.get("summary") or {}
+        if not summary.get("turn_count"):
+            return
+
+        payload.update(
+            {
+                "model": self.model,
+                "base_url": self.base_url,
+                "platform": self.platform,
+                "session_start": self.session_start.isoformat(),
+            }
+        )
+
+        atomic_json_write(
+            self.camel_trace_file,
+            payload,
+            indent=2,
+            default=str,
+        )
 
     def interrupt(self, message: str = None) -> None:
         """
@@ -8913,6 +8969,31 @@ class AIAgent:
         ]
         return api_msg
 
+    def _camel_decide_tool_call(self, function_name: str, function_args: Dict[str, Any]) -> CamelDecision:
+        return self._camel_guard.evaluate_tool_call(function_name, function_args)
+
+    def _camel_make_tool_message(self, function_name: str, function_result: str, tool_call_id: str) -> Dict[str, Any]:
+        wrapped_content, _ = self._camel_guard.wrap_tool_result(function_name, function_result)
+        return {
+            "role": "tool",
+            "content": wrapped_content,
+            "tool_call_id": tool_call_id,
+        }
+
+    def _camel_blocked_tool_result(self, function_name: str, decision: CamelDecision) -> str:
+        return json.dumps(
+            {
+                "error": f"CaMeL guard blocked {function_name}: {decision.reason}",
+                "_camel_guard": {
+                    "allowed": False,
+                    "reason": decision.reason,
+                    "mode": self._camel_guard.config.mode,
+                    "operator_request": self._camel_guard.latest_trusted_user_message[:240],
+                },
+            },
+            ensure_ascii=False,
+        )
+
     @staticmethod
     def _sanitize_tool_call_arguments(
         messages: list,
@@ -9418,7 +9499,7 @@ class AIAgent:
             return
 
         # ── Parse args + pre-execution bookkeeping ───────────────────────
-        parsed_calls = []  # list of (tool_call, function_name, function_args)
+        parsed_calls = []  # list of (tool_call, function_name, function_args, camel_decision, block_result, blocked_by_guardrail)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
 
@@ -9434,9 +9515,10 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            camel_decision = self._camel_decide_tool_call(function_name, function_args)
 
             # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if camel_decision.allowed and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -9446,11 +9528,11 @@ class AIAgent:
                     pass
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if camel_decision.allowed and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        cwd = function_args.get("workdir") or terminal_cwd()
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -9474,14 +9556,17 @@ class AIAgent:
                 if not guardrail_decision.allows_execution:
                     block_result = self._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
+            if not camel_decision.allowed and self._camel_guard.config.mode == "enforce":
+                block_result = self._camel_blocked_tool_result(function_name, camel_decision)
+                blocked_by_guardrail = True
 
-            parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
+            parsed_calls.append((tool_call, function_name, function_args, camel_decision, block_result, blocked_by_guardrail))
 
         # ── Logging / callbacks ──────────────────────────────────────────
-        tool_names_str = ", ".join(name for _, name, _, _, _ in parsed_calls)
+        tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
         if not self.quiet_mode:
             print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-            for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
+            for i, (tc, name, args, camel_decision, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
                     print(f"  📞 Tool {i}: {name}({list(args.keys())})")
@@ -9489,8 +9574,10 @@ class AIAgent:
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                if not camel_decision.allowed and self._camel_guard.config.mode == "enforce":
+                    print(f"     🛡️  {camel_decision.reason}")
 
-        for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
+        for tc, name, args, camel_decision, block_result, blocked_by_guardrail in parsed_calls:
             if block_result is not None:
                 continue
             if self.tool_progress_callback:
@@ -9500,7 +9587,7 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
-        for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
+        for tc, name, args, camel_decision, block_result, blocked_by_guardrail in parsed_calls:
             if block_result is not None:
                 continue
             if self.tool_start_callback:
@@ -9512,7 +9599,7 @@ class AIAgent:
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag)
         results = [None] * num_tools
-        for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+        for i, (tc, name, args, camel_decision, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
             if block_result is not None:
                 results[i] = (name, args, block_result, 0.0, True, True)
 
@@ -9614,7 +9701,7 @@ class AIAgent:
         try:
             runnable_calls = [
                 (i, tc, name, args)
-                for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls)
+                for i, (tc, name, args, camel_decision, block_result, blocked_by_guardrail) in enumerate(parsed_calls)
                 if block_result is None
             ]
             futures = []
@@ -9681,7 +9768,7 @@ class AIAgent:
                 spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
         # ── Post-execution: display per-tool results ─────────────────────
-        for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+        for i, (tc, name, args, camel_decision, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
             r = results[i]
             blocked = False
             if r is None:
@@ -9751,11 +9838,7 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tc.id,
-            }
+            tool_msg = self._camel_make_tool_message(name, function_result, tc.id)
             messages.append(tool_msg)
 
             # ── Per-tool /steer drain ───────────────────────────────────
@@ -9805,6 +9888,7 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            camel_decision = self._camel_decide_tool_call(function_name, function_args)
 
             # Check plugin hooks for a block directive before executing.
             _block_msg: Optional[str] = None
@@ -9822,7 +9906,17 @@ class AIAgent:
                 if not guardrail_decision.allows_execution:
                     _guardrail_block_decision = guardrail_decision
 
-            _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+            _camel_enforce_blocked = (
+                not camel_decision.allowed and self._camel_guard.config.mode == "enforce"
+            )
+            if not camel_decision.allowed and not _camel_enforce_blocked:
+                logger.warning("CaMeL monitor: %s", camel_decision.reason)
+
+            _execution_blocked = (
+                _block_msg is not None
+                or _guardrail_block_decision is not None
+                or _camel_enforce_blocked
+            )
 
             if _execution_blocked:
                 # Tool blocked by plugin or guardrail policy — skip counters,
@@ -9901,6 +9995,10 @@ class AIAgent:
                 # Tool blocked by plugin policy — return error without executing.
                 function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
                 tool_duration = 0.0
+            elif _camel_enforce_blocked:
+                function_result = self._camel_blocked_tool_result(function_name, camel_decision)
+                tool_duration = 0.0
+                logger.warning("CaMeL blocked tool %s: %s", function_name, camel_decision.reason)
             elif _guardrail_block_decision is not None:
                 # Tool blocked by tool-loop guardrail — synthesize exactly one
                 # tool result for the original tool_call_id without executing.
@@ -10138,11 +10236,7 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tool_call.id
-            }
+            tool_msg = self._camel_make_tool_message(function_name, function_result, tool_call.id)
             messages.append(tool_msg)
 
             # ── Per-tool /steer drain ───────────────────────────────────
@@ -10197,7 +10291,11 @@ class AIAgent:
             "Please provide a final response summarizing what you've found and accomplished so far, "
             "without calling any more tools."
         )
-        messages.append({"role": "user", "content": summary_request})
+        messages.append(
+            self._camel_guard.mark_system_control_message(
+                {"role": "user", "content": summary_request}
+            )
+        )
 
         try:
             # Build API messages, stripping internal-only fields
@@ -10205,7 +10303,7 @@ class AIAgent:
             _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
             for msg in messages:
-                api_msg = msg.copy()
+                api_msg = sanitize_message_for_api(msg.copy())
                 self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
@@ -10520,6 +10618,7 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        self._camel_guard.begin_turn(original_user_message, messages)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -10534,7 +10633,7 @@ class AIAgent:
                 self._turns_since_memory = 0
 
         # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        user_msg = self._camel_guard.mark_user_message({"role": "user", "content": user_message})
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
@@ -10880,7 +10979,7 @@ class AIAgent:
 
             api_messages = []
             for idx, msg in enumerate(messages):
-                api_msg = msg.copy()
+                api_msg = sanitize_message_for_api(msg.copy())
 
                 # Inject ephemeral context into the current turn's user message.
                 # Sources: memory manager prefetch + plugin pre_llm_call hooks
@@ -11570,7 +11669,7 @@ class AIAgent:
                                             "restart or repeat prior text. Finish the answer directly.]"
                                         ),
                                     }
-                                    messages.append(continue_msg)
+                                    messages.append(self._camel_guard.mark_system_control_message(continue_msg))
                                     self._session_messages = messages
                                     self._save_session_log(messages)
                                     restart_with_length_continuation = True
@@ -13604,7 +13703,7 @@ class AIAgent:
                                 "send your final answer after completing the task.]"
                             ),
                         }
-                        messages.append(continue_msg)
+                        messages.append(self._camel_guard.mark_system_control_message(continue_msg))
                         self._session_messages = messages
                         self._save_session_log(messages)
                         continue
@@ -13617,8 +13716,14 @@ class AIAgent:
                         length_continue_retries = 0
                     
                     final_response = self._strip_think_blocks(final_response).strip()
+                    response_decision = self._camel_guard.evaluate_assistant_response(final_response)
+                    if not response_decision.allowed:
+                        logger.info(response_decision.reason)
+                        if self._camel_guard.config.mode == "enforce":
+                            final_response = response_decision.content
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    final_msg["content"] = final_response
 
                     # Pop thinking-only prefill message(s) before appending
                     # the final response.  This avoids consecutive assistant
@@ -13631,7 +13736,7 @@ class AIAgent:
                     ):
                         messages.pop()
 
-                    messages.append(final_msg)
+                    messages.append(self._camel_guard.mark_assistant_message(final_msg))
                     
                     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                     if not self.quiet_mode:

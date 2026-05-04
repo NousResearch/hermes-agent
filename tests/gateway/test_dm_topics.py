@@ -738,3 +738,331 @@ def test_build_message_event_dm_from_user_present_uses_user():
     # Normal case — from_user is used directly
     assert event.source.user_id == "99999"
     assert event.source.user_name == "Bob"
+
+
+# ── _clean_dm_topic_title: LLM output normalization ──
+
+
+def test_clean_dm_topic_title_strips_closed_think_block():
+    """<think>...</think> blocks (reasoning models) must be stripped."""
+    raw = "<think>analysing the user request</think>\nMPF Customer Research"
+    assert TelegramAdapter._clean_dm_topic_title(raw) == "MPF Customer Research"
+
+
+def test_clean_dm_topic_title_strips_thinking_variant():
+    """<thinking>...</thinking> alternate tag must be stripped."""
+    raw = "<thinking>let me think</thinking>\nABC Company Meeting"
+    assert TelegramAdapter._clean_dm_topic_title(raw) == "ABC Company Meeting"
+
+
+def test_clean_dm_topic_title_returns_empty_for_unterminated_think():
+    """An unterminated <think> block (truncated by max_tokens) must consume to EOF and yield empty."""
+    raw = "<think>\nThe user is writing in Cantonese (using traditional…"
+    assert TelegramAdapter._clean_dm_topic_title(raw) == ""
+
+
+def test_clean_dm_topic_title_strips_arbitrary_tags():
+    """Any remaining XML-like tag must be stripped (defence in depth)."""
+    raw = "<title>SomeName</title>"
+    assert TelegramAdapter._clean_dm_topic_title(raw) == "SomeName"
+
+
+def test_clean_dm_topic_title_takes_first_nonempty_line():
+    """Multi-line scratchpad output should reduce to the first non-empty line."""
+    raw = "\n\nClean Title\nthis is the reasoning"
+    assert TelegramAdapter._clean_dm_topic_title(raw) == "Clean Title"
+
+
+def test_clean_dm_topic_title_strips_quotes_and_brackets():
+    """Surrounding quotes/brackets common in LLM output must be removed."""
+    assert TelegramAdapter._clean_dm_topic_title('"Birthday list"') == "Birthday list"
+    assert TelegramAdapter._clean_dm_topic_title("「Customer notes」") == "Customer notes"
+
+
+def test_clean_dm_topic_title_strips_title_prefix():
+    """Title:/Topic:/Name: prefixes should be stripped."""
+    assert TelegramAdapter._clean_dm_topic_title("Title: AIA Email") == "AIA Email"
+    assert TelegramAdapter._clean_dm_topic_title("Topic：客戶 MPF") == "客戶 MPF"
+
+
+def test_clean_dm_topic_title_strips_trailing_punctuation():
+    """Trailing punctuation common in user questions should be stripped."""
+    assert TelegramAdapter._clean_dm_topic_title("AIA Email？") == "AIA Email"
+    assert TelegramAdapter._clean_dm_topic_title("Notes!") == "Notes"
+
+
+def test_clean_dm_topic_title_truncates_to_60():
+    """Output longer than 60 chars must be ellipsis-truncated."""
+    out = TelegramAdapter._clean_dm_topic_title("a" * 100)
+    assert len(out) == 60
+    assert out.endswith("…")
+
+
+def test_clean_dm_topic_title_rejects_residual_markup():
+    """If cleaning leaves a stray < or > (unbalanced bracket) it must be rejected as empty."""
+    # An unmatched '<' has no closing '>', so the tag-stripping regex can't
+    # remove it. The residual-markup guard must reject it.
+    raw = "unmatched < bracket"
+    assert TelegramAdapter._clean_dm_topic_title(raw) == ""
+
+
+def test_clean_dm_topic_title_handles_empty_input():
+    """Empty / whitespace input returns empty string."""
+    assert TelegramAdapter._clean_dm_topic_title("") == ""
+    assert TelegramAdapter._clean_dm_topic_title("   \n  \n") == ""
+
+
+# ── _send_dm_topic_seed_message ──
+
+
+@pytest.mark.asyncio
+async def test_send_dm_topic_seed_message_uses_provided_name():
+    """Seed message text should be '📌 <name>' when name is short."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    await adapter._send_dm_topic_seed_message(111, 222, "Birthdays")
+    adapter._bot.send_message.assert_called_once()
+    kwargs = adapter._bot.send_message.call_args.kwargs
+    assert kwargs["chat_id"] == 111
+    assert kwargs["message_thread_id"] == 222
+    assert kwargs["text"] == "📌 Birthdays"
+
+
+@pytest.mark.asyncio
+async def test_send_dm_topic_seed_message_truncates_long_names():
+    """Long topic names should be ellipsis-truncated in the seed text."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    long_name = "x" * 200
+    await adapter._send_dm_topic_seed_message(111, 222, long_name)
+    text = adapter._bot.send_message.call_args.kwargs["text"]
+    assert text.startswith("📌 ")
+    assert text.endswith("…")
+    # 64-char visible cap on the name portion.
+    assert len(text) <= 2 + 64  # "📌 " + 64 chars
+
+
+@pytest.mark.asyncio
+async def test_send_dm_topic_seed_message_falls_back_for_empty_name():
+    """Missing/whitespace-only name should fall back to a generic seed text."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    await adapter._send_dm_topic_seed_message(111, 222, "  ")
+    assert adapter._bot.send_message.call_args.kwargs["text"] == "📌 Topic ready."
+
+
+@pytest.mark.asyncio
+async def test_send_dm_topic_seed_message_no_op_without_bot():
+    """No bot instance should be a silent no-op."""
+    adapter = _make_adapter()
+    adapter._bot = None
+    # Must not raise.
+    await adapter._send_dm_topic_seed_message(111, 222, "Birthdays")
+
+
+@pytest.mark.asyncio
+async def test_send_dm_topic_seed_message_swallows_send_errors():
+    """A send_message failure must be logged but never raised."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.send_message.side_effect = Exception("boom")
+    # Must not raise.
+    await adapter._send_dm_topic_seed_message(111, 222, "Birthdays")
+
+
+# ── _create_dm_topic: seed message integration ──
+
+
+@pytest.mark.asyncio
+async def test_create_dm_topic_sends_seed_after_success():
+    """Successful topic creation must trigger a seed message in the new thread."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=888)
+
+    thread_id = await adapter._create_dm_topic(chat_id=111, name="Birthdays")
+
+    assert thread_id == 888
+    # Seed message should have gone into the new thread.
+    adapter._bot.send_message.assert_called_once()
+    kwargs = adapter._bot.send_message.call_args.kwargs
+    assert kwargs["chat_id"] == 111
+    assert kwargs["message_thread_id"] == 888
+    assert kwargs["text"] == "📌 Birthdays"
+
+
+@pytest.mark.asyncio
+async def test_create_dm_topic_no_seed_on_failure():
+    """A failed topic creation must NOT send a seed message."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = Exception("topic_name_duplicate")
+
+    thread_id = await adapter._create_dm_topic(chat_id=111, name="Birthdays")
+
+    assert thread_id is None
+    adapter._bot.send_message.assert_not_called()
+
+
+# ── _cache_dm_topic_from_message: seed + rename scheduling ──
+
+
+@pytest.mark.asyncio
+async def test_cache_dm_topic_schedules_seed_for_new_entry():
+    """Caching a new topic must schedule a seed message on the running loop."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    adapter._cache_dm_topic_from_message("111", "555", "Customer notes")
+
+    # Let the scheduled task run.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert adapter._dm_topics["111:Customer notes"] == 555
+    adapter._bot.send_message.assert_called_once()
+    kwargs = adapter._bot.send_message.call_args.kwargs
+    assert kwargs["chat_id"] == 111
+    assert kwargs["message_thread_id"] == 555
+    assert kwargs["text"] == "📌 Customer notes"
+
+
+@pytest.mark.asyncio
+async def test_cache_dm_topic_idempotent_no_duplicate_seed():
+    """Re-caching the same key must not schedule a second seed."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    adapter._cache_dm_topic_from_message("111", "555", "Customer notes")
+    await asyncio.sleep(0)
+    adapter._bot.send_message.reset_mock()
+    # Second call with same key.
+    adapter._cache_dm_topic_from_message("111", "555", "Customer notes")
+    await asyncio.sleep(0)
+
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cache_dm_topic_skips_rename_when_flag_disabled():
+    """Without auto_rename_dm_topics, no rename must be scheduled."""
+    adapter = _make_adapter()
+    assert adapter._auto_rename_dm_topics is False
+    adapter._bot = AsyncMock()
+    adapter._maybe_rename_dm_topic = AsyncMock()  # type: ignore[assignment]
+
+    adapter._cache_dm_topic_from_message("111", "555", "Long sentence-like name?")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    adapter._maybe_rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cache_dm_topic_schedules_rename_when_flag_enabled():
+    """With auto_rename_dm_topics enabled, rename must be scheduled for new entries."""
+    config = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"auto_rename_dm_topics": True},
+    )
+    adapter = TelegramAdapter(config)
+    assert adapter._auto_rename_dm_topics is True
+    adapter._bot = AsyncMock()
+    adapter._maybe_rename_dm_topic = AsyncMock()  # type: ignore[assignment]
+
+    adapter._cache_dm_topic_from_message("111", "555", "Long sentence-like name?")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    adapter._maybe_rename_dm_topic.assert_called_once_with(
+        111, 555, "Long sentence-like name?"
+    )
+
+
+# ── _handle_forum_topic_created ──
+
+
+@pytest.mark.asyncio
+async def test_handle_forum_topic_created_caches_topic():
+    """forum_topic_created service messages must reach _cache_dm_topic_from_message."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    msg = MagicMock()
+    msg.forum_topic_created = SimpleNamespace(name="Newly created")
+    msg.message_thread_id = 999
+    msg.chat = SimpleNamespace(id=111)
+    update = SimpleNamespace(effective_message=msg, message=msg)
+
+    await adapter._handle_forum_topic_created(update, None)
+    await asyncio.sleep(0)
+
+    assert adapter._dm_topics["111:Newly created"] == 999
+
+
+@pytest.mark.asyncio
+async def test_handle_forum_topic_created_ignores_non_topic_messages():
+    """Messages without forum_topic_created attribute must be ignored."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    msg = MagicMock()
+    msg.forum_topic_created = None
+    update = SimpleNamespace(effective_message=msg, message=msg)
+
+    await adapter._handle_forum_topic_created(update, None)
+    assert adapter._dm_topics == {}
+
+
+# ── _maybe_rename_dm_topic ──
+
+
+@pytest.mark.asyncio
+async def test_maybe_rename_dm_topic_calls_edit_when_title_generated():
+    """A successful LLM title must be applied via editForumTopic."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._generate_dm_topic_title = AsyncMock(return_value="客戶 MPF 研究")
+
+    await adapter._maybe_rename_dm_topic(111, 555, "我想研究吓一啲客戶 MPF 嘅情況")
+
+    adapter._bot.edit_forum_topic.assert_called_once_with(
+        chat_id=111, message_thread_id=555, name="客戶 MPF 研究",
+    )
+
+
+@pytest.mark.asyncio
+async def test_maybe_rename_dm_topic_skips_if_llm_returns_none():
+    """When the LLM cleaner produces empty output, no rename is sent."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._generate_dm_topic_title = AsyncMock(return_value=None)
+
+    await adapter._maybe_rename_dm_topic(111, 555, "原本嘅名")
+
+    adapter._bot.edit_forum_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_rename_dm_topic_skips_if_unchanged():
+    """If the LLM returns the same name, no rename is sent."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._generate_dm_topic_title = AsyncMock(return_value="客戶 MPF 研究")
+
+    await adapter._maybe_rename_dm_topic(111, 555, "客戶 MPF 研究")
+
+    adapter._bot.edit_forum_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_rename_dm_topic_swallows_edit_errors():
+    """An editForumTopic failure must be logged but never raised."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.edit_forum_topic.side_effect = Exception("boom")
+    adapter._generate_dm_topic_title = AsyncMock(return_value="New Name")
+
+    # Must not raise.
+    await adapter._maybe_rename_dm_topic(111, 555, "Old Name")

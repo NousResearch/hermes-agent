@@ -261,6 +261,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # When enabled, newly-discovered DM topics are auto-renamed via the
+        # auxiliary title-generation LLM. Useful when the Telegram client
+        # auto-names topics from the verbatim first user message, producing
+        # long sentences instead of short labels. Disabled by default.
+        self._auto_rename_dm_topics: bool = self._coerce_bool_extra("auto_rename_dm_topics", False)
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -664,6 +669,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Created DM topic '%s' in chat %s -> thread_id=%s",
                 self.name, name, chat_id, thread_id,
             )
+            # Without an immediate message in the new topic, mobile/desktop
+            # Telegram clients often fail to render it for several minutes —
+            # the forum_topic_created service message alone is not enough.
+            # Sending a seed message forces all clients to sync.
+            await self._send_dm_topic_seed_message(int(chat_id), int(thread_id), name)
             return thread_id
         except Exception as e:
             error_text = str(e).lower()
@@ -687,6 +697,193 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, name, chat_id, e,
                 )
             return None
+
+    async def _send_dm_topic_seed_message(
+        self,
+        chat_id: int,
+        thread_id: int,
+        topic_name: Optional[str],
+    ) -> None:
+        """Send a short marker message into a newly-created/-discovered DM topic.
+
+        Bot API 9.4 introduced DM forum topics, but Telegram clients do not
+        always render new topics until a real message arrives — the
+        forum_topic_created service message alone can leave the topic
+        invisible on mobile/desktop for several minutes. Sending an
+        immediate seed message forces all clients to sync the topic into
+        their UI tree.
+        """
+        if not self._bot:
+            return
+        name = (topic_name or "").strip()
+        if name and len(name) > 64:
+            name = name[:61].rstrip() + "…"
+        text = f"📌 {name}" if name else "📌 Topic ready."
+        try:
+            await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                message_thread_id=int(thread_id),
+                **self._link_preview_kwargs(),
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] DM topic seed message failed chat=%s thread=%s: %s",
+                self.name, chat_id, thread_id, e,
+            )
+
+    async def _handle_forum_topic_created(self, update: "Update", context: Any) -> None:
+        """PTB handler for forum_topic_created service messages.
+
+        The default ``filters.TEXT`` filter does not match service messages,
+        so without this handler Hermes never receives notification that the
+        user created a topic in the Telegram client UI. Registered in
+        ``connect()`` alongside the other message handlers.
+        """
+        msg = getattr(update, "effective_message", None) or getattr(update, "message", None)
+        if msg is None:
+            return
+        ftc = getattr(msg, "forum_topic_created", None)
+        chat = getattr(msg, "chat", None)
+        thread_id = getattr(msg, "message_thread_id", None)
+        if not (ftc and chat and thread_id):
+            return
+        name = getattr(ftc, "name", "") or ""
+        self._cache_dm_topic_from_message(str(chat.id), str(thread_id), name)
+
+    async def _maybe_rename_dm_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        original_name: str,
+    ) -> None:
+        """Opt-in: LLM-rename a newly-discovered DM topic to a short title.
+
+        Telegram clients auto-name DM topics from the verbatim first user
+        message, which often produces long sentences (e.g. "Can we discuss
+        next week's meeting agenda with ABC Company?") instead of short
+        labels. When ``auto_rename_dm_topics`` is enabled, the auxiliary
+        title-generation LLM produces a clean 3-7 word label and
+        ``editForumTopic`` is called. The model is whatever
+        ``auxiliary.title_generation`` resolves to — the same model used
+        for session-title generation, configurable per-deployment.
+        """
+        if not self._bot:
+            return
+        if not (original_name or "").strip():
+            return
+        new_name = await self._generate_dm_topic_title(original_name)
+        if not new_name or new_name == original_name:
+            return
+        try:
+            await self._bot.edit_forum_topic(
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                name=new_name,
+            )
+            logger.info(
+                "[%s] Renamed DM topic chat=%s thread=%s: %r -> %r",
+                self.name, chat_id, thread_id, original_name, new_name,
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] Rename DM topic failed chat=%s thread=%s: %s",
+                self.name, chat_id, thread_id, e,
+            )
+
+    async def _generate_dm_topic_title(self, original_name: str) -> Optional[str]:
+        """Generate a clean topic title via the auxiliary title-generation LLM."""
+        try:
+            from agent.auxiliary_client import call_llm
+        except ImportError as e:
+            logger.warning(
+                "[%s] auxiliary_client unavailable for topic rename: %s",
+                self.name, e,
+            )
+            return None
+        system_prompt = (
+            "Generate a short, clean topic title (3-7 words, max 30 characters) "
+            "for the following user request. The title should capture the main "
+            "subject in the same language as the input. Return ONLY the title "
+            "text — no quotes, no surrounding punctuation, no prefix like "
+            "'Title:'."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": original_name[:500]},
+        ]
+
+        def _call_sync():
+            # max_tokens kept generous — reasoning models that emit
+            # <think> blocks consume a lot of budget inside the trace
+            # before emitting the actual title; a low cap returns empty.
+            return call_llm(
+                task="title_generation",
+                messages=messages,
+                max_tokens=1000,
+                temperature=0.3,
+                timeout=30.0,
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, _call_sync)
+            raw = (response.choices[0].message.content or "").strip()
+            return self._clean_dm_topic_title(raw) or None
+        except Exception as e:
+            logger.warning(
+                "[%s] Topic title generation failed: %s",
+                self.name, e,
+            )
+            return None
+
+    @staticmethod
+    def _clean_dm_topic_title(title: str) -> str:
+        """Strip reasoning traces, XML-like tags, and other artifacts from an LLM-generated topic title.
+
+        Defensive: returns the empty string for any input that still looks
+        like raw markup or reasoning after cleaning, so a bad LLM response
+        cannot become a topic name.
+        """
+        if not title:
+            return ""
+        # Reasoning models commonly emit <think>...</think> blocks before
+        # the actual answer. Strip closed and unterminated tags.
+        title = re.sub(
+            r"<think\b[^>]*>.*?(?:</think>|\Z)",
+            "",
+            title,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        title = re.sub(
+            r"<thinking\b[^>]*>.*?(?:</thinking>|\Z)",
+            "",
+            title,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        # Strip any remaining XML-like tags (defence in depth).
+        title = re.sub(r"<[^>]+>", "", title)
+        # Take the first non-empty line — reasoning models sometimes leak
+        # multi-line scratchpad text after the actual title.
+        title = next(
+            (line.strip() for line in title.splitlines() if line.strip()),
+            "",
+        )
+        if not title:
+            return ""
+        title = title.strip("\"'`「」『』《》()[]{}")
+        title = re.sub(
+            r"^\s*(title|topic|name)\s*[:：-]\s*",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        title = title.strip().rstrip("?？.。!！,，;；:：").strip()
+        if not title or "<" in title or ">" in title:
+            return ""
+        if len(title) > 60:
+            title = title[:59].rstrip() + "…"
+        return title
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
@@ -953,6 +1150,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
+            ))
+            # Bot API 9.4 DM forum topics — service messages are not matched
+            # by the TEXT/COMMAND/LOCATION/media filters above, so without
+            # this handler Hermes never learns about user-created topics.
+            self._app.add_handler(TelegramMessageHandler(
+                filters.StatusUpdate.FORUM_TOPIC_CREATED,
+                self._handle_forum_topic_created
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
@@ -3460,13 +3664,31 @@ class TelegramAdapter(BasePlatformAdapter):
         return None
 
     def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
-        """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
+        """Cache a thread_id -> topic_name mapping discovered from an incoming message.
+
+        For newly-discovered topics, schedules a seed message (and, if
+        ``auto_rename_dm_topics`` is enabled, an LLM-rename) on the running
+        event loop. Sync method so it can be called from ``_build_message_event``
+        and from the ``forum_topic_created`` handler.
+        """
         cache_key = f"{chat_id}:{topic_name}"
-        if cache_key not in self._dm_topics:
-            self._dm_topics[cache_key] = int(thread_id)
-            logger.info(
-                "[%s] Cached DM topic from message: %s -> thread_id=%s",
-                self.name, cache_key, thread_id,
+        if cache_key in self._dm_topics:
+            return
+        self._dm_topics[cache_key] = int(thread_id)
+        logger.info(
+            "[%s] Cached DM topic from message: %s -> thread_id=%s",
+            self.name, cache_key, thread_id,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self._send_dm_topic_seed_message(int(chat_id), int(thread_id), topic_name)
+        )
+        if self._auto_rename_dm_topics:
+            loop.create_task(
+                self._maybe_rename_dm_topic(int(chat_id), int(thread_id), topic_name)
             )
 
     def _build_message_event(

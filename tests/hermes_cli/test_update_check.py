@@ -88,6 +88,31 @@ def test_check_for_updates_invalidates_stale_local_cache(tmp_path, monkeypatch):
     assert cached["rev"] == f"git:{repo_dir}:current"
 
 
+def test_check_for_updates_invalidates_when_upstream_ref_changes(tmp_path, monkeypatch):
+    """Fresh cache with same HEAD but old origin/main must not be trusted."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    old_cache_rev = f"git:{repo_dir}:HEAD=current:origin/main=old-upstream"
+    new_cache_rev = f"git:{repo_dir}:HEAD=current:origin/main=new-upstream"
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 0, "rev": old_cache_rev}))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner._local_git_cache_rev", return_value=new_cache_rev), \
+         patch("hermes_cli.banner.subprocess.run", return_value=MagicMock(returncode=0, stdout="20\n")) as mock_run:
+        result = check_for_updates()
+
+    assert result == 20
+    assert mock_run.call_count == 2  # git fetch + git rev-list
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 20
+    assert cached["rev"] == new_cache_rev
+
+
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Returns None when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner

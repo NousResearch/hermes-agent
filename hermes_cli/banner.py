@@ -151,21 +151,34 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _local_git_cache_rev(repo_dir: Path) -> Optional[str]:
-    """Return a cache key component for the checked-out git revision."""
+def _git_rev_parse(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision to a full hash, or None if unavailable."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
+            ["git", "rev-parse", "--verify", rev],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
-            rev = result.stdout.strip()
-            if rev:
-                return f"git:{repo_dir}:{rev}"
+            parsed = result.stdout.strip()
+            if parsed:
+                return parsed
     except Exception:
         pass
     return None
+
+
+def _local_git_cache_rev(repo_dir: Path) -> Optional[str]:
+    """Return a cache key component for local update-check inputs."""
+    head = _git_rev_parse(repo_dir, "HEAD")
+    if not head:
+        return None
+
+    # The update result depends on both HEAD and the fetched upstream ref. If an
+    # external process updates origin/main while HEAD stays fixed, a HEAD-only
+    # cache key can falsely keep reporting "Up to date" until the TTL expires.
+    upstream = _git_rev_parse(repo_dir, "refs/remotes/origin/main") or "unknown"
+    return f"git:{repo_dir}:HEAD={head}:origin/main={upstream}"
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:

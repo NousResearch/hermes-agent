@@ -317,6 +317,76 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     assert gateway.find_gateway_pids() == [321]
 
 
+def test_find_gateway_pids_excludes_pid_files_from_other_profiles(monkeypatch, tmp_path):
+    default_home = tmp_path / ".hermes"
+    other_home = default_home / "profiles" / "wx1"
+    other_home.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: default_home)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(
+        gateway,
+        "find_profile_gateway_processes",
+        lambda exclude_pids=None: [
+            gateway.ProfileGatewayProcess(profile="wx1", path=other_home, pid=222),
+        ],
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "111 python -m hermes_cli.main gateway run --replace\n"
+                    "222 python -m hermes_cli.main gateway run --replace\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr("os.getpid", lambda: 999)
+
+    assert gateway.find_gateway_pids() == [111]
+
+
+def test_find_gateway_pids_all_profiles_keeps_other_profile_pid_files(monkeypatch, tmp_path):
+    default_home = tmp_path / ".hermes"
+    other_home = default_home / "profiles" / "wx1"
+    other_home.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: default_home)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(
+        gateway,
+        "find_profile_gateway_processes",
+        lambda exclude_pids=None: [
+            gateway.ProfileGatewayProcess(profile="wx1", path=other_home, pid=222),
+        ],
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "111 python -m hermes_cli.main gateway run --replace\n"
+                    "222 python -m hermes_cli.main gateway run --replace\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr("os.getpid", lambda: 999)
+
+    assert gateway.find_gateway_pids(all_profiles=True) == [111, 222]
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

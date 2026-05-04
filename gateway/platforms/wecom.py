@@ -1211,7 +1211,7 @@ class WeComAdapter(BasePlatformAdapter):
             reply_req_id,
             {
                 "msgtype": "markdown",
-                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                "markdown": {"content": content},
             },
         )
         self._raise_for_wecom_error(response, "send reply markdown")
@@ -1348,26 +1348,32 @@ class WeComAdapter(BasePlatformAdapter):
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
-            if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
-            else:
-                response = await self._send_request(
-                    APP_CMD_SEND,
-                    {
-                        "chatid": chat_id,
-                        "msgtype": "markdown",
-                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-                    },
-                )
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+
+            response: Dict[str, Any] = {}
+            for index, chunk in enumerate(chunks):
+                # WeCom reply_req_id is single-use: only the first chunk can ride
+                # the inbound reply context. Subsequent chunks fall back to the
+                # proactive APP_CMD_SEND path, which is stateless.
+                if index == 0 and reply_req_id:
+                    response = await self._send_reply_markdown(reply_req_id, chunk)
+                else:
+                    response = await self._send_request(
+                        APP_CMD_SEND,
+                        {
+                            "chatid": chat_id,
+                            "msgtype": "markdown",
+                            "markdown": {"content": chunk},
+                        },
+                    )
+                error = self._response_error(response)
+                if error:
+                    return SendResult(success=False, error=error)
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
             logger.error("[%s] Send failed: %s", self.name, exc)
             return SendResult(success=False, error=str(exc))
-
-        error = self._response_error(response)
-        if error:
-            return SendResult(success=False, error=error)
 
         return SendResult(
             success=True,

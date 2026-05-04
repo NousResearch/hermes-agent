@@ -461,6 +461,99 @@ class TestSend:
         assert "40001" in (result.error or "")
 
     @pytest.mark.asyncio
+    async def test_send_splits_long_proactive_markdown_into_multiple_messages(self):
+        """Long markdown must be split into multiple sends, not silently truncated."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(return_value={"headers": {"req_id": "req-1"}, "errcode": 0})
+
+        long_content = "abc " * 1500  # 6000 chars, > MAX_MESSAGE_LENGTH (4000)
+        result = await adapter.send("chat-123", long_content)
+
+        assert result.success is True
+        # Multiple proactive sends, none silently dropped at 4000 chars.
+        assert adapter._send_request.await_count >= 2
+        full_sent = ""
+        for call in adapter._send_request.await_args_list:
+            cmd, payload = call.args
+            assert cmd == APP_CMD_SEND
+            assert payload["chatid"] == "chat-123"
+            assert payload["msgtype"] == "markdown"
+            chunk = payload["markdown"]["content"]
+            assert len(chunk) <= adapter.MAX_MESSAGE_LENGTH
+            full_sent += chunk
+
+        # The body of the original message must survive across the chunks
+        # (chunk indicators add a small suffix; we check substantive content).
+        assert long_content.strip()[:3000] in full_sent
+
+    @pytest.mark.asyncio
+    async def test_send_long_message_first_chunk_uses_reply_then_proactive(self):
+        """First chunk rides the reply context; subsequent chunks must go via APP_CMD_SEND
+        because the WeCom reply_req_id is single-use."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"headers": {"req_id": "req-2"}, "errcode": 0})
+
+        long_content = "abc " * 1500  # 6000 chars
+        result = await adapter.send("chat-123", long_content, reply_to="msg-1")
+
+        assert result.success is True
+        # Exactly one passive reply (reply_req_id is single-use).
+        adapter._send_reply_request.assert_awaited_once()
+        assert adapter._send_reply_request.await_args.args[0] == "req-1"
+        # At least one follow-up via proactive APP_CMD_SEND for the remaining chunks.
+        assert adapter._send_request.await_count >= 1
+        for call in adapter._send_request.await_args_list:
+            cmd, payload = call.args
+            assert cmd == APP_CMD_SEND
+            assert len(payload["markdown"]["content"]) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_send_short_message_is_not_chunked(self):
+        """A message under MAX_MESSAGE_LENGTH must produce exactly one send,
+        with content unchanged (no spurious indicator suffix)."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(return_value={"headers": {"req_id": "req-1"}, "errcode": 0})
+
+        result = await adapter.send("chat-123", "short message")
+
+        assert result.success is True
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {
+                "chatid": "chat-123",
+                "msgtype": "markdown",
+                "markdown": {"content": "short message"},
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_long_message_aborts_on_first_chunk_error(self):
+        """If WeCom rejects an early chunk, do not keep firing follow-ups —
+        return the failure."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(return_value={"errcode": 40001, "errmsg": "bad request"})
+
+        long_content = "abc " * 1500
+        result = await adapter.send("chat-123", long_content)
+
+        assert result.success is False
+        assert "40001" in (result.error or "")
+        # First chunk failed → no further sends attempted.
+        assert adapter._send_request.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_send_image_falls_back_to_text_for_remote_url(self):
         from gateway.platforms.wecom import WeComAdapter
 

@@ -617,7 +617,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
+    result = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -626,6 +626,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    mot = runtime.get("max_output_tokens")
+    if isinstance(mot, int) and mot > 0:
+        result["max_tokens"] = mot
+    return result
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -1547,6 +1551,10 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
+        # Propagate max_tokens if the provider config specified max_output_tokens
+        mot = runtime_kwargs.get("max_tokens")
+        if isinstance(mot, int) and mot > 0:
+            runtime["max_tokens"] = mot
         route = {
             "model": model,
             "runtime": runtime,

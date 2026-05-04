@@ -410,6 +410,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    # Propagate max_output_tokens if set in the provider block
+                    mot = entry.get("max_output_tokens")
+                    if isinstance(mot, int) and mot > 0:
+                        result["max_output_tokens"] = mot
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -428,6 +432,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        # Propagate max_output_tokens if set in the provider block
+                        mot = entry.get("max_output_tokens")
+                        if isinstance(mot, int) and mot > 0:
+                            result["max_output_tokens"] = mot
                         return result
 
     # Fall back to custom_providers: list (legacy format)

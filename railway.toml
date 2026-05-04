@@ -1,2 +1,1 @@
 [deploy]
-startCommand = "hermes gateway"

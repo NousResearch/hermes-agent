@@ -413,6 +413,8 @@
 }
 .hermes-kanban-event-payload {
   color: var(--color-muted-foreground);
+  background: transparent;
+  text-shadow: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -606,7 +608,7 @@
 /* ---- Markdown rendering -------------------------------------------- */
 
 .hermes-kanban-md {
-  font-family: var(--theme-font-sans, var(--font-sans, system-ui, sans-serif));
+  font-family: inherit;
   font-size: 0.8rem;
   line-height: 1.55;
   letter-spacing: normal;
@@ -763,6 +765,8 @@
   font-size: 0.65rem;
   padding: 0.15rem 0 0;
   color: var(--color-muted-foreground);
+  background: transparent;
+  text-shadow: none;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);

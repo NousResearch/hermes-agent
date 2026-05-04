@@ -645,12 +645,25 @@ def test_markdown_prose_preserves_source_casing_and_normal_font():
     css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
 
     assert ".hermes-kanban-md {" in css
-    assert "font-family: var(--theme-font-sans" in css
+    assert "font-family: inherit;" in css
     assert "letter-spacing: normal;" in css
     assert "text-transform: none;" in css
     assert "font-family: var(--theme-font-mono" not in css
     assert ".hermes-kanban-md code" in css
     assert "font-family: var(--font-mono, ui-monospace, monospace);" in css
+
+
+def test_drawer_json_code_chips_do_not_inherit_global_highlight_background():
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    event_payload = css[css.index(".hermes-kanban-event-payload {"):css.index(".hermes-kanban-drawer-comment-row {")]
+    assert "background: transparent;" in event_payload
+    assert "text-shadow: none;" in event_payload
+
+    run_meta = css[css.index(".hermes-kanban-run-meta {"):]
+    assert "background: transparent;" in run_meta
+    assert "text-shadow: none;" in run_meta
 
 
 # ---------------------------------------------------------------------------

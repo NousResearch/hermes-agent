@@ -964,7 +964,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                     )
                 else:
                     _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
-                save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+                if _selected_vision_model:
+                    save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
                 print_success(
                     f"Vision configured with {_base_url}"
                     + (f" ({_selected_vision_model})" if _selected_vision_model else "")

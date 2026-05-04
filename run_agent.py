@@ -2866,52 +2866,6 @@ class AIAgent:
             logger.debug("Auxiliary model suggestion failed: %s", e)
             return None
     
-    def _get_consecutive_suggestion(self, tool_name: str) -> str | None:
-        """Get a suggestion when consecutive identical calls trigger the circuit breaker.
-        
-        Strategy (in order):
-        1. Try auxiliary model (if configured)
-        2. Fall back to a simple generic prompt
-        """
-        # 1. Try auxiliary model first
-        suggestion = self._try_auxiliary_model_consecutive(tool_name)
-        if suggestion:
-            return suggestion
-        
-        # 2. Simple generic fallback
-        return "Called the exact same thing N times in a row. It's not working — stop and try something else."
-    
-    def _try_auxiliary_model_consecutive(self, tool_name: str) -> str | None:
-        """Try to get a suggestion from the auxiliary model for consecutive-call loop."""
-        try:
-            from agent.auxiliary_client import call_llm
-            
-            prompt = (
-                f"A tool call is stuck in a loop — same arguments repeated. "
-                f"Break the loop.\n\n"
-                f"Tool: {tool_name}\n\n"
-                f"Give ONE short suggestion (max 20 words) on what to try instead. "
-                f"Be specific. Example: 'Use gh api repos/.../actions/runs/{id}/logs instead of gh run view --log-failed'."
-            )
-            
-            response = call_llm(
-                task=None,
-                messages=[
-                    {"role": "system", "content": "You are a debugging assistant. Give concise, specific suggestions."},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=50,
-                temperature=0.3,
-                main_runtime=self._current_main_runtime(),
-            )
-            
-            suggestion = response.choices[0].message.content.strip()
-            if len(suggestion) > 100:
-                suggestion = suggestion[:97] + "..."
-            return suggestion
-        except Exception as e:
-            logger.debug("Auxiliary model suggestion failed: %s", e)
-            return None
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -9773,12 +9727,6 @@ class AIAgent:
                 self._consecutive_tool_calls.get(function_name, 0) + 1
             )
 
-        # ── Failure retry counter: detect consecutive tool failures ──────
-        # After execution, check if the tool result indicates failure.
-        # Also checks for looping behavior via compression model.
-        _cb_retry_msg = self._check_tool_failure(function_name, function_result)
-        if _cb_retry_msg is not None:
-            return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -9834,13 +9782,17 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
-            return handle_function_call(
+            _function_result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
+            _cb_retry_msg = self._check_tool_failure(function_name, _function_result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return _function_result
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -10567,6 +10519,12 @@ class AIAgent:
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+            # ── Circuit breaker: check for looping/repeated failures ──────
+            if not _execution_blocked and self._circuit_breaker_enabled:
+                _cb_retry_msg = self._check_tool_failure(function_name, function_result)
+                if _cb_retry_msg is not None:
+                    function_result = json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+                    _is_error_result = True
             if not _execution_blocked:
                 function_result = self._append_guardrail_observation(
                     function_name,

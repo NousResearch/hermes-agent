@@ -279,6 +279,70 @@ class TestResolveDeliveryTarget:
             "_resolved_from": "explicit",
         }
 
+    def test_explicit_matrix_room_target(self):
+        """deliver: 'matrix:!room:server.org' parses room ID correctly."""
+        job = {"deliver": "matrix:!HLOQ:matrix.org"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "!HLOQ:matrix.org",
+            "thread_id": None,
+            "_resolved_from": "explicit",
+        }
+
+    def test_explicit_matrix_room_with_thread(self):
+        """deliver: 'matrix:!room:server.org/$evt' splits room and thread."""
+        job = {"deliver": "matrix:!HLOQ:matrix.org/$thread-evt"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "!HLOQ:matrix.org",
+            "thread_id": "$thread-evt",
+            "_resolved_from": "explicit",
+        }
+
+    def test_explicit_matrix_alias_with_thread(self):
+        """deliver: 'matrix:#alias:server.org/$evt' threads via alias."""
+        job = {"deliver": "matrix:#general:matrix.org/$thread-evt"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "#general:matrix.org",
+            "thread_id": "$thread-evt",
+            "_resolved_from": "explicit",
+        }
+
+    def test_explicit_matrix_user_dm(self):
+        """deliver: 'matrix:@user:server.org' resolves an MXID DM target."""
+        job = {"deliver": "matrix:@hermes:matrix.org"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "@hermes:matrix.org",
+            "thread_id": None,
+            "_resolved_from": "explicit",
+        }
+
+    def test_matrix_home_room_with_thread_suffix(self, monkeypatch):
+        """The home target splits the room ID from its inline thread suffix."""
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("MATRIX_HOME_ROOM_THREAD_ID", raising=False)
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org/$thread-root")
+        assert _resolve_delivery_target({"deliver": "matrix"}) == {
+            "platform": "matrix",
+            "chat_id": "!room123:example.org",
+            "thread_id": "$thread-root",
+            "_resolved_from": "home",
+        }
+
+    def test_inline_home_thread_suffix_beats_thread_id_env(self, monkeypatch):
+        """An inline home thread takes precedence over the companion variable."""
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org/$inline-thread")
+        monkeypatch.setenv("MATRIX_HOME_ROOM_THREAD_ID", "$companion-thread")
+        assert _resolve_delivery_target({"deliver": "matrix"}) == {
+            "platform": "matrix",
+            "chat_id": "!room123:example.org",
+            "thread_id": "$inline-thread",
+            "_resolved_from": "home",
+        }
+
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
 

@@ -127,6 +127,26 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_dashboard_select_filters_use_sdk_value_change_handler():
+    """Tenant/assignee filters must work with the dashboard SDK Select API.
+
+    The dashboard Select component is shadcn-like and calls
+    ``onValueChange(value)`` instead of native ``onChange(event)``. A native-only
+    handler leaves the tenant dropdown visually selectable but never updates the
+    filtered board query.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function selectChangeHandler(setter)" in js
+    assert "onValueChange: function (v)" in js
+    assert "onChange: function (e)" in js
+    assert "selectChangeHandler(props.setTenantFilter)" in js
+    assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

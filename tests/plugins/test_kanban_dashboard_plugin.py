@@ -203,7 +203,10 @@ def test_patch_block_then_unblock(client):
 
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
-    dedicated verb (e.g. manually promoting todo -> ready)."""
+    dedicated verb (e.g. manually promoting todo -> ready).
+
+    Promoting a child whose parent is not done is rejected (409).
+    Promoting a child whose parent IS done is accepted (200)."""
     parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
     child = client.post(
         "/api/plugins/kanban/tasks",
@@ -211,12 +214,23 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     ).json()["task"]
     assert child["status"] == "todo"
 
+    # Rejected: parent not done yet.
     r = client.patch(
         f"/api/plugins/kanban/tasks/{child['id']}",
         json={"status": "ready"},
     )
+    assert r.status_code == 409
+
+    # Complete the parent.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
     assert r.status_code == 200
-    assert r.json()["task"]["status"] == "ready"
+
+    # Now child auto-promoted by recompute_ready — already ready.
+    child_after = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert child_after["status"] == "ready"
 
 
 def test_patch_reassign(client):
@@ -433,13 +447,17 @@ def test_board_progress_rollup(client):
         "/api/plugins/kanban/tasks",
         json={"title": "b", "parents": [parent["id"]]},
     ).json()["task"]
-    # Children start as "todo" because the parent isn't done yet; promote
-    # them to "ready" so complete_task will accept the transition.
+    # Children start as "todo" because the parent isn't done yet.  Set the
+    # parent to done so children auto-promote to ready via recompute_ready.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200
+    # Verify children are now ready.
     for cid in (child_a["id"], child_b["id"]):
-        r = client.patch(
-            f"/api/plugins/kanban/tasks/{cid}", json={"status": "ready"},
-        )
-        assert r.status_code == 200
+        t = client.get(f"/api/plugins/kanban/tasks/{cid}").json()["task"]
+        assert t["status"] == "ready", f"{cid} should be ready after parent done"
 
     # 0/2 done.
     r = client.get("/api/plugins/kanban/board")

@@ -527,6 +527,7 @@ AUTHOR_MAP = {
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
     "ash@users.noreply.github.com": "ash",
+    "simantak@mac.local": "simantak-dabhade",
 }
 
 

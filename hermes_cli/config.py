@@ -1025,7 +1025,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 22,
 }
 
 # =============================================================================
@@ -1041,7 +1041,6 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
-    23: ["TINYFISH_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.

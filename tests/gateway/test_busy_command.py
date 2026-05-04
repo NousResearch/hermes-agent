@@ -60,10 +60,10 @@ class TestBusyCommand:
         runner = _make_runner(busy_mode="interrupt")
         event = _make_event("/busy queue")
         result = await runner._handle_busy_command(event)
-        # Should fail to save (no config), but should NOT mutate in-memory
-        assert "unchanged" in str(result).lower() or "could not" in str(result).lower()
-        # In-memory mode should NOT have changed because save failed
-        assert runner._busy_input_mode == "interrupt"
+        assert "set to" in str(result).lower()
+        assert "queue" in str(result).lower()
+        # In-memory mode should be updated on successful save
+        assert runner._busy_input_mode == "queue"
 
     @pytest.mark.asyncio
     async def test_busy_steer_subcommand(self):
@@ -71,9 +71,10 @@ class TestBusyCommand:
         runner = _make_runner(busy_mode="queue")
         event = _make_event("/busy steer")
         result = await runner._handle_busy_command(event)
-        assert "unchanged" in str(result).lower() or "could not" in str(result).lower()
-        # In-memory mode unchanged because save failed
-        assert runner._busy_input_mode == "queue"
+        assert "set to" in str(result).lower()
+        assert "steer" in str(result).lower()
+        # In-memory mode should be updated on successful save
+        assert runner._busy_input_mode == "steer"
 
     @pytest.mark.asyncio
     async def test_busy_interrupt_subcommand(self):
@@ -81,9 +82,10 @@ class TestBusyCommand:
         runner = _make_runner(busy_mode="steer")
         event = _make_event("/busy interrupt")
         result = await runner._handle_busy_command(event)
-        assert "unchanged" in str(result).lower() or "could not" in str(result).lower()
-        # In-memory mode unchanged because save failed
-        assert runner._busy_input_mode == "steer"
+        assert "set to" in str(result).lower()
+        assert "interrupt" in str(result).lower()
+        # In-memory mode should be updated on successful save
+        assert runner._busy_input_mode == "interrupt"
 
     @pytest.mark.asyncio
     async def test_busy_invalid_arg(self):

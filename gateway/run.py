@@ -9350,7 +9350,7 @@ class GatewayRunner:
             /busy steer         Inject messages mid-run without interrupting
             /busy interrupt     Interrupt the current run (default)
         """
-        text = (event.get_text() or "").strip()
+        text = (event.text or "").strip()
         parts = text.split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             mode = self._busy_input_mode

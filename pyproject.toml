@@ -171,6 +171,3 @@ not-iterable = "ignore"
 
 [tool.ruff]
 exclude = ["*"]
-
-[tool.uv]
-exclude-newer = "7 days"

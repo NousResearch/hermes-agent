@@ -1228,7 +1228,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                logger.debug("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
@@ -1593,6 +1593,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 return slug
 
         try:
+            from telegram.error import BadRequest as _BadReq
+        except ImportError:
+            _BadReq = None  # type: ignore[assignment,misc]
+
+        try:
             # Build provider buttons — 2 per row
             buttons: list = []
             for p in providers:
@@ -1618,14 +1623,38 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
-            msg = await self._bot.send_message(
-                chat_id=int(chat_id),
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
-                **self._link_preview_kwargs(),
-            )
+            effective_thread_id = self._message_thread_id_for_send(thread_id)
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                    message_thread_id=effective_thread_id,
+                    **self._link_preview_kwargs(),
+                )
+            except Exception as send_err:
+                if (
+                    _BadReq
+                    and isinstance(send_err, _BadReq)
+                    and self._is_thread_not_found_error(send_err)
+                    and effective_thread_id is not None
+                ):
+                    logger.info(
+                        "[%s] Model picker thread %s not found, retrying without message_thread_id",
+                        self.name,
+                        effective_thread_id,
+                    )
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                        message_thread_id=None,
+                        **self._link_preview_kwargs(),
+                    )
+                else:
+                    raise
 
             # Store picker state keyed by chat_id
             self._model_picker_state[str(chat_id)] = {

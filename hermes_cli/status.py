@@ -9,6 +9,7 @@ import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 import importlib.util
 from pathlib import Path
+from functools import lru_cache
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -87,6 +88,59 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+@lru_cache(maxsize=1)
+def _gateway_runtime_env_presence() -> set[str]:
+    """Best-effort set of env vars present in the running gateway process.
+
+    This lets status reflect secrets injected by a launch wrapper (for example
+    macOS Keychain-backed gateway services) even when they are intentionally not
+    stored in ~/.hermes/.env for regular shell sessions.
+    """
+    present: set[str] = set()
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+
+        snapshot = get_gateway_runtime_snapshot()
+        if not snapshot.gateway_pids:
+            return present
+
+        for pid in snapshot.gateway_pids:
+            try:
+                result = subprocess.run(
+                    ["ps", "eww", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode != 0:
+                continue
+
+            for chunk in result.stdout.split():
+                if "=" not in chunk:
+                    continue
+                key, _value = chunk.split("=", 1)
+                if key and key.isupper():
+                    present.add(key)
+    except Exception:
+        return set()
+    return present
+
+
+def _env_value_or_gateway_presence(env_var: str) -> tuple[str, bool, bool]:
+    """Return (value, present, runtime_only) for an env var.
+
+    runtime_only=True means the variable is absent from the current CLI env/.env
+    but present in the running gateway process.
+    """
+    value = get_env_value(env_var) or ""
+    if value:
+        return value, True, False
+    runtime_present = env_var in _gateway_runtime_env_presence()
+    return "", runtime_present, runtime_present
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -144,9 +198,10 @@ def show_status(args):
     }
 
     for name, env_var in keys.items():
-        value = get_env_value(env_var) or ""
-        has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        value, has_key, runtime_only = _env_value_or_gateway_presence(env_var)
+        display = redact_key(value) if value and not show_all else value
+        if runtime_only:
+            display = "(runtime via gateway)"
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
@@ -388,8 +443,7 @@ def show_status(args):
     }
 
     for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
+        _token_value, has_token, runtime_only = _env_value_or_gateway_presence(token_var)
         
         home_channel = ""
         if home_var:
@@ -398,7 +452,10 @@ def show_status(args):
         if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
             home_channel = os.getenv("QQ_HOME_CHANNEL", "")
         
-        status = "configured" if has_token else "not configured"
+        if runtime_only:
+            status = "configured via running gateway"
+        else:
+            status = "configured" if has_token else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
         

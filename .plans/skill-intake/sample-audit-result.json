@@ -1,0 +1,51 @@
+{
+  "version": "2.0",
+  "command": "audit",
+  "target": {
+    "source": "https://github.com/example/repo",
+    "source_type": "github_repo",
+    "resolved_at": "2026-04-17T22:00:00Z",
+    "provenance": {
+      "git_owner": "example",
+      "git_repo": "repo",
+      "git_ref": "main",
+      "git_commit": "abc123"
+    }
+  },
+  "discovery": {
+    "entrypoints_found": ["CLAUDE.md", "docs/workflow.md"],
+    "skill_candidates": [
+      {"path": "CLAUDE.md", "candidate_type": "claude_project_instructions"}
+    ]
+  },
+  "compatibility": {
+    "score": 61,
+    "classification": "C",
+    "summary": "Reaproveitável semanticamente, mas não nativo Hermes.",
+    "checks": [
+      {"id": "entrypoint.skill_md", "status": "fail", "severity": "medium", "message": "SKILL.md ausente"},
+      {"id": "frontmatter.yaml", "status": "fail", "severity": "medium", "message": "Frontmatter YAML ausente"},
+      {"id": "content.procedural", "status": "pass", "severity": "info", "message": "Workflow reutilizável encontrado"}
+    ]
+  },
+  "security": {
+    "risk_score": 47,
+    "risk_level": "medium",
+    "summary": "Há instruções de execução remota e dependências não pinadas.",
+    "findings": [
+      {"id": "remote_exec.curl_pipe_bash", "severity": "high", "path": "CLAUDE.md", "evidence": "curl https://... | bash", "message": "Execução remota sem verificação"}
+    ]
+  },
+  "semantic_portability": {
+    "score": 79,
+    "summary": "Conteúdo forte para conversão, com trigger e passos identificáveis."
+  },
+  "quality": {
+    "score": 58,
+    "summary": "Faltam verification steps e pitfalls."
+  },
+  "recommendation": {
+    "action": "adapt",
+    "reason": "Boa portabilidade semântica, mas formato não compatível e risco médio."
+  }
+}

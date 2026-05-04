@@ -126,6 +126,32 @@ class TestDoctorToolAvailabilityOverrides:
         assert available == []
         assert unavailable == [honcho_entry]
 
+    def test_marks_web_available_when_any_runtime_backend_env_var_exists(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor,
+            "_gateway_runtime_env_presence",
+            lambda: {"FIRECRAWL_API_URL"},
+        )
+
+        web_entry = {
+            "name": "web",
+            "env_vars": [
+                "EXA_API_KEY",
+                "PARALLEL_API_KEY",
+                "TAVILY_API_KEY",
+                "FIRECRAWL_API_KEY",
+                "FIRECRAWL_API_URL",
+            ],
+            "tools": ["web_search", "web_extract"],
+        }
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [web_entry],
+        )
+
+        assert available == ["web"]
+        assert unavailable == []
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):

@@ -1,0 +1,27 @@
+{
+  "version": "2.0",
+  "command": "re-audit",
+  "target": {
+    "path": "/tmp/skill-intake/output/my-skill"
+  },
+  "compatibility": {
+    "score": 92,
+    "classification": "A",
+    "summary": "Estruturalmente compatível com Hermes."
+  },
+  "security": {
+    "risk_score": 33,
+    "risk_level": "medium",
+    "summary": "Estrutura corrigida, mas ainda há instruções de instalação remota."
+  },
+  "semantic_portability": {
+    "score": 88
+  },
+  "quality": {
+    "score": 74
+  },
+  "readiness": {
+    "status": "review",
+    "reason": "Compatível, porém requer revisão humana por risco residual médio."
+  }
+}

@@ -210,6 +210,50 @@ async def test_send_retries_without_thread_on_thread_not_found():
 
 
 @pytest.mark.asyncio
+async def test_send_model_picker_retries_without_thread_on_thread_not_found(monkeypatch):
+    """Model picker should retry without thread_id when Telegram rejects the topic."""
+    adapter = _make_adapter()
+    adapter._model_picker_state = {}
+
+    from gateway.platforms import telegram as telegram_mod
+
+    monkeypatch.setattr(
+        telegram_mod,
+        "InlineKeyboardButton",
+        lambda text, callback_data: {"text": text, "callback_data": callback_data},
+    )
+    monkeypatch.setattr(telegram_mod, "InlineKeyboardMarkup", lambda rows: {"rows": rows})
+    monkeypatch.setattr(telegram_mod, "ParseMode", SimpleNamespace(MARKDOWN="Markdown"))
+
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=77)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send_model_picker(
+        chat_id="-100123",
+        providers=[{"name": "OpenAI", "slug": "openai", "models": ["gpt-5.4"], "total_models": 1}],
+        current_model="gpt-5.4",
+        current_provider="openai",
+        session_key="agent:main:telegram:group:-100123:99999",
+        on_model_selected=lambda *_args, **_kwargs: None,
+        metadata={"thread_id": "99999"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "77"
+    assert len(call_log) == 2
+    assert call_log[0]["message_thread_id"] == 99999
+    assert call_log[1]["message_thread_id"] is None
+    assert adapter._model_picker_state["-100123"]["msg_id"] == 77
+
+
+@pytest.mark.asyncio
 async def test_send_raises_on_other_bad_request():
     """Non-thread BadRequest errors should NOT be retried — they fail immediately."""
     adapter = _make_adapter()

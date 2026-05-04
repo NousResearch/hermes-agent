@@ -10,6 +10,7 @@ import subprocess
 import shutil
 import importlib.util
 from pathlib import Path
+from functools import lru_cache
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_constants import display_hermes_home
@@ -113,18 +114,59 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
+def _gateway_runtime_env_presence() -> set[str]:
+    """Best-effort set of env vars present in the running gateway process."""
+    present: set[str] = set()
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+
+        snapshot = get_gateway_runtime_snapshot()
+        if not snapshot.gateway_pids:
+            return present
+
+        for pid in snapshot.gateway_pids:
+            try:
+                result = subprocess.run(
+                    ["ps", "eww", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode != 0:
+                continue
+            for chunk in result.stdout.split():
+                if "=" not in chunk:
+                    continue
+                key, _value = chunk.split("=", 1)
+                if key and key.isupper():
+                    present.add(key)
+    except Exception:
+        return set()
+    return present
+
+
+def _has_runtime_env_var(name: str) -> bool:
+    return name in _gateway_runtime_env_presence()
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    if not _honcho_is_configured_for_doctor():
-        return available, unavailable
-
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
         if item.get("name") == "honcho":
-            if "honcho" not in updated_available:
+            if _honcho_is_configured_for_doctor() and "honcho" not in updated_available:
                 updated_available.append("honcho")
-            continue
+                continue
+        if item.get("name") == "web":
+            missing_vars = item.get("missing_vars") or item.get("env_vars") or []
+            if missing_vars and any(_has_runtime_env_var(var) for var in missing_vars):
+                if "web" not in updated_available:
+                    updated_available.append("web")
+                continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
 
@@ -1267,6 +1309,8 @@ def run_doctor(args):
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")
+    elif _has_runtime_env_var("GITHUB_TOKEN") or _has_runtime_env_var("GH_TOKEN"):
+        check_ok("GitHub token configured via running gateway", "(Keychain/runtime-backed)")
     else:
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 

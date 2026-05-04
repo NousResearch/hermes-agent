@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/skill-intake-result.json",
+  "title": "Skill Intake Result",
+  "type": "object",
+  "required": ["version", "command"],
+  "properties": {
+    "version": {"type": "string"},
+    "command": {"type": "string", "enum": ["audit", "convert", "re-audit", "admit"]},
+    "target": {"type": "object"},
+    "source": {"type": "object"},
+    "compatibility": {
+      "type": "object",
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "classification": {"type": "string", "enum": ["A", "B", "C", "D"]},
+        "summary": {"type": "string"},
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status"],
+            "properties": {
+              "id": {"type": "string"},
+              "status": {"type": "string", "enum": ["pass", "warn", "fail"]},
+              "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+              "message": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "risk_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "risk_level": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+        "summary": {"type": "string"},
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "severity"],
+            "properties": {
+              "id": {"type": "string"},
+              "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+              "path": {"type": "string"},
+              "evidence": {"type": "string"},
+              "message": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "semantic_portability": {
+      "type": "object",
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "summary": {"type": "string"},
+        "findings": {"type": "array", "items": {"type": "object"}}
+      },
+      "additionalProperties": true
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "summary": {"type": "string"},
+        "eval_plan": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "recommendation": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["install", "adapt", "quarantine", "reject"]},
+        "reason": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "conversion": {"type": "object", "additionalProperties": true},
+    "generated_skill": {"type": "object", "additionalProperties": true},
+    "readiness": {"type": "object", "additionalProperties": true},
+    "policy": {"type": ["string", "object"]},
+    "decision": {"type": "object", "additionalProperties": true},
+    "controls": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

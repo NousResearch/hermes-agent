@@ -1,0 +1,17 @@
+{
+  "version": "2.0",
+  "command": "admit",
+  "policy": "conservative",
+  "decision": {
+    "status": "review_required",
+    "approved": false,
+    "reason": "Risco residual médio com finding de remote_exec."
+  },
+  "controls": {
+    "required_actions": [
+      "Remover curl|bash",
+      "Pinar dependências",
+      "Reexecutar re-audit"
+    ]
+  }
+}

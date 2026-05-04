@@ -14129,7 +14129,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 and str(os.getpid()) not in line.split()[1:2]  # exclude self
             ]
             if _hermes_procs:
-                logger.warning(
+                logger.debug(
                     "Shutdown diagnostic — other hermes processes running:\n  %s",
                     "\n  ".join(_hermes_procs),
                 )

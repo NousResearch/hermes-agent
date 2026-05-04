@@ -1,0 +1,24 @@
+{
+  "version": "2.0",
+  "command": "convert",
+  "source": {
+    "source": "https://github.com/example/repo",
+    "audit_reference": "audit-2026-04-17-001"
+  },
+  "conversion": {
+    "target_format": "hermes",
+    "mode": "balanced",
+    "output_dir": "/tmp/skill-intake/output/my-skill",
+    "generated_files": ["SKILL.md", "references/original-context.md", "scripts/setup.sh"],
+    "discarded": [
+      {"path": "CLAUDE.md", "section": "Current Sprint Notes", "reason": "temporary_context"}
+    ]
+  },
+  "generated_skill": {
+    "name": "my-skill",
+    "description": "Executa workflow X. Use quando Y."
+  },
+  "warnings": [
+    "Alguns comandos perigosos foram preservados no draft e marcados no relatório."
+  ]
+}

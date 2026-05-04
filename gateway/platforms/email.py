@@ -318,6 +318,22 @@ class EmailAdapter(BasePlatformAdapter):
             self._poll_task = None
         logger.info("[Email] Disconnected.")
 
+    def _mark_as_seen(self, uid: str) -> None:
+        """Mark a message as SEEN on the IMAP server. Runs in executor thread."""
+        try:
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=15)
+            try:
+                imap.login(self._address, self._password)
+                imap.select("INBOX")
+                imap.uid("store", uid, "+FLAGS", "\\Seen")
+            finally:
+                try:
+                    imap.logout()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug("[Email] IMAP mark_seen error for uid %s: %s", uid, e)
+
     async def _poll_loop(self) -> None:
         """Poll IMAP for new messages at regular intervals."""
         while self._running:
@@ -462,6 +478,17 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+
+        # Mark as SEEN on the IMAP server so the message isn't re-fetched
+        # after a gateway restart (which would re-trigger processing
+        # including any pre-auth early returns like the stale-code check).
+        uid = msg_data.get("uid")
+        if uid:
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._mark_as_seen, uid)
+            except Exception as _se:
+                logger.debug("[Email] Failed to mark uid %s as seen: %s", uid, _se)
 
     async def send(
         self,

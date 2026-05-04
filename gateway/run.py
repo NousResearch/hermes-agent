@@ -4612,14 +4612,16 @@ class GatewayRunner:
         try:
             if self._detect_stale_code():
                 self._trigger_stale_code_restart()
-                # Acknowledge to the user so they don't see a silent
-                # drop; the gateway will be back up in a moment via the
-                # service manager / profile-watcher respawn.
-                return (
-                    "⟳ Gateway code was updated in the background — "
-                    "restarting this gateway so your next message runs "
-                    "on the new code. Please retry in a moment."
-                )
+                # Only acknowledge to authorized users so the restart
+                # message doesn't leak to unauthorized senders (e.g.
+                # email replies to strangers — Issue #17648 follow-up).
+                if self._is_user_authorized(source):
+                    return (
+                        "⟳ Gateway code was updated in the background — "
+                        "restarting this gateway so your next message runs "
+                        "on the new code. Please retry in a moment."
+                    )
+                return None
         except Exception as _stale_exc:
             logger.debug("Stale-code self-check failed: %s", _stale_exc)
 

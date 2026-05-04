@@ -570,6 +570,8 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    evidence: Optional[str] = None
+    verifier: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     spawn_failures: int = 0
@@ -614,6 +616,8 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            evidence=row["evidence"] if "evidence" in keys else None,
+            verifier=row["verifier"] if "verifier" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             spawn_failures=row["spawn_failures"] if "spawn_failures" in keys else 0,
@@ -750,7 +754,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Force-loaded skills for the worker on this task, stored as JSON.
     -- Appended to the dispatcher's built-in `--skills kanban-worker`.
     -- NULL or empty array = no extras.
-    skills               TEXT
+    skills               TEXT,
+    -- Structured ticket fields for machine-verifiable work items.
+    -- `assignee` remains the dispatcher owner; `evidence` records what proves
+    -- completion; `verifier` records who/what must check it.
+    evidence             TEXT,
+    verifier             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -955,6 +964,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # worker (additive to the built-in `kanban-worker`). NULL is fine
         # for existing rows.
         conn.execute("ALTER TABLE tasks ADD COLUMN skills TEXT")
+    if "evidence" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN evidence TEXT")
+    if "verifier" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN verifier TEXT")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1111,6 +1124,8 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    evidence: Optional[str] = None,
+    verifier: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1135,6 +1150,10 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``evidence`` and ``verifier`` make the task a structured ticket:
+    evidence states what artifact/proof must exist for completion, and
+    verifier names the human, automation, or command that must check it.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1224,8 +1243,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        tenant, idempotency_key, max_runtime_seconds, skills
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tenant, idempotency_key, max_runtime_seconds, skills,
+                        evidence, verifier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1242,6 +1262,8 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        evidence.strip() if isinstance(evidence, str) and evidence.strip() else None,
+                        verifier.strip() if isinstance(verifier, str) and verifier.strip() else None,
                     ),
                 )
                 for pid in parents:
@@ -1259,6 +1281,8 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "evidence": evidence.strip() if isinstance(evidence, str) and evidence.strip() else None,
+                        "verifier": verifier.strip() if isinstance(verifier, str) and verifier.strip() else None,
                     },
                 )
             return task_id

@@ -119,6 +119,18 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_structured_ticket_fields(kanban_home):
+    out = kc.run_slash(
+        "create 'structured' --owner ops --evidence 'pytest tests/agent/test_behavior_canaries.py' "
+        "--verifier release-manager --json"
+    )
+    payload = json.loads(out)
+    assert payload["owner"] == "ops"
+    assert payload["assignee"] == "ops"
+    assert payload["evidence"] == "pytest tests/agent/test_behavior_canaries.py"
+    assert payload["verifier"] == "release-manager"
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

@@ -61,6 +61,26 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+def test_create_task_records_structured_ticket_fields(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship hardening",
+            assignee="owner-profile",
+            evidence="pytest tests/agent/test_behavior_canaries.py",
+            verifier="release-manager",
+        )
+        t = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert t is not None
+    assert t.assignee == "owner-profile"
+    assert t.evidence == "pytest tests/agent/test_behavior_canaries.py"
+    assert t.verifier == "release-manager"
+    assert events[0].payload["evidence"] == "pytest tests/agent/test_behavior_canaries.py"
+    assert events[0].payload["verifier"] == "release-manager"
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")

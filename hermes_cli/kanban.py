@@ -59,7 +59,10 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "title": t.title,
         "body": t.body,
         "assignee": t.assignee,
+        "owner": t.assignee,
         "status": t.status,
+        "evidence": t.evidence,
+        "verifier": t.verifier,
         "priority": t.priority,
         "tenant": t.tenant,
         "workspace_kind": t.workspace_kind,
@@ -261,6 +264,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_create.add_argument("--owner", default=None,
+                          help="Structured ticket owner alias for --assignee")
+    p_create.add_argument("--evidence", default=None,
+                          help="Proof/artifact expected before the ticket can be verified")
+    p_create.add_argument("--verifier", default=None,
+                          help="Human, automation, or command responsible for verification")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
@@ -905,7 +914,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             conn,
             title=args.title,
             body=args.body,
-            assignee=args.assignee,
+            assignee=args.assignee or getattr(args, "owner", None),
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind,
             workspace_path=ws_path,
@@ -916,6 +925,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
+            evidence=getattr(args, "evidence", None),
+            verifier=getattr(args, "verifier", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1031,6 +1042,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"Task {task.id}: {task.title}")
     print(f"  status:    {task.status}")
     print(f"  assignee:  {task.assignee or '-'}")
+    if task.evidence:
+        print(f"  evidence:  {task.evidence}")
+    if task.verifier:
+        print(f"  verifier:  {task.verifier}")
     if task.tenant:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +

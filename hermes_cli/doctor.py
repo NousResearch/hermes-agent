@@ -12,6 +12,7 @@ import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.credential_audit import summarize_credential_audit
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -720,6 +721,30 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+
+    # =========================================================================
+    # Check: Credential auth/recovery assumptions (metadata only; no secret values)
+    # =========================================================================
+    print()
+    print(color("◆ Credential Recovery Assumptions", Colors.CYAN, Colors.BOLD))
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        audit = summarize_credential_audit(OPTIONAL_ENV_VARS)
+        if audit["warnings"] == 0:
+            check_ok("Credential metadata audit", f"({audit['checked']} secret definitions checked)")
+        else:
+            check_warn(
+                "Credential metadata audit",
+                f"({audit['warnings']} warnings across {audit['checked']} secret definitions)",
+            )
+            for item in audit["findings"][:10]:
+                check_info(f"{item['key']}: {item['issue']} — {item['recommendation']}")
+            if len(audit["findings"]) > 10:
+                check_info(f"... {len(audit['findings']) - 10} more metadata findings hidden")
+            manual_issues.append("Credential definitions need auth_method/phishing_resistant/recovery metadata")
+    except Exception as e:
+        check_warn("Credential metadata audit skipped", f"({e})")
 
     # =========================================================================
     # Check: Command installation (hermes bin symlink)

@@ -985,7 +985,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
+    _busy_input_mode: str = "steer"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1959,9 +1959,9 @@ class GatewayRunner:
                 pass
         if mode == "queue":
             return "queue"
-        if mode == "steer":
-            return "steer"
-        return "interrupt"
+        if mode == "interrupt":
+            return "interrupt"
+        return "steer"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -4767,8 +4767,8 @@ class GatewayRunner:
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
         # PRIORITY handling when an agent is already running for this session.
-        # Default behavior is to interrupt immediately so user text/stop messages
-        # are handled with minimal latency.
+        # Default behavior is to steer user text into the current run without
+        # interrupting; Ctrl+C and /stop remain hard interrupts.
         #
         # Special case: Telegram/photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;

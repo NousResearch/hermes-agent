@@ -97,17 +97,17 @@ class TestVerboseAndToolProgress:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
+    def test_default_busy_input_mode_is_steer(self):
         cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
+        assert cli.busy_input_mode == "steer"
 
     def test_busy_input_mode_queue_is_honored(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
         assert cli.busy_input_mode == "queue"
 
-    def test_unknown_busy_input_mode_falls_back_to_interrupt(self):
+    def test_unknown_busy_input_mode_falls_back_to_steer(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "bogus"}})
-        assert cli.busy_input_mode == "interrupt"
+        assert cli.busy_input_mode == "steer"
 
     def test_queue_command_works_while_busy(self):
         """When agent is running, /queue should still put the prompt in _pending_input."""
@@ -137,8 +137,8 @@ class TestBusyInputMode:
         assert cli._interrupt_queue.empty()
 
     def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
-        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
-        cli = _make_cli()
+        """In interrupt mode, Enter while busy goes to _interrupt_queue."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "interrupt"}})
         cli._agent_running = True
         text = "redirect"
         if cli.busy_input_mode == "queue":

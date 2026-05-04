@@ -213,25 +213,26 @@ hermes pairing revoke telegram 123456789  # Remove access
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
 
-## Interrupting the Agent
+## Steering or Interrupting the Agent
 
-Send any message while the agent is working to interrupt it. Key behaviors:
+By default, sending a message while the agent is working steers it into the current run. Set `display.busy_input_mode: interrupt` if you prefer the older hard-interrupt behavior. In interrupt mode:
 
 - **In-progress terminal commands are killed immediately** (SIGTERM, then SIGKILL after 1s)
 - **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
 - **Multiple messages are combined** — messages sent during interruption are joined into one prompt
-- **`/stop` command** — interrupts without queuing a follow-up message
+- **`/stop` command** — always interrupts without queuing a follow-up message
 
 ### Queue vs interrupt vs steer (busy-input mode)
 
-By default, messaging a busy agent interrupts it. Two other modes are available:
+By default, messaging a busy agent steers it into the active run. Other modes are available:
 
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `interrupt` — follow-up messages stop the current run and redirect Hermes immediately.
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: steer   # default; or queue / interrupt
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 

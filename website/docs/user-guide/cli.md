@@ -217,14 +217,14 @@ There are two ways to enter multi-line messages:
 Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert newlines, or simply paste content directly.
 :::
 
-## Interrupting the Agent
+## Steering or Interrupting the Agent
 
-You can interrupt the agent at any point:
+By default, typing a new message while the agent is working steers that guidance into the current run. You can still interrupt explicitly:
 
-- **Type a new message + Enter** while the agent is working — it interrupts and processes your new instructions
+- **Type a new message + Enter** while the agent is working — by default it steers into the current run; change `display.busy_input_mode` to `interrupt` to make Enter interrupt instead
 - **`Ctrl+C`** — interrupt the current operation (press twice within 2s to force exit)
-- In-progress terminal commands are killed immediately (SIGTERM, then SIGKILL after 1s)
-- Multiple messages typed during interrupt are combined into one prompt
+- In-progress terminal commands are killed immediately when interrupted (SIGTERM, then SIGKILL after 1s)
+- Multiple messages typed during interrupt mode are combined into one prompt
 
 ### Busy Input Mode
 
@@ -232,17 +232,17 @@ The `display.busy_input_mode` config key controls what happens when you press En
 
 | Mode | Behavior |
 |------|----------|
-| `"interrupt"` (default) | Your message interrupts the current operation and is processed immediately |
+| `"steer"` (default) | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn |
 | `"queue"` | Your message is silently queued and sent as the next turn after the agent finishes |
-| `"steer"` | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn |
+| `"interrupt"` | Your message interrupts the current operation and is processed immediately |
 
 ```yaml
 # ~/.hermes/config.yaml
 display:
-  busy_input_mode: "steer"   # or "queue" or "interrupt" (default)
+  busy_input_mode: "steer"   # default; or "queue" / "interrupt"
 ```
 
-`"queue"` mode is useful when you want to prepare follow-up messages without accidentally canceling in-flight work. `"steer"` mode is useful when you want to redirect the agent mid-task without interrupting — e.g. "actually, also check the tests" while it's still editing code. Unknown values fall back to `"interrupt"`.
+`"steer"` mode is useful when you want to redirect the agent mid-task without interrupting — e.g. "actually, also check the tests" while it's still editing code. `"queue"` mode is useful when you want to prepare follow-up messages without affecting in-flight work. Unknown values fall back to `"steer"`.
 
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
 
@@ -256,7 +256,7 @@ You can also change it inside the CLI:
 ```
 
 :::tip First-touch hint
-The very first time you press Enter while Hermes is working, Hermes prints a one-line reminder explaining the `/busy` knob (`"(tip) Your message interrupted the current run…"`). It only fires once per install — a flag in `config.yaml` under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
+The very first time you press Enter while Hermes is working, Hermes prints a one-line reminder explaining the `/busy` knob (for example, `"(tip) Your message was steered into the current run…"`). It only fires once per install — a flag in `config.yaml` under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 :::
 
 ### Suspending to Background

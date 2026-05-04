@@ -267,7 +267,7 @@ def _load_busy_input_mode() -> str:
     if not isinstance(display, dict):
         display = {}
     raw = str(display.get("busy_input_mode", "") or "").strip().lower()
-    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+    return raw if raw in {"queue", "steer", "interrupt"} else "steer"
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None) -> None:

@@ -333,7 +333,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_display": "full",
             "show_reasoning": False,
             "streaming": True,
-            "busy_input_mode": "interrupt",
+            "busy_input_mode": "steer",
 
             "skin": "default",
         },
@@ -2016,16 +2016,16 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # busy_input_mode: "interrupt" (Enter interrupts current run),
-        # "queue" (Enter queues for next turn), or "steer" (Enter injects
-        # mid-run via /steer, arriving after the next tool call).
-        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
+        # busy_input_mode: "steer" (Enter injects mid-run via /steer,
+        # arriving after the next tool call), "queue" (Enter queues for next
+        # turn), or "interrupt" (Enter interrupts current run).
+        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "steer")).strip().lower()
         if _bim == "queue":
             self.busy_input_mode = "queue"
-        elif _bim == "steer":
-            self.busy_input_mode = "steer"
-        else:
+        elif _bim == "interrupt":
             self.busy_input_mode = "interrupt"
+        else:
+            self.busy_input_mode = "steer"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -7416,9 +7416,9 @@ class HermesCLI:
         Usage:
             /busy               Show current busy input mode
             /busy status        Show current busy input mode
+            /busy steer         Inject Enter mid-run via /steer (after next tool call, default)
             /busy queue         Queue input for the next turn instead of interrupting
-            /busy steer         Inject Enter mid-run via /steer (after next tool call)
-            /busy interrupt     Interrupt the current run on Enter (default)
+            /busy interrupt     Interrupt the current run on Enter
         """
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
@@ -9552,7 +9552,7 @@ class HermesCLI:
 
             # Re-queue the interrupt message (and any that arrived while we were
             # processing the first) as the next prompt for process_loop.
-            # Only reached when busy_input_mode == "interrupt" (the default).
+            # Only reached when busy_input_mode == "interrupt".
             # In "queue" mode Enter routes directly to _pending_input so this
             # block is never hit.
             if pending_message and hasattr(self, '_pending_input'):

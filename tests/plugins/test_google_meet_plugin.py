@@ -776,6 +776,97 @@ def test_click_join_noops_when_already_in_call(monkeypatch):
     assert state.error is None
 
 
+def test_prejoin_listen_only_turns_off_enabled_camera_and_microphone():
+    from plugins.google_meet.meet_bot import _ensure_prejoin_listen_only
+
+    class _FakeLocator:
+        def __init__(self, label, page):
+            self.label = label
+            self.page = page
+            self.first = self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return True
+
+        def click(self, timeout=None):
+            self.page.clicked.append(self.label)
+
+    class _FakePage:
+        def __init__(self):
+            self.clicked = []
+
+        def get_by_role(self, role, name=None, exact=False):
+            assert role == "button"
+            return _FakeLocator(name, self)
+
+    page = _FakePage()
+    _ensure_prejoin_listen_only(page)
+
+    assert "Turn off microphone" in page.clicked
+    assert "Turn off camera" in page.clicked
+    assert "Turn on microphone" not in page.clicked
+    assert "Turn on camera" not in page.clicked
+
+
+def test_click_join_prefers_join_here_too_via_other_ways_over_switch_here(monkeypatch):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    monkeypatch.setenv("HERMES_MEET_JOIN_BUTTON_TIMEOUT", "1")
+
+    class _FakeLocator:
+        def __init__(self, page, label, visible=False):
+            self.page = page
+            self.label = label
+            self.visible = visible
+            self.first = self
+
+        def count(self):
+            return 1 if self.visible else 0
+
+        def is_visible(self):
+            return self.visible
+
+        def click(self, timeout=None):
+            self.page.clicked.append(self.label)
+            if self.label == "Other ways to join":
+                self.page.other_ways_expanded = True
+
+    class _FakePage:
+        def __init__(self):
+            self.clicked = []
+            self.other_ways_expanded = False
+
+        def evaluate(self, _js):
+            return False
+
+        def get_by_role(self, role, name=None, exact=False):
+            assert role == "button"
+            label = str(name)
+            visible = False
+            if label == "Other ways to join" and not self.other_ways_expanded:
+                visible = True
+            if label == "Join here too" and self.other_ways_expanded:
+                visible = True
+            if label == "Switch here":
+                visible = True
+            return _FakeLocator(self, label, visible=visible)
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    state = _BotState(out_dir=Path(os.environ["HERMES_HOME"]) / "join-here-too",
+                      meeting_id="x-y-z", url="https://meet.google.com/x-y-z")
+    page = _FakePage()
+    _click_join(page, state)
+
+    assert page.clicked == ["Other ways to join", "Join here too"]
+    assert "Switch here" not in page.clicked
+    assert state.error is None
+
+
 def test_detect_denied_returns_false_on_error():
     from plugins.google_meet.meet_bot import _detect_denied
 

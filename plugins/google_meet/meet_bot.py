@@ -853,6 +853,23 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
     return True
 
 
+def _ensure_prejoin_listen_only(page) -> None:
+    """Best-effort: make Meet prejoin controls listen-only before joining.
+
+    We only click positive "Turn off ..." controls. If Meet already shows
+    "Turn on microphone" / "Turn on camera", that means the device is already
+    muted/off and must be left alone. This keeps the bot safe for the user's
+    expected mode: camera off, microphone off, transcribe-only.
+    """
+    for label in ("Turn off microphone", "Turn off camera"):
+        try:
+            btn = page.get_by_role("button", name=label, exact=False).first
+            if btn.count() and btn.is_visible():
+                btn.click(timeout=3_000)
+        except Exception:
+            pass
+
+
 def _click_join(page, state: _BotState) -> None:
     """Click 'Join now' or 'Ask to join' once Meet's pre-join UI is ready.
 
@@ -884,6 +901,8 @@ def _click_join(page, state: _BotState) -> None:
                     dismissed_switch_hint = True
             except Exception as e:
                 last_error = str(e)
+
+        _ensure_prejoin_listen_only(page)
 
         for label in ("Join now", "Join here too", "Ask to join"):
             try:

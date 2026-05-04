@@ -292,6 +292,40 @@ Three reasons:
 
 The `kanban-worker` and `kanban-orchestrator` skills teach the model which tool to call when and in what order.
 
+### Recommended handoff evidence
+
+`kanban_complete(summary=..., metadata={...})` is intentionally flexible:
+the summary is the human-readable closeout, and `metadata` is the
+machine-readable handoff that downstream agents, reviewers, or dashboards can
+reuse without scraping prose.
+
+For engineering and review tasks, prefer this optional metadata shape:
+
+```json
+{
+  "changed_files": ["path/to/file.py"],
+  "verification": ["pytest tests/hermes_cli/test_kanban_db.py -q"],
+  "dependencies": ["parent task id or external issue, if any"],
+  "blocked_reason": null,
+  "retry_notes": "what failed before, if this was a retry",
+  "residual_risk": ["what was not tested or still needs human review"]
+}
+```
+
+These keys are a convention, not a schema requirement. The useful property is
+that every worker leaves enough evidence for the next reader to answer four
+questions quickly:
+
+1. What changed?
+2. How was it verified?
+3. What can unblock or retry this if it fails?
+4. What risk is still deliberately left open?
+
+Keep secrets, raw logs, tokens, OAuth material, and unrelated transcripts out of
+`metadata`. Store pointers and summaries instead. If a task has no files or
+tests, say so explicitly in `summary` and use `metadata` for the evidence that
+does exist, such as source URLs, issue ids, or manual review steps.
+
 ### The worker skill
 
 Any profile that should be able to work kanban tasks must load the `kanban-worker` skill. It teaches the worker the full lifecycle in **tool calls**, not CLI commands:

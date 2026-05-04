@@ -79,6 +79,19 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
     return env_tid or None
 
 
+def _worker_run_id(task_id: str) -> Optional[int]:
+    """Return this worker's dispatcher run id when it is scoped to task_id."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -240,6 +253,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
+                    expected_run_id=_worker_run_id(tid),
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
@@ -281,7 +295,11 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
-            ok = kb.block_task(conn, tid, reason=reason)
+            ok = kb.block_task(
+                conn, tid,
+                reason=reason,
+                expected_run_id=_worker_run_id(tid),
+            )
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
@@ -310,7 +328,12 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
-            ok = kb.heartbeat_worker(conn, tid, note=note)
+            ok = kb.heartbeat_worker(
+                conn,
+                tid,
+                note=note,
+                expected_run_id=_worker_run_id(tid),
+            )
             if not ok:
                 return tool_error(
                     f"could not heartbeat {tid} (unknown id or not running)"

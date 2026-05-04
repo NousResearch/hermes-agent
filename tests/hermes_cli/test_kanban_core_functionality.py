@@ -1186,6 +1186,79 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
         conn.close()
 
 
+def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
+    """A worker from an earlier attempt cannot close a later retry."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry guarded", assignee="worker")
+
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+
+        assert not kb.complete_task(
+            conn,
+            tid,
+            summary="late stale completion",
+            expected_run_id=run1.id,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="current completion",
+            expected_run_id=run2.id,
+        )
+        runs = kb.list_runs(conn, tid)
+        assert [r.outcome for r in runs] == ["crashed", "completed"]
+        assert runs[-1].summary == "current completion"
+    finally:
+        conn.close()
+
+
+def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatch):
+    """Stale retry attempts cannot mutate the active run lifecycle."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry heartbeat guarded", assignee="worker")
+
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+
+        assert not kb.heartbeat_worker(conn, tid, note="late", expected_run_id=run1.id)
+        assert not kb.block_task(conn, tid, reason="late block", expected_run_id=run1.id)
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+        assert task.last_heartbeat_at is None
+
+        assert kb.heartbeat_worker(conn, tid, note="current", expected_run_id=run2.id)
+        assert kb.block_task(conn, tid, reason="current block", expected_run_id=run2.id)
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
 def test_run_on_block_with_reason(kanban_home):
     conn = kb.connect()
     try:

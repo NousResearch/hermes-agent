@@ -101,10 +101,26 @@ def test_hook_receives_expected_kwargs(monkeypatch):
     assert out == '{"ok": true}'
     assert captured["tool_name"] == "my_tool"
     assert captured["args"] == {"a": 1, "b": "x"}
+    assert captured["arguments"] == {"a": 1, "b": "x"}
     assert captured["result"] == '{"ok": true}'
     assert captured["task_id"] == "t1"
     assert captured["session_id"] == "s1"
     assert captured["tool_call_id"] == "tc1"
+
+
+def test_hook_accepts_documented_arguments_kwarg(monkeypatch):
+    out = _run_handle_function_call(
+        monkeypatch,
+        tool_name="my_tool",
+        tool_args={"a": 1},
+        dispatch_result='{"ok": true}',
+        invoke_hook=lambda hook_name, **kwargs: (
+            [f'ARGS={kwargs["arguments"]["a"]}']
+            if hook_name == "transform_tool_result"
+            else []
+        ),
+    )
+    assert out == "ARGS=1"
 
 
 def test_hook_exception_falls_back_to_original(monkeypatch):

@@ -797,6 +797,7 @@ def handle_function_call(
                 "transform_tool_result",
                 tool_name=function_name,
                 args=function_args,
+                arguments=function_args,
                 result=result,
                 task_id=task_id or "",
                 session_id=session_id or "",

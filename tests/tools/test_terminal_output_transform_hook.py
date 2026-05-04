@@ -133,6 +133,26 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     assert "***" in result["output"]
 
 
+def test_terminal_output_transform_hook_receives_documented_cwd(monkeypatch, tmp_path):
+    captured = {}
+
+    def _hook(hook_name, **kwargs):
+        if hook_name == "transform_terminal_output":
+            captured.update(kwargs)
+        return []
+
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="plain output",
+        invoke_hook=_hook,
+        command="pwd",
+    )
+
+    assert result["output"] == "plain output"
+    assert captured["cwd"] == str(tmp_path)
+
+
 def test_terminal_output_transform_hook_exception_falls_back(monkeypatch, tmp_path):
     def _raise(*_args, **_kwargs):
         raise RuntimeError("boom")

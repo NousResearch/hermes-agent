@@ -2052,6 +2052,7 @@ def terminal_tool(
                     command=command,
                     output=output,
                     returncode=returncode,
+                    cwd=workdir or cwd,
                     task_id=effective_task_id or "",
                     env_type=env_type,
                 )

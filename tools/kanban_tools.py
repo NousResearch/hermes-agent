@@ -380,40 +380,10 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
-            # Auto-subscribe the originating gateway source (if any) to the
-            # new task's terminal events. Mirrors the behavior of the
-            # `/kanban create` slash command in gateway/run.py so that
-            # tool-driven creation (orchestrator agents calling kanban_create)
-            # gets the same blocked/completed/gave_up notifications as human-
-            # driven creation. No-op in CLI / cron contexts where no gateway
-            # session context is active. See issue #19479.
-            subscribed = False
-            try:
-                from gateway.session_context import get_session_env
-                platform = get_session_env("HERMES_SESSION_PLATFORM")
-                chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
-                thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
-                user_id = get_session_env("HERMES_SESSION_USER_ID") or None
-                if platform and chat_id:
-                    kb.add_notify_sub(
-                        conn,
-                        task_id=new_tid,
-                        platform=platform,
-                        chat_id=chat_id,
-                        thread_id=thread_id,
-                        user_id=user_id,
-                    )
-                    subscribed = True
-            except Exception:
-                # Subscription is best-effort; don't fail the whole create
-                # if the gateway context module isn't importable (e.g. in
-                # test rigs that stub out gateway.*).
-                logger.debug("kanban_create notify-sub skipped", exc_info=True)
             new_task = kb.get_task(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
-                subscribed=subscribed,
             )
         finally:
             conn.close()

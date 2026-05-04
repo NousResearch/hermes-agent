@@ -4,6 +4,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ImageAttachResponse } from '../gatewayTypes.js'
+import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -210,6 +211,7 @@ export interface InputHandlerContext {
   }
   voice: {
     enabled: boolean
+    recordKey: ParsedVoiceRecordKey
     recording: boolean
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
@@ -291,6 +293,7 @@ export interface SlashHandlerContext {
   }
   voice: {
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceRecordKey: (v: ParsedVoiceRecordKey) => void
   }
 }
 
@@ -318,6 +321,7 @@ export interface AppLayoutComposerProps {
   queuedDisplay: string[]
   submit: (value: string) => void
   updateInput: StateSetter<string>
+  voiceRecordKey: ParsedVoiceRecordKey
 }
 
 export interface AppLayoutProgressProps {

@@ -348,9 +348,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return scrollTranscript(key.pageUp ? -step : step)
     }
 
-    // Queue-edit cancel beats selection-clear: the queue header explicitly
-    // promises "Esc cancel", so honoring it takes priority over the implicit
-    // selection-dismissal convention. Without an active edit, fall through.
+    // Escape-based voice bindings (ctrl/alt/super+escape) must win before the
+    // generic Esc handlers below; otherwise queue-edit cancel / selection-clear
+    // would swallow the chord and /voice would advertise a shortcut that never
+    // actually toggles recording in those UI states.
+    if (key.escape && isVoiceToggleKey(key, ch, voice.recordKey)) {
+      return voiceRecordToggle()
+    }
+
+    // Queue-edit cancel beats selection-clear for plain Esc: the queue header
+    // explicitly promises "Esc cancel", so honoring it takes priority over the
+    // implicit selection-dismissal convention. Without an active edit, fall through.
     if (key.escape && cState.queueEditIdx !== null) {
       return cActions.clearIn()
     }
@@ -439,7 +447,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isVoiceToggleKey(key, ch)) {
+    if (isVoiceToggleKey(key, ch, voice.recordKey)) {
       return voiceRecordToggle()
     }
 

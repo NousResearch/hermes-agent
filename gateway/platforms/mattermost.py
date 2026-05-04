@@ -201,7 +201,8 @@ class MattermostAdapter(BasePlatformAdapter):
             return False
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=True,
         )
         self._closing = False
 
@@ -634,7 +635,15 @@ class MattermostAdapter(BasePlatformAdapter):
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"
         logger.info("Mattermost: connecting to %s", ws_url)
 
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        ws_proxy = (
+            os.getenv("WSS_PROXY")
+            or os.getenv("wss_proxy")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("ALL_PROXY")
+            or os.getenv("all_proxy")
+        )
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0, proxy=ws_proxy)
 
         # Authenticate via the WebSocket.
         auth_msg = {

@@ -618,6 +618,75 @@ class TestMattermostDedup:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket proxy handling
+# ---------------------------------------------------------------------------
+
+class TestMattermostWebSocketProxy:
+    @pytest.mark.asyncio
+    async def test_connect_creates_session_with_trust_env(self, monkeypatch):
+        """ClientSession must be created with trust_env=True so all requests
+        (REST and WebSocket) honor HTTP_PROXY / HTTPS_PROXY / NO_PROXY."""
+        seen_session_kwargs: dict = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                seen_session_kwargs.update(kwargs)
+                self.closed = False
+
+            async def close(self): self.closed = True
+
+            def get(self, *a, **kw):
+                class _R:
+                    status = 200
+                    async def json(self): return {"id": "bot1", "username": "hermes"}
+                    async def __aenter__(self): return self
+                    async def __aexit__(self, *a): pass
+                return _R()
+
+        adapter = _make_adapter()
+        with patch("gateway.platforms.mattermost.aiohttp.ClientSession", side_effect=FakeSession):
+            result = await adapter.connect()
+            # Cancel background ws_task so the test doesn't hang.
+            if adapter._ws_task:
+                adapter._ws_task.cancel()
+                try:
+                    await adapter._ws_task
+                except asyncio.CancelledError:
+                    pass
+
+        assert result is True
+        assert seen_session_kwargs.get("trust_env") is True
+
+    @pytest.mark.asyncio
+    async def test_ws_connect_passes_proxy_env(self, monkeypatch):
+        """_ws_connect_and_listen must read HTTPS_PROXY and pass it to ws_connect."""
+        for key in ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+        adapter = _make_adapter()
+        seen_ws_kwargs: dict = {}
+
+        class FakeWs:
+            closed = False
+            async def send_json(self, *a, **kw): pass
+            def __aiter__(self): return self
+            async def __anext__(self): raise StopAsyncIteration
+
+        class FakeSession:
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return FakeWs()
+
+        # Inject a pre-built session — bypasses connect() so we isolate
+        # the proxy-resolution logic inside _ws_connect_and_listen().
+        adapter._session = FakeSession()
+        await adapter._ws_connect_and_listen()
+
+        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+
+
+# ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
 

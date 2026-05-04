@@ -1096,6 +1096,27 @@ class AIAgent:
         except Exception:
             pass
 
+        # Pre-stamp the 1M-context-beta latch for models that have no 1M tier.
+        # Haiku 4.5 (and older Claude pre-4.6) reject ``context-1m-2025-08-07``
+        # with "long context beta is not yet available" even on paid API keys —
+        # the entitlement is per-model, not per-subscription. Without this
+        # pre-stamp, every Haiku-routed agent (parents pinned to haiku, or
+        # children spawned with haiku from delegation.model_by_role) hits the
+        # rejection at first call, prints the noisy 🔕 warning, rebuilds its
+        # client, and retries. By stamping the latch up front based on the
+        # model alone, the beta header simply never goes out, no probe is
+        # made, no retry is needed, and the warning stays silent.
+        # ``_oauth_1m_beta_disabled`` is what every downstream client-build
+        # path already keys on, so flipping it here costs zero further wiring.
+        try:
+            from agent.anthropic_adapter import _model_supports_1m_context
+
+            if not _model_supports_1m_context(self.model):
+                self._oauth_1m_beta_disabled = True
+        except Exception:
+            # Best-effort — never let the gate crash agent init.
+            pass
+
         # GPT-5.x models usually require the Responses API path, but some
         # providers have exceptions (for example Copilot's gpt-5-mini still
         # uses chat completions). Also auto-upgrade for direct OpenAI URLs
@@ -1381,7 +1402,19 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                # Honor the 1M-beta latch the pre-stamp set above (~line 1111)
+                # at fresh client construction, not just on rebuild.  Without
+                # this every Haiku-routed agent (parents and swarm/delegate
+                # children alike) builds a client carrying
+                # ``context-1m-2025-08-07``, hits HTTP 400 on first call,
+                # prints the retry banner, and only gets clean on rebuild.
+                _drop_1m_init = bool(getattr(self, "_oauth_1m_beta_disabled", False))
+                self._anthropic_client = build_anthropic_client(
+                    effective_key,
+                    base_url,
+                    timeout=_provider_timeout,
+                    drop_context_1m_beta=_drop_1m_init,
+                )
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -2358,9 +2391,23 @@ class AIAgent:
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url or getattr(self, "_anthropic_base_url", None)
+            # Re-evaluate the 1M-beta latch for the new model: if we're
+            # switching to a non-1M model (e.g. Opus → Haiku), set the
+            # latch so the new client doesn't carry the rejected beta;
+            # if we're going the other way (Haiku → Opus), clear it.
+            try:
+                from agent.anthropic_adapter import _model_supports_1m_context
+                if not _model_supports_1m_context(self.model):
+                    self._oauth_1m_beta_disabled = True
+                else:
+                    # Drop the latch so 1M-capable models can use the beta again.
+                    self._oauth_1m_beta_disabled = False
+            except Exception:
+                pass
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
             self._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
             self.client = None
@@ -5383,6 +5430,16 @@ class AIAgent:
 
         # Build the full candidate set for class-like emissions.
         cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+        # Common pattern from Claude-family children: emitting an MCP-server
+        # tool name without the leading ``mcp_`` prefix (e.g. emitting
+        # ``slack_slack_search_public`` instead of
+        # ``mcp_slack_slack_search_public``).  Try the prefixed forms as a
+        # cheap direct match before falling back to fuzzy.
+        prefixed_extra: set[str] = set()
+        for c in list(cands):
+            if c and not c.startswith("mcp_"):
+                prefixed_extra.add(f"mcp_{c}")
+        cands |= prefixed_extra
         # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
         for _ in range(2):
             extra: set[str] = set()
@@ -6182,6 +6239,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -6238,6 +6296,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -9492,6 +9551,16 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
+        elif function_name == "swarm_run":
+            from tools.swarm_tool import swarm_run as _swarm_run
+            return _swarm_run(
+                agents=function_args.get("agents"),
+                topology=function_args.get("topology"),
+                title=function_args.get("title"),
+                shared_context=function_args.get("shared_context"),
+                swarm_id=function_args.get("swarm_id"),
+                parent_agent=self,
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -10118,6 +10187,33 @@ class AIAgent:
                     self._delegate_spinner = None
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif self._should_emit_quiet_tool_messages():
+                        self._vprint(f"  {cute_msg}")
+            elif function_name == "swarm_run":
+                from tools.swarm_tool import swarm_run as _swarm_run
+                agents_arg = function_args.get("agents") or []
+                spinner_label = f"🐝 swarm of {len(agents_arg)}"
+                spinner = None
+                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
+                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner.start()
+                _swarm_result = None
+                try:
+                    function_result = _swarm_run(
+                        agents=function_args.get("agents"),
+                        topology=function_args.get("topology"),
+                        title=function_args.get("title"),
+                        shared_context=function_args.get("shared_context"),
+                        swarm_id=function_args.get("swarm_id"),
+                        parent_agent=self,
+                    )
+                    _swarm_result = function_result
+                finally:
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl('swarm_run', function_args, tool_duration, result=_swarm_result)
                     if spinner:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():

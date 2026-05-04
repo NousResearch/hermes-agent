@@ -245,6 +245,36 @@ _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 # unknown Anthropic beta headers risk request rejection.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
+
+def _model_supports_1m_context(model: str | None) -> bool:
+    """Return True only for Anthropic models that have a 1M-context tier.
+
+    As of 2026-05, that's Opus 4.6+, Opus 4.7, and Sonnet 4.6. Haiku 4.5
+    has no 1M tier — requesting the beta on a Haiku call returns
+    "long context beta is not yet available" even from paid API customers
+    (it's a per-model entitlement, not per-subscription).
+
+    Without this gate, every Haiku subagent re-discovers the rejection at
+    first API call, prints the noisy warning, rebuilds its client, and
+    retries. With it, the beta header simply never goes out for Haiku.
+
+    Match by substring against ``model`` so prefixed forms
+    ("anthropic/claude-opus-4-7", "claude-opus-4.7", "us.claude-opus-4-7-v1")
+    all resolve correctly. Returns False for empty/None — safer to drop the
+    beta than guess wrong.
+    """
+    if not model:
+        return False
+    m = str(model).lower()
+    # Models with a 1M-context tier. Conservative allowlist — if a future
+    # Haiku gains 1M, add it here explicitly rather than fuzzy-matching.
+    _SUPPORTS_1M = (
+        "claude-opus-4-7", "claude-opus-4.7",
+        "claude-opus-4-6", "claude-opus-4.6",
+        "claude-sonnet-4-6", "claude-sonnet-4.6",
+    )
+    return any(needle in m for needle in _SUPPORTS_1M)
+
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
@@ -465,6 +495,7 @@ def _common_betas_for_base_url(
     base_url: str | None,
     *,
     drop_context_1m_beta: bool = False,
+    model: str | None = None,
 ) -> list[str]:
     """Return the beta headers that are safe for the configured endpoint.
 
@@ -484,11 +515,19 @@ def _common_betas_for_base_url(
     subsequent requests in the same session don't repeat the probe. See the
     reactive recovery loop in ``run_agent.py`` and issue-comment history on
     PR #17680 for the full rationale.
+
+    ``model``, when known, gates the 1M-context beta proactively: models
+    without a 1M tier (Haiku 4.5, older Claude) silently drop the header so
+    subagents using those models never trigger the rejection-and-retry path.
+    Leaving ``model=None`` falls back to the pre-existing endpoint+latch
+    gating only — capable models still get the beta.
     """
     if _requires_bearer_auth(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in _COMMON_BETAS if b not in _stripped]
     if drop_context_1m_beta:
+        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
+    if model is not None and not _model_supports_1m_context(model):
         return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
     return _COMMON_BETAS
 
@@ -1989,6 +2028,7 @@ def build_anthropic_kwargs(
         betas = list(_common_betas_for_base_url(
             base_url,
             drop_context_1m_beta=drop_context_1m_beta,
+            model=model,
         ))
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
@@ -2012,6 +2052,7 @@ def build_anthropic_kwargs(
             # OAuth or context-1m betas.
             prior = list(_common_betas_for_base_url(
                 base_url, drop_context_1m_beta=drop_context_1m_beta,
+                model=model,
             ))
             if is_oauth:
                 prior.extend(_OAUTH_ONLY_BETAS)

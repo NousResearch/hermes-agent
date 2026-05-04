@@ -1116,6 +1116,17 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Inherit the parent's "OAuth subscription rejected the 1M-context beta"
+    # latch.  Without this, every child re-discovers the lack of entitlement
+    # at first API call, hits the rejection, prints the warning, rebuilds
+    # its Anthropic client, and retries.  Per-child cost: ~50ms + a noisy
+    # log line per spawn.  By inheriting the latch (set on the parent the
+    # first time the rejection landed), children skip the failed probe
+    # entirely and stay quiet.  Use getattr so this is a no-op for parents
+    # that never tripped the latch (1M-capable subscriptions, non-Anthropic
+    # providers).
+    if getattr(parent_agent, "_oauth_1m_beta_disabled", False):
+        child._oauth_1m_beta_disabled = True
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the

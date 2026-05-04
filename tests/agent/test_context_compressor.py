@@ -168,9 +168,11 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → standardized compaction handoff prefix added
-        assert summary is not None
-        assert summary == SUMMARY_PREFIX
+        # None content is coerced safely, then rejected by the quality gate
+        # instead of storing an empty checkpoint summary.
+        assert summary is None
+        assert c._last_summary_error is not None
+        assert "empty" in c._last_summary_error
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -306,6 +308,41 @@ class TestSummaryQualityGate:
         assert c._previous_summary is None
         assert c._last_summary_error is not None
         assert "looks_like_direct_response" in c._last_summary_error
+
+    def test_transient_transport_error_retries_once_then_succeeds(self):
+        good = MagicMock()
+        good.choices = [MagicMock()]
+        good.choices[0].message.content = "## Active Task\nTask\n## Completed Actions\nDone\n## Remaining Work\nNone"
+        err = Exception("peer closed connection without sending complete message body (incomplete chunked read)")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, good]) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "## Active Task" in result
+        assert c._summary_failure_cooldown_until == 0.0
+        assert c._last_summary_error is None
+        assert c._summary_transient_retry_used is False
+
+    def test_transient_transport_error_retries_once_then_enters_cooldown(self):
+        err = Exception("peer closed connection without sending complete message body (incomplete chunked read)")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err]) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is None
+        assert c._last_summary_error is not None
+        assert "incomplete chunked read" in c._last_summary_error
+        assert c._summary_failure_cooldown_until > 0.0
+        assert c._summary_transient_retry_used is False
 
 
 class TestSummaryFailureCooldown:

@@ -347,13 +347,26 @@ class CheckpointManager:
 
         Returns a list of dicts with keys: hash, short_hash, timestamp, reason,
         files_changed, insertions, deletions.  Most recent first.
+
+        If no checkpoints exist for the exact directory, searches for checkpoints
+        in subdirectories under the given path (#10505).
         """
         abs_dir = str(_normalize_path(working_dir))
         shadow = _shadow_repo_path(abs_dir)
 
-        if not (shadow / "HEAD").exists():
-            return []
+        # First try exact match
+        if (shadow / "HEAD").exists():
+            return self._list_checkpoints_from_shadow(shadow, abs_dir)
 
+        # If no exact match, search for checkpoints in subdirectories
+        all_checkpoints = self._list_all_checkpoints_under(abs_dir)
+        if all_checkpoints:
+            return all_checkpoints
+
+        return []
+
+    def _list_checkpoints_from_shadow(self, shadow: Path, abs_dir: str) -> List[Dict]:
+        """List checkpoints from a specific shadow repo."""
         ok, stdout, _ = _run_git(
             ["log", "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
             shadow, abs_dir,
@@ -374,6 +387,7 @@ class CheckpointManager:
                     "files_changed": 0,
                     "insertions": 0,
                     "deletions": 0,
+                    "workdir": abs_dir,  # Track which workdir this checkpoint belongs to
                 }
                 # Get diffstat for this commit
                 stat_ok, stat_out, _ = _run_git(
@@ -385,6 +399,58 @@ class CheckpointManager:
                     self._parse_shortstat(stat_out, entry)
                 results.append(entry)
         return results
+
+    def _list_all_checkpoints_under(self, abs_dir: str) -> List[Dict]:
+        """Enumerate all checkpoint repos and find those under abs_dir."""
+        if not CHECKPOINT_BASE.exists():
+            return []
+
+        abs_dir_path = Path(abs_dir)
+        all_checkpoints = []
+
+        # Iterate over all checkpoint repos
+        for shadow_dir in CHECKPOINT_BASE.iterdir():
+            if not shadow_dir.is_dir():
+                continue
+            if not (shadow_dir / "HEAD").exists():
+                continue
+
+            # Read the workdir from HERMES_WORKDIR file
+            workdir_file = shadow_dir / "HERMES_WORKDIR"
+            if not workdir_file.exists():
+                continue
+
+            try:
+                workdir = workdir_file.read_text().strip()
+                workdir_path = Path(workdir)
+
+                # Check if this checkpoint's workdir is under abs_dir
+                # (either a subdirectory or the exact directory)
+                try:
+                    workdir_path.relative_to(abs_dir_path)
+                    # If successful, workdir is under abs_dir
+                except ValueError:
+                    # workdir is not under abs_dir
+                    continue
+
+                # Get checkpoints from this shadow repo
+                checkpoints = self._list_checkpoints_from_shadow(shadow_dir, workdir)
+                for cp in checkpoints:
+                    cp["workdir"] = workdir  # Track the actual workdir
+                    # Add relative path info for display
+                    try:
+                        rel_path = workdir_path.relative_to(abs_dir_path)
+                        if rel_path != Path("."):
+                            cp["subdir"] = str(rel_path)
+                    except ValueError:
+                        pass
+                all_checkpoints.extend(checkpoints)
+            except Exception:
+                continue
+
+        # Sort by timestamp (most recent first)
+        all_checkpoints.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return all_checkpoints[:self.max_snapshots]
 
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
@@ -627,6 +693,9 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
     if not checkpoints:
         return f"No checkpoints found for {directory}"
 
+    # Check if we have checkpoints from multiple subdirectories
+    has_multiple_dirs = any(cp.get("subdir") for cp in checkpoints)
+
     lines = [f"📸 Checkpoints for {directory}:\n"]
     for i, cp in enumerate(checkpoints, 1):
         # Parse ISO timestamp to something readable
@@ -645,7 +714,12 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
         else:
             stat = ""
 
-        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+        # Show subdirectory if checkpoint is from a subdirectory
+        subdir = cp.get("subdir", "")
+        if subdir and has_multiple_dirs:
+            lines.append(f"  {i}. {cp['short_hash']}  {ts}  [{subdir}]  {cp['reason']}{stat}")
+        else:
+            lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
 
     lines.append("\n  /rollback <N>             restore to checkpoint N")
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")

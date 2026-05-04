@@ -512,6 +512,16 @@ Add this to your `~/.hermes/.env`:
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 ```
 
+You can also use a room alias or send into a specific thread:
+
+```bash
+# Resolve a public alias instead of a raw room ID
+MATRIX_HOME_ROOM=#hermes-cron:matrix.example.org
+
+# Deliver into a thread rooted at a specific event
+MATRIX_HOME_ROOM=!abc123def456:matrix.example.org/$threadRootEventId
+```
+
 ## Room allowlist (`allowed_rooms`)
 
 Restrict the bot to a fixed set of Matrix rooms. When set, the bot responds in listed rooms and private bot chats. It ignores messages from other rooms, even if the bot is mentioned.
@@ -542,6 +552,36 @@ See also: [admin/user slash command split](../../reference/slash-commands.md#per
 
 :::tip
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
+:::
+
+### Per-job targeting
+
+Cron jobs can override the home room with the `--deliver` flag. Matrix targets accept the same forms as the env var:
+
+```bash
+# Deliver to a specific room
+hermes cron add "Daily standup reminder" "0 9 * * *" \
+  --deliver "matrix:!project-room:matrix.example.org"
+
+# Deliver to a thread inside a room
+hermes cron add "Build status" "every 30m" \
+  --deliver "matrix:!ops:matrix.example.org/\$buildThreadEvent"
+
+# Deliver via room alias
+hermes cron add "Weekly digest" "0 17 * * 5" \
+  --deliver "matrix:#announcements:matrix.example.org"
+```
+
+This mirrors Discord (`discord:channel_id:thread_id`) and Telegram (`telegram:chat_id:topic_id`) cron targeting.
+
+:::caution Aliases must be published as Local Addresses
+The `#alias:server.org` form requires a **Local Address** registered on the room. A display name in the room header does not register an alias. Matrix's `/directory/room/{alias}` lookup only resolves published aliases.
+
+To publish an alias in Element, open the room's **Settings**, then **General**, then **Local Addresses**, and add the alias. The alias does not need to be the Published Address for bot delivery.
+
+If the alias is not published, the homeserver returns the misleading error *"User &lt;bot&gt; not in room &lt;alias&gt;, and room previews are disabled"*. Hermes logs an actionable warning when this happens (`alias did not resolve to a room ID; the alias must be published as a Local Address`).
+
+**Workaround if you can't add an alias:** target by room ID directly (`matrix:!roomid:server.org`).
 :::
 
 ## Commands in Matrix

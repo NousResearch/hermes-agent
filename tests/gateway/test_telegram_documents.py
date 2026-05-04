@@ -230,6 +230,24 @@ class TestDocumentDownloadBlock:
         assert "# Title" in event.text
 
     @pytest.mark.asyncio
+    async def test_supported_vcf_injects_content(self, adapter):
+        content = b"BEGIN:VCARD\nFN:Test Contact\nTEL:+15551234567\nEND:VCARD"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="contacts.vcf", mime_type="text/vcard",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["text/vcard"]
+        assert "BEGIN:VCARD" in event.text
+        assert "FN:Test Contact" in event.text
+        assert "[Content of contacts.vcf]" in event.text
+
+    @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):
         content = b"file text"
         file_obj = _make_file_obj(content)

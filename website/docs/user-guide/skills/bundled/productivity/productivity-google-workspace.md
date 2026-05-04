@@ -146,7 +146,7 @@ Agent rules for this step:
 
 ### Step 4: Exchange the code
 
-The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
+The user will paste back either a URL like `http://localhost:1/?code=[REDACTED]&scope=...`
 or just the code string. Either works. The `--auth-url` step stores a temporary
 pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:

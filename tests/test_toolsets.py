@@ -56,6 +56,24 @@ class TestGetToolset:
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
 
+    def test_static_and_mcp_alias_with_same_name_are_merged(self, monkeypatch):
+        # An MCP server named like a built-in toolset registers a bare alias to its
+        # `mcp-<name>` toolset; the static entry must union those tools in (and keep
+        # its own includes) instead of shadowing the server.
+        TOOLSETS["_mergetest"] = {"description": "static", "tools": ["builtin_tool_a"], "includes": ["web"]}
+        try:
+            reg = ToolRegistry()
+            reg.register(name="mcp__mergetest_call", toolset="mcp-_mergetest",
+                         schema=_make_schema("mcp__mergetest_call", "Call"), handler=_dummy_handler)
+            reg.register_toolset_alias("_mergetest", "mcp-_mergetest")
+            monkeypatch.setattr("tools.registry.registry", reg)
+
+            ts = get_toolset("_mergetest")
+            assert {"builtin_tool_a", "mcp__mergetest_call"} <= set(ts["tools"])
+            assert ts["includes"] == ["web"]
+        finally:
+            del TOOLSETS["_mergetest"]
+
 
 class TestResolveToolset:
     def test_leaf_toolset(self):

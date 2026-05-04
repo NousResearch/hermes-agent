@@ -1177,6 +1177,15 @@ class TestQuickSnapshot:
         from hermes_cli.backup import restore_quick_snapshot
         assert restore_quick_snapshot("nonexistent", hermes_home=hermes_home) is False
 
+    def test_restore_invalid_manifest_returns_false(self, hermes_home):
+        from hermes_cli.backup import restore_quick_snapshot
+
+        snap_dir = hermes_home / "state-snapshots" / "broken-snap"
+        snap_dir.mkdir(parents=True)
+        (snap_dir / "manifest.json").write_text("{bad json", encoding="utf-8")
+
+        assert restore_quick_snapshot("broken-snap", hermes_home=hermes_home) is False
+
     def test_auto_prune(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots, _QUICK_DEFAULT_KEEP
         for i in range(_QUICK_DEFAULT_KEEP + 5):

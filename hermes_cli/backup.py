@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -573,8 +574,7 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
-    with open(snap_dir / "manifest.json", "w") as f:
-        json.dump(meta, f, indent=2)
+    atomic_json_write(snap_dir / "manifest.json", meta)
 
     # Auto-prune
     _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP)
@@ -629,8 +629,17 @@ def restore_quick_snapshot(
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path) as f:
-        meta = json.load(f)
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error(
+            "Failed to restore quick snapshot %s: invalid manifest %s (%s)",
+            snapshot_id,
+            manifest_path,
+            exc,
+        )
+        return False
 
     restored = 0
     for rel in meta.get("files", {}):

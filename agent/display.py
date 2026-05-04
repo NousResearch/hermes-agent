@@ -4,6 +4,7 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
+import json
 import logging
 import os
 import sys
@@ -810,6 +811,15 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     """
     if result is None:
         return False, ""
+
+    # Guard: tool handlers (especially custom-tools plugin) may return dict
+    # instead of str.  Convert to JSON string so downstream slicing/heuristics
+    # don't raise KeyError on dict[:500].
+    if not isinstance(result, str):
+        try:
+            result = json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:
+            result = str(result)
 
     if tool_name == "terminal":
         data = safe_json_loads(result)

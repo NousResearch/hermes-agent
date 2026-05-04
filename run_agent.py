@@ -8130,10 +8130,11 @@ class AIAgent:
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
+            _result_str = result if isinstance(result, str) else str(result)
             if is_error:
-                logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
+                logger.info("tool %s failed (%.2fs): %s", function_name, duration, _result_str[:200])
             else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(_result_str))
             results[index] = (function_name, function_args, result, duration, is_error)
             # Tear down worker-tid tracking.  Clear any interrupt bit we may
             # have set so the next task scheduled onto this recycled tid
@@ -8227,7 +8228,8 @@ class AIAgent:
                 function_name, function_args, function_result, tool_duration, is_error = r
 
                 if is_error:
-                    result_preview = function_result[:200] if len(function_result) > 200 else function_result
+                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
+                    result_preview = _fr_str[:200] if len(_fr_str) > 200 else _fr_str
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
                 if self.tool_progress_callback:
@@ -8252,7 +8254,8 @@ class AIAgent:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
                     print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
+                    response_preview = _fr_str[:self.log_prefix_chars] + "..." if len(_fr_str) > self.log_prefix_chars else _fr_str
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
@@ -8589,8 +8592,9 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
-            result_preview = function_result if self.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
+            _function_result_str = function_result if isinstance(function_result, str) else str(function_result)
+            result_preview = _function_result_str if self.verbose_logging else (
+                _function_result_str[:200] if len(_function_result_str) > 200 else _function_result_str
             )
 
             # Log tool errors to the persistent error log so [error] tags
@@ -8599,7 +8603,7 @@ class AIAgent:
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(_function_result_str))
 
             if self.tool_progress_callback:
                 try:
@@ -8653,7 +8657,8 @@ class AIAgent:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
                     print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
+                    response_preview = _fr_str[:self.log_prefix_chars] + "..." if len(_fr_str) > self.log_prefix_chars else _fr_str
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):

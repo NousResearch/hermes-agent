@@ -2542,6 +2542,16 @@ DEFAULT_FAILURE_LIMIT = 5
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
+# OpenAI Codex OAuth credentials live in profile-local auth.json rather than
+# only in config.yaml / .env. Kanban workers run under their assignee's profile,
+# so a cloned profile can have a valid model provider but still exit immediately
+# if its auth store was not intentionally initialized. Keep this non-secret: the
+# preflight checks only config metadata plus auth.json presence/size, never token
+# values.
+_AUTH_STORE_REQUIRED_PROVIDERS = {
+    "openai-codex": "OpenAI Codex",
+}
+
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -3107,6 +3117,79 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _worker_profile_dir(profile: str) -> Path:
+    """Resolve a kanban assignee profile to its HERMES_HOME directory."""
+    from hermes_cli.profiles import get_profile_dir
+
+    return get_profile_dir(profile)
+
+
+def _profile_configured_provider(profile_dir: Path) -> Optional[str]:
+    """Read the profile's configured model provider without loading secrets."""
+    config_path = profile_dir / "config.yaml"
+    if not config_path.is_file():
+        return None
+    try:
+        import yaml
+
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    provider: Any = None
+    model_cfg = raw.get("model")
+    if isinstance(model_cfg, dict):
+        provider = model_cfg.get("provider")
+    if not provider:
+        provider = raw.get("provider")
+    if not isinstance(provider, str):
+        return None
+    provider = provider.strip().lower()
+    return provider or None
+
+
+def _preflight_worker_profile_auth(task: Task) -> None:
+    """Fail early when a profile-local OAuth auth store is plainly absent.
+
+    This intentionally does NOT read or copy auth.json contents. It only checks
+    the assignee profile's non-secret configured provider and whether an auth
+    store file exists with nonzero size. The worker still performs the
+    authoritative credential validation when it starts; this preflight catches
+    the common cloned-profile footgun before spawning a process that can only
+    exit immediately.
+    """
+    profile = (task.assignee or "").strip()
+    if not profile:
+        return
+    try:
+        profile_dir = _worker_profile_dir(profile)
+    except Exception:
+        return
+
+    provider = _profile_configured_provider(profile_dir)
+    display_name = _AUTH_STORE_REQUIRED_PROVIDERS.get(provider or "")
+    if not display_name:
+        return
+
+    auth_path = profile_dir / "auth.json"
+    try:
+        has_auth_store = auth_path.is_file() and auth_path.stat().st_size > 0
+    except OSError:
+        has_auth_store = False
+    if has_auth_store:
+        return
+
+    raise RuntimeError(
+        f"Kanban worker profile {profile!r} is configured for {display_name} "
+        f"but has no profile-local auth store at {auth_path}. "
+        f"Authenticate this profile intentionally with `hermes -p {profile} auth` "
+        f"or `hermes -p {profile} model` before dispatching. Hermes will not "
+        "copy OAuth credentials from another profile automatically."
+    )
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -3274,6 +3357,7 @@ def _default_spawn(
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+    _preflight_worker_profile_auth(task)
 
     from hermes_cli.profiles import normalize_profile_name
 

@@ -474,6 +474,104 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_default_spawn_preflights_missing_profile_oauth_auth_store(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "dogfood"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.5\n"
+        "  provider: openai-codex\n",
+        encoding="utf-8",
+    )
+
+    popen_called = False
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            nonlocal popen_called
+            popen_called = True
+            self.pid = 4242
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_missing_auth",
+        title="x",
+        body=None,
+        assignee="dogfood",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+
+    with pytest.raises(RuntimeError, match="dogfood.*OpenAI Codex.*auth"):
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+    assert not popen_called
+
+
+def test_default_spawn_allows_profile_with_oauth_auth_store(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "dogfood"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.5\n"
+        "  provider: openai-codex\n",
+        encoding="utf-8",
+    )
+    (profile_home / "auth.json").write_text("{}", encoding="utf-8")
+
+    popen_calls = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            stdout = kwargs.get("stdout")
+            if stdout is not None:
+                stdout.close()
+            self.pid = 4242
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_has_auth",
+        title="x",
+        body=None,
+        assignee="dogfood",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    assert kb._default_spawn(task, str(workspace)) == 4242
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:3] == ["hermes", "-p", "dogfood"]
+    assert kwargs["env"]["HERMES_PROFILE"] == "dogfood"
+
+
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="alice")

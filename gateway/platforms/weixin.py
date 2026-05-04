@@ -955,6 +955,28 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def _extract_voice_context(item_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return inbound voice hint metadata from the first voice item."""
+    for item in item_list:
+        if item.get("type") != ITEM_VOICE:
+            continue
+        voice_item = item.get("voice_item") or {}
+        playtime = voice_item.get("playtime")
+        try:
+            duration_ms = int(playtime) if playtime is not None else 0
+        except Exception:
+            duration_ms = 0
+        # Some iLink variants appear to report playtime in seconds instead of
+        # milliseconds. Normalize short plausible voice durations to ms.
+        if 0 < duration_ms <= 120:
+            duration_ms *= 1000
+        return {
+            "text_hint": str(voice_item.get("text") or "").strip(),
+            "duration_ms": duration_ms,
+        }
+    return {"text_hint": "", "duration_ms": 0}
+
+
 def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
     if any(m.startswith("image/") for m in media_types):
         return MessageType.PHOTO
@@ -1349,6 +1371,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
+        voice_context = _extract_voice_context(item_list)
         media_paths: List[str] = []
         media_types: List[str] = []
 
@@ -1376,6 +1399,12 @@ class WeixinAdapter(BasePlatformAdapter):
             message_id=message_id or None,
             media_urls=media_paths,
             media_types=media_types,
+            metadata={
+                "voice_text_hint": voice_context["text_hint"],
+                "voice_duration_ms": voice_context["duration_ms"],
+            }
+            if voice_context["text_hint"] or voice_context["duration_ms"]
+            else {},
             timestamp=datetime.now(),
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
@@ -1467,7 +1496,7 @@ class WeixinAdapter(BasePlatformAdapter):
     async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
         voice_item = item.get("voice_item") or {}
         media = voice_item.get("media") or {}
-        if voice_item.get("text"):
+        if not isinstance(media, dict) or not (media.get("full_url") or media.get("encrypt_query_param")):
             return None
         try:
             data = await _download_and_decrypt_media(

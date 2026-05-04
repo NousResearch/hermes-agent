@@ -914,6 +914,10 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Adapter-specific inbound context that should survive normalization without
+    # inventing ad-hoc attributes on the event object.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

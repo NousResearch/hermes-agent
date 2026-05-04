@@ -309,6 +309,96 @@ class TestWeixinSendMessageIntegration:
         )
 
 
+class TestWeixinInboundVoice:
+    @patch("gateway.platforms.weixin._download_and_decrypt_media", new_callable=AsyncMock)
+    def test_download_voice_keeps_audio_even_with_text_hint(self, download_mock):
+        download_mock.return_value = b"fake-silk"
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+
+        path = asyncio.run(
+            adapter._download_voice(
+                {
+                    "voice_item": {
+                        "text": "已有转写",
+                        "media": {
+                            "full_url": "https://cdn.example.com/audio",
+                            "aes_key": "ZmFrZV9rZXk=",
+                        },
+                    }
+                }
+            )
+        )
+
+        assert path is not None
+        download_mock.assert_awaited_once()
+
+    def test_extract_voice_context_normalizes_seconds_to_ms_and_preserves_ms(self):
+        assert weixin._extract_voice_context(
+            [{"type": weixin.ITEM_VOICE, "voice_item": {"text": "短语音", "playtime": 2}}]
+        ) == {"text_hint": "短语音", "duration_ms": 2000}
+
+        assert weixin._extract_voice_context(
+            [{"type": weixin.ITEM_VOICE, "voice_item": {"text": "毫秒值", "playtime": 2400}}]
+        ) == {"text_hint": "毫秒值", "duration_ms": 2400}
+
+    @patch("gateway.platforms.weixin._download_and_decrypt_media", new_callable=AsyncMock)
+    def test_download_voice_returns_none_without_media_reference(self, download_mock):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+
+        path = asyncio.run(
+            adapter._download_voice(
+                {
+                    "voice_item": {
+                        "text": "只有转写没有媒体",
+                        "media": {},
+                    }
+                }
+            )
+        )
+
+        assert path is None
+        download_mock.assert_not_awaited()
+
+    @patch("gateway.platforms.weixin.asyncio.create_task")
+    @patch.object(WeixinAdapter, "_download_voice", new_callable=AsyncMock)
+    def test_process_message_attaches_voice_hint_metadata(self, download_voice_mock, create_task_mock):
+        download_voice_mock.return_value = "/tmp/inbound.silk"
+        create_task_mock.side_effect = lambda coro: coro.close()
+
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        asyncio.run(
+            adapter._process_message(
+                {
+                    "from_user_id": "wxid_peer",
+                    "message_id": "msg-1",
+                    "context_token": "ctx-1",
+                    "item_list": [
+                        {
+                            "type": weixin.ITEM_VOICE,
+                            "voice_item": {
+                                "text": "已有转写",
+                                "playtime": 2,
+                                "media": {"full_url": "https://cdn.example.com/audio"},
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "已有转写"
+        assert event.media_urls == ["/tmp/inbound.silk"]
+        assert event.media_types == ["audio/silk"]
+        assert event.metadata["voice_text_hint"] == "已有转写"
+        assert event.metadata["voice_duration_ms"] == 2000
+
+
 class TestWeixinChunkDelivery:
     def _connected_adapter(self) -> WeixinAdapter:
         adapter = _make_adapter()

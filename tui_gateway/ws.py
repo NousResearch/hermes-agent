@@ -160,8 +160,53 @@ async def handle_ws(ws: Any) -> None:
             # the transport we pass in (a separate thread, so transport.write
             # is the safe path there). For inline handlers it returns the
             # response dict, which we write here from the loop.
-            resp = await asyncio.to_thread(server.dispatch, req, transport)
-            if resp is not None and not await transport.write_async(resp):
+            # P-007: surface dispatch / serialization exceptions instead of
+            # silently closing the WebSocket. Upstream wraps this whole block
+            # in a bare try/finally — any unhandled exception from the inline
+            # handler (session.create, model.options, config.set, etc.) OR
+            # from json.dumps inside transport.write_async (when a handler
+            # returns non-serializable objects) escapes the loop, hits finally
+            # → ws.close(), and the client sees a black-box "WebSocket closed"
+            # with zero diagnostic info. We catch both phases here, persist
+            # the traceback, and convert the crash into a JSON-RPC error
+            # response so the client can both surface the failure and keep
+            # the connection alive for subsequent calls.
+            # See v2/UPSTREAM_PATCHES.md.
+            _p007_should_break = False
+            try:
+                resp = await asyncio.to_thread(server.dispatch, req, transport)
+                if resp is not None and not await transport.write_async(resp):
+                    _p007_should_break = True
+            except Exception as _p007_exc:
+                import traceback as _p007_tb
+                import time as _p007_time
+                import os as _p007_os
+                _p007_log_dir = _p007_os.path.expanduser("~/.hermes/logs")
+                try:
+                    _p007_os.makedirs(_p007_log_dir, exist_ok=True)
+                    with open(_p007_os.path.join(_p007_log_dir, "dispatch_exceptions.log"), "a") as _p007_f:
+                        _p007_f.write(
+                            f"=== {_p007_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                            f"method={req.get('method')!r} id={req.get('id')!r} ===\n"
+                        )
+                        _p007_tb.print_exc(file=_p007_f)
+                        _p007_f.write("\n")
+                except Exception:
+                    pass
+                _p007_err_resp = {
+                    "jsonrpc": "2.0",
+                    "id": req.get("id"),
+                    "error": {
+                        "code": -32000,
+                        "message": f"dispatch crashed: {type(_p007_exc).__name__}: {_p007_exc}",
+                    },
+                }
+                try:
+                    if not await transport.write_async(_p007_err_resp):
+                        _p007_should_break = True
+                except Exception:
+                    _p007_should_break = True
+            if _p007_should_break:
                 break
     finally:
         transport.close()

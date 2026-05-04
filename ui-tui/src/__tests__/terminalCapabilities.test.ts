@@ -27,6 +27,8 @@ const makeSignals = (overrides: SignalOverrides = {}): TerminalSignals => ({
   multiplexer: {
     tmux: false,
     screen: false,
+    zellij: false,
+    cy: false,
     ...((overrides.multiplexer ?? {}) as TerminalSignals['multiplexer'])
   },
   env: {
@@ -141,6 +143,8 @@ describe('deriveTerminalCapabilities', () => {
     ['windows terminal', { env: { WT_SESSION: 'abc' } }, 'windows-terminal'],
     ['Warp on macOS', { env: { TERM_PROGRAM: 'WarpTerminal' } }, 'warp'],
     ['Warp on Linux', { env: { TERM_PROGRAM: 'warp' } }, 'warp'],
+    ['zellij', { multiplexer: { zellij: true } }, 'zellij'],
+    ['cy', { multiplexer: { cy: true } }, 'cy'],
     ['VS Code terminal', { env: { TERM_PROGRAM: 'vscode' } }, 'vscode-xtermjs'],
     ['VTE terminal', { env: { VTE_VERSION: '7600' } }, 'vte'],
     ['xterm fallback', { env: { TERM: 'xterm-256color' } }, 'xterm'],

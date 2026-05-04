@@ -25,7 +25,7 @@ describe('collectTerminalSignals', () => {
       hasSshClient: false,
       hasSshTty: false
     })
-    expect(signals.multiplexer).toEqual({ tmux: false, screen: false })
+    expect(signals.multiplexer).toEqual({ tmux: false, screen: false, zellij: false, cy: false })
     expect(signals.env).toEqual({
       TERM: 'xterm-256color',
       TERM_PROGRAM: 'iTerm.app',
@@ -94,7 +94,7 @@ describe('collectTerminalSignals', () => {
       hasSshClient: false,
       hasSshTty: false
     })
-    expect(signals.multiplexer).toEqual({ tmux: false, screen: false })
+    expect(signals.multiplexer).toEqual({ tmux: false, screen: false, zellij: false, cy: false })
     expect(signals.env).toEqual({})
     expect(signals.shell.family).toBe('unknown')
     expect(signals.shell.startupRiskHints).toEqual([])

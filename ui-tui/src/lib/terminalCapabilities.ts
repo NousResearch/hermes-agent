@@ -1,27 +1,12 @@
 import type { TerminalSignals } from './terminalSignals.js'
+import { findProfile, findMultiplexer, type TerminalProfile, UNKNOWN_PROFILE } from './terminalRegistry.js'
 
-export type TerminalFamily =
-  | 'kitty'
-  | 'wezterm'
-  | 'ghostty'
-  | 'iterm2'
-  | 'warp'
-  | 'windows-terminal'
-  | 'vscode-xtermjs'
-  | 'vte'
-  | 'alacritty'
-  | 'foot'
-  | 'apple-terminal'
-  | 'konsole'
-  | 'xterm'
-  | 'tmux'
-  | 'screen'
-  | 'unknown'
-
-export type TransportKind = 'local' | 'ssh' | 'tmux' | 'screen' | 'nested'
-export type KeyboardEncoding = 'legacy' | 'csi-u' | 'kitty' | 'modify-other-keys'
-export type ClipboardWritePath = 'native' | 'osc52' | 'tmux-buffer' | 'screen-passthrough' | 'none'
+// Exported for backward compatibility — registry-driven, not hardcoded
+export type TerminalFamily = string
+export type TransportKind = string
+export type ClipboardWritePath = string
 export type ClipboardReadPath = 'native' | 'osc52-query' | 'none'
+export type KeyboardEncoding = 'legacy' | 'csi-u' | 'kitty' | 'modify-other-keys'
 
 export type TerminalProbeResult = {
   xtversion?: string
@@ -60,78 +45,29 @@ export type TerminalCapabilities = {
   diagnostics: string[]
 }
 
-const MODERN_CSI_U_FAMILIES = new Set<TerminalFamily>(['wezterm', 'ghostty', 'iterm2', 'warp', 'vscode-xtermjs'])
+// ── Registry-backed capability derivation ──
 
-function isXtermLike(term?: string): boolean {
-  return typeof term === 'string' && /^xterm(?:$|[-_])/i.test(term)
-}
-
-function detectExplicitTerminalFamily(s: TerminalSignals): TerminalFamily | undefined {
-  const termProgram = s.env.TERM_PROGRAM
-  const term = s.env.TERM ?? ''
-
-  if (s.env.KITTY_WINDOW_ID || termProgram === 'kitty' || term.toLowerCase().includes('kitty')) return 'kitty'
-  if (s.env.WEZTERM_PANE || term === 'wezterm') return 'wezterm'
-  if (s.env.GHOSTTY_RESOURCES_DIR || term.toLowerCase().includes('ghostty')) return 'ghostty'
-  if (s.env.ITERM_SESSION_ID || termProgram === 'iTerm.app' || s.env.LC_TERMINAL === 'iTerm2') return 'iterm2'
-  if (termProgram === 'WarpTerminal' || termProgram === 'warp' || term.toLowerCase().includes('warp')) return 'warp'
-  if (s.env.WT_SESSION) return 'windows-terminal'
-  if (termProgram === 'vscode') return 'vscode-xtermjs'
-  if (s.env.VTE_VERSION) return 'vte'
-  if (termProgram === 'Alacritty' || term === 'alacritty') return 'alacritty'
-  if (termProgram === 'foot' || term === 'foot' || term === 'foot-direct') return 'foot'
-  if (termProgram === 'Apple_Terminal' || s.env.TERM_SESSION_ID) return 'apple-terminal'
-  if (s.env.KONSOLE_VERSION) return 'konsole'
-
-  return undefined
-}
-
-function detectOuterTerminalHint(s: TerminalSignals): TerminalFamily | undefined {
-  const explicit = detectExplicitTerminalFamily(s)
-
-  if (explicit) {
-    return explicit
+/** Extract an env-like record from TerminalSignals for registry matching. */
+function signalsEnv(s: TerminalSignals): Record<string, string | undefined> {
+  return {
+    TERM: s.env.TERM,
+    TERM_PROGRAM: s.env.TERM_PROGRAM,
+    TERM_PROGRAM_VERSION: s.env.TERM_PROGRAM_VERSION,
+    COLORTERM: s.env.COLORTERM,
+    VTE_VERSION: s.env.VTE_VERSION,
+    WT_SESSION: s.env.WT_SESSION,
+    KITTY_WINDOW_ID: s.env.KITTY_WINDOW_ID,
+    WEZTERM_PANE: s.env.WEZTERM_PANE,
+    GHOSTTY_RESOURCES_DIR: s.env.GHOSTTY_RESOURCES_DIR,
+    KONSOLE_VERSION: s.env.KONSOLE_VERSION,
+    ITERM_SESSION_ID: s.env.ITERM_SESSION_ID,
+    LC_TERMINAL: s.env.LC_TERMINAL,
+    TERM_SESSION_ID: s.env.TERM_SESSION_ID,
+    TMUX: s.multiplexer.tmux ? '1' : undefined,
+    STY: s.multiplexer.screen ? '1' : undefined,
+    ZELLIJ: s.multiplexer.zellij ? '0' : undefined,
+    CY: s.multiplexer.cy ? 'default:1' : undefined,
   }
-
-  if (!s.ssh.hasSshConnection && isXtermLike(s.env.TERM)) {
-    return 'xterm'
-  }
-
-  return undefined
-}
-
-function deriveTransport(layers: TransportKind[]): TransportKind {
-  if (layers.length === 0) {
-    return 'local'
-  }
-
-  if (layers.length > 2) {
-    return 'nested'
-  }
-
-  return layers[layers.length - 1]!
-}
-
-function deriveTerminalFamily(s: TerminalSignals, currentLayer: TransportKind | undefined): TerminalFamily {
-  if (currentLayer === 'tmux') {
-    return 'tmux'
-  }
-
-  if (currentLayer === 'screen') {
-    return 'screen'
-  }
-
-  const explicit = detectExplicitTerminalFamily(s)
-
-  if (explicit) {
-    return explicit
-  }
-
-  if (!s.ssh.hasSshConnection && isXtermLike(s.env.TERM)) {
-    return 'xterm'
-  }
-
-  return 'unknown'
 }
 
 function deriveTerminalVersion(s: TerminalSignals, probe: TerminalProbeResult): string | undefined {
@@ -145,43 +81,6 @@ function deriveTerminalVersion(s: TerminalSignals, probe: TerminalProbeResult): 
   )
 }
 
-function deriveKeyboardEncoding(family: TerminalFamily, probe: TerminalProbeResult): KeyboardEncoding {
-  if (family === 'kitty') {
-    return 'kitty'
-  }
-
-  if (MODERN_CSI_U_FAMILIES.has(family)) {
-    return 'csi-u'
-  }
-
-  const kittyProbe = probe.kittyKeyboard ?? ((probe.kittyKeyboardFlags ?? 0) > 0)
-
-  return kittyProbe ? 'kitty' : 'legacy'
-}
-
-function buildPasteShortcutShapes(platform: NodeJS.Platform, family: TerminalFamily): string[] {
-  const shapes = platform === 'darwin' ? ['cmd+v', 'ctrl+shift+v'] : ['ctrl+shift+v', 'alt+v']
-
-  if (family === 'kitty') {
-    shapes.push('ctrl+v')
-  }
-
-  return shapes
-}
-
-function deriveClipboardWritePath(currentLayer: TransportKind | undefined, hasTty: boolean): ClipboardWritePath {
-  switch (currentLayer) {
-    case 'tmux':
-      return 'tmux-buffer'
-    case 'screen':
-      return 'screen-passthrough'
-    case 'ssh':
-      return 'osc52'
-    default:
-      return hasTty ? 'native' : 'none'
-  }
-}
-
 function deriveClipboardReadPath(
   transport: TransportKind,
   hasTty: boolean,
@@ -190,22 +89,25 @@ function deriveClipboardReadPath(
   if (transport === 'local' && hasTty) {
     return 'native'
   }
-
   if (probe.osc52ReadSupported ?? probe.osc52Read) {
     return 'osc52-query'
   }
-
   return 'none'
+}
+
+function deriveTransport(layers: TransportKind[]): TransportKind {
+  if (layers.length === 0) return 'local'
+  if (layers.length > 2) return 'nested'
+  return layers[layers.length - 1]!
 }
 
 function buildDiagnostics(params: {
   s: TerminalSignals
   transport: TransportKind
-  family: TerminalFamily
   currentLayer: TransportKind | undefined
-  outerHint?: TerminalFamily
+  outerProfile?: TerminalProfile
 }): string[] {
-  const { s, transport, family, currentLayer, outerHint } = params
+  const { s, transport, currentLayer, outerProfile } = params
   const diagnostics: string[] = []
 
   if (!s.env.TERM) {
@@ -217,11 +119,19 @@ function buildDiagnostics(params: {
   }
 
   if (transport === 'nested') {
-    diagnostics.push(`nested transport layers: ${[...(s.ssh.hasSshConnection ? ['ssh'] : []), ...(s.multiplexer.tmux ? ['tmux'] : []), ...(s.multiplexer.screen ? ['screen'] : [])].join(' > ')}`)
+    diagnostics.push(
+      `nested transport layers: ${[
+        ...(s.ssh.hasSshConnection ? ['ssh'] : []),
+        ...(s.multiplexer.tmux ? ['tmux'] : []),
+        ...(s.multiplexer.screen ? ['screen'] : []),
+        ...(s.multiplexer.zellij ? ['zellij'] : []),
+        ...(s.multiplexer.cy ? ['cy'] : []),
+      ].join(' > ')}`
+    )
   }
 
-  if ((family === 'tmux' || family === 'screen') && outerHint && outerHint !== family) {
-    diagnostics.push(`outer terminal: ${outerHint}`)
+  if (currentLayer && currentLayer !== 'ssh' && outerProfile && outerProfile.id !== currentLayer) {
+    diagnostics.push(`outer terminal: ${outerProfile.id}`)
   }
 
   if (s.platform !== 'win32' && s.env.WT_SESSION) {
@@ -250,49 +160,93 @@ export function deriveTerminalCapabilities(
   s: TerminalSignals,
   probe: TerminalProbeResult = {}
 ): TerminalCapabilities {
+  // Build transport layers from signals
   const layers: TransportKind[] = []
 
   if (s.ssh.hasSshConnection || s.ssh.hasSshClient || s.ssh.hasSshTty) {
     layers.push('ssh')
   }
 
-  if (s.multiplexer.tmux) {
-    layers.push('tmux')
-  }
+  // Add multiplexer layers using registry
+  const muxEnv: Record<string, string | undefined> = {}
+  if (s.multiplexer.tmux) muxEnv['TMUX'] = '1'
+  if (s.multiplexer.screen) muxEnv['STY'] = '1'
+  if (s.multiplexer.zellij) muxEnv['ZELLIJ'] = '0'
+  if (s.multiplexer.cy) muxEnv['CY'] = 'default:1'
 
-  if (s.multiplexer.screen) {
-    layers.push('screen')
+  // Push multiplexer IDs from registry as layers
+  for (const [key] of Object.entries(muxEnv)) {
+    const mux = findMultiplexer({ [key]: muxEnv[key] })
+    if (mux) layers.push(mux.id)
   }
 
   const currentLayer = layers.length > 0 ? layers[layers.length - 1] : undefined
   const transport = deriveTransport(layers)
-  const terminalFamily = deriveTerminalFamily(s, currentLayer)
-  const terminalVersion = deriveTerminalVersion(s, probe)
+
+  // Find profiles: outer terminal + current layer (for multiplexer capabilities)
+  const env = signalsEnv(s)
+  for (const key of ['TMUX', 'STY', 'ZELLIJ', 'CY']) {
+    delete env[key]
+  }
+  const outerProfile = findProfile(env)
+  // For capability lookup, use multiplexer profile when in a mux layer
+  const muxProfile = currentLayer && currentLayer !== 'ssh' && currentLayer !== 'local'
+    ? findMultiplexer(Object.fromEntries(
+        Object.entries({
+          TMUX: s.multiplexer.tmux ? '1' : undefined,
+          STY: s.multiplexer.screen ? '1' : undefined,
+          ZELLIJ: s.multiplexer.zellij ? '0' : undefined,
+          CY: s.multiplexer.cy ? 'default:1' : undefined,
+        }).filter(([, v]) => v !== undefined)
+      ))
+    : undefined
+  const profile = muxProfile ?? outerProfile
+
   const hasTty = s.isStdinTty && s.isStdoutTty
   const localClipboardCapable = transport === 'local' && hasTty
-  const outerHint = currentLayer === 'tmux' || currentLayer === 'screen' ? detectOuterTerminalHint(s) : undefined
+
+  // Clipboard: multiplexer layer takes priority, then SSH, then native/none
+  const isMuxLayer = currentLayer && currentLayer !== 'ssh' && currentLayer !== 'local'
+  const writePath: ClipboardWritePath =
+    isMuxLayer ? profile.capabilities.clipboard.writePath :
+    layers.includes('ssh') ? 'osc52' :
+    hasTty ? 'native' : 'none'
+
+  const isDarwin = s.platform === 'darwin'
+
+  // Terminal family: multiplexer layer takes priority, SSH context skips env detection
+  let terminalFamily: string
+  if (currentLayer && currentLayer !== 'ssh' && currentLayer !== 'local') {
+    terminalFamily = currentLayer
+  } else if (layers.includes('ssh')) {
+    terminalFamily = 'unknown'
+  } else {
+    terminalFamily = profile.id
+  }
 
   return {
     transport,
     layers,
     terminalFamily,
-    terminalVersion,
+    terminalVersion: deriveTerminalVersion(s, probe),
     keyboard: {
-      encoding: deriveKeyboardEncoding(terminalFamily, probe),
-      pasteShortcutShapes: buildPasteShortcutShapes(s.platform, terminalFamily)
+      encoding: probe.kittyKeyboard ?? ((probe.kittyKeyboardFlags ?? 0) > 0) ? 'kitty' : profile.capabilities.keyboard,
+      pasteShortcutShapes: isDarwin
+        ? profile.capabilities.pasteShortcuts.darwin
+        : profile.capabilities.pasteShortcuts.default,
     },
     paste: {
-      bracketedPaste: probe.bracketedPaste ?? true
+      bracketedPaste: probe.bracketedPaste ?? true,
     },
     copy: {
-      writePath: deriveClipboardWritePath(currentLayer, hasTty),
+      writePath,
       readPath: deriveClipboardReadPath(transport, hasTty, probe),
-      copyOnSelect: localClipboardCapable && s.platform === 'darwin'
+      copyOnSelect: profile.capabilities.copyOnSelect && isDarwin && localClipboardCapable,
     },
     mouse: {
       tracking: false,
-      shiftDragHint: currentLayer === 'tmux' || currentLayer === 'screen'
+      shiftDragHint: profile.capabilities.shiftDragHint,
     },
-    diagnostics: buildDiagnostics({ s, transport, family: terminalFamily, currentLayer, outerHint })
+    diagnostics: buildDiagnostics({ s, transport, currentLayer, outerProfile }),
   }
 }

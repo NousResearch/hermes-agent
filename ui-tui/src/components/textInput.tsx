@@ -751,9 +751,9 @@ export function TextInput({
               void writeClipboardText(text)
               break
             case 'osc52':
-            case 'tmux-buffer':
-            case 'screen-passthrough':
             default:
+              // tmux-buffer, screen-passthrough, zellij-passthrough, cy-passthrough
+              // all use OSC52 as the bridge to the local desktop clipboard
               writeOsc52Clipboard(text)
               break
           }

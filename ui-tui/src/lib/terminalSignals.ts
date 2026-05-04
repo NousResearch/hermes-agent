@@ -23,6 +23,8 @@ export type TerminalSignals = {
   multiplexer: {
     tmux: boolean
     screen: boolean
+    zellij: boolean
+    cy: boolean
   }
   env: {
     TERM?: string
@@ -112,7 +114,9 @@ export function collectTerminalSignals(input: TerminalSignalInput): TerminalSign
     },
     multiplexer: {
       tmux: pick(env, 'TMUX') !== undefined,
-      screen: pick(env, 'STY') !== undefined
+      screen: pick(env, 'STY') !== undefined,
+      zellij: pick(env, 'ZELLIJ') !== undefined,
+      cy: pick(env, 'CY') !== undefined
     },
     env: collectEnvSignals(env),
     shell

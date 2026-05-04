@@ -7393,11 +7393,13 @@ class HermesCLI:
         m = (self.model or "").lower()
         is_dsv4 = "deepseek" in m or "dsv4" in m
         # Hints reflect the three modes documented on DSv4-Flash's
-        # HuggingFace model card.
+        # HuggingFace model card. Kept short to fit a typical panel
+        # width without wrapping; the model card is the canonical
+        # reference for full descriptions.
         dsv4_hints = {
-            "none": "none — Non-think (fast, intuitive)",
-            "high": "high — Think High (default thinking; logical analysis)",
-            "xhigh": "xhigh — Think Max (max reasoning; needs ≥384K ctx)",
+            "none": "none — Non-think (fast)",
+            "high": "high — Think High (default)",
+            "xhigh": "xhigh — Think Max (needs ≥384K ctx)",
         }
         binary_hints = {
             "none": "none (no thinking)",

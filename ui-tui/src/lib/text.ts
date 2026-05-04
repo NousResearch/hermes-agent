@@ -164,12 +164,51 @@ const countNewlines = (text: string, end: number) => {
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
 
+const OPERATOR_TOOL_LABELS: Record<string, string> = {
+  browser_click: 'Using browser',
+  browser_console: 'Checking browser',
+  browser_get_images: 'Checking images',
+  browser_navigate: 'Checking browser',
+  browser_press: 'Using browser',
+  browser_scroll: 'Using browser',
+  browser_snapshot: 'Checking browser',
+  browser_type: 'Using browser',
+  browser_vision: 'Checking page',
+  clarify: 'Asking Andrew',
+  cronjob: 'Updating schedule',
+  delegate_task: 'Delegating task',
+  execute_code: 'Running script',
+  memory: 'Updating memory',
+  patch: 'Editing file',
+  process: 'Checking process',
+  read_file: 'Reading file',
+  search_files: 'Searching files',
+  send_message: 'Sending message',
+  session_search: 'Checking past chats',
+  skill_manage: 'Updating skills',
+  skill_view: 'Checking skills',
+  skills_list: 'Checking skills',
+  terminal: 'Running command',
+  todo: 'Updating tasks',
+  vision_analyze: 'Checking image',
+  web_extract: 'Reading web page',
+  web_search: 'Searching web',
+  write_file: 'Writing file'
+}
+
 export const toolTrailLabel = (name: string) =>
-  name
-    .split('_')
-    .filter(Boolean)
-    .map(p => p[0]!.toUpperCase() + p.slice(1))
-    .join(' ') || name
+  OPERATOR_TOOL_LABELS[name] ??
+  (name.startsWith('browser_')
+    ? 'Using browser'
+    : name.startsWith('web_')
+      ? 'Checking web'
+      : name.startsWith('github_')
+        ? 'Checking GitHub'
+        : name
+            .split('_')
+            .filter(Boolean)
+            .map(p => p[0]!.toUpperCase() + p.slice(1))
+            .join(' ') || name)
 
 export const formatToolCall = (name: string, context = '') => {
   const label = toolTrailLabel(name)

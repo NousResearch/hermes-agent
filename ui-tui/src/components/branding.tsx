@@ -192,9 +192,15 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             </Box>
 
             <Box flexDirection="column" marginTop={1}>
+              <Text bold color={t.color.accent}>Current work</Text>
+              <Text color={t.color.text}>Resume first: /resume or hermes --continue</Text>
+              <Text color={t.color.muted}>Decision queue: 1/2/3 to choose, 4 for something else.</Text>
+            </Box>
+
+            <Box flexDirection="column" marginTop={1}>
               <Text bold color={t.color.accent}>Fast moves</Text>
-              <Text color={t.color.text}>/resume continue work  /new fresh task  /tools capabilities</Text>
-              <Text color={t.color.muted}>Use 1/2/3 for decisions, 4 for something else.</Text>
+              <Text color={t.color.text}>/new fresh task  /tools capabilities  /status session state</Text>
+              <Text color={t.color.muted}>Default lane: act safely, surface blockers, avoid rabbit holes.</Text>
             </Box>
 
             {typeof info.update_behind === 'number' && info.update_behind > 0 && (

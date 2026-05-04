@@ -54,15 +54,106 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 
 ## Core concepts
 
+- **Board** — a standalone queue of tasks with its own SQLite DB, workspaces
+  directory, and dispatcher loop. A single install can have many boards
+  (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
+  below. Single-project users stay on the `default` board and never see the
+  word "board" outside this docs section.
 - **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
-  - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/`.
+  - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design.
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Worker-side `git worktree add` creates it.
-- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). After ~5 consecutive spawn failures on the same task the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
-- **Tenant** — optional string namespace. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix.
+- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After ~5 consecutive spawn failures on the same task the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
+- **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+## Boards (multi-project)
+
+Boards let you separate unrelated streams of work — one per project, repo,
+or domain — into isolated queues. A new install has exactly one board
+called `default` (DB at `~/.hermes/kanban.db` for back-compat). Users who
+only want one stream of work never need to know about boards; the feature
+is opt-in.
+
+Per-board isolation is absolute:
+
+- Separate SQLite DB per board (`~/.hermes/kanban/boards/<slug>/kanban.db`).
+- Separate `workspaces/` and `logs/` directories.
+- Workers spawned for a task see **only** their board's tasks — the
+  dispatcher sets `HERMES_KANBAN_BOARD` in the child env and every
+  `kanban_*` tool the worker has access to reads it.
+- Linking tasks across boards is not allowed (keeps the schema simple; if
+  you really need cross-project refs, use free-text mentions and look
+  them up by id manually).
+
+### Managing boards from the CLI
+
+```bash
+# See what's on disk. Fresh installs show only "default".
+hermes kanban boards list
+
+# Create a new board.
+hermes kanban boards create atm10-server \
+    --name "ATM10 Server" \
+    --description "Minecraft modded server ops" \
+    --icon 🎮 \
+    --switch                   # optional: make it the active board
+
+# Operate on a specific board without switching.
+hermes kanban --board atm10-server list
+hermes kanban --board atm10-server create "Restart ATM server" --assignee ops
+
+# Change which board is "current" for subsequent calls.
+hermes kanban boards switch atm10-server
+hermes kanban boards show             # who's active right now?
+
+# Rename the display name (the slug is immutable — it's the directory name).
+hermes kanban boards rename atm10-server "ATM10 (Prod)"
+
+# Archive (default) — moves the board's dir to boards/_archived/<slug>-<ts>/.
+# Recoverable by moving the dir back.
+hermes kanban boards rm atm10-server
+
+# Hard delete — `rm -rf` the board dir. No recovery.
+hermes kanban boards rm atm10-server --delete
+```
+
+Board resolution order (highest precedence first):
+
+1. Explicit `--board <slug>` on the CLI call.
+2. `HERMES_KANBAN_BOARD` env var (set by the dispatcher when spawning a
+   worker, so workers can't see other boards).
+3. `~/.hermes/kanban/current` — the slug persisted by `hermes kanban
+   boards switch`.
+4. `default`.
+
+Slugs are validated: lowercase alphanumerics + hyphens + underscores, 1-64
+chars, must start with alphanumeric. Uppercase input is auto-downcased.
+Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer
+so path-traversal tricks can't name a board.
+
+### Managing boards from the dashboard
+
+`hermes dashboard` → Kanban tab shows a board switcher at the top as soon
+as more than one board exists (or any board has tasks). Single-board users
+see only a small `+ New board` button; the switcher is hidden until it
+matters.
+
+- **Board dropdown** — pick the active board. Your selection is saved to
+  the browser's `localStorage` so it persists across reloads without
+  shifting the CLI's `current` pointer out from under a terminal you left
+  open.
+- **+ New board** — opens a modal asking for slug, display name,
+  description, and icon. Option to auto-switch to the new board.
+- **Archive** — only shown on non-`default` boards. Confirms, then moves
+  the board dir to `boards/_archived/`.
+
+All dashboard API endpoints accept `?board=<slug>` for board scoping. The
+events WebSocket is pinned to a board at connection time; switching in
+the UI opens a fresh WS against the new board.
+
 
 ## Quick start
 

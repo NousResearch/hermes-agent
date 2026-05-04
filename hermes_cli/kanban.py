@@ -169,10 +169,92 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "or docs/hermes-kanban-v1-spec.pdf for the full design."
         ),
     )
+    # --- global --board flag ---
+    # Applies to every subcommand below. When set, scopes all reads and
+    # writes to that board's DB. When omitted, resolves via the
+    # HERMES_KANBAN_BOARD env var, then the persisted current-board
+    # file, then "default". See kanban_db.get_current_board().
+    kanban_parser.add_argument(
+        "--board",
+        default=None,
+        metavar="<slug>",
+        help=(
+            "Board slug to operate on. Defaults to the current board "
+            "(set via `hermes kanban boards switch <slug>` or the "
+            "HERMES_KANBAN_BOARD env var). Use `hermes kanban boards list` "
+            "to see all boards."
+        ),
+    )
     sub = kanban_parser.add_subparsers(dest="kanban_action")
 
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
+
+    # --- boards (new in v2: multi-project support) ---
+    p_boards = sub.add_parser(
+        "boards",
+        help="Manage kanban boards (one board per project / workstream)",
+        description=(
+            "Boards let you separate unrelated streams of work "
+            "(projects, repos, domains) into isolated queues. Each "
+            "board has its own DB, workspaces directory, and dispatcher "
+            "loop — tasks on one board cannot collide with tasks on "
+            "another. The first board is 'default' and always exists."
+        ),
+    )
+    boards_sub = p_boards.add_subparsers(dest="boards_action")
+
+    b_list = boards_sub.add_parser(
+        "list", aliases=["ls"],
+        help="List all boards with task counts",
+    )
+    b_list.add_argument("--json", action="store_true")
+    b_list.add_argument("--all", action="store_true",
+                        help="Include archived boards too")
+
+    b_create = boards_sub.add_parser(
+        "create", aliases=["new"],
+        help="Create a new board",
+    )
+    b_create.add_argument("slug",
+                          help="Board slug (kebab-case, e.g. atm10-server)")
+    b_create.add_argument("--name", default=None,
+                          help="Human-readable display name (defaults to Title Case of slug)")
+    b_create.add_argument("--description", default=None,
+                          help="Optional description")
+    b_create.add_argument("--icon", default=None,
+                          help="Optional emoji or single-character icon for the dashboard")
+    b_create.add_argument("--color", default=None,
+                          help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
+    b_create.add_argument("--switch", action="store_true",
+                          help="Switch to the new board after creating it")
+
+    b_rm = boards_sub.add_parser(
+        "rm", aliases=["remove", "delete"],
+        help="Archive (default) or delete a board",
+    )
+    b_rm.add_argument("slug")
+    b_rm.add_argument("--delete", action="store_true",
+                      help="Hard-delete the board directory instead of archiving it. "
+                           "Default is to move it to boards/_archived/ so it's recoverable.")
+
+    b_switch = boards_sub.add_parser(
+        "switch", aliases=["use"],
+        help="Set the active board for subsequent CLI calls",
+    )
+    b_switch.add_argument("slug")
+
+    boards_sub.add_parser(
+        "show", aliases=["current"],
+        help="Print the currently-active board slug",
+    )
+
+    b_rename = boards_sub.add_parser(
+        "rename",
+        help="Change a board's human-readable display name (slug is immutable)",
+    )
+    b_rename.add_argument("slug")
+    b_rename.add_argument("name", help="New display name")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -442,6 +524,38 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # `--board <slug>` applies to every subcommand below by way of an
+    # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
+    # (rather than threading `board=` through 50+ kb.connect() sites)
+    # keeps the patch small and inherits the exact same resolution the
+    # dispatcher uses for workers — consistency is a feature here.
+    board_override = getattr(args, "board", None)
+    if board_override:
+        try:
+            normed = kb._normalize_board_slug(board_override)
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+        if not normed:
+            print("kanban: --board requires a slug", file=sys.stderr)
+            return 2
+        # Boards other than 'default' must already exist — typoed slugs
+        # would otherwise silently create an empty board.
+        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+            print(
+                f"kanban: board {normed!r} does not exist. "
+                f"Create it with `hermes kanban boards create {normed}`.",
+                file=sys.stderr,
+            )
+            return 1
+        os.environ["HERMES_KANBAN_BOARD"] = normed
+
+    # Boards management doesn't touch the DB at all — dispatch early so
+    # fresh installs that haven't initialized any DB can still use
+    # `hermes kanban boards create …`.
+    if action == "boards":
+        return _dispatch_boards(args)
+
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
     # SELECT against sqlite_master when tables already exist) and
@@ -511,6 +625,185 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+# ---------------------------------------------------------------------------
+# Boards management (hermes kanban boards …)
+# ---------------------------------------------------------------------------
+
+def _dispatch_boards(args: argparse.Namespace) -> int:
+    """Handle ``hermes kanban boards <action>``.
+
+    Boards management is deliberately separate from the task-level
+    commands: it operates on the filesystem (board directories,
+    ``current`` pointer, ``board.json``), not on the per-board SQLite
+    DB, so a fresh HERMES_HOME that has never called ``kanban init``
+    can still run ``boards create`` / ``boards list``.
+    """
+    sub = getattr(args, "boards_action", None) or "list"
+    if sub in ("list", "ls"):
+        return _cmd_boards_list(args)
+    if sub in ("create", "new"):
+        return _cmd_boards_create(args)
+    if sub in ("rm", "remove", "delete"):
+        return _cmd_boards_rm(args)
+    if sub in ("switch", "use"):
+        return _cmd_boards_switch(args)
+    if sub in ("show", "current"):
+        return _cmd_boards_show(args)
+    if sub == "rename":
+        return _cmd_boards_rename(args)
+    print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
+    return 2
+
+
+def _board_task_counts(slug: str) -> dict[str, int]:
+    """Return ``{status: count}`` for a board. Safe to call on an empty DB."""
+    try:
+        path = kb.kanban_db_path(board=slug)
+        if not path.exists():
+            return {}
+        with kb.connect(board=slug) as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+            ).fetchall()
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+def _cmd_boards_list(args: argparse.Namespace) -> int:
+    include_archived = bool(getattr(args, "all", False))
+    boards = kb.list_boards(include_archived=include_archived)
+    # Enrich each entry with task counts + whether it's the current board.
+    current = kb.get_current_board()
+    for b in boards:
+        b["is_current"] = (b["slug"] == current)
+        b["counts"] = _board_task_counts(b["slug"])
+        b["total"] = sum(b["counts"].values())
+    if getattr(args, "json", False):
+        print(json.dumps(boards, indent=2, ensure_ascii=False))
+        return 0
+    # Human table: marker (•) for current, slug, display name, counts.
+    if not boards:
+        print("(no boards — create one with `hermes kanban boards create <slug>`)")
+        return 0
+    print(f"{'':2s}  {'SLUG':24s}  {'NAME':28s}  COUNTS")
+    for b in boards:
+        marker = "●" if b["is_current"] else " "
+        counts = b["counts"] or {}
+        counts_str = (
+            ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            or "(empty)"
+        )
+        name = b.get("name") or ""
+        if b.get("archived"):
+            name += " [archived]"
+        print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {counts_str}")
+    print()
+    print(f"Current board: {current}")
+    if len(boards) > 1:
+        print("Switch boards with `hermes kanban boards switch <slug>`.")
+    return 0
+
+
+def _cmd_boards_create(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards create: {exc}", file=sys.stderr)
+        return 2
+    if not normed:
+        print("kanban boards create: slug is required", file=sys.stderr)
+        return 2
+    already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
+    meta = kb.create_board(
+        normed,
+        name=args.name,
+        description=args.description,
+        icon=args.icon,
+        color=args.color,
+    )
+    verb = "already exists" if already else "created"
+    print(f"Board {meta['slug']!r} {verb}.")
+    print(f"  Display name: {meta.get('name', '')}")
+    print(f"  DB path:      {meta['db_path']}")
+    if getattr(args, "switch", False):
+        kb.set_current_board(meta["slug"])
+        print(f"  Switched to {meta['slug']!r}.")
+    else:
+        print(f"  Use `hermes kanban boards switch {meta['slug']}` to make it current.")
+    return 0
+
+
+def _cmd_boards_rm(args: argparse.Namespace) -> int:
+    try:
+        res = kb.remove_board(args.slug, archive=not getattr(args, "delete", False))
+    except ValueError as exc:
+        print(f"kanban boards rm: {exc}", file=sys.stderr)
+        return 1
+    if res["action"] == "archived":
+        print(f"Board {res['slug']!r} archived → {res['new_path']}")
+        print("Recover by moving the directory back to "
+              "<root>/kanban/boards/<slug>/.")
+    else:
+        print(f"Board {res['slug']!r} deleted.")
+    return 0
+
+
+def _cmd_boards_switch(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards switch: {exc}", file=sys.stderr)
+        return 2
+    if not normed:
+        print("kanban boards switch: slug is required", file=sys.stderr)
+        return 2
+    if not kb.board_exists(normed):
+        print(
+            f"kanban boards switch: board {normed!r} does not exist. "
+            f"Create it with `hermes kanban boards create {normed}`.",
+            file=sys.stderr,
+        )
+        return 1
+    kb.set_current_board(normed)
+    print(f"Active board is now {normed!r}.")
+    return 0
+
+
+def _cmd_boards_show(args: argparse.Namespace) -> int:
+    current = kb.get_current_board()
+    meta = kb.read_board_metadata(current)
+    counts = _board_task_counts(current)
+    total = sum(counts.values())
+    print(f"Current board: {current}")
+    print(f"  Display name: {meta.get('name', '')}")
+    if meta.get("description"):
+        print(f"  Description:  {meta['description']}")
+    print(f"  DB path:      {meta['db_path']}")
+    print(f"  Tasks:        {total} total"
+          + (f" ({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))})"
+             if counts else ""))
+    return 0
+
+
+def _cmd_boards_rename(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards rename: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards rename: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    meta = kb.write_board_metadata(normed, name=args.name)
+    print(f"Board {normed!r} renamed to {meta['name']!r}.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 
 
 def _parse_duration(val) -> Optional[int]:
@@ -662,6 +955,21 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
         return 0
+    # Passive discoverability: when the user has multiple boards, surface
+    # which one they're looking at in the list header. Single-board users
+    # never see this — the feature stays invisible until you opt in.
+    try:
+        all_boards = kb.list_boards(include_archived=False)
+    except Exception:
+        all_boards = []
+    if len(all_boards) > 1:
+        current = kb.get_current_board()
+        other_count = len(all_boards) - 1
+        print(
+            f"Board: {current} "
+            f"({other_count} other board{'s' if other_count != 1 else ''} — "
+            f"`hermes kanban boards list`)\n"
+        )
     if not tasks:
         print("(no matching tasks)")
         return 0

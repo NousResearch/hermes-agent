@@ -1259,7 +1259,29 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             })
 
         async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
+            # B-0504-01: artemis MCP subprocess is long-lived per-gateway-process.
+            # spawn-time env (HERMES_SESSION_USER_ID set in safe_env) is captured
+            # at the first spawn and frozen — subsequent sessions can't update it.
+            # Inject session identity as per-call request _meta so the server can
+            # bind each call to the actual current caller. Caller-side source:
+            # ContextVar (preferred, per-asyncio-task) → os.environ fallback for
+            # contexts where ContextVar isn't propagated (cron path crosses a
+            # ThreadPoolExecutor boundary; gateway/run.py:~7185 wraps with
+            # copy_context but cron path doesn't).
+            try:
+                from tools.session_context import get_user_id as _ctx_user
+                _uid = _ctx_user()
+            except Exception:
+                _uid = None
+            if not _uid:
+                _uid = os.environ.get("HERMES_SESSION_USER_ID", "").strip() or None
+            _call_meta = {"hermes_session_user_id": _uid} if _uid else None
+            if _call_meta:
+                result = await server.session.call_tool(
+                    tool_name, arguments=args, meta=_call_meta
+                )
+            else:
+                result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

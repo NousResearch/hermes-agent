@@ -1372,24 +1372,24 @@ provider_routing:
 
 **Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
 
-## Fallback Model
+## Fallback Providers
 
-Configure a backup provider:model that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
+Configure a backup provider:model chain that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
 
 ```yaml
-fallback_model:
-  provider: openrouter                    # required
-  model: anthropic/claude-sonnet-4        # required
-  # base_url: http://localhost:8000/v1    # optional, for custom endpoints
-  # key_env: MY_CUSTOM_KEY               # optional, env var name for custom endpoint API key
+fallback_providers:
+  - provider: openrouter                    # required
+    model: anthropic/claude-sonnet-4        # required
+    # base_url: http://localhost:8000/v1    # optional, for custom endpoints
+    # key_env: MY_CUSTOM_KEY                # optional, env var name for custom endpoint API key
 ```
 
-When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
+When activated, the fallback swaps the model and provider mid-turn without losing your conversation. The primary model is restored for the next user message.
 
 Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `alibaba`, `tencent-tokenhub`, `custom`.
 
 :::tip
-Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
+Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. The older top-level `fallback_model` object is still read for backward compatibility, but new configs should use `fallback_providers`. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
 :::
 
 ---

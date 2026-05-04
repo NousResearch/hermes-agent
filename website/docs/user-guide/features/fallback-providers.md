@@ -27,20 +27,20 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Press `a` to add a fallback, `↑`/`↓` to reorder, `d` to remove, `q` to save and exit. Changes persist under `model.fallback_providers` in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Press `a` to add a fallback, `↑`/`↓` to reorder, `d` to remove, `q` to save and exit. Changes persist under top-level `fallback_providers` in `config.yaml`.
 
-If you'd rather edit the YAML directly, add a `fallback_model` section to `~/.hermes/config.yaml`:
+If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
-Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+Each entry requires both `provider` and `model`. Entries missing either value are ignored.
 
 :::note `fallback_model` vs `fallback_providers`
-`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
+`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) is the current format and supports multiple fallbacks tried in order; `hermes fallback` writes to this top-level key. When both are set, `fallback_providers` takes priority.
 :::
 
 ### Supported Providers
@@ -90,11 +90,11 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:
 
 ```yaml
-fallback_model:
-  provider: custom
-  model: my-local-model
-  base_url: http://localhost:8000/v1
-  key_env: MY_LOCAL_KEY              # env var name containing the API key
+fallback_providers:
+  - provider: custom
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+    key_env: MY_LOCAL_KEY              # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -128,9 +128,9 @@ model:
   provider: anthropic
   default: claude-sonnet-4-6
 
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
 **Nous Portal as fallback for OpenRouter:**
@@ -139,25 +139,25 @@ model:
   provider: openrouter
   default: anthropic/claude-opus-4
 
-fallback_model:
-  provider: nous
-  model: nous-hermes-3
+fallback_providers:
+  - provider: nous
+    model: nous-hermes-3
 ```
 
 **Local model as fallback for cloud:**
 ```yaml
-fallback_model:
-  provider: custom
-  model: llama-3.1-70b
-  base_url: http://localhost:8000/v1
-  key_env: LOCAL_API_KEY
+fallback_providers:
+  - provider: custom
+    model: llama-3.1-70b
+    base_url: http://localhost:8000/v1
+    key_env: LOCAL_API_KEY
 ```
 
 **Codex OAuth as fallback:**
 ```yaml
-fallback_model:
-  provider: openai-codex
-  model: gpt-5.3-codex
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.3-codex
 ```
 
 ### Where Fallback Works
@@ -171,7 +171,7 @@ fallback_model:
 | Auxiliary tasks (vision, compression) | ✘ (use their own provider chain — see below) |
 
 :::tip
-There are no environment variables for `fallback_model` — it is configured exclusively through `config.yaml`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
+There are no environment variables for `fallback_providers` — it is configured exclusively through `config.yaml`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
 :::
 
 ---
@@ -259,13 +259,13 @@ auxiliary:
     base_url: null                                    # Custom OpenAI-compatible endpoint
 ```
 
-And the fallback model uses:
+And the primary fallback chain uses:
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
-  # base_url: http://localhost:8000/v1               # Optional custom endpoint
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+    # base_url: http://localhost:8000/v1             # Optional custom endpoint
 ```
 
 For `auxiliary.session_search`, Hermes also supports:
@@ -287,11 +287,11 @@ auxiliary:
 
 If your provider does not support a native OpenAI-compatible reasoning-control field, `extra_body` will not help for that part; in that case `max_concurrency` is still useful for reducing request-burst 429s.
 
-All three — auxiliary, compression, fallback — work the same way: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
+Auxiliary, compression, and each fallback entry use the same provider fields: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
 
 ### Provider Options for Auxiliary Tasks
 
-These options apply to `auxiliary:`, `compression:`, and `fallback_model:` configs only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](/docs/integrations/providers)).
+These options apply to `auxiliary:`, `compression:`, and fallback-provider entries only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](/docs/integrations/providers)).
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|
@@ -375,7 +375,7 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_model` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_model:` (top-level) |
+| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level) |
 | Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` |

@@ -2310,7 +2310,7 @@ def _setup_trueconf():
     save_env_value("TRUECONF_SERVER", server)
     print_success(f"TrueConf server: {server}")
 
-    username = prompt("Bot username (email or user ID on the server)")
+    username = prompt("Bot username (TrueConf ID on the server)")
     if not username:
         return
     username = username.strip()
@@ -2345,8 +2345,8 @@ def _setup_trueconf():
 
     print()
     print_info("Home Channel: where Hermes delivers cron results and notifications.")
-    print_info("For TrueConf DMs, this is your user email on the server.")
-    home_channel = prompt("Home channel (user email or leave empty to set later via /set-home in TrueConf)")
+    print_info("For TrueConf DMs, this is your user TrueConf ID on the server.")
+    home_channel = prompt("Home channel (user TrueConf ID or leave empty to set later via /set-home in TrueConf)")
     if home_channel:
         save_env_value("TRUECONF_HOME_CHANNEL", home_channel.strip())
         print_success(f"TrueConf home channel set to {home_channel.strip()}")

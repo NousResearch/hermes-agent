@@ -467,8 +467,8 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
         skip_memory=True,
     )
     prompt = a._build_system_prompt()
-    # Header phrase
-    assert "You are a Kanban worker" in prompt
+    # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
+    assert "Kanban task execution protocol" in prompt
     # Lifecycle signals
     assert "kanban_show()" in prompt
     assert "kanban_complete" in prompt

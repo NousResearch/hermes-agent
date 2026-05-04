@@ -644,6 +644,42 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _resolve_parent_tool_universe(parent_toolset_names) -> set:
+    """Return the set of tool names a parent with these toolsets effectively has.
+
+    Composite/preset toolsets (``hermes-cli``, ``hermes-acp``, …) bundle tools
+    drawn from many individual toolsets. The intersection that scopes a child
+    must compare at the tool level so a child requesting ``web`` from a parent
+    with ``hermes-cli`` is allowed (because ``hermes-cli`` already exposes
+    ``web_search``/``web_extract``).
+    """
+    from toolsets import resolve_toolset
+
+    tools: set[str] = set()
+    for name in parent_toolset_names:
+        try:
+            tools.update(resolve_toolset(name))
+        except Exception:
+            continue
+    return tools
+
+
+def _toolset_subset_of_parent(toolset_name: str, parent_tools: set) -> bool:
+    """True when every tool the requested toolset would add is already on the parent.
+
+    Falls back to False when the requested toolset resolves to an empty set
+    (unknown name or stub), so the child cannot smuggle in toolsets the
+    registry can't account for.
+    """
+    from toolsets import resolve_toolset
+
+    try:
+        ts_tools = set(resolve_toolset(toolset_name))
+    except Exception:
+        return False
+    return bool(ts_tools) and ts_tools.issubset(parent_tools)
+
+
 def _build_child_progress_callback(
     task_index: int,
     goal: str,
@@ -907,8 +943,16 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        # Intersect with parent — subagent must not gain tools the parent lacks.
+        # Compare at the tool level so requests like toolsets=["web"] succeed
+        # when the parent runs a composite preset (hermes-cli, hermes-acp, …)
+        # that already bundles those tools.
+        parent_tool_universe = _resolve_parent_tool_universe(parent_toolsets)
+        child_toolsets = [
+            t for t in toolsets
+            if t in parent_toolsets
+            or _toolset_subset_of_parent(t, parent_tool_universe)
+        ]
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets

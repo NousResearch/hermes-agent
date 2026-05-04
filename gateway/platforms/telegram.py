@@ -122,6 +122,16 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+SUPPORTED_IMAGE_DOCUMENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -3131,6 +3141,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
+                if not ext and doc.mime_type:
+                    image_mime_to_ext = {v: k for k, v in SUPPORTED_IMAGE_DOCUMENT_TYPES.items()}
+                    ext = image_mime_to_ext.get(doc.mime_type.lower(), "")
+
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
@@ -3142,8 +3156,33 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
+                if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES or (doc.mime_type or "").lower().startswith("image/"):
+                    if not doc.file_size or doc.file_size > 20 * 1024 * 1024:
+                        event.text = (
+                            "The image is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                        logger.info("[Telegram] Image document too large: %s bytes", doc.file_size)
+                        await self.handle_message(event)
+                        return
+
+                    image_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_IMAGE_DOCUMENT_TYPES.get(image_ext, (doc.mime_type or "image/jpeg"))]
+                    event.message_type = MessageType.PHOTO
+                    logger.info("[Telegram] Cached user image document at %s", cached_path)
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        await self.handle_message(event)
+                    return
+
                 # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                elif ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "

@@ -146,6 +146,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +259,59 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls and event.media_urls[0].endswith("archive.zip")
         assert event.media_types == ["application/zip"]
+
+    @pytest.mark.asyncio
+    async def test_image_document_with_jpg_extension_is_cached_as_photo(self, adapter):
+        jpg_bytes = b"\xff\xd8\xff fake jpeg bytes"
+        file_obj = _make_file_obj(jpg_bytes)
+        doc = _make_document(
+            file_name="photo.jpg", mime_type="image/jpeg",
+            file_size=len(jpg_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc, caption="what is this?")
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.text == "what is this?"
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_urls[0].endswith(".jpg")
+        assert event.media_types == ["image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_image_document_without_extension_uses_image_mime(self, adapter):
+        png_bytes = b"\x89PNG\r\n\x1a\n fake png bytes"
+        file_obj = _make_file_obj(png_bytes)
+        doc = _make_document(
+            file_name=None, mime_type="image/png",
+            file_size=len(png_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_urls[0].endswith(".png")
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_image_document_over_size_is_rejected(self, adapter):
+        doc = _make_document(
+            file_name="photo.jpeg", mime_type="image/jpeg",
+            file_size=25 * 1024 * 1024,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert "image is too large" in event.text
 
     @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):

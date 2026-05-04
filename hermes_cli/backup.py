@@ -874,9 +874,13 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
 
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
+
+    ``keep`` is floored to 1 because this helper is only called immediately
+    after a fresh backup is written — same rationale as
+    :func:`_prune_pre_update_backups`.
     """
-    if keep < 0:
-        keep = 0
+    if keep < 1:
+        keep = 1
     if not backup_dir.exists():
         return 0
 

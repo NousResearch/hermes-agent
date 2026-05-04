@@ -600,6 +600,8 @@ class ContextCompressor(ContextEngine):
             # Skip multimodal content (list of content blocks)
             if isinstance(content, list):
                 continue
+            if not isinstance(content, str):
+                continue
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
             # Skip already-deduplicated or previously-summarized results

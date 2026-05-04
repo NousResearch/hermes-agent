@@ -81,22 +81,11 @@ function RootRedirect() {
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
-  if (!pluginsLoading) {
-    return <Navigate to="/sessions" replace />;
+  if (pluginsLoading) {
+    // Render nothing during the plugin-load window — a spinner here would just flash.
+    return null;
   }
-
-  return (
-    <div
-      className="flex min-h-[16rem] min-w-0 items-center justify-center"
-      aria-busy="true"
-      aria-live="polite"
-    >
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Spinner />
-        <span>Loading dashboard plugins…</span>
-      </div>
-    </div>
-  );
+  return <Navigate to="/sessions" replace />;
 }
 
 const CHAT_NAV_ITEM: NavItem = {

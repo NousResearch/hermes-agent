@@ -5116,6 +5116,31 @@ class HermesCLI:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
+    def _handle_mode_command(self, cmd_original: str) -> None:
+        """Handle /mode <name> — load a mode file as the ephemeral system prompt."""
+        parts = cmd_original.split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+
+        if not target or target == "off":
+            if self.agent:
+                self.agent.system_prompt = ""
+                self.agent._invalidate_system_prompt()
+            _cprint("  Mode cleared.")
+            return
+
+        from hermes_constants import get_hermes_home
+        mode_path = get_hermes_home() / "modes" / f"{target}.md"
+        if not mode_path.exists():
+            _cprint(f"  Mode not found: {target}")
+            return
+
+        content = mode_path.read_text(encoding="utf-8")
+        if self.agent:
+            self.agent.system_prompt = content
+            self.agent._invalidate_system_prompt()
+        os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"] = content
+        _cprint(f"  Loaded mode: {target} ({len(content)} chars, never compacted)")
+    
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -6417,6 +6442,8 @@ class HermesCLI:
             self.new_session()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "mode":
+            self._handle_mode_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":

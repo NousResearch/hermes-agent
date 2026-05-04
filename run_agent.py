@@ -1708,16 +1708,20 @@ class AIAgent:
         #     enabled: true
         #     consecutive_threshold: 5    # calls before asking compression model
         #     failure_threshold: 5        # consecutive failures before breaker
+        #     use_auxiliary_judgment: false  # skip compression model, use self-reflection only
         _cb_cfg = _agent_cfg.get("circuit_breaker", {})
         self._circuit_breaker_enabled = bool(_cb_cfg.get("enabled", False))
         self._consecutive_tool_calls: dict[str, int] = {}
         self._consecutive_threshold: int = int(_cb_cfg.get("consecutive_threshold", 5))
-        
+
         # Per-tool failure retry counter: tracks consecutive failures
         # for a tool regardless of argument changes.  Prevents the LLM
         # from retrying different variations of a failing tool call.
         self._tool_failure_count: dict[str, int] = {}
         self._tool_failure_threshold: int = int(_cb_cfg.get("failure_threshold", 5))
+        # When false, skip compression model judgment and use self-reflection only.
+        # Useful for users with weak/cheap compression models that produce false positives.
+        self._use_auxiliary_judgment: bool = bool(_cb_cfg.get("use_auxiliary_judgment", True))
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -2698,7 +2702,8 @@ class AIAgent:
         """Check if the agent is looping by asking an auxiliary model.
 
         Two strategies depending on configuration:
-        1. If compression model is available: ask it to judge (fast, cheap).
+        1. If compression model is available and _use_auxiliary_judgment is True:
+           ask it to judge (fast, cheap).
         2. If not: return a special message that tells the main model to
            self-reflect — letting it judge its own behavior.
 
@@ -2707,6 +2712,25 @@ class AIAgent:
         - str: error message to return to the LLM (either hard break or
            self-reflection prompt).
         """
+        # Short-circuit: skip compression model judgment entirely when disabled.
+        # Goes straight to self-reflection fallback — no LLM call made.
+        if not self._use_auxiliary_judgment:
+            consecutive = self._consecutive_tool_calls.get(tool_name, 0)
+            result_preview = last_result[:500] if last_result else "(empty)"
+            logger.debug(
+                "Loop check: use_auxiliary_judgment=false, "
+                "skipping compression model for %s (%d calls)",
+                tool_name, consecutive,
+            )
+            return (
+                f"[Tool called {consecutive} times consecutively] "
+                f"Tool '{tool_name}' has been called {consecutive} times in a row. "
+                f"Last result: {result_preview}\n\n"
+                f"Please pause and assess: are you making progress, or are you stuck in a loop? "
+                f"If the repeated calls are not producing useful results, "
+                f"try a completely different approach."
+            )
+
         try:
             from agent.auxiliary_client import call_llm
 

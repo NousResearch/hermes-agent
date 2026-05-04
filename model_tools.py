@@ -22,8 +22,8 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
-import os
 import logging
+import re
 import threading
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -369,6 +369,176 @@ def get_tool_definitions(
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
+# ── Path fields that may carry markdown links ──────────────────────
+_PATH_FIELDS = {"path", "file_path", "filepath", "source", "destination", "target", "old_string"}
+
+
+# =============================================================================
+# Validate-then-repair layer
+# =============================================================================
+
+
+def _repair_null_to_omit(
+    args: Dict[str, Any], schema: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Remove ``None`` values from optional fields.
+
+    Models frequently pass ``{"key": null}`` instead of omitting the key.
+    Required fields keep their ``None`` value (the tool will reject them
+    with a clear error).  Optional ``None`` fields are silently dropped.
+    """
+    repairs: List[Dict[str, str]] = []
+    required = set(schema.get("required", [])) if schema else set()
+    for key in list(args.keys()):
+        if args[key] is None and key not in required:
+            del args[key]
+            repairs.append({"field": key, "issue": "null_on_optional", "action": "omitted"})
+    return args, repairs
+
+
+def _repair_string_to_array(
+    args: Dict[str, Any], schema: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Repair a JSON-encoded string that should be an array.
+
+    Two attempts:
+    1. Try ``json.loads(value)`` — catches ``"["a","b"]"``.
+    2. Wrap the bare string in a single-element array.
+    """
+    repairs: List[Dict[str, str]] = []
+    props = (schema or {}).get("properties", {})
+    for key, value in args.items():
+        prop = props.get(key, {})
+        if prop.get("type") == "array" and isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    args[key] = parsed
+                    repairs.append({"field": key, "issue": "string_as_array", "action": "json_parse"})
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+            args[key] = [value]
+            repairs.append({"field": key, "issue": "string_as_array", "action": "wrapped"})
+    return args, repairs
+
+
+def _repair_bare_to_array(
+    args: Dict[str, Any], schema: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Wrap a single non-list value in a single-element array.
+
+    Catches the common ``"foo"`` → ``["foo"]`` mistake when the schema
+    declares ``"type": "array"``.
+    """
+    repairs: List[Dict[str, str]] = []
+    props = (schema or {}).get("properties", {})
+    for key, value in args.items():
+        prop = props.get(key, {})
+        if prop.get("type") == "array" and not isinstance(value, (list, tuple)):
+            args[key] = [value]
+            repairs.append({"field": key, "issue": "bare_as_array", "action": "wrapped"})
+    return args, repairs
+
+
+def _repair_markdown_path(
+    args: Dict[str, Any], schema: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Strip markdown link syntax from path values.
+
+    Models sometimes output ``"[notes.md](http://notes.md)"`` instead of
+    ``"notes.md"``.  The regex preserves valid markdown links where the
+    text differs from the URL.
+    """
+    # Matches ``[text](url)`` — when text == url, use the text part;
+    # otherwise keep the text (likely a genuine description → link pairing).
+    _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    repairs: List[Dict[str, str]] = []
+    for key in args:
+        if key not in _PATH_FIELDS or not isinstance(args[key], str):
+            continue
+        cleaned = _MD_LINK_RE.sub(lambda m: m.group(1) if m.group(1) == m.group(2) else m.group(0), args[key])
+        if cleaned != args[key]:
+            args[key] = cleaned
+            repairs.append({"field": key, "issue": "markdown_link", "action": "cleaned"})
+    return args, repairs
+
+
+def _repair_relational(
+    args: Dict[str, Any], schema: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Fix relational invariants like ``offset`` without ``limit``.
+
+    Tools may declare ``offset`` and ``limit`` as separate optional
+    fields, but they form a relational pair — sending one without the
+    other can produce confusing results.
+    """
+    repairs: List[Dict[str, str]] = []
+    if "offset" in args and "limit" not in args:
+        args["limit"] = 500
+        repairs.append({"field": "limit", "issue": "missing_with_offset", "action": "default_500"})
+    if "limit" in args and "offset" not in args:
+        args["offset"] = 1
+        repairs.append({"field": "offset", "issue": "missing_with_limit", "action": "default_1"})
+    return args, repairs
+
+
+def validate_tool_args(
+    tool_name: str, args: Dict[str, Any]
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Validate-then-repair: apply semantic repairs to tool arguments.
+
+    Unlike the existing ``_repair_tool_call_arguments`` in ``run_agent.py``
+    (which focuses on JSON-level syntax — trailing commas, unclosed
+    brackets, control characters), this layer addresses **semantic**
+    issues:
+
+    * ``null`` on optional fields → omit the field
+    * JSON-encoded string where array expected → parse or wrap
+    * Bare scalar where array expected → wrap in single-element array
+    * Markdown links in path fields → strip link syntax
+    * Relational invariants (offset/limit, limit/offset) → set defaults
+
+    Each repair is logged at INFO level for telemetry, and a note is
+    prepended to the tool result so the model learns to avoid the
+    malformation in subsequent calls.
+
+    Returns ``(args, repairs)`` where *repairs* is empty when no changes
+    were made.
+    """
+    if not args or not isinstance(args, dict):
+        return args, []
+
+    schema = registry.get_schema(tool_name)
+    params_schema = (schema or {}).get("parameters", {})
+    if not params_schema:
+        return args, []
+
+    repairs: List[Dict[str, str]] = []
+
+    # Order matters: null→omit must run before type-based repairs
+    # to avoid wrapping ``None`` in an array.
+    args, r = _repair_null_to_omit(args, params_schema)
+    repairs.extend(r)
+
+    args, r = _repair_string_to_array(args, params_schema)
+    repairs.extend(r)
+
+    args, r = _repair_bare_to_array(args, params_schema)
+    repairs.extend(r)
+
+    args, r = _repair_markdown_path(args, params_schema)
+    repairs.extend(r)
+
+    args, r = _repair_relational(args, params_schema)
+    repairs.extend(r)
+
+    if repairs:
+        note = "; ".join(f"{r['field']}: {r['issue']} -> {r['action']}" for r in repairs)
+        logger.info("validate-then-repair for %s [%s]: %s", tool_name, len(repairs), note)
+
+    return args, repairs
+
 
 def handle_function_call(
     function_name: str,
@@ -414,12 +584,20 @@ def handle_function_call(
         except Exception:
             pass
 
+        # ── Validate-then-repair: fix semantic tool argument issues ────
+        # Catches null-on-optional, string-as-array, bare-as-array,
+        # markdown-in-path, and relational-invariant violations.
+        # Repairs are logged and prepended to the tool result so the model
+        # can learn to avoid them in subsequent calls.
+        repaired_args, repair_log = validate_tool_args(function_name, function_args)
+        has_repairs = bool(repair_log)
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
             result = registry.dispatch(
-                function_name, function_args,
+                function_name, repaired_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
                 honcho_manager=honcho_manager,
@@ -427,12 +605,17 @@ def handle_function_call(
             )
         else:
             result = registry.dispatch(
-                function_name, function_args,
+                function_name, repaired_args,
                 task_id=task_id,
                 user_task=user_task,
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
             )
+
+        # Prepend repair notes so the model sees what was fixed.
+        if has_repairs:
+            note = " | ".join(f"{r['field']}: {r['issue']} -> {r['action']}" for r in repair_log)
+            result = f"[validate-then-repair: {note}]\n{result}"
 
         try:
             from hermes_cli.plugins import invoke_hook

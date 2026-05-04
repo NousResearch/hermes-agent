@@ -4988,14 +4988,27 @@ class HermesCLI:
                 except Exception:
                     pass
                 if title and self._session_db:
+                    from hermes_state import SessionDB
                     try:
-                        from hermes_state import SessionDB
                         sanitized = SessionDB.sanitize_title(title)
-                        if sanitized:
+                    except ValueError as e:
+                        _cprint(f"  Title rejected: {e}")
+                        sanitized = None
+                        title = None
+                    if sanitized:
+                        try:
                             self._session_db.set_session_title(self.session_id, sanitized)
                             self._pending_title = None
-                    except Exception:
-                        pass
+                            title = sanitized
+                        except ValueError as e:
+                            _cprint(f"  {e} — session started untitled.")
+                            title = None
+                        except Exception:
+                            title = None
+                    elif title is not None:
+                        # sanitize_title returned empty (whitespace-only / unprintable)
+                        _cprint("  Title is empty after cleanup — session started untitled.")
+                        title = None
             # Notify memory providers that session_id rotated to a fresh
             # conversation. reset=True signals providers to flush accumulated
             # per-session state (_session_turns, _turn_counter, _document_id).

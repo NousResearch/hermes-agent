@@ -1773,6 +1773,11 @@ def _build_child_agent(
     effective_blocked: set = set()
     warnings: List[str] = []
 
+    logger.error(
+        "BUILD_CHILD_BRANCH agent_id=%r has_config=%r has_profile=%r profile_keys=%s",
+        agent_id, bool(agent_config), bool(profile),
+        list((profile or {}).keys())[:5] if profile else [],
+    )
     if agent_id and agent_config and profile:
         # ── agent_id path ─────────────────────────────────────────────
         child_toolsets = _resolve_effective_toolsets(

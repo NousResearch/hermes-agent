@@ -294,7 +294,16 @@ class PlatformConfig:
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+
+        # Known top-level fields — everything else falls into extra so that
+        # users can write e.g. `platforms.webhook.port: 9000` directly in
+        # config.yaml without having to nest it under `extra:`.
+        _KNOWN_KEYS = {"enabled", "token", "api_key", "home_channel", "reply_to_mode", "extra"}
+        extra = dict(data.get("extra", {}))
+        for key, value in data.items():
+            if key not in _KNOWN_KEYS:
+                extra.setdefault(key, value)
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),

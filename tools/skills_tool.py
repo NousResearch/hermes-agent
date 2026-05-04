@@ -973,6 +973,18 @@ def skill_view(
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
                         break
+                    # Also allow resolving by frontmatter name so entries shown
+                    # by skills_list() are always loadable via skill_view().
+                    try:
+                        raw_skill = found_skill_md.read_text(encoding="utf-8")
+                        fm, _ = _parse_frontmatter(raw_skill)
+                        fm_name = str((fm or {}).get("name", "")).strip()
+                        if fm_name and fm_name == name:
+                            skill_dir = found_skill_md.parent
+                            skill_md = found_skill_md
+                            break
+                    except Exception:
+                        pass
                 if skill_md:
                     break
 

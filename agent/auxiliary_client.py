@@ -3114,6 +3114,22 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
+        # Inherit base_url/api_key from providers.<name> when task config
+        # specifies only a provider. This avoids forcing users to duplicate
+        # credentials in every auxiliary.<task> block.
+        if cfg_provider and cfg_provider != "auto" and (not cfg_base_url or not cfg_api_key):
+            try:
+                from hermes_cli.auth import resolve_provider_credentials
+
+                inherited = resolve_provider_credentials(cfg_provider) or {}
+                if not cfg_base_url:
+                    cfg_base_url = str(inherited.get("base_url", "")).strip() or None
+                if not cfg_api_key:
+                    cfg_api_key = str(inherited.get("api_key", "")).strip() or None
+            except Exception:
+                # Keep legacy fallback behavior when provider resolution fails.
+                pass
+
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
@@ -3127,7 +3143,7 @@ def _resolve_task_provider_model(
         if cfg_base_url:
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None, resolved_api_mode
+            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 

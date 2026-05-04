@@ -400,6 +400,11 @@ _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
+# Lightpanda engine support — cached like _get_cloud_provider().
+# agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
+_cached_browser_engine: Optional[str] = None
+_browser_engine_resolved = False
+
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
@@ -487,6 +492,218 @@ def _is_local_backend() -> bool:
 
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
+
+
+def _get_browser_engine() -> str:
+    """Return the configured browser engine (``auto``, ``lightpanda``, or ``chrome``).
+
+    Reads ``config["browser"]["engine"]`` once and caches the result.
+    Falls back to the ``AGENT_BROWSER_ENGINE`` env var, then ``auto``.
+
+    ``auto`` means: don't pass ``--engine`` at all (agent-browser defaults to
+    Chrome).  ``lightpanda`` or ``chrome`` are forwarded as
+    ``--engine <value>`` to agent-browser v0.25.3+.
+
+    Lightpanda is 1.3-5.8x faster on navigation but has no graphical
+    renderer (no screenshots).
+    """
+    global _cached_browser_engine, _browser_engine_resolved
+    if _browser_engine_resolved:
+        return _cached_browser_engine
+
+    _browser_engine_resolved = True
+    _cached_browser_engine = "auto"  # safe default
+
+    # Config file takes priority
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("engine")
+        if val and str(val).strip():
+            _cached_browser_engine = str(val).strip().lower()
+    except Exception as e:
+        logger.debug("Could not read browser.engine from config: %s", e)
+
+    # Fall back to env var (only if config didn't set a value)
+    if _cached_browser_engine == "auto":
+        env_val = os.environ.get("AGENT_BROWSER_ENGINE", "").strip().lower()
+        if env_val:
+            _cached_browser_engine = env_val
+
+    # Validate: agent-browser only accepts "chrome" and "lightpanda".
+    _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
+    if _cached_browser_engine not in _VALID_ENGINES:
+        logger.warning(
+            "Unknown browser engine %r (valid: %s), falling back to 'auto'",
+            _cached_browser_engine, ", ".join(sorted(_VALID_ENGINES)),
+        )
+        _cached_browser_engine = "auto"
+
+    return _cached_browser_engine
+
+
+def _should_inject_engine(engine: str) -> bool:
+    """Return True when the engine flag should be added to agent-browser commands.
+
+    Only inject ``--engine`` for non-cloud, non-camofox local sessions where
+    the engine is explicitly set (not ``auto``).
+    """
+    if engine == "auto":
+        return False
+    if _is_camofox_mode():
+        return False
+    return _is_local_mode()
+
+
+def _needs_lightpanda_fallback(engine: str, command: str, result: Dict[str, Any]) -> bool:
+    """Check if a Lightpanda result should trigger an automatic Chrome fallback.
+
+    Returns True when:
+    - The engine is lightpanda AND
+    - The command is fallback-eligible (not close/record) AND
+    - The command failed, OR
+    - A snapshot came back empty/suspiciously short, OR
+    - A screenshot returned but is likely the Lightpanda placeholder PNG
+    """
+    if engine != "lightpanda":
+        return False
+
+    # Only retry commands where Chrome can meaningfully produce a different
+    # result. Session-management commands (close, record) are tied to the
+    # engine's daemon and can't be retried on a different engine.
+    _FALLBACK_ELIGIBLE = {"open", "snapshot", "screenshot", "eval", "click",
+                          "fill", "scroll", "back", "press", "console", "errors"}
+    if command not in _FALLBACK_ELIGIBLE:
+        return False
+
+    # Explicit failure
+    if not result.get("success"):
+        return True
+
+    data = result.get("data", {})
+
+    if command == "snapshot":
+        snap = data.get("snapshot", "")
+        # Empty or near-empty snapshots indicate Lightpanda couldn't render
+        if not snap or len(snap.strip()) < 20:
+            return True
+
+    if command == "screenshot":
+        # Lightpanda returns a placeholder PNG with its panda logo.
+        # Since LP PR #1766 resized it to 1920x1080, the placeholder is
+        # ~17 KB.  Real Chromium screenshots are typically 100 KB+.
+        path = data.get("path", "")
+        if path:
+            try:
+                size = os.path.getsize(path)
+                if size < 20480:
+                    logger.debug("Lightpanda screenshot is suspiciously small (%d bytes), "
+                                 "triggering Chrome fallback", size)
+                    return True
+            except OSError:
+                return True  # file doesn't exist or can't be read
+
+    return False
+
+
+def _chrome_fallback_screenshot(
+    task_id: str,
+    args: List[str],
+    timeout: int,
+) -> Dict[str, Any]:
+    """Take a screenshot using a temporary Chrome session.
+
+    When the active session uses Lightpanda, ``--engine chrome`` on the same
+    session has no effect — the engine is locked at daemon startup.  This
+    helper spins up a **separate** Chrome session, navigates to the same URL
+    the agent is currently viewing, takes the screenshot, then tears down the
+    temporary session.
+
+    Returns the screenshot result dict (same shape as ``_run_browser_command``).
+    """
+    import uuid
+
+    # 1. Grab the current URL from the Lightpanda session.
+    url_result = _run_browser_command(task_id, "eval", ["window.location.href"], timeout=10)
+    current_url = None
+    if url_result.get("success"):
+        current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
+    if not current_url:
+        logger.warning("Chrome fallback: could not determine current URL from LP session")
+        return {"success": False, "error": "Chrome fallback failed: could not determine current URL"}
+
+    # 2. Create a temporary Chrome session (bypasses _get_session_info's cache).
+    tmp_session = f"h_cfb_{uuid.uuid4().hex[:8]}"
+    try:
+        browser_cmd = _find_agent_browser()
+    except FileNotFoundError as e:
+        return {"success": False, "error": str(e)}
+
+    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
+
+    task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
+    os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+    browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+
+    def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
+        full = base_args + [cmd] + cmd_args
+        # Use temp-file stdout/stderr pattern (same as _run_browser_command)
+        # to avoid pipe hang from agent-browser daemon inheriting fds.
+        stdout_path = os.path.join(task_socket_dir, f"_stdout_{cmd}")
+        stderr_path = os.path.join(task_socket_dir, f"_stderr_{cmd}")
+        stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            proc = subprocess.Popen(
+                full, stdout=stdout_fd, stderr=stderr_fd,
+                stdin=subprocess.DEVNULL, env=browser_env,
+            )
+        finally:
+            os.close(stdout_fd)
+            os.close(stderr_fd)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
+        try:
+            with open(stdout_path, "r") as f:
+                stdout = f.read().strip()
+            if stdout:
+                return json.loads(stdout.split("\n")[-1])
+        except Exception as exc:
+            logger.debug("Chrome fallback tmp cmd '%s' error: %s", cmd, exc)
+        finally:
+            for p in (stdout_path, stderr_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
+
+    try:
+        # 3. Navigate Chrome to the same URL.
+        nav = _run_tmp("open", [current_url])
+        if not nav.get("success"):
+            logger.warning("Chrome fallback: navigate failed: %s", nav.get("error"))
+            return {"success": False, "error": f"Chrome fallback navigate failed: {nav.get('error')}"}
+
+        # 4. Take the screenshot.
+        result = _run_tmp("screenshot", args)
+        return result
+
+    finally:
+        # 5. Tear down the temporary Chrome session.
+        try:
+            _run_tmp("close", [])
+        except Exception:
+            pass
+        # Clean up socket directory
+        import shutil as _shutil
+        _shutil.rmtree(task_socket_dir, ignore_errors=True)
 
 
 def _auto_local_for_private_urls() -> bool:
@@ -1371,6 +1588,7 @@ def _run_browser_command(
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
+    _engine_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -1381,6 +1599,9 @@ def _run_browser_command(
         args: Additional arguments for the command
         timeout: Command timeout in seconds.  ``None`` reads
                  ``browser.command_timeout`` from config (default 30s).
+        _engine_override: Force a specific engine for this call only.  Used
+                          internally by the Lightpanda fallback to retry with
+                          Chrome without touching global state.
         
     Returns:
         Parsed JSON response from agent-browser
@@ -1403,7 +1624,8 @@ def _run_browser_command(
 
     # Local mode with no Chromium on disk: fail fast with an actionable
     # message instead of hanging for _command_timeout seconds per call.
-    if _is_local_mode() and not _chromium_installed():
+    # Skip when engine=lightpanda — LP doesn't need Chromium for navigation.
+    if _is_local_mode() and not _chromium_installed() and _get_browser_engine() != "lightpanda":
         if _running_in_docker():
             hint = (
                 "Chromium browser is missing. You're running in Docker — pull "
@@ -1442,6 +1664,11 @@ def _run_browser_command(
     else:
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
+
+    # Lightpanda engine injection (local mode only, agent-browser v0.25.3+)
+    engine = _engine_override or _get_browser_engine()
+    if _should_inject_engine(engine):
+        backend_args += ["--engine", engine]
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
@@ -1539,87 +1766,105 @@ def _run_browser_command(
             proc.wait()
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
-            return {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            # Fall through to fallback check below
+        else:
+            with open(stdout_path, "r") as f:
+                stdout = f.read()
+            with open(stderr_path, "r") as f:
+                stderr = f.read()
+            returncode = proc.returncode
 
-        with open(stdout_path, "r") as f:
-            stdout = f.read()
-        with open(stderr_path, "r") as f:
-            stderr = f.read()
-        returncode = proc.returncode
+            # Clean up temp files (best-effort)
+            for p in (stdout_path, stderr_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
-        # Clean up temp files (best-effort)
-        for p in (stdout_path, stderr_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+            # Log stderr for diagnostics — use warning level on failure so it's visible
+            if stderr and stderr.strip():
+                level = logging.WARNING if returncode != 0 else logging.DEBUG
+                logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
+            
+            stdout_text = stdout.strip()
 
-        # Log stderr for diagnostics — use warning level on failure so it's visible
-        if stderr and stderr.strip():
-            level = logging.WARNING if returncode != 0 else logging.DEBUG
-            logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
-        
-        stdout_text = stdout.strip()
+            # Empty output with rc=0 is a broken state — treat as failure rather
+            # than silently returning {"success": True, "data": {}}.
+            # Some commands (close, record) legitimately return no output.
+            if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
+                logger.warning("browser '%s' returned empty output (rc=0)", command)
+                result = {"success": False, "error": f"Browser command '{command}' returned no output"}
+            elif stdout_text:
+                try:
+                    parsed = json.loads(stdout_text)
+                    # Warn if snapshot came back empty (common sign of daemon/CDP issues)
+                    if command == "snapshot" and parsed.get("success"):
+                        snap_data = parsed.get("data", {})
+                        if not snap_data.get("snapshot") and not snap_data.get("refs"):
+                            logger.warning("snapshot returned empty content. "
+                                           "Possible stale daemon or CDP connection issue. "
+                                           "returncode=%s", returncode)
+                    result = parsed
+                except json.JSONDecodeError:
+                    raw = stdout_text[:2000]
+                    logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
+                                   command, returncode, raw[:500])
 
-        # Empty output with rc=0 is a broken state — treat as failure rather
-        # than silently returning {"success": True, "data": {}}.
-        # Some commands (close, record) legitimately return no output.
-        if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
-            logger.warning("browser '%s' returned empty output (rc=0)", command)
-            return {"success": False, "error": f"Browser command '{command}' returned no output"}
-
-        if stdout_text:
-            try:
-                parsed = json.loads(stdout_text)
-                # Warn if snapshot came back empty (common sign of daemon/CDP issues)
-                if command == "snapshot" and parsed.get("success"):
-                    snap_data = parsed.get("data", {})
-                    if not snap_data.get("snapshot") and not snap_data.get("refs"):
-                        logger.warning("snapshot returned empty content. "
-                                       "Possible stale daemon or CDP connection issue. "
-                                       "returncode=%s", returncode)
-                return parsed
-            except json.JSONDecodeError:
-                raw = stdout_text[:2000]
-                logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                               command, returncode, raw[:500])
-
-                if command == "screenshot":
-                    stderr_text = (stderr or "").strip()
-                    combined_text = "\n".join(
-                        part for part in [stdout_text, stderr_text] if part
-                    )
-                    recovered_path = _extract_screenshot_path_from_text(combined_text)
-
-                    if recovered_path and Path(recovered_path).exists():
-                        logger.info(
-                            "browser 'screenshot' recovered file from non-JSON output: %s",
-                            recovered_path,
+                    if command == "screenshot":
+                        stderr_text = (stderr or "").strip()
+                        combined_text = "\n".join(
+                            part for part in [stdout_text, stderr_text] if part
                         )
-                        return {
-                            "success": True,
-                            "data": {
-                                "path": recovered_path,
-                                "raw": raw,
-                            },
-                        }
+                        recovered_path = _extract_screenshot_path_from_text(combined_text)
 
-                return {
-                    "success": False,
-                    "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
-                }
-        
-        # Check for errors
-        if returncode != 0:
-            error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
-            logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-            return {"success": False, "error": error_msg}
-        
-        return {"success": True, "data": {}}
+                        if recovered_path and Path(recovered_path).exists():
+                            logger.info(
+                                "browser 'screenshot' recovered file from non-JSON output: %s",
+                                recovered_path,
+                            )
+                            result = {
+                                "success": True,
+                                "data": {
+                                    "path": recovered_path,
+                                    "raw": raw,
+                                },
+                            }
+                        else:
+                            result = {
+                                "success": False,
+                                "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+                            }
+                    else:
+                        result = {
+                            "success": False,
+                            "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+                        }
+            elif returncode != 0:
+                # Check for errors
+                error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
+                logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
+                result = {"success": False, "error": error_msg}
+            else:
+                result = {"success": True, "data": {}}
         
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
-        return {"success": False, "error": str(e)}
+        result = {"success": False, "error": str(e)}
+
+    # --- Lightpanda automatic Chrome fallback ---
+    # If engine is lightpanda and the result looks broken, retry with Chrome.
+    # This runs for ALL exit paths (timeout, empty, non-JSON, nonzero rc, parsed).
+    if _needs_lightpanda_fallback(engine, command, result):
+        logger.info("Lightpanda fallback: retrying '%s' with Chrome (task=%s)", command, task_id)
+        # For screenshots, use the dedicated Chrome fallback helper
+        # (spins up a separate Chrome session to the same URL).
+        if command == "screenshot":
+            return _chrome_fallback_screenshot(task_id, args or [], timeout)
+        # For other commands, re-run with engine forced to "auto" (Chrome).
+        return _run_browser_command(task_id, command, args, timeout, _engine_override="auto")
+
+    return result
 
 
 def _extract_relevant_content(
@@ -2399,6 +2644,49 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     import base64
     import uuid as uuid_mod
     effective_task_id = _last_session_key(task_id or "default")
+
+    # Lightpanda has no graphical renderer — pre-route screenshots to Chrome
+    # via the fallback helper instead of letting the normal path fail with a
+    # CDP error or return a placeholder PNG.
+    engine = _get_browser_engine()
+    _lp_prerouted = False
+    if engine == "lightpanda" and _should_inject_engine(engine):
+        logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
+        screenshot_args = []
+        if annotate:
+            screenshot_args.append("--annotate")
+        fb_result = _chrome_fallback_screenshot(
+            effective_task_id, screenshot_args, _get_command_timeout(),
+        )
+        if fb_result.get("success"):
+            # Proceed with the Chrome screenshot for vision analysis
+            fb_path = fb_result.get("data", {}).get("path", "")
+            if fb_path and os.path.exists(fb_path):
+                try:
+                    with open(fb_path, "rb") as f:
+                        image_data = base64.b64encode(f.read()).decode("utf-8")
+                    analysis = call_llm(
+                        f"Analyze this browser screenshot and answer: {question}",
+                        images=[{"data": image_data, "media_type": "image/png"}],
+                        task="vision",
+                    )
+                    from hermes_constants import get_hermes_dir
+                    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+                    screenshots_dir.mkdir(parents=True, exist_ok=True)
+                    # Copy to persistent location
+                    import shutil as _shutil_vision
+                    persistent_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
+                    _shutil_vision.copy2(fb_path, persistent_path)
+                    return json.dumps({
+                        "analysis": analysis,
+                        "screenshot_path": str(persistent_path),
+                    })
+                except Exception as e:
+                    logger.warning("Lightpanda Chrome fallback vision failed: %s", e)
+                    # Fall through to normal path as last resort
+        # Mark that we already tried the Chrome fallback, so the normal
+        # _run_browser_command path doesn't trigger it a second time.
+        _lp_prerouted = True
     
     # Save screenshot to persistent location so it can be shared with users
     from hermes_constants import get_hermes_dir
@@ -2421,6 +2709,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             effective_task_id, 
             "screenshot", 
             screenshot_args,
+            # If the Lightpanda pre-route already failed, force Chrome so
+            # _run_browser_command doesn't trigger a redundant LP fallback.
+            _engine_override="auto" if _lp_prerouted else None,
         )
         
         if not result.get("success"):
@@ -2738,12 +3029,15 @@ def cleanup_all_browsers() -> None:
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
+    global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
     _cached_chromium_installed = None
+    _cached_browser_engine = None
+    _browser_engine_resolved = False
 
 # ============================================================================
 # Requirements Check

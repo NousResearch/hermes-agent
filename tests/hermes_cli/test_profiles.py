@@ -8,6 +8,8 @@ and shell completion generation.
 import json
 import io
 import os
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -914,6 +916,38 @@ class TestInternalHelpers:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_active_profile_name() == "orchestrator"
+
+    def test_main_profile_override_reads_active_profile_from_docker_root(self, tmp_path):
+        """Docker sets HERMES_HOME to the root, so sticky active_profile must still apply."""
+        docker_home = tmp_path / "opt" / "data"
+        profile = docker_home / "profiles" / "orchestrator"
+        profile.mkdir(parents=True)
+        (docker_home / "active_profile").write_text("orchestrator\n")
+
+        env = os.environ.copy()
+        env["HOME"] = str(tmp_path)
+        env["HERMES_HOME"] = str(docker_home)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os, sys; "
+                    "sys.argv = ['hermes', 'profile', 'list']; "
+                    "import hermes_cli.main; "
+                    "print(os.environ['HERMES_HOME'])"
+                ),
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().splitlines()[-1] == str(profile)
 
 
 # ===================================================================

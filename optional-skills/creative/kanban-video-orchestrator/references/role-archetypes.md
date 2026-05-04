@@ -82,14 +82,14 @@ film and music video. Often pairs with a diagramming tool.
 Designs the visual language: framing, color, motion, transitions. Reviews
 generator output for visual consistency. Hands off per-scene `VISUAL_SPEC.md`.
 
-- **Toolsets:** kanban, terminal, file
+- **Toolsets:** kanban, terminal, file, video, vision
 - **Skills:** `kanban-worker` plus the visual skill that matches the project
   (e.g., `ascii-video` for ASCII work, `manim-video` for explainers,
   `touchdesigner-mcp` for real-time visuals, etc.)
 - **Outputs:** `scenes/scene-NN/VISUAL_SPEC.md`, review comments on renderer
   tasks
-- **Reviews via:** any media-analysis approach (Gemini multimodal, manual
-  inspection of clip thumbnails, ffprobe summaries)
+- **Reviews via:** `video_analyze` (sends full clip to multimodal LLM for
+  native review), `vision_analyze` for spot-checking frames, ffprobe summaries
 
 ## Production roles
 
@@ -247,10 +247,10 @@ specifically on what's off (pacing, sync, brand alignment, technical
 quality). Distinct from the cinematographer (who reviews visuals during
 production) and the editor (who reviews for assembly).
 
-- **Toolsets:** kanban, terminal, file
+- **Toolsets:** kanban, terminal, file, video, vision
 - **Skills:** `kanban-worker`
-- **External tools:** any media-analysis approach (Gemini multimodal,
-  ffprobe, manual frame extraction)
+- **Review tools:** `video_analyze` (native clip review via multimodal LLM),
+  `vision_analyze` (frame/thumbnail review), ffprobe
 - **Outputs:** `review-notes.md`, comments on tasks
 
 ### brand-cop

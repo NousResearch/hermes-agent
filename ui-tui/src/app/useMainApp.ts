@@ -17,6 +17,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
+import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { isMac } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -244,7 +245,8 @@ export function useMainApp(gw: GatewayClient) {
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
   const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
   const heightCache = useMemo(() => {
     let cache = heightCachesRef.current.get(heightCacheKey)
@@ -266,9 +268,10 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
-        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
+        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS,
+        userPrompt: ui.theme.brand.prompt
       }),
-    [cols, detailsVisible, ui.compact, virtualRows]
+    [cols, detailsVisible, ui.compact, ui.theme.brand.prompt, virtualRows]
   )
 
   const syncHeightCache = useCallback(

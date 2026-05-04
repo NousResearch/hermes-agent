@@ -286,6 +286,30 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
 
+## No-agent mode (script-only jobs)
+
+For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:
+
+```bash
+hermes cron create "every 5m" \
+  --no-agent \
+  --script memory-watchdog.sh \
+  --deliver telegram \
+  --name "memory-watchdog"
+```
+
+Semantics:
+
+- Script stdout (trimmed) → delivered verbatim as the message.
+- **Empty stdout → silent tick**, no delivery. This is the watchdog pattern: "only say something when something is wrong".
+- Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
+- `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
+- No tokens, no model, no provider fallback — the job never touches the inference layer.
+
+`.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
+
+See the [Script-Only Cron Jobs guide](/docs/guides/cron-script-only) for worked examples.
+
 ## Provider recovery
 
 Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:

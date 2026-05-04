@@ -420,7 +420,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
 
 
 def create_job(
-    prompt: str,
+    prompt: Optional[str],
     schedule: str,
     name: Optional[str] = None,
     repeat: Optional[int] = None,
@@ -435,12 +435,14 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
 
     Args:
-        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set)
+        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set).
+                Ignored when ``no_agent=True`` except as an optional name hint.
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
@@ -451,21 +453,33 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
-        script: Optional path to a Python script whose stdout is injected into the
-                prompt each run.  The script runs before the agent turn, and its output
-                is prepended as context.  Useful for data collection / change detection.
+        script: Optional path to a script whose stdout feeds the job. With
+                ``no_agent=True`` the script IS the job — its stdout is
+                delivered verbatim. Without ``no_agent``, its stdout is
+                injected into the agent's prompt as context (data-collection /
+                change-detection pattern). Paths resolve under
+                ~/.hermes/scripts/; ``.sh`` / ``.bash`` files run via bash,
+                anything else via Python.
         context_from: Optional job ID (or list of job IDs) whose most recent output
                       is injected into the prompt as context before each run.
                       Useful for chaining cron jobs: job A finds data, job B processes it.
         enabled_toolsets: Optional list of toolset names to restrict the agent to.
                           When set, only tools from these toolsets are loaded, reducing
                           token overhead. When omitted, all default tools are loaded.
+                          Ignored when ``no_agent=True``.
         workdir: Optional absolute path.  When set, the job runs as if launched
                 from that directory: AGENTS.md / CLAUDE.md / .cursorrules from
                 that directory are injected into the system prompt, and the
                 terminal/file/code_exec tools use it as their working directory
                 (via TERMINAL_CWD).  When unset, the old behaviour is preserved
                 (no context files injected, tools use the scheduler's cwd).
+                With ``no_agent=True``, ``workdir`` is still applied as the
+                script's cwd so relative paths inside the script behave
+                predictably.
+        no_agent: When True, skip the agent entirely — run ``script`` on schedule
+                and deliver its stdout directly. Empty stdout = silent (no
+                delivery). Requires ``script`` to be set. Ideal for classic
+                watchdogs and periodic alerts that don't need LLM reasoning.
 
     Returns:
         The created job dict
@@ -499,6 +513,16 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    normalized_no_agent = bool(no_agent)
+
+    # no_agent jobs are meaningless without a script — the script IS the job.
+    # Surface this as a clear ValueError at create time so bad configs never
+    # reach the scheduler.
+    if normalized_no_agent and not normalized_script:
+        raise ValueError(
+            "no_agent=True requires a script — with no agent and no script "
+            "there is nothing for the job to run."
+        )
 
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
@@ -508,7 +532,7 @@ def create_job(
     else:
         context_from = None
 
-    label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
+    label_source = (prompt or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -519,6 +543,7 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "no_agent": normalized_no_agent,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),

@@ -1826,6 +1826,49 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
+
+
+
+class TestPluginAPIAuth:
+    """Tests that plugin API routes require the session token (issue #19533)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        """Create a TestClient without the session token header."""
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_plugin_route_requires_auth(self):
+        """Plugin API routes should return 401 without a valid session token."""
+        # Use a known plugin route (kanban board)
+        resp = self.client.get("/api/plugins/kanban/board")
+        assert resp.status_code == 401
+
+    def test_plugin_route_allows_auth(self):
+        """Plugin API routes should work with a valid session token."""
+        # This test verifies the fix doesn't break authenticated access.
+        # The kanban plugin may not be loaded in the test environment,
+        # so we accept 200 (plugin loaded) or 404 (plugin not mounted).
+        resp = self.auth_client.get("/api/plugins/kanban/board")
+        assert resp.status_code in (200, 404)
+
+    def test_plugin_post_requires_auth(self):
+        """Plugin POST routes should return 401 without a valid session token."""
+        resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})
+        assert resp.status_code == 401
+
 class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""

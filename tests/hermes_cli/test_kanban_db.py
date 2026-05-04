@@ -23,6 +23,26 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+
+
+def test_kanban_paths_are_shared_from_profile_home(tmp_path, monkeypatch):
+    """Named profiles must see the shared root Kanban board, not a private one.
+
+    Worker processes are launched with `hermes -p <assignee>`, which sets
+    HERMES_HOME to `<root>/profiles/<assignee>` before imports. The Kanban
+    board is the cross-profile coordination primitive, so DB/log/workspace paths
+    must resolve back to `<root>`.
+    """
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "kurt"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    assert kb.kanban_db_path() == root / "kanban.db"
+    assert kb.workspaces_root() == root / "kanban" / "workspaces"
+    assert kb.worker_log_path("t_demo") == root / "kanban" / "logs" / "t_demo.log"
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

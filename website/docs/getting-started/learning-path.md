@@ -80,15 +80,18 @@ Cron jobs let Hermes Agent run tasks on a schedule — daily summaries, periodic
 
 Extend Hermes Agent with your own tools and reusable skill packages.
 
-1. [Tools Overview](/docs/user-guide/features/tools)
-2. [Skills Overview](/docs/user-guide/features/skills)
-3. [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-4. [Architecture](/docs/developer-guide/architecture)
-5. [Adding Tools](/docs/developer-guide/adding-tools)
-6. [Creating Skills](/docs/developer-guide/creating-skills)
+1. [Plugins](/docs/user-guide/features/plugins)
+2. [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin)
+3. [Tools Overview](/docs/user-guide/features/tools)
+4. [Skills Overview](/docs/user-guide/features/skills)
+5. [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
+6. [Architecture](/docs/developer-guide/architecture)
+7. [Adding Tools](/docs/developer-guide/adding-tools)
+8. [Creating Skills](/docs/developer-guide/creating-skills)
 
 :::tip
-Tools are individual functions the agent can call. Skills are bundles of tools, prompts, and configuration packaged together. Start with tools, graduate to skills.
+For most custom tool creation, start with plugins. The [Adding Tools](/docs/developer-guide/adding-tools)
+page is for built-in Hermes core development, not the usual user/custom-tool path.
 :::
 
 ### "I want to train models"

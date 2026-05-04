@@ -6,7 +6,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
-  (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
+  (regexes for bridge ghosts), MATRIX_HOME_ROOM (room ID, MXID or alias for cron delivery,
+  with an optional /<event_id> thread suffix), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
@@ -1485,6 +1486,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
+        chat_id = await self._resolve_send_target(chat_id)
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
@@ -1865,6 +1867,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_voice: bool = False, voice_metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if len(data) > self._max_media_bytes:
             return self._media_too_large(len(data))
+        room_id = await self._resolve_send_target(room_id)
         upload_data = data
         encrypted_file = None
         if await self._room_needs_encrypted_upload(room_id):
@@ -2517,6 +2520,36 @@ class MatrixAdapter(BasePlatformAdapter):
                     await self._client.leave_room(RoomID(room_id))
                     logger.info("Matrix: declined dead invite to %s", room_id)
             return False
+
+    async def _resolve_send_target(self, chat_id: str) -> str:
+        """Resolve aliases to room IDs and join the resolved room before sending.
+
+        The Client-Server send endpoint accepts room IDs. On lookup failure,
+        return the original target so the send reports the homeserver error.
+        """
+        if not chat_id:
+            return chat_id
+        target = chat_id.split("/", 1)[0]
+        if not target.startswith("#"):
+            return chat_id
+        try:
+            info = await self._client.resolve_room_alias(target)
+            room_id = str(info.room_id) if info and info.room_id else ""
+        except Exception as exc:
+            logger.warning("Matrix: failed to resolve alias %s: %s", target, exc)
+            return chat_id
+        if not room_id:
+            logger.warning(
+                "Matrix: alias %s did not resolve to a room ID; the alias "
+                "must be published as a Local Address on the target room. "
+                "Either add it in Element (Room Settings, General, Local "
+                "Addresses) or target by room ID instead.",
+                target,
+            )
+            return chat_id
+        if room_id not in self._joined_rooms:
+            await self._join_room_by_id(room_id)
+        return room_id
 
     def _schedule_invite_join(self, room_id: str, *, is_direct: bool = False, inviter: str = "") -> None:
         """Schedule an invite join without blocking sync or gateway readiness."""
@@ -3442,6 +3475,46 @@ class MatrixAdapter(BasePlatformAdapter):
         return result
 
 
+async def _resolve_matrix_room_alias(homeserver: str, token: str, alias: str):
+    """Resolve a room alias to a room ID, or return a lookup error."""
+    try:
+        import aiohttp
+    except ImportError:
+        return None, "aiohttp not installed. Run: pip install aiohttp"
+    from urllib.parse import quote
+    encoded_alias = quote(alias, safe="")
+    url = f"{homeserver}/_matrix/client/v3/directory/room/{encoded_alias}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async def _lookup():
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return None, f"alias resolution failed ({resp.status}): {body}"
+                    return await resp.json(), None
+
+            data, err = await asyncio.wait_for(_lookup(), timeout=15)
+        if err:
+            return None, err
+        room_id = data.get("room_id")
+        if not room_id:
+            return None, f"alias resolution returned no room_id for {alias}"
+        return room_id, None
+    except Exception as e:
+        return None, f"alias resolution failed: {e}"
+
+
+async def _resolve_matrix_room_alias_target(homeserver: str, token: str, chat_id: str):
+    """Return a concrete room ID for alias targets, or the original target."""
+    if not chat_id.startswith("#"):
+        return chat_id, None
+    resolved, err = await _resolve_matrix_room_alias(homeserver, token, chat_id)
+    if err:
+        return chat_id, f"Matrix alias '{chat_id}': {err}"
+    return resolved, None
+
+
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery via the Client-Server API (cron without gateway)."""
     extra = getattr(pconfig, "extra", {}) or {}
@@ -3456,6 +3529,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
+        chat_id, err = await _resolve_matrix_room_alias_target(homeserver, token, chat_id)
+        if err:
+            return send_error(err)
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
         url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
@@ -3468,6 +3544,12 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             payload["format"] = "org.matrix.custom.html"
             payload["formatted_body"] = _tokens_to_mx_maths(
                 re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
+        if thread_id:
+            payload["m.relates_to"] = {
+                "rel_type": "m.thread",
+                "event_id": thread_id,
+                "is_falling_back": True,
+            }
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:

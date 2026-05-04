@@ -542,6 +542,21 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     except ImportError:
         return {"error": "Matrix dependencies not installed. Run: "
                 f"{install_hint('matrix')}"}
+    if chat_id.startswith("#"):
+        from agent.secret_scope import get_secret
+        from plugins.platforms.matrix.adapter import _resolve_matrix_room_alias_target
+
+        homeserver = (
+            (getattr(pconfig, "extra", {}) or {}).get("homeserver")
+            or get_secret("MATRIX_HOMESERVER", "") or ""
+        ).rstrip("/")
+        token = getattr(pconfig, "token", "") or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
+        if homeserver and token:
+            resolved, err = await _resolve_matrix_room_alias_target(homeserver, token, chat_id)
+            if err:
+                return _error(err)
+            chat_id = resolved
+
     adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():

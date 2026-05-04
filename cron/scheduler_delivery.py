@@ -596,10 +596,18 @@ def _origin_delivery_thread(origin: dict):
 
 def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] = None) -> dict:
     """Target dict for a platform's configured home channel (+ optional mirror provenance)."""
+    from tools.send_message_targets import _parse_target_ref
+
+    parsed_chat_id, thread_id, is_explicit = _parse_target_ref(platform_name.lower(), chat_id)
+    if is_explicit and parsed_chat_id:
+        chat_id = parsed_chat_id
+    if thread_id is None:
+        thread_id = _get_home_target_thread_id(platform_name)
+
     target = {
         "platform": platform_name,
         "chat_id": chat_id,
-        "thread_id": _get_home_target_thread_id(platform_name)}
+        "thread_id": thread_id}
     if resolved_from:
         target["_resolved_from"] = resolved_from
     return target

@@ -337,6 +337,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "dingtalk" and target_ref.startswith("cid"):
+        return target_ref, None, True
     if platform_name == "yuanbao":
         match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
         if match:

@@ -29,11 +29,15 @@ Configuration in config.yaml:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
+import struct
+import tempfile
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -1211,6 +1215,9 @@ class DingTalkAdapter(BasePlatformAdapter):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
 
+        # picture_url fallback for image downloads (when download API returns 500)
+        picture_url = getattr(message, "picture_url", None)
+
         if not codes_to_resolve:
             return
 
@@ -1220,49 +1227,155 @@ class DingTalkAdapter(BasePlatformAdapter):
             code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
             if code:
                 tasks.append(
-                    self._fetch_download_url(code, robot_code, token, obj, key)
+                    self._fetch_download_url(code, robot_code, token, obj, key, picture_url=picture_url)
                 )
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _fetch_download_url(
-        self, code: str, robot_code: str, token: str, obj, key: str
-    ) -> None:
-        """Fetch download URL for a single code using the robot SDK."""
-        if not self._robot_sdk:
+        self, code: str, robot_code: str, token: str, obj, key: str,
+        picture_url: Optional[str] = None,
+    ) -> Optional[str]:
+        """Fetch download URL for a single code via direct DingTalk Open API.
+
+        Uses the DingTalk robot message file download endpoint directly with
+        httpx, avoiding the alibabacloud_dingtalk SDK dependency.
+
+        If the API returns a 500 error and picture_url is provided, falls back
+        to using the picture_url directly (temporary OSS URL from the message).
+
+        Returns the download URL on success, None on failure.
+        """
+        if not HTTPX_AVAILABLE or not self._http_client:
             logger.warning(
-                "[%s] Robot SDK not initialized, cannot resolve media code",
-                self.name,
+                "[%s] httpx not available, cannot resolve media code", self.name
             )
-            return
+            return None
+
+        # Helper to store URL back into the object
+        def store_url(url: str) -> None:
+            if hasattr(obj, key):
+                setattr(obj, key, url)
+            elif isinstance(obj, dict):
+                obj[key] = url
+
         try:
-            request = dingtalk_robot_models.RobotMessageFileDownloadRequest(
-                download_code=code,
-                robot_code=robot_code,
+            # DingTalk Open API: get file download URL
+            # Endpoint: https://api.dingtalk.com/v1.0/robot/messageFiles/download
+            # Note: the "getFileDownloadUrl" path is wrong (404); the correct one is "messageFiles/download"
+            endpoint = "https://api.dingtalk.com/v1.0/robot/messageFiles/download"
+            headers = {
+                "Content-Type": "application/json",
+                "x-acs-dingtalk-access-token": token,
+            }
+            payload = {
+                "downloadCode": code,
+                "robotCode": robot_code,
+            }
+            response = await self._http_client.post(endpoint, json=payload, headers=headers, timeout=15.0)
+            response.raise_for_status()
+            result = response.json()
+            url = result.get("data", {}).get("downloadUrl") or result.get("downloadUrl")
+            if url:
+                store_url(url)
+                return url
+            logger.warning(
+                "[%s] Failed to get download URL: empty response for code %s, body=%s",
+                self.name, code, str(result)[:200],
             )
-            headers = dingtalk_robot_models.RobotMessageFileDownloadHeaders(
-                x_acs_dingtalk_access_token=token,
-            )
-            runtime = tea_util_models.RuntimeOptions()
-            response = await self._robot_sdk.robot_message_file_download_with_options_async(
-                request, headers, runtime
-            )
-            body = response.body if response else None
-            if body:
-                url = getattr(body, "download_url", None)
-                if url:
-                    if hasattr(obj, key):
-                        setattr(obj, key, url)
-                    elif isinstance(obj, dict):
-                        obj[key] = url
-            else:
-                logger.warning(
-                    "[%s] Failed to download media: empty response for code %s",
-                    self.name,
-                    code,
-                )
         except Exception as e:
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+
+        # Fallback: if API failed and we have a pictureUrl, try downloading directly
+        # This handles the case where DingTalk's download API returns 500 but the
+        # temporary OSS URL from the message payload is still valid.
+        if picture_url:
+            try:
+                download_response = await self._http_client.get(picture_url, timeout=30.0)
+                if download_response.status_code == 200:
+                    ext = self._guess_extension_from_url(picture_url) or ".jpg"
+                    with tempfile.NamedTemporaryFile(
+                        prefix="dingtalk_picture_", suffix=ext, delete=False
+                    ) as tmp:
+                        tmp.write(await download_response.aread())
+                        local_path = tmp.name
+                    logger.info("[%s] Downloaded picture via pictureUrl fallback to: %s", self.name, local_path)
+                    store_url(local_path)
+                    return local_path
+                else:
+                    logger.warning(
+                        "[%s] pictureUrl fallback also failed (HTTP %d) for code %s",
+                        self.name, download_response.status_code, code,
+                    )
+            except Exception as fallback_err:
+                logger.warning(
+                    "[%s] pictureUrl fallback failed with exception: %s",
+                    self.name, fallback_err,
+                )
+
+        return None
+
+    @staticmethod
+    def _get_video_duration_ms(video_path: str) -> Optional[int]:
+        """Parse video duration from MP4 moov/mvhd atom.
+
+        Returns duration in milliseconds, or None if it cannot be determined.
+        Does not require external libraries — reads the MP4 container directly.
+        """
+        try:
+            with open(video_path, "rb") as f:
+                data = f.read()
+            # Find moov atom
+            moov_pos = data.find(b"moov")
+            if moov_pos == -1:
+                return None
+            moov_data = data[moov_pos:]
+            # Find mvhd inside moov
+            mvhd_pos = moov_data.find(b"mvhd")
+            if mvhd_pos == -1:
+                return None
+            mvhd_payload = moov_data[mvhd_pos + 4:]  # skip size(4) + 'mvhd'(4)
+            version = mvhd_payload[0]
+            if version == 0:
+                # 32-bit: timescale at offset 12, duration at offset 16
+                timescale = struct.unpack(">I", mvhd_payload[12:16])[0]
+                duration = struct.unpack(">I", mvhd_payload[16:20])[0]
+            else:
+                # 64-bit: timescale at offset 20, duration at offset 24
+                timescale = struct.unpack(">I", mvhd_payload[20:24])[0]
+                duration = struct.unpack(">Q", mvhd_payload[24:32])[0]
+            if timescale == 0:
+                return None
+            return int(duration / timescale * 1000)
+        except Exception:
+            return None
+
+    def _guess_extension_from_url(self, url: str) -> Optional[str]:
+        """Guess file extension from URL path."""
+        path = url.split("?")[0]
+        _, ext = os.path.splitext(path)
+        ext_map = {
+            ".jpg": ".jpg",
+            ".jpeg": ".jpg",
+            ".png": ".png",
+            ".gif": ".gif",
+            ".mp4": ".mp4",
+            ".mp3": ".mp3",
+            ".wav": ".wav",
+            ".pdf": ".pdf",
+            ".doc": ".doc",
+            ".docx": ".docx",
+            ".xls": ".xls",
+            ".xlsx": ".xlsx",
+            ".ppt": ".ppt",
+            ".pptx": ".pptx",
+        }
+        normalized = ext_map.get(ext.lower())
+        if normalized:
+            return normalized
+        if ext:
+            return ext.lower()
+        return None
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:
@@ -1352,6 +1465,32 @@ class _IncomingHandler(
                 )
                 if raw_flag:
                     chatbot_msg.is_in_at_list = True
+
+            # Preserve pictureUrl from raw content for image fallback download.
+            # The DingTalk callback includes a temporary OSS URL (pictureUrl) for
+            # images which can be used when the download API returns 500.
+            # pictureUrl appears in both msgtype=picture AND msgtype=richText (image in rich text).
+            picture_url = None
+            if isinstance(data, dict):
+                msg_type = data.get("msgtype")
+                if msg_type == "picture":
+                    raw_content = data.get("content")
+                    if isinstance(raw_content, dict):
+                        picture_url = raw_content.get("pictureUrl")
+                elif msg_type == "richText":
+                    # Images embedded in rich text are in content.richText[].pictureUrl
+                    raw_content = data.get("content")
+                    if isinstance(raw_content, dict):
+                        rich_list = raw_content.get("richText") or []
+                        if isinstance(rich_list, list):
+                            for item in rich_list:
+                                if isinstance(item, dict) and item.get("type") == "image":
+                                    picture_url = item.get("pictureUrl")
+                                    if picture_url:
+                                        break
+            if picture_url:
+                logger.info("[%s] Extracted pictureUrl for fallback: %.50s...", self.name, picture_url)
+                chatbot_msg.picture_url = picture_url
 
             msg_id = getattr(chatbot_msg, "message_id", None) or ""
             conversation_id = getattr(chatbot_msg, "conversation_id", None) or ""

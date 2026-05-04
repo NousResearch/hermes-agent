@@ -10,6 +10,15 @@ description: "Durable SQLite-backed task board for coordinating multiple Hermes 
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
 
+### Two surfaces: the model talks through tools, you talk through the CLI
+
+The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
+
+- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`. The dispatcher spawns each worker with these tools already in its schema; the model reads its task and hands work off by calling them directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
+
+Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.
@@ -57,23 +66,27 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 
 ## Quick start
 
+The commands below are **you** (the human) setting up the board and creating tasks. Once a task is assigned, the dispatcher spawns the assigned profile as a worker, and from there **the model drives the task through `kanban_*` tool calls, not CLI commands** — see [How workers interact with the board](#how-workers-interact-with-the-board).
+
 ```bash
-# 1. Create the board
+# 1. Create the board (you)
 hermes kanban init
 
 # 2. Start the gateway (hosts the embedded dispatcher)
 hermes gateway start
 
-# 3. Create a task
+# 3. Create a task (you — or an orchestrator agent via kanban_create)
 hermes kanban create "research AI funding landscape" --assignee researcher
 
-# 4. Watch activity live
+# 4. Watch activity live (you)
 hermes kanban watch
 
-# 5. See the board
+# 5. See the board (you)
 hermes kanban list
 hermes kanban stats
 ```
+
+When the dispatcher picks up `t_abcd` and spawns the `researcher` profile, the very first thing that worker's model does is call `kanban_show()` to read its task. It doesn't run `hermes kanban show t_abcd`.
 
 ### Gateway-embedded dispatcher (default)
 
@@ -127,22 +140,61 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 
 ## How workers interact with the board
 
-When the dispatcher spawns a worker, it sets `HERMES_KANBAN_TASK` in the child's env. That env var is the gate for a dedicated **kanban toolset** — 7 tools that the normal agent schema never sees:
+**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema — seven tools that read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
 
-| Tool | Purpose |
-|---|---|
-| `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full `worker_context`). Defaults to the env's task id. |
-| `kanban_complete` | Finish with `summary` + `metadata` structured handoff. |
-| `kanban_block` | Escalate for human input. |
-| `kanban_heartbeat` | Signal liveness during long operations. |
-| `kanban_comment` | Append to the task thread. |
-| `kanban_create` | (Orchestrators) fan out into child tasks. |
-| `kanban_link` | (Orchestrators) add dependency edges after the fact. |
+| Tool | Purpose | Required params |
+|---|---|---|
+| `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
+| `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
+| `kanban_block` | Escalate for human input with a `reason`. | `reason` |
+| `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
+| `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
+| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
+| `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
 
-**Why tools and not just shelling to `hermes kanban`?** Three reasons:
+A typical worker turn looks like:
 
-1. **Backend portability.** Workers whose terminal tool points at a remote backend (Docker / Modal / Singularity / SSH) would run `hermes kanban complete` inside the container where `hermes` isn't installed and the DB isn't mounted. The kanban tools run in the agent's own Python process and always reach `~/.hermes/kanban.db` regardless of terminal backend.
-2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it.
+```
+# Model's tool calls, in order:
+kanban_show()                                     # no args — uses HERMES_KANBAN_TASK
+# (model reads the returned worker_context, does the work via terminal/file tools)
+kanban_heartbeat(note="halfway through — 4 of 8 files transformed")
+# (more work)
+kanban_complete(
+    summary="migrated limiter.py to token-bucket; added 14 tests, all pass",
+    metadata={"changed_files": ["limiter.py", "tests/test_limiter.py"], "tests_run": 14},
+)
+```
+
+An **orchestrator** worker fans out instead:
+
+```
+kanban_show()
+kanban_create(
+    title="research ICP funding 2024-2026",
+    assignee="researcher-a",
+    body="focus on seed + series A, North America, AI-adjacent",
+)
+# → returns {"task_id": "t_r1", ...}
+kanban_create(title="research ICP funding — EU angle", assignee="researcher-b", body="…")
+# → returns {"task_id": "t_r2", ...}
+kanban_create(
+    title="synthesize findings into launch brief",
+    assignee="writer",
+    parents=["t_r1", "t_r2"],                     # promotes to ready when both complete
+    body="one-pager, 300 words, neutral tone",
+)
+kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
+```
+
+The three "(Orchestrators)" tools — `kanban_create`, `kanban_link`, and `kanban_comment` on foreign tasks — are available to every worker; the convention (enforced by the `kanban-orchestrator` skill) is that worker profiles don't fan out and orchestrator profiles don't execute.
+
+### Why tools instead of shelling to `hermes kanban`
+
+Three reasons:
+
+1. **Backend portability.** Workers whose terminal tool points at a remote backend (Docker / Modal / Singularity / SSH) would run `hermes kanban complete` *inside* the container, where `hermes` isn't installed and `~/.hermes/kanban.db` isn't mounted. The kanban tools run in the agent's own Python process and always reach `~/.hermes/kanban.db` regardless of terminal backend.
+2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it entirely.
 3. **Better errors.** Tool results are structured JSON the model can reason about, not stderr strings it has to parse.
 
 **Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema. The `check_fn` on each tool only returns True when `HERMES_KANBAN_TASK` is set, which only happens when the dispatcher spawned this process. No tool bloat for users who never touch kanban.
@@ -151,14 +203,14 @@ The `kanban-worker` and `kanban-orchestrator` skills teach the model which tool 
 
 ### The worker skill
 
-Any profile that should be able to work kanban tasks must load the `kanban-worker` skill. It teaches the worker the full lifecycle:
+Any profile that should be able to work kanban tasks must load the `kanban-worker` skill. It teaches the worker the full lifecycle in **tool calls**, not CLI commands:
 
 1. On spawn, call `kanban_show()` to read title + body + parent handoffs + prior attempts + full comment thread.
-2. `cd $HERMES_KANBAN_WORKSPACE` and do the work there.
+2. `cd $HERMES_KANBAN_WORKSPACE` (via the terminal tool) and do the work there.
 3. Call `kanban_heartbeat(note="...")` every few minutes during long operations.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
 
-Load it with:
+Load it with (this one is **you**, installing into a profile — not a tool call):
 
 ```bash
 hermes skills install devops/kanban-worker
@@ -168,22 +220,9 @@ The dispatcher also auto-passes `--skills kanban-worker` when spawning every wor
 
 ### Pinning extra skills to a specific task
 
-Sometimes a single task needs specialist context the assignee profile doesn't carry by default — a translation job that needs the `translation` skill, a review task that needs `github-code-review`, a security audit that needs `security-pr-audit`. Rather than editing the assignee's profile every time, attach the skills directly to the task:
+Sometimes a single task needs specialist context the assignee profile doesn't carry by default — a translation job that needs the `translation` skill, a review task that needs `github-code-review`, a security audit that needs `security-pr-audit`. Rather than editing the assignee's profile every time, attach the skills directly to the task.
 
-```bash
-# CLI — repeat --skill for each extra skill
-hermes kanban create "translate README to Japanese" \
-    --assignee linguist \
-    --skill translation
-
-# Multiple skills
-hermes kanban create "audit auth flow" \
-    --assignee reviewer \
-    --skill security-pr-audit \
-    --skill github-code-review
-```
-
-From the dashboard's inline create form, type the skills comma-separated into the **skills** field. From another agent (orchestrator pattern), use `kanban_create(skills=[...])`:
+**From an orchestrator agent** (the usual case — one agent routing work to another), use the `kanban_create` tool's `skills` array:
 
 ```
 kanban_create(
@@ -191,13 +230,53 @@ kanban_create(
     assignee="linguist",
     skills=["translation"],
 )
+
+kanban_create(
+    title="audit auth flow",
+    assignee="reviewer",
+    skills=["security-pr-audit", "github-code-review"],
+)
 ```
+
+**From a human (CLI / slash command)**, repeat `--skill` for each one:
+
+```bash
+hermes kanban create "translate README to Japanese" \
+    --assignee linguist \
+    --skill translation
+
+hermes kanban create "audit auth flow" \
+    --assignee reviewer \
+    --skill security-pr-audit \
+    --skill github-code-review
+```
+
+**From the dashboard**, type the skills comma-separated into the **skills** field of the inline create form.
 
 These skills are **additive** to the built-in `kanban-worker` — the dispatcher emits one `--skills <name>` flag for each (and for the built-in), so the worker spawns with all of them loaded. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
 ### The orchestrator skill
 
-A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to a specialist, and steps back. The `kanban-orchestrator` skill encodes this: anti-temptation rules, a standard specialist roster (`researcher`, `writer`, `analyst`, `backend-eng`, `reviewer`, `ops`), and a decomposition playbook.
+A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to a specialist, and steps back. The `kanban-orchestrator` skill encodes this as tool-call patterns: anti-temptation rules, a standard specialist roster (`researcher`, `writer`, `analyst`, `backend-eng`, `reviewer`, `ops`), and a decomposition playbook keyed on `kanban_create` / `kanban_link` / `kanban_comment`.
+
+A canonical orchestrator turn (two parallel researchers handing off to a writer):
+
+```
+# Goal from user: "draft a launch post on the ICP funding landscape"
+kanban_create(title="research ICP funding, NA angle",  assignee="researcher-a", body="…")  # → t_r1
+kanban_create(title="research ICP funding, EU angle",  assignee="researcher-b", body="…")  # → t_r2
+kanban_create(
+    title="synthesize ICP funding research into launch post draft",
+    assignee="writer",
+    parents=["t_r1", "t_r2"],        # promoted to 'ready' when both researchers complete
+    body="one-pager, neutral tone, cite sources inline",
+)                                     # → t_w1
+# Optional: add cross-cutting deps discovered later without re-creating tasks
+kanban_link(parent_id="t_r1", child_id="t_followup")
+kanban_complete(
+    summary="decomposed into 2 parallel research tasks → 1 synthesis task; writer starts when both researchers finish",
+)
+```
 
 Load it into your orchestrator profile:
 
@@ -324,6 +403,8 @@ The GUI is deliberately thin. Everything the plugin does is reachable from the C
 
 ## CLI command reference
 
+This is the surface **you** (or scripts, cron, the dashboard) use to drive the board. Workers running inside the dispatcher use the `kanban_*` [tool surface](#how-workers-interact-with-the-board) for the same operations — the CLI here and the tools there both route through `kanban_db`, so the two surfaces agree by construction.
+
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
@@ -369,7 +450,57 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
         [--log-retention-days N]
 ```
 
-All commands are also available as a slash command in the gateway (`/kanban list`, `/kanban comment t_abc "need docs"`, etc.). The slash command bypasses the running-agent guard, so you can `/kanban unblock` a stuck worker while the main agent is still chatting.
+All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+## `/kanban` slash command {#kanban-slash-command}
+
+Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — from inside an interactive `hermes chat` session **and** from any gateway platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, email, SMS). Both surfaces call the exact same `hermes_cli.kanban.run_slash()` entry point that reuses the `hermes kanban` argparse tree, so the argument surface, flags, and output format are identical across CLI, `/kanban`, and `hermes kanban`. You don't have to leave the chat to drive the board.
+
+```
+/kanban list
+/kanban show t_abcd
+/kanban create "write launch post" --assignee writer --parent t_research
+/kanban comment t_abcd "looks good, ship it"
+/kanban unblock t_abcd
+/kanban dispatch --max 3
+```
+
+Quote multi-word arguments the same way you would on a shell — `run_slash` parses the rest of the line with `shlex.split`, so `"..."` and `'...'` both work.
+
+### Mid-run usage: `/kanban` bypasses the running-agent guard
+
+The gateway normally queues slash commands and user messages while an agent is still thinking — that's what stops you from accidentally starting a second turn while the first is in flight. **`/kanban` is explicitly exempted from this guard.** The board lives in `~/.hermes/kanban.db`, not in the running agent's state, so reads (`list`, `show`, `context`, `tail`, `watch`, `stats`, `runs`) and writes (`comment`, `unblock`, `block`, `assign`, `archive`, `create`, `link`, …) all go through immediately, even mid-turn.
+
+This is the whole point of the separation:
+
+- A worker blocks waiting on a peer → you send `/kanban unblock t_abcd` from your phone and the dispatcher picks the peer up on its next tick. The blocked worker isn't interrupted — it just stops being blocked.
+- You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
+- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
+
+### Auto-subscribe on `/kanban create` (gateway only)
+
+When you create a task from the gateway with `/kanban create "…"`, the originating chat (platform + chat id + thread id) is automatically subscribed to that task's terminal events (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`). You'll get one message back per terminal event — including the first line of the worker's result summary on `completed` — without having to poll or remember the task id.
+
+```
+you> /kanban create "transcribe today's podcast" --assignee transcriber
+bot> Created t_9fc1a3  (ready, assignee=transcriber)
+     (subscribed — you'll be notified when t_9fc1a3 completes or blocks)
+
+… ~8 minutes later …
+
+bot> ✓ t_9fc1a3 completed by transcriber
+     transcribed 42 minutes, saved to podcast/2026-05-04.md
+```
+
+Subscriptions auto-remove themselves once the task reaches `done` or `archived`. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
+
+### Output truncation in messaging
+
+Gateway platforms have practical message-length caps. If `/kanban list`, `/kanban show`, or `/kanban tail` produce more than ~3800 characters of output, the response is truncated with a `… (truncated; use \`hermes kanban …\` in your terminal for full output)` footer. The CLI surface has no such cap.
+
+### Autocomplete
+
+In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list (`list`, `ls`, `show`, `create`, `assign`, `link`, `unlink`, `claim`, `comment`, `complete`, `block`, `unblock`, `archive`, `tail`, `dispatch`, `context`, `init`, `gc`). The remaining verbs listed in the CLI reference above (`watch`, `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-subscribe`, `notify-list`, `notify-unsubscribe`, `daemon`) also work — they're just not in the autocomplete hint list yet.
 
 ## Collaboration patterns
 
@@ -424,16 +555,26 @@ A task is a logical unit of work; a **run** is one attempt to execute it. When t
 
 Why two tables instead of just mutating the task: you need **full attempt history** for real-world postmortems ("the second reviewer attempt got to approve, the third merged"), and you need a clean place to hang per-attempt metadata — which files changed, which tests ran, which findings a reviewer noted. Those are run facts, not task facts.
 
-Runs are also where **structured handoff** lives. When a worker completes a task it can pass:
+Runs are also where **structured handoff** lives. When a worker completes a task (via `kanban_complete(...)`) it can pass:
 
-- `--result "<short log line>"` — goes on the task row as before (for back-compat).
-- `--summary "<human handoff>"` — goes on the run; downstream children see it in their `build_worker_context`.
-- `--metadata '{"changed_files": [...], "tests_run": 12}'` — JSON dict on the run; children see it serialized alongside the summary.
+- `summary` (tool param) / `--summary` (CLI) — human handoff; goes on the run; downstream children see it in their `build_worker_context`.
+- `metadata` (tool param) / `--metadata` (CLI) — free-form JSON dict on the run; children see it serialized alongside the summary.
+- `result` (tool param) / `--result` (CLI) — short log line that goes on the task row (legacy field, kept for back-compat).
 
 Downstream children read the most recent completed run's summary + metadata for each parent. Retrying workers read the prior attempts on their own task (outcome, summary, error) so they don't repeat a path that already failed.
 
+```
+# What a worker actually does — a tool call, from inside the agent loop:
+kanban_complete(
+    summary="implemented token bucket, keys on user_id with IP fallback, all tests pass",
+    metadata={"changed_files": ["limiter.py", "tests/test_limiter.py"], "tests_run": 14},
+    result="rate limiter shipped",
+)
+```
+
+The same handoff is reachable from the CLI when you (the human) need to close out a task a worker can't — e.g. a task that was abandoned, or one you marked done manually from the dashboard:
+
 ```bash
-# Worker completes with a structured handoff:
 hermes kanban complete t_abcd \
     --result "rate limiter shipped" \
     --summary "implemented token bucket, keys on user_id with IP fallback, all tests pass" \

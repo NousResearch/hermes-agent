@@ -74,6 +74,16 @@ describe('isVoiceToggleKey', () => {
     expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'o', 'alt+o')).toBe(false)
   })
 
+  it('falls back to the exported default for missing or invalid configured keys', async () => {
+    const { DEFAULT_VOICE_RECORD_KEY, formatVoiceRecordKey, isVoiceToggleKey, normalizeVoiceRecordKey } = await importPlatform('linux')
+
+    expect(normalizeVoiceRecordKey(undefined)).toBe(DEFAULT_VOICE_RECORD_KEY)
+    expect(normalizeVoiceRecordKey('not-a-key')).toBe(DEFAULT_VOICE_RECORD_KEY)
+    expect(formatVoiceRecordKey(undefined)).toBe('Ctrl+B')
+    expect(formatVoiceRecordKey('not-a-key')).toBe('Ctrl+B')
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'b', 'not-a-key')).toBe(true)
+  })
+
   it('matches raw Ctrl+B on macOS (doc-default across platforms)', async () => {
     const { isVoiceToggleKey } = await importPlatform('darwin')
 

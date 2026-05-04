@@ -59,20 +59,37 @@ interface VoiceRecordKeySpec {
   modifier: VoiceRecordModifier
 }
 
-const parseVoiceRecordKey = (raw: unknown): VoiceRecordKeySpec => {
-  if (typeof raw !== 'string') {
-    return { key: 'b', modifier: 'ctrl' }
-  }
+const VOICE_RECORD_KEY_PATTERN = /^(ctrl|control|c|alt|option|meta|a)\s*\+\s*(.)$/
 
-  const match = raw.trim().toLowerCase().match(/^(ctrl|control|c|alt|option|meta|a)\s*\+\s*(.)$/)
+const parseVoiceRecordKeySpec = (raw: string): null | VoiceRecordKeySpec => {
+  const match = raw.trim().toLowerCase().match(VOICE_RECORD_KEY_PATTERN)
 
   if (!match) {
-    return { key: 'b', modifier: 'ctrl' }
+    return null
   }
 
-  const modifier: VoiceRecordModifier = ['alt', 'option', 'meta', 'a'].includes(match[1]) ? 'alt' : 'ctrl'
+  const [, modifierToken = '', key = ''] = match
+  const modifier: VoiceRecordModifier = ['alt', 'option', 'meta', 'a'].includes(modifierToken) ? 'alt' : 'ctrl'
 
-  return { key: match[2], modifier }
+  return { key, modifier }
+}
+
+const DEFAULT_VOICE_RECORD_KEY_SPEC = (() => {
+  const spec = parseVoiceRecordKeySpec(DEFAULT_VOICE_RECORD_KEY)
+
+  if (!spec) {
+    throw new Error(`Invalid DEFAULT_VOICE_RECORD_KEY: ${DEFAULT_VOICE_RECORD_KEY}`)
+  }
+
+  return spec
+})()
+
+const parseVoiceRecordKey = (raw: unknown): VoiceRecordKeySpec => {
+  if (typeof raw !== 'string') {
+    return DEFAULT_VOICE_RECORD_KEY_SPEC
+  }
+
+  return parseVoiceRecordKeySpec(raw) ?? DEFAULT_VOICE_RECORD_KEY_SPEC
 }
 
 export const normalizeVoiceRecordKey = (raw: unknown): string => {

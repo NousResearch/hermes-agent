@@ -530,6 +530,26 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Slash-invoked turns: chat_id → active discord.Interaction whose
+        # followup webhook should carry the agent's replies as ephemeral
+        # messages. Registered in _run_simple_slash before the agent runs and
+        # cleared in finally; send() consults this map so /approve, /retry,
+        # tool-progress bubbles, etc. land as ephemeral followups visible only
+        # to the invoker instead of public channel posts.
+        self._slash_followup_interactions: Dict[str, Any] = {}
+
+    def _register_slash_followup(self, chat_id: str, interaction: Any) -> None:
+        """Register *interaction* as the ephemeral-followup target for *chat_id*."""
+        self._slash_followup_interactions[chat_id] = interaction
+
+    def _clear_slash_followup(self, chat_id: str, interaction: Any) -> None:
+        """Drop the registration for *chat_id* iff it still points at *interaction*.
+
+        The identity check guards against clearing a registration that was
+        overwritten by a concurrent slash invocation in the same channel.
+        """
+        if self._slash_followup_interactions.get(chat_id) is interaction:
+            self._slash_followup_interactions.pop(chat_id, None)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1138,6 +1158,43 @@ class DiscordAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+            # Slash-invoked turns: route replies through the deferred
+            # interaction's followup webhook as ephemeral so /approve, /deny,
+            # /retry, tool-progress bubbles, etc. stay visible only to the
+            # invoker. Skip when reply_to is requested (followup webhooks
+            # don't accept reply references) and on forum parents (handled
+            # below by _send_to_forum). Falls back to a normal channel.send
+            # if the interaction's 15-minute followup window has expired.
+            slash_interaction = (
+                self._slash_followup_interactions.get(chat_id)
+                if not reply_to
+                else None
+            )
+            if slash_interaction is not None:
+                try:
+                    followup_ids: list[str] = []
+                    for chunk in chunks:
+                        sent = await slash_interaction.followup.send(
+                            content=chunk,
+                            ephemeral=True,
+                        )
+                        sent_id = getattr(sent, "id", None)
+                        if sent_id is not None:
+                            followup_ids.append(str(sent_id))
+                    return SendResult(
+                        success=True,
+                        message_id=followup_ids[0] if followup_ids else None,
+                        raw_response={"message_ids": followup_ids, "ephemeral": True},
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "[%s] Slash followup send failed (%s); "
+                        "falling back to channel.send",
+                        self.name, e,
+                    )
+                    self._clear_slash_followup(chat_id, slash_interaction)
+                    # Fall through to normal channel.send path below.
 
             message_ids = []
             reference = None
@@ -2554,7 +2611,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
-        await self.handle_message(event)
+        chat_id = str(interaction.channel_id)
+        self._register_slash_followup(chat_id, interaction)
+        try:
+            await self.handle_message(event)
+        finally:
+            self._clear_slash_followup(chat_id, interaction)
         try:
             if followup_msg:
                 await interaction.edit_original_response(content=followup_msg)
@@ -4343,7 +4405,7 @@ if DISCORD_AVAILABLE:
                     self.session_key, self.confirm_id, choice,
                 )
                 if result_text:
-                    await interaction.followup.send(result_text)
+                    await interaction.followup.send(result_text, ephemeral=True)
                 logger.info(
                     "Discord button resolved slash-confirm for session %s "
                     "(choice=%s, user=%s)",

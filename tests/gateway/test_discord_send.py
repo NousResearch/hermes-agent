@@ -386,3 +386,171 @@ async def test_forum_post_file_creation_failure():
 
     assert result.success is False
     assert "missing perms" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Slash-followup ephemeral routing — replies to slash-invoked turns are sent
+# as ephemeral followups on the registered interaction so /approve, /retry,
+# tool-progress bubbles, etc. don't post publicly to the channel.
+# ---------------------------------------------------------------------------
+
+
+def _make_slash_interaction(*, message_id=4242):
+    """Build a stand-in discord.Interaction whose followup.send returns a msg."""
+    sent = SimpleNamespace(id=message_id)
+    interaction = SimpleNamespace(
+        followup=SimpleNamespace(send=AsyncMock(return_value=sent)),
+    )
+    return interaction, sent
+
+
+@pytest.mark.asyncio
+async def test_send_routes_through_followup_when_slash_interaction_registered():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    channel = SimpleNamespace(send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    interaction, sent = _make_slash_interaction(message_id=7777)
+    adapter._register_slash_followup("123", interaction)
+
+    result = await adapter.send("123", "tool result")
+
+    assert result.success is True
+    assert result.message_id == "7777"
+    assert (result.raw_response or {}).get("ephemeral") is True
+    interaction.followup.send.assert_awaited_once_with(
+        content="tool result", ephemeral=True,
+    )
+    channel.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_followup_sends_each_chunk_when_message_splits():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.MAX_MESSAGE_LENGTH = 20
+
+    channel = SimpleNamespace(send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    counter = {"n": 0}
+
+    async def fake_followup_send(*, content, ephemeral):
+        counter["n"] += 1
+        return SimpleNamespace(id=10 + counter["n"])
+
+    interaction = SimpleNamespace(
+        followup=SimpleNamespace(send=AsyncMock(side_effect=fake_followup_send)),
+    )
+    adapter._register_slash_followup("999", interaction)
+
+    result = await adapter.send("999", "A" * 50)
+
+    assert result.success is True
+    assert result.message_id == "11"
+    assert interaction.followup.send.await_count >= 2
+    assert all(
+        call.kwargs.get("ephemeral") is True
+        for call in interaction.followup.send.await_args_list
+    )
+    channel.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_falls_back_to_channel_when_followup_window_expired():
+    """Discord enforces a 15-minute followup TTL on interactions. When the
+    followup webhook rejects the send, drop the registration and fall back
+    to a normal channel.send so a long-running agent turn still delivers."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    channel_msg = SimpleNamespace(id=2024)
+    channel = SimpleNamespace(send=AsyncMock(return_value=channel_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    interaction = SimpleNamespace(
+        followup=SimpleNamespace(
+            send=AsyncMock(side_effect=RuntimeError("Unknown Webhook (10015)")),
+        ),
+    )
+    adapter._register_slash_followup("555", interaction)
+
+    result = await adapter.send("555", "late reply")
+
+    assert result.success is True
+    assert result.message_id == "2024"
+    interaction.followup.send.assert_awaited_once()
+    channel.send.assert_awaited_once()
+    # Registration was dropped after the failure so subsequent sends skip
+    # the followup path entirely.
+    assert "555" not in adapter._slash_followup_interactions
+
+
+@pytest.mark.asyncio
+async def test_send_uses_channel_when_no_slash_registered():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=3030)
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("888", "hello")
+
+    assert result.success is True
+    assert result.message_id == "3030"
+    channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_skips_followup_when_reply_to_set():
+    """Followup webhooks don't accept reply references. When the caller asks
+    for a reply, prefer channel.send so the reply chain is preserved even
+    if a slash interaction is registered for the channel."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=object()))
+    sent_msg = SimpleNamespace(id=4040)
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=ref_msg),
+        send=AsyncMock(return_value=sent_msg),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    interaction, _ = _make_slash_interaction()
+    adapter._register_slash_followup("777", interaction)
+
+    result = await adapter.send("777", "thread reply", reply_to="99")
+
+    assert result.success is True
+    assert result.message_id == "4040"
+    interaction.followup.send.assert_not_called()
+    channel.send.assert_awaited_once()
+
+
+def test_clear_slash_followup_only_clears_matching_interaction():
+    """_clear_slash_followup must not drop a registration that was overwritten
+    by a concurrent slash invocation in the same channel."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    interaction_a = SimpleNamespace(name="a")
+    interaction_b = SimpleNamespace(name="b")
+
+    adapter._register_slash_followup("c1", interaction_a)
+    # A second slash invocation in the same channel overwrites the first.
+    adapter._register_slash_followup("c1", interaction_b)
+    # First handler finishes and tries to clear — must be a no-op.
+    adapter._clear_slash_followup("c1", interaction_a)
+    assert adapter._slash_followup_interactions["c1"] is interaction_b
+    # Second handler clears its own registration successfully.
+    adapter._clear_slash_followup("c1", interaction_b)
+    assert "c1" not in adapter._slash_followup_interactions

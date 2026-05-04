@@ -198,13 +198,19 @@ def normalize_profile_name(name: str) -> str:
 
 
 def validate_profile_name(name: str) -> None:
-    """Raise ``ValueError`` if *name* is not a valid profile identifier."""
-    canon = normalize_profile_name(name)
-    if canon == "default":
+    """Raise ``ValueError`` if *name* is not a valid profile identifier.
+
+    Validates the input as-given — strict lowercase match. Callers that accept
+    mixed-case or title-cased input from users (dashboard UI, CLI args) should
+    call :func:`normalize_profile_name` first. This separation keeps validate
+    honest about what the on-disk directory name must look like, while
+    ingress-point normalization handles UX flexibility (see #18498).
+    """
+    if name == "default":
         return  # special alias for ~/.hermes
-    if not _PROFILE_ID_RE.match(canon):
+    if not _PROFILE_ID_RE.match(name):
         raise ValueError(
-            f"Invalid profile name {canon!r}. Must match "
+            f"Invalid profile name {name!r}. Must match "
             f"[a-z0-9][a-z0-9_-]{{0,63}}"
         )
 
@@ -444,8 +450,8 @@ def create_profile(
     Path
         The newly created profile directory.
     """
-    validate_profile_name(name)
     canon = normalize_profile_name(name)
+    validate_profile_name(canon)
 
     if canon == "default":
         raise ValueError(
@@ -464,6 +470,7 @@ def create_profile(
             from hermes_constants import get_hermes_home
             source_dir = get_hermes_home()
         else:
+            clone_from = normalize_profile_name(clone_from)
             validate_profile_name(clone_from)
             source_dir = get_profile_dir(clone_from)
         if not source_dir.is_dir():
@@ -564,8 +571,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     Returns the path that was removed.
     """
-    validate_profile_name(name)
     canon = normalize_profile_name(name)
+    validate_profile_name(canon)
 
     if canon == "default":
         raise ValueError(
@@ -755,8 +762,8 @@ def set_active_profile(name: str) -> None:
 
     Writes to ``~/.hermes/active_profile``. Use ``"default"`` to clear.
     """
-    validate_profile_name(name)
     canon = normalize_profile_name(name)
+    validate_profile_name(canon)
     if canon != "default" and not profile_exists(canon):
         raise FileNotFoundError(
             f"Profile '{canon}' does not exist. "
@@ -837,8 +844,8 @@ def export_profile(name: str, output_path: str) -> Path:
     """
     import tempfile
 
-    validate_profile_name(name)
     canon = normalize_profile_name(name)
+    validate_profile_name(canon)
     profile_dir = get_profile_dir(canon)
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
@@ -979,8 +986,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # Archives exported from the default profile have "default/" as top-level
     # dir.  Importing as "default" would target ~/.hermes itself — disallow
     # that and guide the user toward a named profile.
-    validate_profile_name(inferred_name)
     canon = normalize_profile_name(inferred_name)
+    validate_profile_name(canon)
     if canon == "default":
         raise ValueError(
             "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
@@ -1076,10 +1083,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     Returns the new profile directory.
     """
-    validate_profile_name(old_name)
-    validate_profile_name(new_name)
     old_canon = normalize_profile_name(old_name)
     new_canon = normalize_profile_name(new_name)
+    validate_profile_name(old_canon)
+    validate_profile_name(new_canon)
 
     if old_canon == "default":
         raise ValueError("Cannot rename the default profile.")
@@ -1221,8 +1228,8 @@ def resolve_profile_env(profile_name: str) -> str:
     Called early in the CLI entry point, before any hermes modules
     are imported, to set the HERMES_HOME environment variable.
     """
-    validate_profile_name(profile_name)
     canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
     profile_dir = get_profile_dir(canon)
 
     if canon != "default" and not profile_dir.is_dir():

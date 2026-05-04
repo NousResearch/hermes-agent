@@ -308,6 +308,62 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
     assert "mcp-off" in err
 
 
+def test_oneshot_agent_suppresses_session_persistence(monkeypatch):
+    from hermes_cli.oneshot import _run_agent
+
+    created = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.persist_called = False
+            created["agent"] = self
+
+            def persist_session(messages, conversation_history=None):
+                self.persist_called = True
+
+            self._persist_session = persist_session
+
+        def chat(self, prompt):
+            self._persist_session(
+                [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "OK"},
+                ],
+                None,
+            )
+            return "OK"
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(load_config=lambda: {"model": {"default": "test-model"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        types.SimpleNamespace(detect_provider_for_model=lambda model, provider: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **kwargs: {
+                "provider": "test-provider",
+                "api_mode": "chat_completions",
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        types.SimpleNamespace(_get_platform_tools=lambda cfg, platform: set()),
+    )
+
+    assert _run_agent("hello") == "OK"
+    assert created["agent"].persist_called is False
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

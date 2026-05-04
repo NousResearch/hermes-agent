@@ -307,6 +307,8 @@ def _run_agent(
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
     )
+    # `hermes -z` is a scripted one-shot path; leave no hidden session transcript.
+    agent._persist_session = lambda messages, conversation_history=None: None
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
     # display callbacks that would bypass our stdout capture.

@@ -1965,11 +1965,33 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+    """Check whether the configured web backend is available.
+
+    Anthropic native web_search (server-side) is also a valid backend —
+    it requires no third-party key, only that we're running against an
+    Anthropic endpoint. Detection is loose: any of the standard Anthropic
+    credential paths counts. The adapter's convert_tools_to_anthropic()
+    is what actually decides whether to send the native form or the
+    third-party form; this function only gates whether the schema is
+    exposed to the model at all.
+    """
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in ("exa", "parallel", "firecrawl", "tavily"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    if any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily")):
+        return True
+    # Fall back to "Anthropic native available?" — credentials present
+    # via env or Claude Code OAuth credentials file. Cheap probes only;
+    # don't make network calls in a check_fn.
+    if _has_env("ANTHROPIC_API_KEY") or _has_env("CLAUDE_CODE_OAUTH_TOKEN"):
+        return True
+    try:
+        from pathlib import Path as _P
+        if (_P.home() / ".claude" / ".credentials.json").exists():
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def check_auxiliary_model() -> bool:
@@ -2109,7 +2131,21 @@ WEB_SEARCH_SCHEMA = {
             }
         },
         "required": ["query"]
-    }
+    },
+    # ── Anthropic native server-side tool marker ─────────────────────
+    # When the active provider is Anthropic, agent/anthropic_adapter.py
+    # detects this field in convert_tools_to_anthropic() and emits the
+    # native server-tool spec instead of the function-shaped form. The
+    # local handler below is then never invoked: Anthropic's infra runs
+    # the search and returns web_search_tool_result blocks inline.
+    # On non-Anthropic providers (OpenAI, Bedrock, etc.) this field is
+    # silently ignored and the local Tavily/Exa/Parallel handler runs.
+    # max_uses caps searches per turn; bump if you find the model
+    # frequently exhausting the budget.
+    "_anthropic_server_tool": {
+        "type": "web_search_20250305",
+        "max_uses": 5,
+    },
 }
 
 WEB_EXTRACT_SCHEMA = {

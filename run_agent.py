@@ -8758,6 +8758,15 @@ class AIAgent:
         if codex_message_items:
             msg["codex_message_items"] = codex_message_items
 
+        # Anthropic server-side tools (web_search_20250305, etc.) — preserve
+        # the server_tool_use + web_search_tool_result content blocks so they
+        # are re-emitted verbatim on the next turn. Anthropic's API will
+        # reject re-submitted assistant messages if the server_tool_use
+        # block exists without its paired tool_result.
+        server_tool_blocks = getattr(assistant_message, "server_tool_blocks", None)
+        if server_tool_blocks:
+            msg["server_tool_blocks"] = server_tool_blocks
+
         if assistant_tool_calls:
             tool_calls = []
             for tool_call in assistant_tool_calls:

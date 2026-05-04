@@ -1237,7 +1237,15 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
 
 
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI tool definitions to Anthropic format."""
+    """Convert OpenAI tool definitions to Anthropic format.
+
+    Server-side Anthropic tools (web_search_20250305, etc.) are signalled
+    by a top-level ``_anthropic_server_tool`` key inside the function
+    schema — when present, that block is emitted verbatim instead of the
+    function-shaped form. The model still sees the tool by its original
+    ``name``; Anthropic intercepts the call server-side, so the local
+    handler is never invoked on Anthropic providers.
+    """
     if not tools:
         return []
     result = []
@@ -1257,6 +1265,18 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             continue
         if name:
             seen_names.add(name)
+        # Server-side tool shortcut — emit Anthropic's native spec verbatim.
+        # The marker is stripped here; required beta headers are computed
+        # separately in build_anthropic_kwargs by re-walking the input list.
+        server_spec = fn.get("_anthropic_server_tool")
+        if isinstance(server_spec, dict) and server_spec.get("type"):
+            block = dict(server_spec)
+            # Anthropic's native server tools must keep their canonical name
+            # ("web_search" for web_search_20250305) — the registry name
+            # is authoritative here.
+            block.setdefault("name", name)
+            result.append(block)
+            continue
         result.append({
             "name": name,
             "description": fn.get("description", ""),
@@ -1265,6 +1285,35 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             ),
         })
     return result
+
+
+def _required_anthropic_server_tool_betas(tools: List[Dict]) -> List[str]:
+    """Inspect the OpenAI-shaped tool list and return any extra anthropic-beta
+    headers required by server-side tools that appear in the request.
+
+    Maps each declared ``_anthropic_server_tool.type`` to its corresponding
+    beta. Returns an empty list when no server tools are present (so the
+    beta header set isn't unnecessarily widened — some Anthropic-compatible
+    third-party endpoints reject unknown beta headers).
+    """
+    if not tools:
+        return []
+    beta_for_type = {
+        "web_search_20250305": "web-search-2025-03-05",
+        # Future server tools (e.g. computer_use_20250124) get added here.
+    }
+    seen: set[str] = set()
+    for t in tools:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        spec = fn.get("_anthropic_server_tool")
+        if not isinstance(spec, dict):
+            continue
+        beta = beta_for_type.get(spec.get("type", ""))
+        if beta:
+            seen.add(beta)
+    return sorted(seen)
 
 
 def _image_source_from_openai_url(url: str) -> Dict[str, str]:
@@ -1437,6 +1486,17 @@ def convert_messages_to_anthropic(
 
         if role == "assistant":
             blocks = _extract_preserved_thinking_blocks(m)
+            # Anthropic server-side tool blocks (web_search etc.) — must be
+            # re-emitted verbatim before text/tool_use blocks. Stored on the
+            # message dict by run_agent._build_assistant_message after the
+            # transport extracted them in normalize_response.
+            preserved_server_blocks = m.get("server_tool_blocks")
+            if isinstance(preserved_server_blocks, list):
+                for sb in preserved_server_blocks:
+                    if isinstance(sb, dict) and sb.get("type") in (
+                        "server_tool_use", "web_search_tool_result"
+                    ):
+                        blocks.append(dict(sb))
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)
@@ -1816,9 +1876,14 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
+        # 3. Prefix tool names with mcp_ (Claude Code convention).
+        # Skip Anthropic native server tools — they have a "type" field
+        # (e.g. "web_search_20250305") instead of an input_schema, and
+        # Anthropic only intercepts them under their canonical names.
         if anthropic_tools:
             for tool in anthropic_tools:
+                if "type" in tool and tool.get("type", "").startswith(("web_search_", "code_execution_", "computer_", "bash_", "text_editor_")):
+                    continue
                 if "name" in tool:
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
@@ -1930,6 +1995,30 @@ def build_anthropic_kwargs(
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
+    # ── Server-side tool beta headers ────────────────────────────────
+    # Tools like web_search_20250305 require their own anthropic-beta
+    # header. We can't put it on the client-level default_headers because
+    # that would be sent for every request (some Anthropic-compatible
+    # third-party providers reject unknown betas). Instead, detect the
+    # tools in this specific request and union with any already-set
+    # extra_headers (preserving fast-mode wiring above).
+    server_tool_betas = _required_anthropic_server_tool_betas(tools or [])
+    if server_tool_betas and not _is_third_party_anthropic_endpoint(base_url):
+        existing = kwargs.get("extra_headers", {}) or {}
+        prior = [b.strip() for b in existing.get("anthropic-beta", "").split(",") if b.strip()]
+        if not prior:
+            # No prior extra_headers — start from the same base set the
+            # client would otherwise send so we don't accidentally drop
+            # OAuth or context-1m betas.
+            prior = list(_common_betas_for_base_url(
+                base_url, drop_context_1m_beta=drop_context_1m_beta,
+            ))
+            if is_oauth:
+                prior.extend(_OAUTH_ONLY_BETAS)
+        merged: list[str] = []
+        for beta in prior + server_tool_betas:
+            if beta and beta not in merged:
+                merged.append(beta)
+        kwargs["extra_headers"] = {**existing, "anthropic-beta": ",".join(merged)}
+
     return kwargs
-
-

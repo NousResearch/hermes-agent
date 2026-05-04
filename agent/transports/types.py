@@ -131,6 +131,18 @@ class NormalizedResponse:
         pd = self.provider_data or {}
         return pd.get("codex_message_items")
 
+    @property
+    def server_tool_blocks(self):
+        """Anthropic server-side tool blocks (web_search_tool_result, etc.).
+
+        Server tools execute on Anthropic's infrastructure, not locally.
+        Their content blocks must be preserved into history so the model
+        can reference them on subsequent turns and so the UI can show
+        what was searched. Populated by AnthropicTransport.normalize_response.
+        """
+        pd = self.provider_data or {}
+        return pd.get("server_tool_blocks")
+
 
 # ---------------------------------------------------------------------------
 # Factory helpers

@@ -94,6 +94,16 @@ class AnthropicTransport(ProviderTransport):
         reasoning_parts = []
         reasoning_details = []
         tool_calls = []
+        # Server-side tools (web_search_20250305, etc.) emit two distinct
+        # block types in the same response: ``server_tool_use`` (Anthropic
+        # logging the search Anthropic-side) and ``web_search_tool_result``
+        # (the search results Anthropic fetched). We don't execute these
+        # locally — Anthropic already did. Keep them in provider_data so
+        # they survive into the next turn's history (Anthropic requires
+        # the tool_result blocks to be present when re-submitting prior
+        # assistant turns that reference them) and so the UI can show a
+        # search citation panel.
+        server_tool_blocks: list[dict] = []
 
         for block in response.content:
             if block.type == "text":
@@ -114,12 +124,18 @@ class AnthropicTransport(ProviderTransport):
                         arguments=json.dumps(block.input),
                     )
                 )
+            elif block.type in ("server_tool_use", "web_search_tool_result"):
+                block_dict = _to_plain_data(block)
+                if isinstance(block_dict, dict):
+                    server_tool_blocks.append(block_dict)
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
 
         provider_data = {}
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
+        if server_tool_blocks:
+            provider_data["server_tool_blocks"] = server_tool_blocks
 
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None,

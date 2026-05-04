@@ -550,6 +550,13 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # Browser engine for local mode.  Passed as ``--engine <value>`` to
+        # agent-browser v0.25.3+.
+        # "auto"       — use Chrome (default, don't pass --engine at all)
+        # "lightpanda" — use Lightpanda (1.3-5.8x faster navigation, no screenshots)
+        # "chrome"     — explicitly request Chrome
+        # Also settable via AGENT_BROWSER_ENGINE env var.
+        "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
@@ -1826,6 +1833,15 @@ OPTIONAL_ENV_VARS = {
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
         "category": "tool",
+    },
+    "AGENT_BROWSER_ENGINE": {
+        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
+        "prompt": "Browser engine (auto/lightpanda/chrome)",
+        "url": "https://github.com/vercel-labs/agent-browser",
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",

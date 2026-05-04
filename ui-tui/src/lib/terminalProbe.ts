@@ -122,7 +122,7 @@ const extractBracketedPaste = (value: unknown): boolean | undefined => {
     return undefined
   }
 
-  return value.status === 1
+  return value.status === 1 || value.status === 3
 }
 
 const extractKittyKeyboardFlags = (value: unknown): number | undefined => {

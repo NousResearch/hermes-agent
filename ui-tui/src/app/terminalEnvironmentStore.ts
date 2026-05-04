@@ -10,7 +10,12 @@ export type TerminalEnvironment = {
 }
 
 export const createTerminalEnvironment = (env: NodeJS.ProcessEnv = process.env): TerminalEnvironment => {
-  const signals = collectTerminalSignals({ env, platform: process.platform })
+  const signals = collectTerminalSignals({
+    env,
+    platform: process.platform,
+    isStdinTty: process.stdin.isTTY ?? false,
+    isStdoutTty: process.stdout.isTTY ?? false
+  })
   const probe: TerminalProbeResult = {}
 
   return { signals, probe, capabilities: deriveTerminalCapabilities(signals, probe) }

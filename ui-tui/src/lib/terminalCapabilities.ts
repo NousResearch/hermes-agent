@@ -250,7 +250,7 @@ export function deriveTerminalCapabilities(
 ): TerminalCapabilities {
   const layers: TransportKind[] = []
 
-  if (s.ssh.hasSshConnection) {
+  if (s.ssh.hasSshConnection || s.ssh.hasSshClient || s.ssh.hasSshTty) {
     layers.push('ssh')
   }
 

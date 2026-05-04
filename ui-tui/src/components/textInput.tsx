@@ -746,10 +746,16 @@ export function TextInput({
         if (range) {
           const text = vRef.current.slice(range.start, range.end)
 
-          if (capabilities.copy.writePath === 'osc52') {
-            writeOsc52Clipboard(text)
-          } else if (capabilities.copy.writePath === 'native') {
-            void writeClipboardText(text)
+          switch (capabilities.copy.writePath) {
+            case 'native':
+              void writeClipboardText(text)
+              break
+            case 'osc52':
+            case 'tmux-buffer':
+            case 'screen-passthrough':
+            default:
+              writeOsc52Clipboard(text)
+              break
           }
         }
 

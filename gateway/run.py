@@ -12251,6 +12251,7 @@ class GatewayRunner:
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
+        ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),
         ("compression", "target_ratio"),

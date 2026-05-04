@@ -734,6 +734,155 @@ def get_config():
 
 
 # ---------------------------------------------------------------------------
+# Home-channel subscriptions (per-task, per-platform toggles)
+# ---------------------------------------------------------------------------
+#
+# Home channels are a first-class gateway concept — each configured platform
+# can have exactly one (chat_id, thread_id, name) it considers "home". The
+# dashboard surfaces these as per-task toggles so a user can opt a specific
+# task into receiving terminal notifications (completed / blocked / gave_up)
+# at their telegram/discord/slack home, without touching the CLI.
+#
+# The wire format mirrors kanban_db.add_notify_sub — (task_id, platform,
+# chat_id, thread_id) — so toggle-on creates exactly the same row the
+# `/kanban create` slash command would, and the existing gateway notifier
+# watcher delivers events without any additional plumbing.
+
+
+def _configured_home_channels() -> list[dict]:
+    """Return every platform that has a home_channel set, fully hydrated.
+
+    Reads the live GatewayConfig so env-var overlays (``TELEGRAM_HOME_CHANNEL``
+    etc.) are honored alongside config.yaml. Returns platforms in a stable
+    order and drops platforms without a home.
+    """
+    try:
+        from gateway.config import load_gateway_config
+    except Exception:
+        return []
+    try:
+        gw_cfg = load_gateway_config()
+    except Exception:
+        return []
+    result: list[dict] = []
+    for platform, pcfg in gw_cfg.platforms.items():
+        if not pcfg or not pcfg.home_channel:
+            continue
+        hc = pcfg.home_channel
+        result.append({
+            "platform": platform.value,
+            "chat_id": hc.chat_id,
+            "thread_id": hc.thread_id or "",
+            "name": hc.name or "Home",
+        })
+    # Stable order for deterministic UI — platform name alphabetical.
+    result.sort(key=lambda r: r["platform"])
+    return result
+
+
+def _home_sub_matches(sub: dict, home: dict) -> bool:
+    """True if a notify_subs row corresponds to the given home channel."""
+    return (
+        sub.get("platform") == home["platform"]
+        and str(sub.get("chat_id", "")) == str(home["chat_id"])
+        and str(sub.get("thread_id") or "") == str(home["thread_id"] or "")
+    )
+
+
+@router.get("/home-channels")
+def get_home_channels(
+    task_id: Optional[str] = Query(None),
+    board: Optional[str] = Query(None),
+):
+    """List every platform with a home channel, plus whether *task_id*
+    (if given) is currently subscribed to that home.
+
+    When ``task_id`` is omitted, every entry's ``subscribed`` is ``false``
+    — useful for the "no task selected" state of the UI.
+    """
+    homes = _configured_home_channels()
+    subscribed_homes: set[tuple[str, str, str]] = set()
+    if task_id:
+        board = _resolve_board(board)
+        conn = _conn(board=board)
+        try:
+            subs = kanban_db.list_notify_subs(conn, task_id)
+        finally:
+            conn.close()
+        for sub in subs:
+            key = (
+                str(sub.get("platform") or ""),
+                str(sub.get("chat_id") or ""),
+                str(sub.get("thread_id") or ""),
+            )
+            subscribed_homes.add(key)
+    result = []
+    for home in homes:
+        key = (home["platform"], home["chat_id"], home["thread_id"])
+        result.append({**home, "subscribed": key in subscribed_homes})
+    return {"home_channels": result}
+
+
+@router.post("/tasks/{task_id}/home-subscribe/{platform}")
+def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Subscribe *task_id* to notifications routed to *platform*'s home channel.
+
+    Idempotent — re-subscribing is a no-op at the DB layer. 404 if the
+    platform has no home channel configured. 404 if the task doesn't exist.
+    """
+    homes = _configured_home_channels()
+    home = next((h for h in homes if h["platform"] == platform), None)
+    if not home:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No home channel configured for platform {platform!r}. "
+                   f"Set one from the messenger via /sethome, or configure "
+                   f"gateway.platforms.{platform}.home_channel in config.yaml.",
+        )
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        kanban_db.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+        )
+        return {"ok": True, "task_id": task_id, "home_channel": home}
+    finally:
+        conn.close()
+
+
+@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
+def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Remove any notify subscription on *task_id* that matches *platform*'s home."""
+    homes = _configured_home_channels()
+    home = next((h for h in homes if h["platform"] == platform), None)
+    if not home:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No home channel configured for platform {platform!r}.",
+        )
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        kanban_db.remove_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+        )
+        return {"ok": True, "task_id": task_id, "home_channel": home}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Stats (per-profile / per-status counts + oldest-ready age)
 # ---------------------------------------------------------------------------
 

@@ -1375,6 +1375,11 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Home-channel notification toggles. homeChannels is the list of platforms
+    // the user has a /sethome on; each entry has a `subscribed` bool telling
+    // us whether this task is currently subscribed via that platform's home.
+    const [homeChannels, setHomeChannels] = useState([]);
+    const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
 
     const load = useCallback(function () {
@@ -1384,10 +1389,19 @@
         .finally(function () { setLoading(false); });
     }, [props.taskId, boardSlug]);
 
+    const loadHomeChannels = useCallback(function () {
+      const qs = new URLSearchParams({ task_id: props.taskId });
+      const url = withBoard(`${API}/home-channels?${qs}`, boardSlug);
+      return SDK.fetchJSON(url)
+        .then(function (d) { setHomeChannels(d.home_channels || []); })
+        .catch(function () { /* silent — endpoint optional on older gateways */ });
+    }, [props.taskId, boardSlug]);
+
     // Reload when the WS stream reports new events for this task id
     // (completion, block, crash, etc. — anything that'd make the drawer
     // show stale data if we only loaded on mount).
     useEffect(function () { load(); }, [load, props.eventTick]);
+    useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
     useEffect(function () {
       function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
       window.addEventListener("keydown", onKey);
@@ -1448,6 +1462,43 @@
         .catch(function (e) { setErr(String(e.message || e)); });
     };
 
+    const toggleHomeSubscription = function (platform, currentlySubscribed) {
+      // Optimistic flip + busy flag to keep double-clicks idempotent.
+      setHomeBusy(function (b) { return Object.assign({}, b, { [platform]: true }); });
+      setHomeChannels(function (list) {
+        return list.map(function (h) {
+          return h.platform === platform
+            ? Object.assign({}, h, { subscribed: !currentlySubscribed })
+            : h;
+        });
+      });
+      const method = currentlySubscribed ? "DELETE" : "POST";
+      const url = withBoard(
+        `${API}/tasks/${encodeURIComponent(props.taskId)}/home-subscribe/${encodeURIComponent(platform)}`,
+        boardSlug,
+      );
+      return SDK.fetchJSON(url, { method: method })
+        .then(function () { return loadHomeChannels(); })
+        .catch(function (e) {
+          // Revert optimistic flip on failure.
+          setHomeChannels(function (list) {
+            return list.map(function (h) {
+              return h.platform === platform
+                ? Object.assign({}, h, { subscribed: currentlySubscribed })
+                : h;
+            });
+          });
+          setErr(String(e.message || e));
+        })
+        .finally(function () {
+          setHomeBusy(function (b) {
+            const next = Object.assign({}, b);
+            delete next[platform];
+            return next;
+          });
+        });
+    };
+
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
       h("div", {
         className: "hermes-kanban-drawer",
@@ -1474,6 +1525,9 @@
           onRemoveParent: removeLink,
           onAddChild: addChild,
           onRemoveChild: removeChild,
+          homeChannels: homeChannels,
+          homeBusy: homeBusy,
+          onToggleHomeSub: toggleHomeSubscription,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -1535,6 +1589,11 @@
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
       h(StatusActions, { task: t, onPatch: props.onPatch }),
+      h(HomeSubsSection, {
+        homeChannels: props.homeChannels || [],
+        homeBusy: props.homeBusy || {},
+        onToggle: props.onToggleHomeSub,
+      }),
       h(BodyEditor, {
         task: t,
         renderMarkdown: props.renderMarkdown,
@@ -1947,6 +2006,43 @@
         DESTRUCTIVE_TRANSITIONS.done),
       b("Archive",   { status: "archived" }, t.status !== "archived",
         DESTRUCTIVE_TRANSITIONS.archived),
+    );
+  }
+
+
+  // One toggle per gateway platform the user has a home channel set on
+  // (telegram, discord, slack, etc.). Toggling on creates a kanban_notify_subs
+  // row routed to that platform's home; toggling off removes it. Nothing
+  // renders when no platforms have a home configured — this section stays
+  // invisible for users who haven't set one up.
+  function HomeSubsSection(props) {
+    const channels = props.homeChannels || [];
+    if (channels.length === 0) return null;
+    const busy = props.homeBusy || {};
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        "Notify home channels"),
+      h("div", { className: "hermes-kanban-home-subs" },
+        channels.map(function (hc) {
+          const isBusy = !!busy[hc.platform];
+          const label = hc.subscribed ? "✓ " + hc.platform : hc.platform;
+          const title = hc.subscribed
+            ? `Sending updates to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}). Click to stop.`
+            : `Send completed / blocked / gave_up notifications to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}).`;
+          return h(Button, {
+            key: hc.platform,
+            size: "sm",
+            title: title,
+            disabled: isBusy || !props.onToggle,
+            onClick: function () {
+              if (props.onToggle) props.onToggle(hc.platform, hc.subscribed);
+            },
+            className: hc.subscribed
+              ? "hermes-kanban-home-sub hermes-kanban-home-sub--on"
+              : "hermes-kanban-home-sub",
+          }, label);
+        })
+      )
     );
   }
 

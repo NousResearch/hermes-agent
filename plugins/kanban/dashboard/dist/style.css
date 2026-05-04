@@ -351,6 +351,26 @@
   gap: 0.3rem;
 }
 
+/* ---- Home channel subscription toggles (per-platform, per-task) ----- */
+
+.hermes-kanban-home-subs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.hermes-kanban-home-sub {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.hermes-kanban-home-sub--on {
+  /* Subtly indicate the subscribed state without a hard color change so
+   * dashboard themes stay coherent. Border + tinted background. */
+  border-color: color-mix(in srgb, var(--color-ring) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-ring) 14%, transparent);
+  color: var(--color-foreground);
+}
+
 .hermes-kanban-section {
   display: flex;
   flex-direction: column;

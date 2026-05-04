@@ -127,6 +127,23 @@ class TestGeneratedSystemdUnits:
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
+    def test_user_unit_quotes_execstart_and_workdir_paths_with_spaces(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "Hermes Agent"
+        venv_dir = project_root / "venv"
+        python_path = venv_dir / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f'ExecStart="{python_path}" -m hermes_cli.main gateway run --replace' in unit
+        assert f'WorkingDirectory="{project_root}"' in unit
+
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
         unit = gateway_cli.generate_systemd_unit(system=True)
 

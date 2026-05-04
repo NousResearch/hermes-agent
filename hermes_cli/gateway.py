@@ -1610,6 +1610,14 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _systemd_quote_arg(value: str) -> str:
+    """Quote a systemd command/path argument only when needed."""
+    text = str(value)
+    if text and not any(ch.isspace() for ch in text) and '"' not in text and "\\" not in text:
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -1651,6 +1659,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        profile_suffix = f" {profile_arg}" if profile_arg else ""
+        exec_start = (
+            f"{_systemd_quote_arg(python_path)} -m hermes_cli.main"
+            f"{profile_suffix} gateway run --replace"
+        )
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -1661,8 +1674,8 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
-WorkingDirectory={working_dir}
+ExecStart={exec_start}
+WorkingDirectory={_systemd_quote_arg(working_dir)}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
@@ -1690,6 +1703,11 @@ WantedBy=multi-user.target
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    profile_suffix = f" {profile_arg}" if profile_arg else ""
+    exec_start = (
+        f"{_systemd_quote_arg(python_path)} -m hermes_cli.main"
+        f"{profile_suffix} gateway run --replace"
+    )
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -1698,8 +1716,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
-WorkingDirectory={working_dir}
+ExecStart={exec_start}
+WorkingDirectory={_systemd_quote_arg(working_dir)}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"

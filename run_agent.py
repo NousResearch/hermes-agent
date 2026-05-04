@@ -127,9 +127,14 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from agent.memory_manager import StreamingContextScrubber, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.turn_assembly import (
+    apply_user_turn_context,
+    compose_effective_system_prompt,
+    inject_prefill_messages,
+)
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -10260,15 +10265,17 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
-            effective_system = self._cached_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = compose_effective_system_prompt(
+                self._cached_system_prompt or "",
+                self.ephemeral_system_prompt,
+            )
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
+            api_messages = inject_prefill_messages(
+                api_messages,
+                self.prefill_messages,
+                effective_system,
+            )
 
             # Same safety net as the main loop: repair tool-call/result
             # pairing before asking for a final summary.  Compression and
@@ -10947,17 +10954,11 @@ class AIAgent:
                 # API-call-time only — the original message in `messages` is
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
-                    _injections = []
-                    if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
-                    if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                    if _injections:
-                        _base = api_msg.get("content", "")
-                        if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                    api_msg = apply_user_turn_context(
+                        api_msg,
+                        _ext_prefetch_cache,
+                        _plugin_user_context,
+                    )
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -10986,9 +10987,10 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = compose_effective_system_prompt(
+                active_system_prompt or "",
+                self.ephemeral_system_prompt,
+            )
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
@@ -10998,10 +11000,11 @@ class AIAgent:
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
+            api_messages = inject_prefill_messages(
+                api_messages,
+                self.prefill_messages,
+                effective_system,
+            )
 
             # Apply Anthropic prompt caching for Claude models on native
             # Anthropic, OpenRouter, and third-party Anthropic-compatible

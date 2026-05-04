@@ -580,10 +580,18 @@ export default function App() {
                   {routes.map(({ key, path, element }) => (
                     <Route key={key} path={path} element={element} />
                   ))}
-                  <Route
-                    path="*"
-                    element={<Navigate to="/sessions" replace />}
-                  />
+                  {/*
+                   * Only fire the catch-all redirect once plugin manifests
+                   * have loaded — otherwise a fresh deep-link to a plugin
+                   * route (e.g. /kanban) hits this before its <Route> is
+                   * registered and gets bounced to /sessions.
+                   */}
+                  {!pluginsLoading && (
+                    <Route
+                      path="*"
+                      element={<Navigate to="/sessions" replace />}
+                    />
+                  )}
                 </Routes>
 
                 {embeddedChat &&

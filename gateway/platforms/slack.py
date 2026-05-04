@@ -436,23 +436,26 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         ctx: Dict[str, Any],
         content: str,
+        chat_id: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> "SendResult":
         """Replace the initial ephemeral ack via ``response_url``.
 
-        Slack's ``response_url`` accepts a POST with ``replace_original``
+        Slack’s ``response_url`` accepts a POST with ``replace_original``
         for up to 30 minutes after the slash command was invoked.  This
-        lets us swap the "Running /cmd…" placeholder with the real reply,
-        and the message stays ephemeral ("Only visible to you").
+        lets us swap the “Running /cmd…” placeholder with the real reply,
+        and the message stays ephemeral (“Only visible to you”).
 
-        Falls back to a simple ``True`` SendResult if the POST fails —
-        the user already saw the initial ack, so a delivery failure here
-        is non-critical.
+        For multi-chunk responses the first chunk replaces the ephemeral
+        ack and subsequent chunks are delivered as normal channel messages
+        so the user sees the complete output.
+
+        Returns ``SendResult(success=False, ...)`` when the ``response_url``
+        POST fails so that the caller can surface or retry the failure
+        instead of silently swallowing it.
         """
         formatted = self.format_message(content)
-        # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
-        # response_url replaces a single ephemeral ack, so multi-chunk isn't
-        # possible.  Long responses are rare for command replies.
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         text = chunks[0] if chunks else formatted
         payload = {
@@ -460,6 +463,7 @@ class SlackAdapter(BasePlatformAdapter):
             "replace_original": True,
             "text": text,
         }
+        ephemeral_ok = False
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -468,18 +472,46 @@ class SlackAdapter(BasePlatformAdapter):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
-                        return SendResult(success=True, message_id=None)
-                    body = await resp.text()
-                    logger.warning(
-                        "[Slack] response_url POST returned %s: %s",
-                        resp.status,
-                        body[:200],
-                    )
+                        ephemeral_ok = True
+                    else:
+                        body = await resp.text()
+                        logger.warning(
+                            "[Slack] response_url POST returned %s: %s",
+                            resp.status,
+                            body[:200],
+                        )
         except Exception as e:
             logger.warning(
                 "[Slack] response_url POST failed: %s", e,
             )
-        # Non-fatal — the user saw the initial ack already.
+
+        if not ephemeral_ok:
+            return SendResult(
+                success=False,
+                error="response_url delivery failed",
+                retryable=True,
+            )
+
+        # Deliver remaining chunks (if any) as normal channel messages so the
+        # user sees the full response.  The first chunk already replaced the
+        # ephemeral ack above.
+        if len(chunks) > 1 and chat_id:
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            for extra_chunk in chunks[1:]:
+                kwargs = {
+                    "channel": chat_id,
+                    "text": extra_chunk,
+                    "mrkdwn": True,
+                }
+                if thread_ts:
+                    kwargs["thread_ts"] = thread_ts
+                try:
+                    await self._get_client(chat_id).chat_postMessage(**kwargs)
+                except Exception as e:
+                    logger.warning(
+                        "[Slack] follow-up chunk delivery failed: %s", e,
+                    )
+
         return SendResult(success=True, message_id=None)
 
     async def connect(self) -> bool:
@@ -720,6 +752,7 @@ class SlackAdapter(BasePlatformAdapter):
             if slash_ctx:
                 return await self._send_slash_ephemeral(
                     slash_ctx, content,
+                    chat_id=chat_id, reply_to=reply_to, metadata=metadata,
                 )
 
             # Convert standard markdown → Slack mrkdwn

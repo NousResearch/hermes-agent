@@ -2932,7 +2932,7 @@ class TestSlashEphemeralAck:
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
-        """_send_slash_ephemeral returns success=True even if POST fails."""
+        """_send_slash_ephemeral returns success=False with retryable=True when POST fails."""
         import time
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/bad",
@@ -2954,11 +2954,13 @@ class TestSlashEphemeralAck:
             result = await adapter.send("C1", "Some response")
 
         # Still success — the user saw the initial ack already
-        assert result.success is True
+        assert result.success is False
+        assert result.retryable is True
+        assert result.error == "response_url delivery failed"
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_exception(self, adapter):
-        """_send_slash_ephemeral returns success=True even if aiohttp raises."""
+        """_send_slash_ephemeral returns success=False with retryable=True when aiohttp raises."""
         import time
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/timeout",
@@ -2973,7 +2975,8 @@ class TestSlashEphemeralAck:
         with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
             result = await adapter.send("C1", "Some response")
 
-        assert result.success is True
+        assert result.success is False
+        assert result.retryable is True
 
     @pytest.mark.asyncio
     async def test_native_slash_stashes_context_and_dispatches(self, adapter):

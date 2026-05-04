@@ -2353,8 +2353,9 @@ def _refresh_codex_auth_tokens(
     timeout_seconds: float,
 ) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token.
-    
-    Saves the new tokens to Hermes auth store automatically.
+
+    Saves the new tokens to Hermes auth store and mirrors them into any
+    matching ``credential_pool`` entries for ``openai-codex``.
     """
     refreshed = refresh_codex_oauth_pure(
         str(tokens.get("access_token", "") or ""),
@@ -2366,6 +2367,32 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
+
+    # Mirror rotated tokens into credential_pool. OpenAI uses single-use
+    # rotating refresh tokens, so any pool entry still holding the previous
+    # refresh_token will fail with invalid_grant the next time pool.select()
+    # routes a request to it. Failure here must not break refresh — the new
+    # tokens are already persisted to the active provider state above.
+    try:
+        pool_entries = read_credential_pool("openai-codex")
+        pool_changed = False
+        for entry in pool_entries:
+            if not isinstance(entry, dict) or entry.get("auth_type") != "oauth":
+                continue
+            if (
+                entry.get("access_token") == updated_tokens["access_token"]
+                and entry.get("refresh_token") == updated_tokens["refresh_token"]
+            ):
+                continue
+            entry["access_token"] = updated_tokens["access_token"]
+            entry["refresh_token"] = updated_tokens["refresh_token"]
+            entry["last_refresh"] = refreshed.get("last_refresh")
+            pool_changed = True
+        if pool_changed:
+            write_credential_pool("openai-codex", pool_entries)
+    except Exception as exc:
+        logger.warning("Failed to sync credential_pool after Codex refresh: %s", exc)
+
     return updated_tokens
 
 

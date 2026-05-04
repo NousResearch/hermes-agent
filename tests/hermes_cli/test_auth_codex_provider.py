@@ -14,14 +14,17 @@ from hermes_cli.auth import (
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
     _read_codex_tokens,
+    _refresh_codex_auth_tokens,
     _save_codex_tokens,
     _import_codex_cli_tokens,
     _login_openai_codex,
     get_codex_auth_status,
     get_provider_auth_state,
+    read_credential_pool,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
     resolve_provider,
+    write_credential_pool,
 )
 
 
@@ -351,3 +354,107 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+def _seed_pool_entry(hermes_home: Path, *, access_token: str, refresh_token: str, auth_type: str = "oauth"):
+    """Add one credential_pool entry for openai-codex inside an existing auth.json."""
+    auth_file = hermes_home / "auth.json"
+    store = json.loads(auth_file.read_text())
+    store.setdefault("credential_pool", {})["openai-codex"] = [
+        {
+            "id": "test01",
+            "label": "device_code",
+            "auth_type": auth_type,
+            "priority": 0,
+            "source": "device_code",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "last_status": None,
+            "last_refresh": "2026-02-26T00:00:00Z",
+        }
+    ]
+    auth_file.write_text(json.dumps(store, indent=2))
+
+
+def test_refresh_codex_auth_tokens_syncs_credential_pool(tmp_path, monkeypatch):
+    """After token rotation, credential_pool entries should hold the new tokens."""
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="access-old", refresh_token="refresh-old")
+    _seed_pool_entry(hermes_home, access_token="access-old", refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_codex_oauth_pure",
+        lambda *_a, **_kw: {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "last_refresh": "2026-05-04T08:41:03Z",
+        },
+    )
+
+    _refresh_codex_auth_tokens({"access_token": "access-old", "refresh_token": "refresh-old"}, 20.0)
+
+    entries = read_credential_pool("openai-codex")
+    assert len(entries) == 1
+    assert entries[0]["access_token"] == "access-new"
+    assert entries[0]["refresh_token"] == "refresh-new"
+    assert entries[0]["last_refresh"] == "2026-05-04T08:41:03Z"
+
+
+def test_refresh_codex_auth_tokens_pool_sync_skips_non_oauth_entries(tmp_path, monkeypatch):
+    """API-key (non-oauth) pool entries must not be touched by OAuth refresh."""
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="access-old", refresh_token="refresh-old")
+    _seed_pool_entry(
+        hermes_home,
+        access_token="sk-static-key",
+        refresh_token="",
+        auth_type="api_key",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_codex_oauth_pure",
+        lambda *_a, **_kw: {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "last_refresh": "2026-05-04T08:41:03Z",
+        },
+    )
+
+    _refresh_codex_auth_tokens({"access_token": "access-old", "refresh_token": "refresh-old"}, 20.0)
+
+    entries = read_credential_pool("openai-codex")
+    assert entries[0]["access_token"] == "sk-static-key"
+    assert entries[0]["refresh_token"] == ""
+
+
+def test_refresh_codex_auth_tokens_pool_write_failure_does_not_break_refresh(tmp_path, monkeypatch):
+    """If credential_pool write fails, refresh must still return new tokens (provider state already persisted)."""
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="access-old", refresh_token="refresh-old")
+    _seed_pool_entry(hermes_home, access_token="access-old", refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_codex_oauth_pure",
+        lambda *_a, **_kw: {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "last_refresh": "2026-05-04T08:41:03Z",
+        },
+    )
+
+    def _boom(*_a, **_kw):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr("hermes_cli.auth.write_credential_pool", _boom)
+
+    result = _refresh_codex_auth_tokens(
+        {"access_token": "access-old", "refresh_token": "refresh-old"}, 20.0
+    )
+
+    assert result["access_token"] == "access-new"
+    assert result["refresh_token"] == "refresh-new"
+    state = get_provider_auth_state("openai-codex")
+    assert state["tokens"]["access_token"] == "access-new"

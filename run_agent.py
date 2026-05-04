@@ -5321,6 +5321,16 @@ class AIAgent:
         if _env_hints:
             prompt_parts.append(_env_hints)
 
+        # Subagent delegation guidance — teaches the model when to use
+        # delegate_task with agent_id for named subagents.
+        try:
+            from tools.delegate_tool import get_delegation_guidance
+            _delegation_guidance = get_delegation_guidance()
+            if _delegation_guidance:
+                prompt_parts.append(_delegation_guidance)
+        except Exception:
+            pass
+
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])

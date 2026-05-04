@@ -3947,6 +3947,63 @@ DELEGATE_TASK_SCHEMA = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Delegation guidance for the parent agent's system prompt
+# ---------------------------------------------------------------------------
+
+
+def get_delegation_guidance() -> str:
+    """Return system prompt text instructing the model when and how to delegate.
+
+    Reads available agents from agent-registry.json to keep the guidance
+    in sync with the actual registry.
+    """
+    try:
+        registry = _load_agent_registry()
+        agents = registry.get("agents", {})
+    except Exception:
+        agents = {}
+
+    agent_lines = []
+    for aid, cfg in agents.items():
+        profile = cfg.get("subagent_profile", {})
+        caps = cfg.get("capabilities", [])
+        cap_str = ", ".join(caps[:4]) if caps else "general"
+        toolsets = profile.get("toolsets", [])
+        ts_str = ", ".join(toolsets) if toolsets else "inherited"
+        agent_lines.append(
+            f"  - agent_id='{aid}': {cfg.get('type', 'worker')} — "
+            f"capabilities=[{cap_str}], tools=[{ts_str}]"
+        )
+
+    agent_list = "\n".join(agent_lines) if agent_lines else (
+        "  - agent_id='kimi': research & web search (tools: web+file, readonly)\n"
+        "  - agent_id='claude': code editing & commands (tools: file+terminal)\n"
+        "  - agent_id='hermes-internal': analysis & planning (tools: file, readonly)"
+    )
+
+    return (
+        "## Subagent Delegation (delegate_task)\n"
+        "You have access to delegate_task with pre-configured named agents. "
+        "Each agent has a specific profile with the right toolsets, permissions, "
+        "and isolation mode pre-set.\n\n"
+        "**CRITICAL — When user mentions an agent name, you MUST use delegate_task "
+        "with the agent_id parameter:**\n"
+        "- \"用 kimi\" / \"让 kimi\" / \"派 kimi\" → delegate_task(agent_id='kimi', goal=...)\n"
+        "- \"用 claude\" / \"让 claude\" / \"派 claude\" → delegate_task(agent_id='claude', goal=...)\n"
+        "- \"agent_id=kimi\" or \"agent_id=claude\" → delegate_task(agent_id=..., goal=...)\n\n"
+        "**Available agents:**\n"
+        f"{agent_list}\n\n"
+        "**Key rules:**\n"
+        "1. When the user names kimi, ALWAYS delegate — do NOT search directly yourself.\n"
+        "2. When the user names claude, ALWAYS delegate — do NOT edit files directly.\n"
+        "3. agent_id and role are mutually exclusive. Use agent_id, not role.\n"
+        "4. Never translate a user's agent request into manual toolsets+role.\n"
+        "5. Set 'context' to include the user's language preference.\n"
+        "6. Background long searches with run_in_background=true for instant response."
+    )
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 

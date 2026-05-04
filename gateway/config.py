@@ -1601,5 +1601,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
+
+            # Mirror the built-in pattern: {PREFIX}_HOME_CHANNEL env var
+            # populates the platform's home_channel so cross-platform
+            # send_message can route to a default destination.
+            prefix = entry.name.upper().replace("-", "_")
+            home_val = os.getenv(f"{prefix}_HOME_CHANNEL")
+            if home_val:
+                config.platforms[platform].home_channel = HomeChannel(
+                    platform=platform,
+                    chat_id=home_val,
+                    name=os.getenv(f"{prefix}_HOME_CHANNEL_NAME", "Home"),
+                    thread_id=os.getenv(f"{prefix}_HOME_CHANNEL_THREAD_ID") or None,
+                )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

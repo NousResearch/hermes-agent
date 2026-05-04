@@ -609,3 +609,80 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestPluginPlatformHomeChannelEnvOverride:
+    """Plugin platforms registered via the platform registry should pick up
+    ``{PREFIX}_HOME_CHANNEL`` env vars during ``_apply_env_overrides``,
+    matching the built-in pattern (regression for issue #19440)."""
+
+    def test_plugin_home_channel_env_var_populates_home_channel(self, monkeypatch):
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        original = dict(platform_registry._entries)
+        try:
+            platform_registry._entries.clear()
+            platform_registry.register(PlatformEntry(
+                name="xmpp",
+                label="XMPP",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                source="plugin",
+            ))
+
+            monkeypatch.setattr(
+                "hermes_cli.plugins.discover_plugins",
+                lambda: None,
+            )
+
+            config = GatewayConfig()
+            env = {
+                "XMPP_HOME_CHANNEL": "room@conference.example.org",
+                "XMPP_HOME_CHANNEL_NAME": "Lounge",
+                "XMPP_HOME_CHANNEL_THREAD_ID": "thread-1",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                _apply_env_overrides(config)
+
+            platform = Platform("xmpp")
+            assert platform in config.platforms
+            assert config.platforms[platform].enabled is True
+            home = config.platforms[platform].home_channel
+            assert home is not None
+            assert home.chat_id == "room@conference.example.org"
+            assert home.name == "Lounge"
+            assert home.thread_id == "thread-1"
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original)
+
+    def test_plugin_without_home_channel_env_leaves_home_channel_unset(self, monkeypatch):
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        original = dict(platform_registry._entries)
+        try:
+            platform_registry._entries.clear()
+            platform_registry.register(PlatformEntry(
+                name="xmpp",
+                label="XMPP",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                source="plugin",
+            ))
+
+            monkeypatch.setattr(
+                "hermes_cli.plugins.discover_plugins",
+                lambda: None,
+            )
+
+            config = GatewayConfig()
+            with patch.dict(os.environ, {}, clear=True):
+                _apply_env_overrides(config)
+
+            platform = Platform("xmpp")
+            assert platform in config.platforms
+            assert config.platforms[platform].enabled is True
+            assert config.platforms[platform].home_channel is None
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original)

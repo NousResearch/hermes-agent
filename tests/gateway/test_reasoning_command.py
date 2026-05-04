@@ -80,6 +80,7 @@ class TestReasoningCommand:
     def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("high --global") == ("high", True)
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("—global xhigh") == ("xhigh", True)
+        assert gateway_run.GatewayRunner._parse_reasoning_command_args("--global max") == ("max", True)
 
     @pytest.mark.asyncio
     async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):

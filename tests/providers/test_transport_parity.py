@@ -122,6 +122,49 @@ class TestKimiParity:
         assert kw.get("reasoning_effort") == "medium"
 
 
+class TestOpenCodeGoParity:
+    def test_deepseek_v4_reasoning_effort_top_level(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("opencode-go"),
+            reasoning_config={"enabled": True, "effort": "max"},
+            supports_reasoning=True,
+        )
+        assert kw["reasoning_effort"] == "max"
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    def test_deepseek_v4_reasoning_effort_default_medium(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("opencode-go"),
+        )
+        assert kw["reasoning_effort"] == "medium"
+
+    def test_deepseek_v4_reasoning_effort_omitted_when_disabled(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("opencode-go"),
+            reasoning_config={"enabled": False},
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_non_deepseek_v4_has_no_reasoning_effort(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.6-plus",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("opencode-go"),
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert "reasoning_effort" not in kw
+
+
 class TestOpenRouterParity:
     """OpenRouter: provider preferences, reasoning in extra_body."""
 

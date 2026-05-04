@@ -1998,7 +1998,7 @@ class GatewayRunner:
         """Load reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
+        "minimal", "low", "medium", "high", "xhigh", "max". Returns None to use
         default (medium).
         """
         from hermes_constants import parse_reasoning_effort
@@ -9409,7 +9409,7 @@ class GatewayRunner:
                 f"**Effort:** `{level}`\n"
                 f"**Scope:** {scope}\n"
                 f"**Display:** {display_state}\n\n"
-                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|reset|show|hide> [--global]`"
             )
 
         # Display toggle (per-platform)
@@ -9438,12 +9438,12 @@ class GatewayRunner:
             return "🧠 ✓ Session reasoning override cleared; falling back to global config."
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in ("minimal", "low", "medium", "high", "xhigh"):
+        elif effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
             parsed = {"enabled": True, "effort": effort}
         else:
             return (
                 f"⚠️ Unknown argument: `{effort or raw_args.lower()}`\n\n"
-                "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
+                "**Valid levels:** none, minimal, low, medium, high, xhigh, max\n"
                 "**Display:** show, hide\n"
                 "**Persist:** add `--global` to save beyond this session"
             )

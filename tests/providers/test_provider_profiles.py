@@ -88,6 +88,44 @@ class TestKimiProfile:
         assert tl["reasoning_effort"] == "medium"
 
 
+class TestOpenCodeGoProfile:
+    def test_deepseek_v4_reasoning_effort_top_level(self):
+        p = get_provider_profile("opencode-go")
+        eb, tl = p.build_api_kwargs_extras(
+            model="deepseek-v4-pro",
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "max"
+
+    def test_deepseek_v4_minimal_clamps_to_low(self):
+        p = get_provider_profile("go")
+        eb, tl = p.build_api_kwargs_extras(
+            model="deepseek-v4-flash",
+            reasoning_config={"enabled": True, "effort": "minimal"},
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "low"
+
+    def test_deepseek_v4_omits_reasoning_when_disabled(self):
+        p = get_provider_profile("opencode-go")
+        eb, tl = p.build_api_kwargs_extras(
+            model="deepseek-v4-pro",
+            reasoning_config={"enabled": False},
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_non_deepseek_v4_has_no_reasoning_effort(self):
+        p = get_provider_profile("opencode-go")
+        eb, tl = p.build_api_kwargs_extras(
+            model="qwen3.6-plus",
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert eb == {}
+        assert tl == {}
+
+
 class TestOpenRouterProfile:
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")

@@ -7,8 +7,36 @@ Both use per-model api_mode routing:
     (this profile)
 """
 
+from typing import Any
+
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+class OpenCodeGoProfile(ProviderProfile):
+    """OpenCode Go subscription profile."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        model = str(context.get("model") or "").strip().lower()
+        if not model.startswith("deepseek-v4-"):
+            return {}, {}
+
+        if reasoning_config and isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                return {}, {}
+            effort = str(reasoning_config.get("effort") or "medium").strip().lower()
+        else:
+            effort = "medium"
+
+        if effort == "minimal":
+            effort = "low"
+        elif effort not in {"low", "medium", "high", "xhigh", "max"}:
+            effort = "medium"
+
+        return {}, {"reasoning_effort": effort}
+
 
 opencode_zen = ProviderProfile(
     name="opencode-zen",
@@ -18,7 +46,7 @@ opencode_zen = ProviderProfile(
     default_aux_model="gemini-3-flash",
 )
 
-opencode_go = ProviderProfile(
+opencode_go = OpenCodeGoProfile(
     name="opencode-go",
     aliases=("opencode_go", "go", "opencode-go-sub"),
     env_vars=("OPENCODE_GO_API_KEY",),

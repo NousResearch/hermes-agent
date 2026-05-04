@@ -115,6 +115,46 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('opens the agents overlay locally for bare /agents', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/agents')).toBe(true)
+    expect(getOverlayState().agents).toBe(true)
+    expect(getOverlayState().agentsInitialHistoryIndex).toBe(0)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('opens the agents overlay locally for bare /tasks alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/tasks')).toBe(true)
+    expect(getOverlayState().agents).toBe(true)
+    expect(getOverlayState().agentsInitialHistoryIndex).toBe(0)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /agents pause directly to delegation.pause without opening the overlay', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn(() => Promise.resolve({ paused: true }))
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/agents pause')).toBe(true)
+    expect(getOverlayState().agents).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('delegation.pause', { paused: true })
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('delegation · paused')
+    })
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 

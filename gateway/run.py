@@ -1080,6 +1080,9 @@ class GatewayRunner:
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        # Nudge queue: messages from cronjobs to be injected into agent sessions
+        # Key: session_key, Value: List[str] of pending nudge contents
+        self._nudge_queue: Dict[str, List[str]] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1453,6 +1456,48 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+    def _queue_nudge_for_session(self, session_key: str, content: str) -> None:
+        """Queue a nudge message for a session.
+        
+        Nudges are injected at the start of the next agent turn.
+        Called by the cron ticker when processing nudge files.
+        """
+        if session_key not in self._nudge_queue:
+            self._nudge_queue[session_key] = []
+        self._nudge_queue[session_key].append(content)
+        logger.info("Queued nudge for %s (now %d pending)", session_key, len(self._nudge_queue[session_key]))
+
+    async def _trigger_nudge_continuation(self, source, session_key: str) -> None:
+        """Trigger a continuation turn for pending nudges after agent completes.
+        
+        This is called when the agent finishes but there are still pending nudges
+        in the queue. It creates a synthetic internal event to process them.
+        """
+        from gateway.platforms.base import MessageEvent, MessageType
+        
+        # Brief delay to let the current turn's response be sent first
+        await asyncio.sleep(0.5)
+        
+        # Check if there are still nudges pending (might have been processed already)
+        if session_key not in self._nudge_queue or not self._nudge_queue[session_key]:
+            return
+        
+        # Check if session is now free (no other agent started)
+        if session_key in self._running_agents:
+            logger.debug("Session %s still has running agent, deferring nudge continuation", session_key)
+            return
+        
+        # Create synthetic internal event
+        event = MessageEvent(
+            text="(system: processing pending update)",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        
+        logger.info("Triggering nudge continuation turn for session %s", session_key)
+        await self._handle_message(event)
 
     def _resolve_session_agent_runtime(
         self,
@@ -5718,6 +5763,22 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
+        # -----------------------------------------------------------------
+        # Inject any pending nudges from cronjobs at the start of the message
+        # -----------------------------------------------------------------
+        session_key = self._session_key_for_source(source)
+        if hasattr(self, "_nudge_queue") and session_key in self._nudge_queue:
+            pending_nudges = self._nudge_queue.pop(session_key, [])
+            if pending_nudges:
+                nudge_content = "\n\n".join(pending_nudges)
+                if getattr(event, "internal", False):
+                    # Internal/system event - replace with nudge content
+                    message_text = nudge_content
+                else:
+                    # User message - prepend nudges
+                    message_text = f"{nudge_content}\n\n{message_text}"
+                logger.info("Injected %d pending nudge(s) for session %s", len(pending_nudges), session_key)
+
         return message_text
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
@@ -6655,6 +6716,19 @@ class GatewayRunner:
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
+
+            # -----------------------------------------------------------------
+            # Check for pending nudges after agent completes and trigger another
+            # turn if there are any. This enables cronjob "nudges" to continue
+            # the conversation without waiting for user input.
+            # -----------------------------------------------------------------
+            if hasattr(self, "_nudge_queue") and session_key in self._nudge_queue:
+                pending_nudges = self._nudge_queue.get(session_key, [])
+                if pending_nudges:
+                    # Clear from queue (will be injected by next turn's _prepare_inbound_message_text)
+                    # and trigger a synthetic continuation turn
+                    asyncio.create_task(self._trigger_nudge_continuation(source, session_key))
+                    logger.info("Scheduled nudge continuation for session %s after current turn", session_key)
 
             return response
             
@@ -13837,7 +13911,194 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _process_pending_nudges(runner_ref, adapters, loop):
+    """
+    Check for pending nudges and queue them for target sessions.
+    
+    Called from the cron ticker to enable "push" updates from cronjobs
+    to agent sessions without requiring user input first.
+    
+    Nudges are queued and injected at the start of the next agent turn.
+    If no agent is currently running for the session, a new turn is
+    triggered automatically.
+    """
+    try:
+        from pathlib import Path
+        from hermes_constants import get_hermes_home
+        import json
+        import asyncio
+        
+        nudge_dir = get_hermes_home() / "nudges"
+        logger.debug("Nudge check: dir=%s exists=%s", nudge_dir, nudge_dir.exists())
+        if not nudge_dir.exists():
+            return
+        
+        # Get reference to the GatewayRunner
+        runner = runner_ref() if runner_ref else None
+        if not runner:
+            logger.debug("Nudge processing skipped: runner_ref=%s runner=%s", runner_ref, runner)
+            return
+        
+        nudge_files = list(nudge_dir.glob("*.json"))
+        logger.debug("Nudge check: found %d file(s) in %s", len(nudge_files), nudge_dir)
+        
+        processed = 0
+        triggered_sessions = []  # Sessions that need auto-trigger
+        
+        for nudge_file in nudge_files:
+            try:
+                with open(nudge_file, "r") as f:
+                    data = json.load(f)
+                
+                nudges = data.get("nudges", [])
+                if not nudges:
+                    logger.debug("Nudge file %s has no nudges, removing", nudge_file.name)
+                    nudge_file.unlink()
+                    continue
+                
+                # Parse session key from filename
+                safe_key = nudge_file.stem
+                # Restore original format (replace first dash with colon)
+                if "-" in safe_key:
+                    session_key = safe_key.replace("-", ":", 1)
+                else:
+                    session_key = safe_key
+                
+                logger.info("Processing nudge file %s → session %s (%d nudge(s))", nudge_file.name, session_key, len(nudges))
+                
+                # Get all nudge content
+                nudge_contents = []
+                for nudge in nudges:
+                    content = nudge.get("content", "")
+                    if content:
+                        nudge_contents.append(content)
+                
+                if not nudge_contents:
+                    logger.debug("Nudge file %s has empty content, removing", nudge_file.name)
+                    nudge_file.unlink()
+                    continue
+                
+                # Combine multiple nudges into one message
+                combined_content = "\n\n".join(nudge_contents)
+                
+                # Store the nudge in the session store so it's picked up
+                # at the start of the next agent turn
+                try:
+                    runner._queue_nudge_for_session(session_key, combined_content)
+                    logger.info("Nudge queued for session %s (queue size: %d)", session_key, len(runner._nudge_queue.get(session_key, [])))
+                    processed += 1
+                    
+                    # Check if we need to auto-trigger a new turn
+                    # (only if no agent is currently running for this session)
+                    if session_key not in runner._running_agents:
+                        logger.info("Session %s not running — scheduling auto-trigger", session_key)
+                        triggered_sessions.append(session_key)
+                    else:
+                        logger.info("Session %s has running agent — nudge will be injected at next turn", session_key)
+                        
+                except Exception as e:
+                    logger.warning("Failed to queue nudge for %s: %s", session_key, e)
+                
+                # Clear processed nudges
+                nudge_file.unlink()
+                logger.debug("Removed nudge file %s", nudge_file.name)
+                
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Error processing nudge file %s: %s", nudge_file, e)
+                try:
+                    nudge_file.unlink()
+                except OSError:
+                    pass
+        
+        # Auto-trigger agent runs for sessions that have nudges but no running agent
+        for session_key in triggered_sessions:
+            try:
+                logger.info("Auto-triggering session %s (adapters=%d, loop=%s)", session_key, len(adapters) if adapters else 0, loop is not None)
+                _trigger_nudged_session(runner, adapters, loop, session_key)
+            except Exception as e:
+                logger.warning("Failed to auto-trigger session %s: %s", session_key, e)
+        
+        if processed:
+            logger.info("Nudge processing complete: %d nudge(s) processed, %d session(s) triggered", processed, len(triggered_sessions))
+        else:
+            logger.debug("Nudge processing complete: no nudges found")
+            
+    except Exception as e:
+        logger.error("Nudge processing error: %s", e, exc_info=True)
+
+
+def _trigger_nudged_session(runner, adapters, loop, session_key):
+    """
+    Trigger an agent turn for a session that has pending nudges.
+    
+    Creates a synthetic internal message event to wake up the agent
+    without requiring user input.
+    """
+    import asyncio
+    from gateway.platforms.base import MessageEvent, MessageType, SessionSource, Platform
+    
+    # Parse session key to reconstruct the source
+    # Format: platform:chat_id:thread_id or platform:chat_id
+    parts = session_key.split(":")
+    if len(parts) < 2:
+        logger.warning("Cannot trigger session with invalid key: %s", session_key)
+        return
+    
+    platform_str = parts[0]
+    chat_id = parts[1]
+    thread_id = parts[2] if len(parts) > 2 else None
+    
+    try:
+        platform = Platform(platform_str)
+    except ValueError:
+        logger.warning("Unknown platform in session key: %s", session_key)
+        return
+    
+    # Get the adapter for this platform
+    adapter = adapters.get(platform) if adapters else None
+    if not adapter:
+        logger.warning("No adapter available for platform %s, cannot trigger %s", platform_str, session_key)
+        return
+    
+    logger.info("Triggering nudge session: platform=%s chat_id=%s thread_id=%s", platform_str, chat_id, thread_id)
+    
+    # Create a synthetic source - use minimal required fields
+    # The session store will resolve the full context
+    source = SessionSource(
+        platform=platform,
+        chat_id=chat_id,
+        user_id="system",  # Internal trigger
+        user_name="System",
+        chat_type="dm" if thread_id is None else "thread",
+        thread_id=thread_id,
+    )
+    
+    # Create synthetic message event
+    # The actual nudge content is already queued and will be injected
+    # by _prepare_inbound_message_text when this event is processed
+    event = MessageEvent(
+        text="(system: processing pending update)",
+        message_type=MessageType.TEXT,
+        source=source,
+        internal=True,  # Mark as internal so it bypasses user auth
+    )
+    
+    # Schedule the handler on the event loop
+    async def _dispatch():
+        try:
+            logger.info("Auto-triggering agent turn for session %s", session_key)
+            await runner._handle_message(event)
+        except Exception as e:
+            logger.error("Error in auto-triggered turn for %s: %s", session_key, e)
+    
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(_dispatch(), loop)
+        logger.debug("Scheduled auto-trigger for %s", session_key)
+    else:
+        logger.warning("Event loop not available, cannot trigger %s", session_key)
+
+
+def _start_cron_ticker(stop_event: threading.Event, runner_ref=None, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
     
@@ -13850,6 +14111,9 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache + expired ``hermes debug share`` pastes
     once per hour.
+    
+    Also processes pending nudges to enable "push" updates from cronjobs
+    to agent sessions.
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
@@ -13859,6 +14123,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    NUDGE_EVERY = 1          # ticks — every tick (60s default) check for nudges
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -13867,6 +14132,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
+        
+        # Process pending nudges every tick
+        if tick_count % NUDGE_EVERY == 0 and runner_ref:
+            try:
+                _process_pending_nudges(runner_ref, adapters, loop)
+            except Exception as e:
+                logger.debug("Nudge processing error: %s", e)
 
         tick_count += 1
 
@@ -14212,11 +14484,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    import weakref as _weakref
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={"runner_ref": _weakref.ref(runner), "adapters": runner.adapters, "loop": asyncio.get_running_loop()},
         daemon=True,
         name="cron-ticker",
     )

@@ -316,6 +316,10 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+# Mark this process as a gateway so cli.py's module-level load_cli_config()
+# knows not to clobber TERMINAL_CWD if lazily imported.
+os.environ["_HERMES_GATEWAY"] = "1"
+
 _ensure_ssl_certs()
 
 # Add parent directory to path

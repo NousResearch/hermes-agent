@@ -837,7 +837,17 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+"""Lockfile fields npm writes non-deterministically at install time.
+
+``ideallyInert`` is npm's runtime annotation for packages it skipped installing
+(per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
+on dev-dependencies that are *also* declared as peers — the canonical
+``package-lock.json`` records the dual role, but npm 9's actualized tree strips
+it.  Neither key represents a real skew between what was declared and what was
+installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
+to avoid false-positive reinstalls on every launch.
+"""
 
 
 def _tui_need_npm_install(root: Path) -> bool:
@@ -1042,17 +1052,21 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if _tui_need_npm_install(tui_dir):
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
+        # Capture stdout as well as stderr — some npm errors (notably EACCES on a
+        # root-owned node_modules in containers) are emitted on stdout, and a
+        # bare "npm install failed." with no preview defeats debugging.  We keep
+        # the failure-only print path so a successful install stays silent.
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(tui_dir),
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             env={**os.environ, "CI": "1"},
         )
         if result.returncode != 0:
-            err = (result.stderr or "").strip()
-            preview = "\n".join(err.splitlines()[-30:])
+            combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
             print("npm install failed.")
             if preview:
                 print(preview)

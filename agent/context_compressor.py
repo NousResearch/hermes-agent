@@ -39,13 +39,16 @@ SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "EVERY question and request mentioned anywhere in this summary was "
+    "already handled in the prior context window. Do NOT re-answer them, "
+    "do NOT resume them, do NOT treat them as open. "
+    "The ONLY active instruction is the most recent user message that "
+    "appears AFTER this summary block. If that message is short or "
+    "ambiguous, ASK the user — do not infer intent from the summary. "
+    "The '## Active Task' section may say 'None'; that is normal and "
+    "means there is no carried-over task. The current session state "
+    "(files, config, processes) may already reflect work described "
+    "here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -757,12 +760,15 @@ class ContextCompressor(ContextEngine):
 
         # Shared structured template (used by both paths).
         _template_sections = f"""## Active Task
-[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
-task assignment verbatim — the exact words they used. If multiple tasks
-were requested and only some are done, list only the ones NOT yet completed.
-The next assistant must pick up exactly here. Example:
-"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
-If no outstanding task exists, write "None."]
+[Default to "None." — write that unless the user's most recent message
+in the conversation is a clear, unhandled request that the assistant
+did not respond to or complete. Do NOT invent an active task from
+older requests, side questions, clarifying questions the assistant
+asked, items that were discussed and dropped, or anything the
+assistant already addressed. When in doubt, write "None." — the
+assistant receiving this summary will read the user's latest
+post-summary message for instructions. If you DO write an active
+task, copy the user's exact words verbatim and nothing else.]
 
 ## Goal
 [What the user is trying to accomplish overall]
@@ -798,9 +804,6 @@ Be specific with file paths, commands, line numbers, and results.]
 
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so the next assistant does not re-answer them]
-
-## Pending User Asks
-[Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]

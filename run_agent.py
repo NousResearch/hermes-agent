@@ -13328,11 +13328,25 @@ class AIAgent:
                         )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
-                        self._safe_print("  ⟳ compacting context…")
+                        _pre_tokens = _real_tokens
+                        _pre_msgs = len(messages)
+                        self._emit_status(
+                            f"⟳ Compacting context: {_pre_tokens:,} tokens / {_pre_msgs} messages "
+                            f"→ summarizing with {self.context_compressor.summary_model or self.model}…"
+                        )
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,
+                        )
+                        _post_tokens = self.context_compressor.last_prompt_tokens
+                        _saved_pct = (
+                            int((1 - _post_tokens / _pre_tokens) * 100)
+                            if _pre_tokens > 0 else 0
+                        )
+                        self._emit_status(
+                            f"✓ Compaction complete: {_pre_tokens:,} → {_post_tokens:,} tokens "
+                            f"({_saved_pct}% reduction, {_pre_msgs} → {len(messages)} messages)"
                         )
                         # Compression created a new session — clear history so
                         # _flush_messages_to_session_db writes compressed messages

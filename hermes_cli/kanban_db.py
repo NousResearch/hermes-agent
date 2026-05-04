@@ -1729,7 +1729,7 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
+                   started_at    = ?
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL

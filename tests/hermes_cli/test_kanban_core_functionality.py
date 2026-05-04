@@ -747,6 +747,79 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         conn.close()
 
 
+def test_claim_resets_task_started_at_after_unblock(kanban_home):
+    """A blocked task gets a fresh task-level runtime clock when retried."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="blocked then retried",
+            assignee="worker",
+            max_runtime_seconds=60,
+        )
+        kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, reason="waiting for input")
+        assert kb.unblock_task(conn, tid) is True
+
+        stale_started_at = int(time.time()) - 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?",
+                (stale_started_at, tid),
+            )
+
+        before_claim = int(time.time())
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.started_at is not None
+        assert claimed.started_at >= before_claim
+        assert claimed.started_at != stale_started_at
+    finally:
+        conn.close()
+
+
+def test_timeout_retry_uses_fresh_task_started_at(kanban_home):
+    """A timed-out task should not immediately time out again on retry."""
+    signals = []
+
+    def _signal_fn(pid, sig):
+        signals.append((pid, sig))
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="timeout then retry",
+            assignee="worker",
+            max_runtime_seconds=60,
+        )
+        kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 999_999)
+        stale_started_at = int(time.time()) - 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?",
+                (stale_started_at, tid),
+            )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=_signal_fn)
+        assert timed_out == [tid]
+        assert kb.get_task(conn, tid).status == "ready"
+
+        before_retry = int(time.time())
+        retried = kb.claim_task(conn, tid)
+        assert retried is not None
+        assert retried.started_at is not None
+        assert retried.started_at >= before_retry
+        assert retried.started_at != stale_started_at
+        kb._set_worker_pid(conn, tid, 999_999)
+
+        assert kb.enforce_max_runtime(conn, signal_fn=_signal_fn) == []
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Heartbeat (item 2 from the Multica audit)
 # ---------------------------------------------------------------------------

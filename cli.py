@@ -9607,7 +9607,17 @@ class HermesCLI:
         msg_count = len(self.conversation_history)
         if msg_count > 0:
             user_msgs = len([m for m in self.conversation_history if m.get("role") == "user"])
-            tool_calls = len([m for m in self.conversation_history if m.get("role") == "tool" or m.get("tool_calls")])
+            assistant_msgs = len([m for m in self.conversation_history if m.get("role") == "assistant"])
+            tool_results = len([m for m in self.conversation_history if m.get("role") == "tool"])
+            # Total tool invocations: sum across all assistant messages' tool_calls lists.
+            # An assistant turn can request multiple tool calls in parallel, so this is
+            # more accurate than counting tool-result messages (which 1:1 with invocations
+            # in well-formed transcripts but can drift if a tool result is dropped).
+            tool_invocations = sum(
+                len(m.get("tool_calls") or [])
+                for m in self.conversation_history
+                if m.get("role") == "assistant"
+            )
             elapsed = datetime.now() - self.session_start
             hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
             minutes, seconds = divmod(remainder, 60)
@@ -9662,7 +9672,7 @@ class HermesCLI:
             if session_title:
                 print(f"Title:          {session_title}")
             print(f"Duration:       {duration_str}")
-            print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+            print(f"Messages:       {msg_count} ({user_msgs} user, {assistant_msgs} assistant, {tool_invocations} tool calls / {tool_results} results)")
             if cost_str:
                 print(f"Cost:           {cost_str}")
         else:

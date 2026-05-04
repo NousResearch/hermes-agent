@@ -1,0 +1,26 @@
+name = "hf-model-index-worker"
+main = "src/index.ts"
+compatibility_date = "2026-05-04"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "MODEL_KV"
+id = "1ff206c342f241a1bbcb8324b3d6e3a3"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hf-model-index"
+database_id = "35edc271-a0b2-43b4-80c6-be1193495a34"
+
+[triggers]
+crons = ["17 */6 * * *"]
+
+[vars]
+WATCHED_AUTHORS = "[\"unsloth\",\"Qwen\",\"mistralai\",\"meta-llama\",\"THUDM\",\"zai-org\",\"moonshotai\",\"google\",\"litert-community\"]"
+INCLUDE_PATTERNS = "[\"^unsloth/.*GGUF.*\",\"^Qwen/.*\",\"^mistralai/.*\",\"^meta-llama/.*\",\"^THUDM/.*\",\"^zai-org/.*\",\"^moonshotai/.*\",\"^google/gemma-.*\",\"^litert-community/.*\"]"
+EXCLUDE_PATTERNS = "[\".*test.*\",\".*demo.*\",\".*eval.*\",\".*adapter.*\",\".*lora.*\",\".*draft.*\",\".*embedding.*\"]"
+UNSLOTH_SEARCH_TERMS = "[\"Qwen3\",\"Qwen3.5\",\"Gemma\",\"Gemma-3\",\"Gemma-4\",\"Phi-4\",\"DeepSeek-R1-Distill-Qwen\"]"
+POLL_LIMIT = "24"
+INDEX_TTL_SECONDS = "21600"
+SIGNING_KEY_ID = "model-index-key-v1"
+MAX_MODEL_BYTES = "5368709120"

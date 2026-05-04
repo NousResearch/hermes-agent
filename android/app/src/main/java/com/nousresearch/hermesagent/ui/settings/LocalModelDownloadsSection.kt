@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -20,6 +23,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -37,6 +43,8 @@ fun LocalModelDownloadsSection(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
+    var detectedModelMenuExpanded by remember { mutableStateOf(false) }
+    val selectedDetectedModel = uiState.detectedModels.firstOrNull { model -> model.id == uiState.selectedDetectedModelId }
 
     LaunchedEffect(selectedBackend) {
         viewModel.syncSelectedBackend(selectedBackend)
@@ -114,6 +122,87 @@ fun LocalModelDownloadsSection(
             HorizontalDivider()
             Text(strings.quickLocalModelsTitle(), style = MaterialTheme.typography.titleSmall)
             Text(strings.quickLocalModelsDescription(), style = MaterialTheme.typography.bodySmall)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(strings.detectedModelCatalogTitle(), style = MaterialTheme.typography.titleSmall)
+                    Text(strings.detectedModelCatalogDescription(), style = MaterialTheme.typography.bodySmall)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedButton(
+                            onClick = { detectedModelMenuExpanded = true },
+                            modifier = Modifier.weight(1f),
+                            enabled = uiState.detectedModels.isNotEmpty(),
+                        ) {
+                            Text(selectedDetectedModel?.title ?: strings.detectedModelDropdownPlaceholder())
+                        }
+                        DropdownMenu(
+                            expanded = detectedModelMenuExpanded,
+                            onDismissRequest = { detectedModelMenuExpanded = false },
+                        ) {
+                            uiState.detectedModels.forEach { model ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(model.title, style = MaterialTheme.typography.bodyMedium)
+                                            Text(
+                                                "${model.runtimeFlavor} · ${model.repoOrUrl}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        detectedModelMenuExpanded = false
+                                        onRuntimeFlavorSelected(model.runtimeFlavor)
+                                        viewModel.selectDetectedModel(model.id)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    if (selectedDetectedModel != null) {
+                        Text(selectedDetectedModel.summary, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "${selectedDetectedModel.runtimeFlavor} · ${selectedDetectedModel.repoOrUrl}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Button(onClick = viewModel::refreshDetectedModels) {
+                            Text(strings.refreshCatalog())
+                        }
+                        Button(
+                            onClick = {
+                                selectedDetectedModel?.let { model ->
+                                    onRuntimeFlavorSelected(model.runtimeFlavor)
+                                    viewModel.startDetectedModelDownload(dataSaverMode)
+                                }
+                            },
+                            enabled = selectedDetectedModel != null,
+                        ) {
+                            Text(strings.downloadAndStart())
+                        }
+                    }
+                    if (uiState.workerCatalogStatus.isNotBlank()) {
+                        Text(uiState.workerCatalogStatus, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
             LocalModelDownloadsViewModel.recommendedModelPresets.forEach { preset ->
                 Surface(
                     modifier = Modifier.fillMaxWidth(),

@@ -1,0 +1,19 @@
+{
+  "name": "hf-model-index-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "migrate:local": "wrangler d1 migrations apply hf-model-index --local",
+    "migrate:remote": "wrangler d1 migrations apply hf-model-index --remote",
+    "generate-keys": "node scripts/generate-keys.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260404.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.54.0"
+  }
+}

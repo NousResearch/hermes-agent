@@ -14,6 +14,10 @@ For the full feature reference, see [Scheduled Tasks (Cron)](/docs/user-guide/fe
 Cron jobs run in fresh agent sessions with no memory of your current chat. Prompts must be **completely self-contained** — include everything the agent needs to know.
 :::
 
+:::tip Don't need the LLM? Use no-agent mode.
+For recurring watchdogs where the script already produces the exact message you want to send (memory alerts, disk alerts, CI pings, heartbeats), skip the LLM entirely with [script-only cron jobs](/docs/guides/cron-script-only). Zero tokens, same scheduler.
+:::
+
 ---
 
 ## Pattern 1: Website Change Monitor

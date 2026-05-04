@@ -120,3 +120,27 @@ mcporter emit-ts <server> --mode types
 - Use `--output json` for structured output that's easier to parse
 - Ad-hoc servers (HTTP URL or `--stdio` command) work without any config — useful for one-off calls
 - OAuth auth may require interactive browser flow — use `terminal(command="mcporter auth <server>", pty=true)` if needed
+
+## Typical Steps
+
+1. Confirm Node.js/npx is available: `node --version && npx --version`.
+2. Discover configured MCP servers: `npx mcporter list --output json`.
+3. Inspect the target server's tools and schemas: `npx mcporter list <server> --schema --output json`.
+4. Call the smallest safe read-only tool first with `--output json` to validate auth and argument shape.
+5. For state-changing tools, pass a complete JSON payload with `--args '{...}'` and record the returned ID/status for verification.
+
+## Pitfalls
+
+1. `mcporter` vs `npx mcporter`: many machines do not have a global `mcporter` binary. Prefer `npx mcporter ...` unless you have already verified the global install.
+2. Shell quoting breaks JSON easily. For complex arguments, write the payload in single quotes around valid JSON and escape only inner single quotes.
+3. OAuth flows may need a pseudo-terminal. Run auth with `pty=true` when using the terminal tool.
+4. Do not assume a configured server name. Always list servers first; MCP client configs differ across Claude Desktop, Cursor, Hermes, and project-local configs.
+5. Use `--output json` for automation. Human-formatted tables are harder to parse and can hide tool errors.
+
+## Verification Checklist
+
+- [ ] `npx mcporter list --output json` succeeds or the missing Node/npm prerequisite is explicit.
+- [ ] The target server appears in the list, or the ad-hoc `--http-url` / `--stdio` command was used deliberately.
+- [ ] Tool schema was inspected before calling a non-trivial tool.
+- [ ] Tool call output was captured in JSON and includes a success indicator, result object, or actionable error.
+- [ ] Any state-changing call was verified by reading back the created/updated resource.

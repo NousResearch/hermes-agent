@@ -12,6 +12,7 @@ from agent.insights import (
     _bar_chart,
     _has_known_pricing,
     _DEFAULT_PRICING,
+    parse_insights_args,
 )
 
 
@@ -731,3 +732,102 @@ class TestEdgeCases:
         # Depending on timing, might catch the session if created <1s ago
         # Just verify it doesn't crash
         assert "empty" in report
+
+
+# =========================================================================
+# Qualitative insights
+# =========================================================================
+
+class TestQualitativeInsights:
+    def test_empty_qualitative_report(self, db):
+        engine = InsightsEngine(db)
+        report = engine.generate_qualitative(days=30)
+
+        assert report["empty"] is True
+        text = engine.format_qualitative_terminal(report)
+        assert "No sessions found" in text
+
+    def test_detects_obvious_friction_and_recommendations(self, db):
+        db.create_session(session_id="q1", source="cli", model="test-model")
+        db._conn.execute("UPDATE sessions SET title = ? WHERE id = 'q1'", ("Hermes config debugging",))
+        db.append_message("q1", role="user", content="Fix Hermes config. Use systematic debugging first.")
+        db.append_message("q1", role="assistant", content="I'll just patch the file now.",
+                          tool_calls=[{"function": {"name": "patch", "arguments": "{}"}}])
+        db.append_message("q1", role="tool", content="Error: old_string not found", tool_name="patch")
+        db.append_message("q1", role="assistant", content="I'll try another patch.",
+                          tool_calls=[{"function": {"name": "patch", "arguments": "{}"}}])
+        db.append_message("q1", role="tool", content="Traceback: permission denied", tool_name="patch")
+        db.append_message("q1", role="user", content="No, that's wrong. I asked you to inspect first; you forgot the hermes-agent skill. Don't implement before understanding.")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate_qualitative(days=30)
+        terminal_text = engine.format_qualitative_terminal(report)
+
+        assert report["empty"] is False
+        assert report["summary"]["what_hinders"]
+        assert report["friction"]["user_corrections"]["count"] >= 1
+        assert report["friction"]["tool_failures"]["count"] >= 2
+        assert report["friction"]["acted_before_understanding"]["count"] >= 1
+        assert any("hermes-agent" in item for item in report["recommendations"]["skill_updates"])
+        assert "Friction Analysis" in terminal_text
+        assert "Actionable Recommendations" in terminal_text
+
+    def test_qualitative_redacts_secrets(self, db):
+        db.create_session(session_id="q2", source="cli", model="test-model")
+        db.append_message("q2", role="user", content="No, don't print OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456")
+        db.append_message("q2", role="assistant", content="Here is the key: sk-proj-abcdefghijklmnopqrstuvwxyz123456")
+        db._conn.execute("UPDATE sessions SET title = ? WHERE id = 'q2'", ("Token sk-proj-abcdefghijklmnopqrstuvwxyz123456 project",))
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate_qualitative(days=30)
+        text = engine.format_qualitative_terminal(report)
+        markdown = engine.format_qualitative_markdown(report)
+
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in text
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in markdown
+        assert "***" in text or "***" in markdown
+
+    def test_write_qualitative_markdown_report(self, db, tmp_path):
+        db.create_session(session_id="q3", source="cli", model="test-model")
+        db.append_message("q3", role="user", content="Thanks, this worked well")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate_qualitative(days=30)
+        path = engine.write_qualitative_markdown(report, output_dir=tmp_path)
+
+        assert path.exists()
+        assert path.name.startswith("qualitative-report-")
+        assert "Hermes Qualitative Insights" in path.read_text(encoding="utf-8")
+
+    def test_successful_tool_envelopes_are_not_failures(self, db):
+        db.create_session(session_id="q4", source="cli", model="test-model")
+        db.append_message("q4", role="tool", content='{"output": "ok", "exit_code": 0, "error": null}', tool_name="terminal")
+        db.append_message("q4", role="tool", content='{"success": true, "exit_code": 0, "error": "stale but harmless", "output": "ok"}', tool_name="terminal")
+        db.append_message("q4", role="tool", content='{"success": true, "name": "hermes-agent", "description": "Complete guide to using Hermes Agent"}', tool_name="skill_view")
+        db.append_message("q4", role="tool", content='{"output": "Error: command failed", "exit_code": 1, "error": "failed"}', tool_name="terminal")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate_qualitative(days=30)
+
+        assert report["friction"]["tool_failures"]["count"] == 1
+
+    def test_parse_insights_qualitative_args(self):
+        parsed = parse_insights_args("--qualitative --days 14 --source cli")
+        assert parsed["qualitative"] is True
+        assert parsed["days"] == 14
+        assert parsed["source"] == "cli"
+
+        parsed = parse_insights_args("qualitative 7")
+        assert parsed["qualitative"] is True
+        assert parsed["days"] == 7
+
+        parsed = parse_insights_args("--days abc")
+        assert parsed["error"] == "Invalid --days value: abc"
+
+        parsed = parse_insights_args("\u2014qualitative \u2014no-write")
+        assert parsed["qualitative"] is True
+        assert parsed["write_report"] is False

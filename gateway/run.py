@@ -10645,46 +10645,29 @@ class GatewayRunner:
         return "No usage data available for this session."
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
-        """Handle /insights command -- show usage insights and analytics."""
+        """Handle /insights command -- show usage insights, analytics, or qualitative coaching."""
         args = event.get_command_args().strip()
-
-        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
-        args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
-
-        days = 30
-        source = None
-
-        # Parse simple args: /insights 7  or  /insights --days 7
-        if args:
-            parts = args.split()
-            i = 0
-            while i < len(parts):
-                if parts[i] == "--days" and i + 1 < len(parts):
-                    try:
-                        days = int(parts[i + 1])
-                    except ValueError:
-                        return f"Invalid --days value: {parts[i + 1]}"
-                    i += 2
-                elif parts[i] == "--source" and i + 1 < len(parts):
-                    source = parts[i + 1]
-                    i += 2
-                elif parts[i].isdigit():
-                    days = int(parts[i])
-                    i += 1
-                else:
-                    i += 1
 
         try:
             from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
+            from agent.insights import InsightsEngine, parse_insights_args
 
+            parsed = parse_insights_args(args)
+            if parsed.get("error"):
+                return parsed["error"]
             loop = asyncio.get_running_loop()
 
             def _run_insights():
                 db = SessionDB()
                 engine = InsightsEngine(db)
-                report = engine.generate(days=days, source=source)
-                result = engine.format_gateway(report)
+                if parsed.get("qualitative"):
+                    report = engine.generate_qualitative(days=parsed["days"], source=parsed.get("source"))
+                    if parsed.get("write_report", True) and not report.get("empty"):
+                        engine.write_qualitative_markdown(report)
+                    result = engine.format_qualitative_terminal(report)
+                else:
+                    report = engine.generate(days=parsed["days"], source=parsed.get("source"))
+                    result = engine.format_gateway(report)
                 db.close()
                 return result
 

@@ -17,9 +17,12 @@ Usage:
 """
 
 import json
+import re
+import shlex
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.usage_pricing import (
@@ -90,7 +93,85 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
+def parse_insights_args(arg_string: str = "") -> Dict[str, Any]:
+    """Parse shared CLI/gateway `/insights` arguments.
+
+    Supports: `7`, `--days 7`, `--source cli`, `--qualitative`, and
+    `qualitative`. Unknown tokens are ignored for backwards compatibility.
+    """
+    arg_string = (arg_string or "").strip()
+    arg_string = re.sub(r'[\u2012\u2013\u2014\u2015](days|source|qualitative|no-write|no-report)', r'--\1', arg_string)
+    try:
+        parts = shlex.split(arg_string) if arg_string else []
+    except ValueError as exc:
+        return {"days": 30, "source": None, "qualitative": False, "write_report": True, "error": str(exc)}
+    parsed = {"days": 30, "source": None, "qualitative": False, "write_report": True, "error": None}
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if part in {"--qualitative", "qualitative", "coach", "retrospective"}:
+            parsed["qualitative"] = True
+            i += 1
+        elif part in {"--no-write", "--no-report"}:
+            parsed["write_report"] = False
+            i += 1
+        elif part == "--days" and i + 1 < len(parts):
+            try:
+                parsed["days"] = int(parts[i + 1])
+            except ValueError:
+                parsed["error"] = f"Invalid --days value: {parts[i + 1]}"
+            i += 2
+        elif part.startswith("--days="):
+            value = part.split("=", 1)[1]
+            try:
+                parsed["days"] = int(value)
+            except ValueError:
+                parsed["error"] = f"Invalid --days value: {value}"
+            i += 1
+        elif part == "--source" and i + 1 < len(parts):
+            parsed["source"] = parts[i + 1]
+            i += 2
+        elif part.startswith("--source="):
+            parsed["source"] = part.split("=", 1)[1]
+            i += 1
+        elif part.isdigit():
+            parsed["days"] = int(part)
+            i += 1
+        else:
+            i += 1
+    return parsed
+
+
+_CORRECTION_RE = re.compile(
+    r"\b(no|wrong|that's wrong|not what i asked|i asked|don't|do not|stop|instead|you forgot|you missed|you ignored|why did you|premature)\b",
+    re.IGNORECASE,
+)
+_TOOL_FAILURE_RE = re.compile(
+    r"\b(error|failed|failure|traceback|exception|timeout|timed out|permission denied|not found|command not found|old_string not found|exit_code\W*[1-9])\b",
+    re.IGNORECASE,
+)
+_ACT_BEFORE_UNDERSTANDING_RE = re.compile(
+    r"\b(just patch|patch .*now|fix it now|i'll (?:just )?(?:patch|change|edit|implement)|let me (?:just )?(?:patch|change|edit|implement))\b",
+    re.IGNORECASE,
+)
+_MISSING_CONTEXT_RE = re.compile(
+    r"\b(need context|missing context|not enough context|can't find|cannot find|unclear|ambiguous|which file|what path)\b",
+    re.IGNORECASE,
+)
+_TOO_VERBOSE_RE = re.compile(
+    r"\b(too much explanation|be concise|less explanation|stop explaining|just do it|low-volume|shorter)\b",
+    re.IGNORECASE,
+)
+_REQUIRED_SKILLS = {
+    "hermes-agent": ("hermes", "config", "gateway", "profile", "provider", "model", "tool", "skill"),
+    "systematic-debugging": ("debug", "bug", "error", "failing", "failure", "root cause"),
+    "test-driven-development": ("test", "tdd", "implement", "feature", "regression"),
+    "writing-plans": ("plan", "spec", "implementation plan", "acceptance criteria"),
+}
+
+
 class InsightsEngine:
+
     """
     Analyzes session history and produces usage insights.
 
@@ -170,6 +251,60 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+        }
+
+    def generate_qualitative(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+        """Generate qualitative workflow coaching from local session transcripts.
+
+        This is heuristic-only by default. It does not call an LLM and treats
+        transcript text as untrusted data. Examples are short and forcibly
+        secret-redacted before entering the report.
+        """
+        cutoff = time.time() - (days * 86400)
+        sessions = self._get_qualitative_sessions(cutoff, source)
+        if not sessions:
+            return {
+                "days": days,
+                "source_filter": source,
+                "empty": True,
+                "summary": {},
+                "friction": {},
+                "recommendations": {},
+                "projects": [],
+                "safety": {
+                    "local_only": True,
+                    "raw_transcripts_included": False,
+                    "redaction": "forced",
+                },
+            }
+
+        session_ids = [s["id"] for s in sessions]
+        messages = self._get_qualitative_messages(session_ids)
+        messages_by_session: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for msg in messages:
+            messages_by_session[msg["session_id"]].append(msg)
+
+        friction = self._compute_qualitative_friction(messages)
+        projects = self._compute_project_breakdown(sessions, messages_by_session, friction)
+        recommendations = self._build_qualitative_recommendations(friction, projects)
+        summary = self._build_qualitative_summary(friction, recommendations, projects)
+
+        return {
+            "days": days,
+            "source_filter": source,
+            "empty": False,
+            "generated_at": time.time(),
+            "session_count": len(sessions),
+            "message_count": len(messages),
+            "summary": summary,
+            "friction": friction,
+            "recommendations": recommendations,
+            "projects": projects,
+            "safety": {
+                "local_only": True,
+                "raw_transcripts_included": False,
+                "redaction": "forced",
+            },
         }
 
     # =========================================================================
@@ -403,6 +538,42 @@ class InsightsEngine:
             "total_messages": 0, "user_messages": 0,
             "assistant_messages": 0, "tool_messages": 0,
         }
+
+    def _get_qualitative_sessions(self, cutoff: float, source: str = None) -> List[Dict[str, Any]]:
+        base = """SELECT id, source, model, started_at, ended_at, message_count,
+                         tool_call_count, title
+                  FROM sessions
+                  WHERE started_at >= ?"""
+        params: tuple[Any, ...]
+        if source:
+            base += " AND source = ?"
+            params = (cutoff, source)
+        else:
+            params = (cutoff,)
+        base += " ORDER BY started_at DESC LIMIT 200"
+        cursor = self._conn.execute(base, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _get_qualitative_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        cursor = self._conn.execute(
+            "SELECT session_id, role, content, tool_calls, tool_name, timestamp "
+            f"FROM messages WHERE session_id IN ({placeholders}) "
+            "ORDER BY timestamp, id",
+            tuple(session_ids),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            msg = dict(row)
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["tool_calls"] = []
+            rows.append(msg)
+        return rows
 
     # =========================================================================
     # Computation
@@ -719,6 +890,257 @@ class InsightsEngine:
 
         return top
 
+    def _redact_excerpt(self, text: Any, limit: int = 180) -> str:
+        if text is None:
+            return ""
+        if not isinstance(text, str):
+            text = str(text)
+        text = " ".join(text.split())
+        if len(text) > limit:
+            text = text[: limit - 1].rstrip() + "…"
+        try:
+            from agent.redact import redact_sensitive_text
+
+            return redact_sensitive_text(text, force=True)
+        except Exception:
+            return re.sub(r"sk-[A-Za-z0-9_-]{10,}", "***", text)
+
+    def _skill_names_from_message(self, msg: Dict[str, Any]) -> set[str]:
+        skills: set[str] = set()
+        calls = msg.get("tool_calls") or []
+        if not isinstance(calls, list):
+            return skills
+        for call in calls:
+            func = call.get("function", {}) if isinstance(call, dict) else {}
+            if func.get("name") not in {"skill_view", "skill_manage"}:
+                continue
+            args = func.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+            if isinstance(args, dict) and args.get("name"):
+                skills.add(str(args["name"]))
+        return skills
+
+    def _loaded_skill_names(self, messages: List[Dict[str, Any]]) -> set[str]:
+        skills: set[str] = set()
+        for msg in messages:
+            skills.update(self._skill_names_from_message(msg))
+        return skills
+
+    def _event(self, msg: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        return {
+            "session_id": str(msg.get("session_id", ""))[:16],
+            "role": msg.get("role"),
+            "tool": msg.get("tool_name"),
+            "reason": reason,
+            "excerpt": self._redact_excerpt(msg.get("content")),
+        }
+
+    def _tool_output_has_failure(self, content: Any) -> bool:
+        """Return True for real tool failures, avoiding JSON fields like error=null."""
+        if content is None:
+            return False
+        text = content if isinstance(content, str) else str(content)
+        stripped = text.strip()
+        if stripped.startswith("{"):
+            try:
+                data = json.loads(stripped)
+                if isinstance(data, dict):
+                    if data.get("success") is False:
+                        return True
+                    exit_code = data.get("exit_code")
+                    if isinstance(exit_code, int) and exit_code != 0:
+                        return True
+                    # Successful tool envelopes often contain words like
+                    # "error", "not found", or "fallback" in harmless data.
+                    # Do not scan their payloads as failures.
+                    if data.get("success") is True or exit_code == 0:
+                        return False
+                    error = data.get("error")
+                    if error not in (None, "", False):
+                        return True
+                    results = data.get("results")
+                    if isinstance(results, list):
+                        saw_result = False
+                        for item in results:
+                            if not isinstance(item, dict):
+                                continue
+                            saw_result = True
+                            if item.get("error") not in (None, "", False):
+                                return True
+                            status = str(item.get("status") or "").lower()
+                            if status in {"failed", "error", "timeout"}:
+                                return True
+                            summary = item.get("summary")
+                            if isinstance(summary, str) and _TOOL_FAILURE_RE.search(summary):
+                                return True
+                        if saw_result:
+                            return False
+                    output = data.get("output")
+                    if isinstance(output, str):
+                        return bool(_TOOL_FAILURE_RE.search(output))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        cleaned = re.sub(r'"error"\s*:\s*null', "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'"success"\s*:\s*true', "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'"exit_code"\s*:\s*0', "", cleaned, flags=re.IGNORECASE)
+        return bool(_TOOL_FAILURE_RE.search(cleaned))
+
+    def _compute_qualitative_friction(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        buckets = {
+            "user_corrections": {"count": 0, "examples": [], "description": "User corrections or reversals."},
+            "acted_before_understanding": {"count": 0, "examples": [], "description": "Assistant appeared to edit/implement before inspection or planning."},
+            "tool_failures": {"count": 0, "examples": [], "description": "Tool errors, failed commands, timeouts, or permission problems."},
+            "missing_context": {"count": 0, "examples": [], "description": "Messages indicating missing paths, ambiguity, or insufficient context."},
+            "missed_tool_or_skill": {"count": 0, "examples": [], "description": "Likely missed skill/session_search/memory/todo/verification opportunities."},
+            "verbosity_mismatch": {"count": 0, "examples": [], "description": "User asked for less explanation or more concise execution."},
+        }
+
+        loaded_by_session: Dict[str, set[str]] = defaultdict(set)
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            lower = content.lower() if isinstance(content, str) else ""
+            session_id = str(msg.get("session_id") or "")
+            loaded_so_far = loaded_by_session[session_id]
+            if role == "user":
+                if _CORRECTION_RE.search(content):
+                    buckets["user_corrections"]["count"] += 1
+                    if len(buckets["user_corrections"]["examples"]) < 5:
+                        buckets["user_corrections"]["examples"].append(self._event(msg, "correction language"))
+                if _TOO_VERBOSE_RE.search(content):
+                    buckets["verbosity_mismatch"]["count"] += 1
+                    if len(buckets["verbosity_mismatch"]["examples"]) < 5:
+                        buckets["verbosity_mismatch"]["examples"].append(self._event(msg, "verbosity preference"))
+                for skill, keywords in _REQUIRED_SKILLS.items():
+                    if skill not in loaded_so_far and any(k in lower for k in keywords):
+                        buckets["missed_tool_or_skill"]["count"] += 1
+                        if len(buckets["missed_tool_or_skill"]["examples"]) < 5:
+                            event = self._event(msg, f"consider loading {skill}")
+                            buckets["missed_tool_or_skill"]["examples"].append(event)
+                        break
+                if any(k in lower for k in ("last time", "remember when", "we did this before", "as mentioned")):
+                    buckets["missed_tool_or_skill"]["count"] += 1
+                    if len(buckets["missed_tool_or_skill"]["examples"]) < 5:
+                        buckets["missed_tool_or_skill"]["examples"].append(self._event(msg, "consider session_search earlier"))
+            elif role == "assistant":
+                if _ACT_BEFORE_UNDERSTANDING_RE.search(content):
+                    buckets["acted_before_understanding"]["count"] += 1
+                    if len(buckets["acted_before_understanding"]["examples"]) < 5:
+                        buckets["acted_before_understanding"]["examples"].append(self._event(msg, "implementation language before evidence"))
+            elif role == "tool":
+                tool_failed = self._tool_output_has_failure(content)
+                if tool_failed:
+                    buckets["tool_failures"]["count"] += 1
+                    if len(buckets["tool_failures"]["examples"]) < 5:
+                        buckets["tool_failures"]["examples"].append(self._event(msg, "tool failure text"))
+                if tool_failed and _MISSING_CONTEXT_RE.search(content):
+                    buckets["missing_context"]["count"] += 1
+                    if len(buckets["missing_context"]["examples"]) < 5:
+                        buckets["missing_context"]["examples"].append(self._event(msg, "missing context text"))
+            loaded_by_session[session_id].update(self._skill_names_from_message(msg))
+        return buckets
+
+    def _compute_project_breakdown(
+        self,
+        sessions: List[Dict[str, Any]],
+        messages_by_session: Dict[str, List[Dict[str, Any]]],
+        friction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        project_data: Dict[str, Dict[str, Any]] = {}
+        event_sessions: Dict[str, Counter] = defaultdict(Counter)
+        for name, bucket in friction.items():
+            for ex in bucket.get("examples", []):
+                event_sessions[ex.get("session_id")][name] += 1
+
+        for session in sessions:
+            raw_label = (session.get("title") or session.get("source") or "unknown").strip()[:120]
+            label = self._redact_excerpt(raw_label, limit=60) or "untitled"
+            entry = project_data.setdefault(label, {
+                "project": label,
+                "source": self._redact_excerpt(session.get("source"), limit=40),
+                "sessions": 0,
+                "messages": 0,
+                "recurring_tasks": Counter(),
+                "failure_modes": Counter(),
+            })
+            entry["sessions"] += 1
+            entry["messages"] += int(session.get("message_count") or 0)
+            sid_short = str(session.get("id", ""))[:16]
+            entry["failure_modes"].update(event_sessions.get(sid_short, {}))
+            text = " ".join(str(m.get("content") or "").lower() for m in messages_by_session.get(session["id"], []) if m.get("role") == "user")
+            for task, keys in {
+                "coding/debugging": ("bug", "test", "fix", "implement", "code"),
+                "Hermes configuration": ("hermes", "config", "provider", "gateway", "profile"),
+                "research/analysis": ("research", "analyze", "summary", "report"),
+                "planning/spec": ("plan", "spec", "acceptance criteria"),
+            }.items():
+                if any(k in text for k in keys):
+                    entry["recurring_tasks"][task] += 1
+
+        result = []
+        for entry in project_data.values():
+            result.append({
+                **entry,
+                "recurring_tasks": [name for name, _ in entry["recurring_tasks"].most_common(4)],
+                "failure_modes": [name for name, _ in entry["failure_modes"].most_common(4)],
+            })
+        result.sort(key=lambda x: (x["sessions"], x["messages"]), reverse=True)
+        return result[:12]
+
+    def _build_qualitative_recommendations(self, friction: Dict[str, Any], projects: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+        recs = {
+            "skill_updates": [],
+            "candidate_new_skills": [],
+            "memory_entries": [],
+            "obsidian_notes": [],
+            "config_tooling": [],
+            "prompt_patterns": [],
+        }
+        if friction["user_corrections"]["count"]:
+            recs["skill_updates"].append("Patch umbrella implementation/debugging skills with a rule: when the user says inspect/plan/load-skill first, do that before edits.")
+            recs["prompt_patterns"].append("Start complex requests with: 'First inspect X/Y/Z, then write acceptance criteria, then implement only after tests fail.'")
+        if friction["acted_before_understanding"]["count"]:
+            recs["skill_updates"].append("Add to systematic-debugging: no patch/write actions until evidence has been gathered and the suspected root cause is stated.")
+        if friction["tool_failures"]["count"]:
+            recs["config_tooling"].append("For repeated tool failures, prefer read/search verification before patching and include exact failing command/output in the next attempt.")
+        if friction["missed_tool_or_skill"]["count"]:
+            recs["skill_updates"].append("Patch hermes-agent and class-level software-development skills with stronger trigger phrases for skill_view, session_search, todo, and verification.")
+            recs["candidate_new_skills"].append("qualitative-retrospective: reusable workflow for auditing Hermes transcripts and converting findings into skill/memory/wiki updates.")
+        if friction["verbosity_mismatch"]["count"]:
+            recs["memory_entries"].append("User prefers concise, low-volume implementation/debugging updates; save only if not already present.")
+        if any("Hermes" in p.get("project", "") for p in projects):
+            recs["obsidian_notes"].append("Obsidian LLM Wiki note: Hermes qualitative-insights design, heuristics, and next iterations.")
+        recs["prompt_patterns"].append("For retrospectives: 'Analyze local session history only; redact secrets; output recommendations as skill patches, memory candidates, wiki notes, and config changes.'")
+        return recs
+
+    def _build_qualitative_summary(
+        self,
+        friction: Dict[str, Any],
+        recommendations: Dict[str, List[str]],
+        projects: List[Dict[str, Any]],
+    ) -> Dict[str, List[str]]:
+        total_failures = friction["tool_failures"]["count"]
+        total_corrections = friction["user_corrections"]["count"]
+        return {
+            "what_works": [
+                "Hermes session history contains enough structured roles/tool metadata to infer workflow patterns locally.",
+                "Skill and tool usage are visible, so missed-trigger recommendations can be grounded in actual transcript behavior.",
+            ],
+            "what_hinders": [
+                f"Detected {total_corrections} user correction(s) and {total_failures} tool failure signal(s) in the selected window.",
+                "Heuristics can identify likely friction, but they cannot fully infer intent without an optional LLM synthesis pass.",
+            ],
+            "quick_wins": (recommendations.get("skill_updates") or recommendations.get("prompt_patterns") or [])[:3],
+            "ambitious_improvements": [
+                "Add optional LLM synthesis over redacted event summaries, not raw transcripts.",
+                "Track workdir/project metadata directly in session rows for stronger workspace-level coaching.",
+            ],
+        }
+
     # =========================================================================
     # Formatting
     # =========================================================================
@@ -862,6 +1284,142 @@ class InsightsEngine:
             lines.append("")
 
         return "\n".join(lines)
+
+    def _append_bullets(self, lines: List[str], items: List[str], indent: str = "  ") -> None:
+        if not items:
+            lines.append(f"{indent}- None detected.")
+            return
+        for item in items:
+            lines.append(f"{indent}- {item}")
+
+    def format_qualitative_terminal(self, report: Dict[str, Any]) -> str:
+        """Format qualitative insights for terminal display."""
+        if report.get("empty"):
+            days = report.get("days", 30)
+            src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
+            return f"  No sessions found in the last {days} days{src}."
+
+        lines: List[str] = []
+        days = report.get("days", 30)
+        src_filter = report.get("source_filter")
+        label = f"Last {days} days" + (f" ({src_filter})" if src_filter else "")
+        lines.append("")
+        lines.append("  Hermes Qualitative Insights")
+        lines.append(f"  {label} · {report.get('session_count', 0)} sessions · local transcripts only")
+        lines.append("  " + "=" * 72)
+        lines.append("")
+
+        summary = report.get("summary", {})
+        lines.append("  At a glance")
+        lines.append("  " + "-" * 72)
+        for title, key in (("What's working", "what_works"), ("What's hindering", "what_hinders"), ("Quick wins", "quick_wins"), ("Ambitious improvements", "ambitious_improvements")):
+            lines.append(f"  {title}:")
+            self._append_bullets(lines, summary.get(key, []), indent="    ")
+        lines.append("")
+
+        lines.append("  Friction Analysis")
+        lines.append("  " + "-" * 72)
+        for key, bucket in (report.get("friction") or {}).items():
+            count = bucket.get("count", 0)
+            title = key.replace("_", " ").title()
+            lines.append(f"  {title}: {count}")
+            for ex in bucket.get("examples", [])[:3]:
+                tool = f" tool={ex['tool']}" if ex.get("tool") else ""
+                lines.append(f"    - {ex.get('reason')} ({ex.get('session_id')}{tool}): {ex.get('excerpt')}")
+        lines.append("")
+
+        recs = report.get("recommendations", {})
+        lines.append("  Actionable Recommendations")
+        lines.append("  " + "-" * 72)
+        for title, key in (("Skill updates", "skill_updates"), ("Candidate new skills", "candidate_new_skills"), ("Memory candidates", "memory_entries"), ("Obsidian notes", "obsidian_notes"), ("Config/tooling", "config_tooling"), ("Prompt patterns", "prompt_patterns")):
+            lines.append(f"  {title}:")
+            self._append_bullets(lines, recs.get(key, []), indent="    ")
+        lines.append("")
+
+        projects = report.get("projects") or []
+        if projects:
+            lines.append("  Project / Workspace Breakdown")
+            lines.append("  " + "-" * 72)
+            for project in projects[:8]:
+                tasks = ", ".join(project.get("recurring_tasks") or ["uncategorized"])
+                failures = ", ".join(project.get("failure_modes") or ["none detected"])
+                lines.append(f"  - {project['project']} ({project['sessions']} sessions, {project.get('source')})")
+                lines.append(f"    tasks: {tasks}")
+                lines.append(f"    friction: {failures}")
+            lines.append("")
+
+        lines.append("  Safety / Privacy")
+        lines.append("  " + "-" * 72)
+        lines.append("  - Analyzed local Hermes SQLite session history only.")
+        lines.append("  - Raw transcripts are not included; examples are short excerpts.")
+        lines.append("  - Report text uses forced secret redaction for likely keys/tokens.")
+        if report.get("report_path"):
+            lines.append(f"  - Markdown report: {report['report_path']}")
+        return "\n".join(lines)
+
+    def format_qualitative_markdown(self, report: Dict[str, Any]) -> str:
+        """Format qualitative insights as Markdown."""
+        if report.get("empty"):
+            return f"# Hermes Qualitative Insights\n\nNo sessions found in the last {report.get('days', 30)} days.\n"
+
+        lines = [
+            "# Hermes Qualitative Insights",
+            "",
+            f"Window: last {report.get('days', 30)} days",
+            f"Sessions analyzed: {report.get('session_count', 0)}",
+            "Safety: local SQLite session history only; raw transcripts omitted; excerpts forcibly redacted.",
+            "",
+            "## At a glance",
+        ]
+        summary = report.get("summary", {})
+        for title, key in (("What's working", "what_works"), ("What's hindering", "what_hinders"), ("Quick wins", "quick_wins"), ("Ambitious workflow improvements", "ambitious_improvements")):
+            lines.extend([f"### {title}", ""])
+            items = summary.get(key, []) or ["None detected."]
+            lines.extend(f"- {item}" for item in items)
+            lines.append("")
+
+        lines.append("## Friction analysis")
+        lines.append("")
+        for key, bucket in (report.get("friction") or {}).items():
+            lines.extend([f"### {key.replace('_', ' ').title()} ({bucket.get('count', 0)})", ""])
+            lines.append(bucket.get("description", ""))
+            lines.append("")
+            for ex in bucket.get("examples", [])[:5]:
+                lines.append(f"- `{ex.get('session_id')}` {ex.get('reason')}: {ex.get('excerpt')}")
+            if not bucket.get("examples"):
+                lines.append("- None detected.")
+            lines.append("")
+
+        lines.append("## Actionable recommendations")
+        lines.append("")
+        for title, key in (("Copy-pasteable skill updates", "skill_updates"), ("Candidate new skills", "candidate_new_skills"), ("Suggested memory entries", "memory_entries"), ("Suggested Obsidian LLM Wiki notes", "obsidian_notes"), ("Suggested config/tooling changes", "config_tooling"), ("Better prompt patterns", "prompt_patterns")):
+            lines.extend([f"### {title}", ""])
+            items = (report.get("recommendations") or {}).get(key, []) or ["None detected."]
+            lines.extend(f"- {item}" for item in items)
+            lines.append("")
+
+        lines.append("## Project / workspace breakdown")
+        lines.append("")
+        for project in report.get("projects") or []:
+            lines.append(f"- **{project['project']}**: {project['sessions']} session(s), source `{project.get('source')}`")
+            lines.append(f"  - Recurring task types: {', '.join(project.get('recurring_tasks') or ['uncategorized'])}")
+            lines.append(f"  - Recurring failure modes: {', '.join(project.get('failure_modes') or ['none detected'])}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def write_qualitative_markdown(self, report: Dict[str, Any], output_dir: Path | str = None) -> Path:
+        """Write the qualitative Markdown report under HERMES_HOME/insights by default."""
+        if output_dir is None:
+            from hermes_constants import get_hermes_home
+
+            output_dir = get_hermes_home() / "insights"
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = output_path / f"qualitative-report-{stamp}.md"
+        path.write_text(self.format_qualitative_markdown(report), encoding="utf-8")
+        report["report_path"] = str(path)
+        return path
 
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""

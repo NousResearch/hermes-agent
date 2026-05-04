@@ -9941,6 +9941,16 @@ Examples:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--qualitative",
+        action="store_true",
+        help="Generate qualitative workflow/friction coaching from local transcripts",
+    )
+    insights_parser.add_argument(
+        "--no-write",
+        action="store_true",
+        help="Do not write a Markdown report when using --qualitative",
+    )
 
     def cmd_insights(args):
         try:
@@ -9949,8 +9959,14 @@ Examples:
 
             db = SessionDB()
             engine = InsightsEngine(db)
-            report = engine.generate(days=args.days, source=args.source)
-            print(engine.format_terminal(report))
+            if args.qualitative:
+                report = engine.generate_qualitative(days=args.days, source=args.source)
+                if not args.no_write and not report.get("empty"):
+                    engine.write_qualitative_markdown(report)
+                print(engine.format_qualitative_terminal(report))
+            else:
+                report = engine.generate(days=args.days, source=args.source)
+                print(engine.format_terminal(report))
             db.close()
         except Exception as e:
             print(f"Error generating insights: {e}")

@@ -2203,7 +2203,7 @@ def resolve_provider_client(
                     is_agent_turn=True, is_vision=is_vision
                 )
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
-            client = _wrap_if_needed(client, final_model, custom_base, custom_key)
+            client = _wrap_if_needed(client, final_model, explicit_base_url, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:

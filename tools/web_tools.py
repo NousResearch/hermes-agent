@@ -995,6 +995,51 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def _exa_crawl(url: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """Crawl pages from a URL using the Exa get_contents API with subpages.
+
+    Fetches content from the given URL and auto-discovers linked subpages,
+    returning full-text results in the format expected by the LLM
+    post-processing pipeline.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": url, "error": "Interrupted", "title": "", "content": ""}]
+
+    logger.info("Exa crawl: %s (subpages=%d)", url, limit)
+    response = _get_exa_client().get_contents(
+        [url],
+        text=True,
+        subpages=limit,
+    )
+
+    results = []
+    for result in response.results or []:
+        content = result.text or ""
+        page_url = result.url or ""
+        title = result.title or ""
+        results.append({
+            "url": page_url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": {"sourceURL": page_url, "title": title},
+        })
+        for subpage in result.subpages or []:
+            sub_content = subpage.get("text", "") if isinstance(subpage, dict) else (subpage.text or "")
+            sub_url = subpage.get("url", "") if isinstance(subpage, dict) else (subpage.url or "")
+            sub_title = subpage.get("title", "") if isinstance(subpage, dict) else (subpage.title or "")
+            results.append({
+                "url": sub_url,
+                "title": sub_title,
+                "content": sub_content,
+                "raw_content": sub_content,
+                "metadata": {"sourceURL": sub_url, "title": sub_title},
+            })
+
+    return results
+
+
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -1653,6 +1698,75 @@ async def web_crawl_tool(
                     return result, metrics, "too_short"
 
                 tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
+                processed_results = await asyncio.gather(*tasks)
+                for result, metrics, status in processed_results:
+                    if status == "processed":
+                        debug_call_data["compression_metrics"].append(metrics)
+                        debug_call_data["pages_processed_with_llm"] += 1
+
+            if use_llm_processing and not auxiliary_available:
+                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
+                debug_call_data["processing_applied"].append("llm_processing_unavailable")
+
+            trimmed_results = [{"url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""), "error": r.get("error"),
+                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {})} for r in response.get("results", [])]
+            result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
+            cleaned_result = clean_base64_images(result_json)
+            debug_call_data["final_response_size"] = len(cleaned_result)
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return cleaned_result
+
+        # Exa supports crawl via get_contents with subpages
+        if backend == "exa":
+            if not url.startswith(('http://', 'https://')):
+                url = f'https://{url}'
+
+            if not is_safe_url(url):
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+                return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
+
+            from tools.interrupt import is_interrupted as _is_int
+            if _is_int():
+                return tool_error("Interrupted", success=False)
+
+            results = _exa_crawl(url, limit=20)
+            response = {"results": results}
+
+            pages_crawled = len(response.get('results', []))
+            logger.info("Crawled %d pages", pages_crawled)
+            debug_call_data["pages_crawled"] = pages_crawled
+            debug_call_data["original_response_size"] = len(json.dumps(response))
+
+            if use_llm_processing and auxiliary_available:
+                logger.info("Processing crawled content with LLM (parallel)...")
+                debug_call_data["processing_applied"].append("llm_processing")
+
+                async def _process_exa_crawl(result):
+                    page_url = result.get('url', 'Unknown URL')
+                    title = result.get('title', '')
+                    content = result.get('content', '')
+                    if not content:
+                        return result, None, "no_content"
+                    original_size = len(content)
+                    processed = await process_content_with_llm(content, page_url, title, effective_model, min_length)
+                    if processed:
+                        result['raw_content'] = content
+                        result['content'] = processed
+                        metrics = {"url": page_url, "original_size": original_size, "processed_size": len(processed),
+                                   "compression_ratio": len(processed) / original_size if original_size else 1.0, "model_used": effective_model}
+                        return result, metrics, "processed"
+                    metrics = {"url": page_url, "original_size": original_size, "processed_size": original_size,
+                               "compression_ratio": 1.0, "model_used": None, "reason": "content_too_short"}
+                    return result, metrics, "too_short"
+
+                tasks = [_process_exa_crawl(r) for r in response.get('results', [])]
                 processed_results = await asyncio.gather(*tasks)
                 for result, metrics, status in processed_results:
                     if status == "processed":

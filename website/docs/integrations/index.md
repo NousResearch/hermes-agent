@@ -29,7 +29,7 @@ The `web_search` and `web_extract` tools support four backend providers, configu
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| **Exa** | `EXA_API_KEY` | ✔ | ✔ | ✔ |
 
 Quick setup example:
 

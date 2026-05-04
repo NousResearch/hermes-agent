@@ -526,6 +526,24 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_renders_multimodal_content():
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look here"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        },
+        {"role": "assistant", "content": "saw it"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "look here\n[image]"},
+        {"role": "assistant", "text": "saw it"},
+    ]
+
+
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     captured = {}
 

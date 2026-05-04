@@ -64,6 +64,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _looks_like_image,
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
@@ -71,6 +72,21 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
+
+
+def _decode_wecom_aes_key(aes_key: str) -> bytes:
+    """Decode WeCom AES key (43-char base64 without padding -> 32 bytes)."""
+    payload = str(aes_key or "").strip()
+    if not payload:
+        raise ValueError("aes_key is empty")
+    # WeCom encoding_aeskey is 43 chars, missing the trailing '=' padding
+    # that standard base64 requires. Add it back.
+    padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+    key = base64.b64decode(padded)
+    if len(key) != 32:
+        raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
+    return key
+
 
 APP_CMD_SUBSCRIBE = "aibot_subscribe"
 APP_CMD_CALLBACK = "aibot_msg_callback"
@@ -743,8 +759,9 @@ class WeComAdapter(BasePlatformAdapter):
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
-        url = str(media.get("url") or "").strip()
+        url = str(media.get("url") or media.get("pic_url") or "").strip()
         if not url:
+            logger.debug("[%s] No url/pic_url found in inbound %s media", self.name, kind)
             return None
 
         try:
@@ -755,10 +772,19 @@ class WeComAdapter(BasePlatformAdapter):
 
         aes_key = str(media.get("aeskey") or "").strip()
         if aes_key:
+            decrypted = None
             try:
-                raw = self._decrypt_file_bytes(raw, aes_key)
+                decrypted = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.debug("[%s] Primary decrypt failed for %s, trying variants: %s", self.name, kind, exc)
+
+            if decrypted is None:
+                decrypted = self._try_decrypt_variants(raw, aes_key, kind)
+
+            if decrypted is not None:
+                raw = decrypted
+            else:
+                logger.debug("[%s] All decryption variants failed for %s", self.name, kind)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
@@ -1011,12 +1037,8 @@ class WeComAdapter(BasePlatformAdapter):
     def _decrypt_file_bytes(encrypted_data: bytes, aes_key: str) -> bytes:
         if not encrypted_data:
             raise ValueError("encrypted_data is empty")
-        if not aes_key:
-            raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
-        if len(key) != 32:
-            raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
+        key = _decode_wecom_aes_key(aes_key)
 
         try:
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -1034,6 +1056,91 @@ class WeComAdapter(BasePlatformAdapter):
             raise ValueError("Invalid PKCS#7 padding: padding bytes mismatch")
 
         return decrypted[:-pad_len]
+
+    @staticmethod
+    def _try_decrypt_variants(encrypted_data: bytes, aes_key: str, kind: str = "media") -> Optional[bytes]:
+        """Try multiple AES decryption strategies and return the best result."""
+        if not encrypted_data or not aes_key:
+            return None
+
+        try:
+            key = _decode_wecom_aes_key(aes_key)
+        except Exception:
+            return None
+
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        except ImportError:
+            return None
+
+        def _decrypt_cbc(data: bytes, key_bytes: bytes, iv: bytes) -> bytes:
+            cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv))
+            decryptor = cipher.decryptor()
+            decrypted = decryptor.update(data) + decryptor.finalize()
+            pad_len = decrypted[-1]
+            if 1 <= pad_len <= 32 and decrypted.endswith(bytes([pad_len]) * pad_len):
+                return decrypted[:-pad_len]
+            return decrypted
+
+        def _decrypt_ecb(data: bytes, key_bytes: bytes) -> bytes:
+            cipher = Cipher(algorithms.AES(key_bytes), modes.ECB())
+            decryptor = cipher.decryptor()
+            decrypted = decryptor.update(data) + decryptor.finalize()
+            pad_len = decrypted[-1]
+            if 1 <= pad_len <= 32 and decrypted.endswith(bytes([pad_len]) * pad_len):
+                return decrypted[:-pad_len]
+            return decrypted
+
+        variants = []
+
+        if len(key) == 32:
+            variants.append(("AES-256-CBC(iv=key[:16])", lambda d: _decrypt_cbc(d, key, key[:16])))
+            variants.append(("AES-256-ECB", lambda d: _decrypt_ecb(d, key)))
+            variants.append(("AES-128-CBC(iv=key[:16])", lambda d: _decrypt_cbc(d, key[:16], key[:16])))
+            variants.append(("AES-128-ECB", lambda d: _decrypt_ecb(d, key[:16])))
+        elif len(key) == 16:
+            variants.append(("AES-128-CBC(iv=key)", lambda d: _decrypt_cbc(d, key, key)))
+            variants.append(("AES-128-ECB", lambda d: _decrypt_ecb(d, key)))
+
+        # Weixin-style: key may be hex-encoded inside base64
+        if len(key) == 32:
+            try:
+                hex_text = key.decode("ascii", errors="ignore")
+                if hex_text and all(ch in "0123456789abcdefABCDEF" for ch in hex_text):
+                    hex_bytes = bytes.fromhex(hex_text)
+                    if len(hex_bytes) == 16:
+                        variants.append(("AES-128-CBC(hex, iv=hex)", lambda d: _decrypt_cbc(d, hex_bytes, hex_bytes)))
+                        variants.append(("AES-128-ECB(hex)", lambda d: _decrypt_ecb(d, hex_bytes)))
+            except Exception:
+                pass
+
+        best_result = None
+        best_score = -1
+
+        for name, decrypt_fn in variants:
+            try:
+                decrypted = decrypt_fn(encrypted_data)
+                score = 0
+                if _looks_like_image(decrypted):
+                    score = 100
+                elif len(decrypted) > 100:
+                    # Heuristic: avoid error pages / XML
+                    head = decrypted[:200].lower()
+                    if b"<html" not in head and b"<?xml" not in head and b"error" not in head:
+                        score = 1
+
+                if score > best_score:
+                    best_score = score
+                    best_result = decrypted
+                    logger.debug(
+                        "[%s] Decryption success with %s for %s (score=%d, header=%s)",
+                        "WeCom", name, kind, score, decrypted[:8].hex(),
+                    )
+            except Exception as exc:
+                logger.debug("Decryption failed with %s for %s: %s", name, kind, exc)
+                continue
+
+        return best_result
 
     async def _download_remote_bytes(
         self,

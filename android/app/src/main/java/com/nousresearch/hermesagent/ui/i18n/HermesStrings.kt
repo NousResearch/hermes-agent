@@ -695,6 +695,42 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Choose a validated mobile model. Hermes downloads it, marks it preferred, and starts the local runtime when the file is ready."
     }
 
+    fun detectedModelCatalogTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "已检测模型目录"
+        AppLanguage.SPANISH -> "Catálogo de modelos detectados"
+        AppLanguage.GERMAN -> "Erkannter Modellkatalog"
+        AppLanguage.PORTUGUESE -> "Catálogo de modelos detectados"
+        AppLanguage.FRENCH -> "Catalogue de modèles détectés"
+        AppLanguage.ENGLISH -> "Detected model catalog"
+    }
+
+    fun detectedModelCatalogDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "从已签名的 Cloudflare 目录选择一个模型。Hermes 会验证签名，然后通过 Hugging Face 下载所选文件。"
+        AppLanguage.SPANISH -> "Elige un modelo del catálogo firmado de Cloudflare. Hermes verifica la firma y descarga el archivo seleccionado desde Hugging Face."
+        AppLanguage.GERMAN -> "Wähle ein Modell aus dem signierten Cloudflare-Katalog. Hermes prüft die Signatur und lädt die ausgewählte Datei von Hugging Face."
+        AppLanguage.PORTUGUESE -> "Escolha um modelo do catálogo assinado da Cloudflare. O Hermes verifica a assinatura e baixa o arquivo selecionado pelo Hugging Face."
+        AppLanguage.FRENCH -> "Choisissez un modèle dans le catalogue Cloudflare signé. Hermes vérifie la signature puis télécharge le fichier choisi depuis Hugging Face."
+        AppLanguage.ENGLISH -> "Choose a model from the signed Cloudflare catalog. Hermes verifies the signature, then downloads the selected file from Hugging Face."
+    }
+
+    fun detectedModelDropdownPlaceholder(): String = when (language) {
+        AppLanguage.CHINESE -> "选择检测到的模型"
+        AppLanguage.SPANISH -> "Elegir modelo detectado"
+        AppLanguage.GERMAN -> "Erkanntes Modell wählen"
+        AppLanguage.PORTUGUESE -> "Escolher modelo detectado"
+        AppLanguage.FRENCH -> "Choisir un modèle détecté"
+        AppLanguage.ENGLISH -> "Choose detected model"
+    }
+
+    fun refreshCatalog(): String = when (language) {
+        AppLanguage.CHINESE -> "刷新目录"
+        AppLanguage.SPANISH -> "Actualizar catálogo"
+        AppLanguage.GERMAN -> "Katalog aktualisieren"
+        AppLanguage.PORTUGUESE -> "Atualizar catálogo"
+        AppLanguage.FRENCH -> "Actualiser le catalogue"
+        AppLanguage.ENGLISH -> "Refresh catalog"
+    }
+
     fun downloadAndStart(): String = when (language) {
         AppLanguage.CHINESE -> "下载并启动"
         AppLanguage.SPANISH -> "Descargar e iniciar"

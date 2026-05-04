@@ -11,7 +11,9 @@ import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import com.nousresearch.hermesagent.data.SecureSecretsStore
+import com.nousresearch.hermesagent.models.DetectedHfModel
 import com.nousresearch.hermesagent.models.HermesModelDownloadManager
+import com.nousresearch.hermesagent.models.HuggingFaceModelIndexClient
 import com.nousresearch.hermesagent.models.ModelDownloadDraft
 import com.nousresearch.hermesagent.models.ModelDownloadInspection
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +61,9 @@ data class LocalModelDownloadsUiState(
     val candidateSummary: String = "",
     val candidateRamWarning: String = "",
     val pendingAutoStartRecordId: String = "",
+    val workerCatalogStatus: String = "",
+    val detectedModels: List<DetectedHfModel> = emptyList(),
+    val selectedDetectedModelId: String = "",
     val downloads: List<LocalModelDownloadItemUi> = emptyList(),
 )
 
@@ -72,6 +77,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
 
     init {
         refreshDownloads()
+        refreshDetectedModels()
         viewModelScope.launch {
             while (true) {
                 delay(1800)
@@ -199,6 +205,115 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                             context = context,
                             store = downloadStore,
                             draft = preset.toDraft(),
+                            hfToken = _uiState.value.huggingFaceToken,
+                            dataSaverMode = dataSaverMode,
+                        )
+                    }
+                }
+            }.onSuccess { record ->
+                refreshDownloads()
+                _uiState.update {
+                    it.copy(
+                        pendingAutoStartRecordId = record.id,
+                        inspectionStatus = if (record.status == "completed") {
+                            "${record.title} is already downloaded. Starting runtime…"
+                        } else {
+                            "Queued ${record.title}; Hermes will start it when Android finishes the download."
+                        },
+                        candidateSummary = it.candidateSummary.ifBlank { record.statusMessage },
+                        candidateRamWarning = record.ramWarning,
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        inspectionStatus = error.message ?: error.javaClass.simpleName,
+                        pendingAutoStartRecordId = "",
+                    )
+                }
+            }
+        }
+    }
+
+    fun refreshDetectedModels() {
+        _uiState.update {
+            it.copy(workerCatalogStatus = "Refreshing signed Hugging Face model catalog…")
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    HuggingFaceModelIndexClient.fetchDetectedModels()
+                }
+            }.onSuccess { models ->
+                _uiState.update { state ->
+                    val selectedId = when {
+                        models.any { model -> model.id == state.selectedDetectedModelId } -> state.selectedDetectedModelId
+                        models.isNotEmpty() -> models.first().id
+                        else -> ""
+                    }
+                    state.copy(
+                        detectedModels = models,
+                        selectedDetectedModelId = selectedId,
+                        workerCatalogStatus = if (models.isEmpty()) {
+                            "Signed catalog loaded, but no downloadable model files were detected yet"
+                        } else {
+                            "Signed catalog loaded with ${models.size} downloadable model choices"
+                        },
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        workerCatalogStatus = "Unable to load signed model catalog: ${error.message ?: error.javaClass.simpleName}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectDetectedModel(modelId: String) {
+        val model = _uiState.value.detectedModels.firstOrNull { it.id == modelId } ?: return
+        _uiState.update {
+            it.copy(
+                selectedDetectedModelId = model.id,
+                repoOrUrl = model.repoOrUrl,
+                filePath = model.filePath,
+                revision = model.revision,
+                runtimeFlavor = model.runtimeFlavor,
+                inspectionStatus = "",
+                candidateSummary = model.summary,
+                candidateRamWarning = "",
+            )
+        }
+    }
+
+    fun startDetectedModelDownload(dataSaverMode: Boolean) {
+        val model = _uiState.value.detectedModels.firstOrNull { it.id == _uiState.value.selectedDetectedModelId } ?: return
+        val context = getApplication<Application>()
+        _uiState.update {
+            it.copy(
+                repoOrUrl = model.repoOrUrl,
+                filePath = model.filePath,
+                revision = model.revision,
+                runtimeFlavor = model.runtimeFlavor,
+                inspectionStatus = "Preparing ${model.title} from signed catalog…",
+                candidateSummary = model.summary,
+                candidateRamWarning = "",
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val refreshed = HermesModelDownloadManager.refreshDownloads(context, downloadStore)
+                    val existing = refreshed.firstOrNull { record -> record.matchesDetectedModel(model) && record.status == "completed" }
+                    if (existing != null) {
+                        HermesModelDownloadManager.setPreferredDownload(downloadStore, existing.id)
+                        existing
+                    } else {
+                        HermesModelDownloadManager.enqueueDownload(
+                            context = context,
+                            store = downloadStore,
+                            draft = model.toDraft(),
                             hfToken = _uiState.value.huggingFaceToken,
                             dataSaverMode = dataSaverMode,
                         )
@@ -412,6 +527,15 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         )
     }
 
+    private fun DetectedHfModel.toDraft(): ModelDownloadDraft {
+        return ModelDownloadDraft(
+            repoOrUrl = repoOrUrl,
+            filePath = filePath,
+            revision = revision,
+            runtimeFlavor = runtimeFlavor,
+        )
+    }
+
     private fun LocalModelDownloadRecord.matchesPreset(preset: RecommendedLocalModelPreset): Boolean {
         val exactFileMatches = preset.filePath.isNotBlank() &&
             (filePath.equals(preset.filePath, ignoreCase = true) ||
@@ -420,6 +544,17 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         val repoMatches = repoOrUrl.equals(preset.repoOrUrl, ignoreCase = true)
         return runtimeFlavor.equals(preset.runtimeFlavor, ignoreCase = true) &&
             (exactFileMatches || repoMatches)
+    }
+
+    private fun LocalModelDownloadRecord.matchesDetectedModel(model: DetectedHfModel): Boolean {
+        val modelFileName = model.filePath.substringAfterLast('/')
+        val fileMatches = model.filePath.isNotBlank() &&
+            (filePath.equals(model.filePath, ignoreCase = true) ||
+                destinationFileName.equals(modelFileName, ignoreCase = true) ||
+                destinationPath.substringAfterLast('/').equals(modelFileName, ignoreCase = true))
+        val repoMatches = repoOrUrl.equals(model.repoOrUrl, ignoreCase = true)
+        return runtimeFlavor.equals(model.runtimeFlavor, ignoreCase = true) &&
+            (fileMatches || repoMatches)
     }
 
     private fun List<LocalModelDownloadRecord>.toUiItems(

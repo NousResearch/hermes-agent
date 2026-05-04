@@ -18,9 +18,9 @@ RepoType: git
 Repo: https://github.com/adybag14-cyber/hermes-agent.git
 
 Builds:
-  - versionName: 0.13.9
-    versionCode: 130990
-    commit: v0.13.9
+  - versionName: 0.13.10
+    versionCode: 131090
+    commit: v0.13.10
     subdir: android
     gradle:
       - yes
@@ -32,5 +32,5 @@ Builds:
 
 AutoUpdateMode: Version v%v
 UpdateCheckMode: Tags
-CurrentVersion: 0.13.9
-CurrentVersionCode: 130990
+CurrentVersion: 0.13.10
+CurrentVersionCode: 131090

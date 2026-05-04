@@ -298,6 +298,7 @@ def load_cli_config() -> Dict[str, Any]:
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
+            "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
@@ -7131,7 +7132,20 @@ class HermesCLI:
                 if provider is not None:
                     print(f"🌐 Browser: {provider.provider_name()} (cloud)")
                 else:
-                    print("🌐 Browser: local headless Chromium (agent-browser)")
+                    # Show engine info for local mode
+                    try:
+                        from tools.browser_tool import _get_browser_engine
+                        engine = _get_browser_engine()
+                    except Exception:
+                        engine = "auto"
+                    if engine == "lightpanda":
+                        print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
+                        print("   ⚡ Lightpanda: faster navigation, no screenshot support")
+                        print("   Automatic Chrome fallback for screenshots and failed commands")
+                    elif engine == "chrome":
+                        print("🌐 Browser: local headless Chrome (agent-browser --engine chrome)")
+                    else:
+                        print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
             print("   /browser connect      — connect to your live Chrome")
             print("   /browser disconnect   — revert to default")

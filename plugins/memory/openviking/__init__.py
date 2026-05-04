@@ -110,14 +110,10 @@ class _VikingClient:
     def _url(self, path: str) -> str:
         return f"{self._endpoint}{path}"
 
-    def _auth_headers(self) -> dict:
-        h = {
-            "X-OpenViking-Account": self._account,
-            "X-OpenViking-User": self._user,
-        }
-        if self._api_key:
-            h["X-API-Key"] = self._api_key
-        return h
+    def _multipart_headers(self) -> dict:
+        headers = self._headers()
+        headers.pop("Content-Type", None)
+        return headers
 
     def _parse_response(self, resp) -> dict:
         try:
@@ -167,7 +163,7 @@ class _VikingClient:
             resp = self._httpx.post(
                 self._url("/api/v1/resources/temp_upload"),
                 files={"file": (file_path.name, f, mime_type)},
-                headers=self._auth_headers(),
+                headers=self._multipart_headers(),
                 timeout=_TIMEOUT,
             )
         data = self._parse_response(resp)

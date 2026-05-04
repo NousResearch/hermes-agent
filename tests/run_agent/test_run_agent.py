@@ -724,6 +724,56 @@ class TestInit:
             )
             assert a._cache_ttl == "1h"
 
+    def test_model_max_tokens_from_config(self):
+        """model.max_tokens config populates the chat-completions request cap."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.max_tokens == 4096
+        assert kwargs["max_tokens"] == 4096
+
+    def test_constructor_max_tokens_wins_over_config(self):
+        """Explicit constructor max_tokens keeps programmatic callers stable."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                max_tokens=8192,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 8192
+
     def test_prompt_caching_cache_ttl_invalid_falls_back(self):
         """Non-Anthropic TTL values keep default 5m without raising."""
         with (

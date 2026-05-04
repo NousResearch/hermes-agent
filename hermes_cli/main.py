@@ -6484,6 +6484,33 @@ def _finalize_update_output(state):
             pass
 
 
+def _update_webui_after_agent_update() -> None:
+    """Run the optional repo-external Hermes WebUI updater after ``hermes update``.
+
+    This is intentionally repo-external so upstream Hermes Agent remains the
+    source of truth while local service customizations live under ``~/.hermes``.
+    Failures are reported but do not make the agent update fail.
+    """
+    script = Path.home() / ".hermes" / "scripts" / "update-hermes-webui.sh"
+    if not script.exists():
+        return
+
+    print()
+    print("→ Updating Hermes WebUI...")
+    try:
+        result = subprocess.run([str(script)], cwd=PROJECT_ROOT, text=True)
+    except Exception as exc:
+        print(f"  ⚠ Hermes WebUI update skipped: {exc}")
+        return
+
+    if result.returncode != 0:
+        print(
+            "  ⚠ Hermes WebUI update failed "
+            f"(exit {result.returncode}); agent update will continue."
+        )
+        print("    Check: ~/.hermes/scripts/update-hermes-webui.sh")
+
+
 def _cmd_update_check():
     """Implement ``hermes update --check``: fetch and report without installing."""
     git_dir = PROJECT_ROOT / ".git"
@@ -6898,6 +6925,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=False,
                 )
             print("✓ Already up to date!")
+            _update_webui_after_agent_update()
             return
 
         print(f"→ Found {commit_count} new commit(s)")
@@ -7175,6 +7203,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Update complete!")
+        _update_webui_after_agent_update()
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise

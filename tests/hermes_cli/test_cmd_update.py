@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import cmd_update, PROJECT_ROOT, _update_webui_after_agent_update
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -96,10 +96,12 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="0"
         )
 
-        cmd_update(mock_args)
+        with patch("hermes_cli.main._update_webui_after_agent_update") as mock_webui_update:
+            cmd_update(mock_args)
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+        mock_webui_update.assert_called_once_with()
 
         # Should NOT have called pull
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
@@ -116,8 +118,10 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="1"
         )
 
-        cmd_update(mock_args)
+        with patch("hermes_cli.main._update_webui_after_agent_update") as mock_webui_update:
+            cmd_update(mock_args)
 
+        mock_webui_update.assert_called_once_with()
         npm_calls = [
             (call.args[0], call.kwargs.get("cwd"))
             for call in mock_run.call_args_list
@@ -163,3 +167,29 @@ class TestCmdUpdateBranchFallback:
             mock_input.assert_not_called()
             captured = capsys.readouterr()
             assert "Non-interactive session" in captured.out
+
+
+def test_update_webui_after_agent_update_runs_optional_script(tmp_path, capsys):
+    script = tmp_path / ".hermes" / "scripts" / "update-hermes-webui.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/usr/bin/env bash\n")
+    with patch("hermes_cli.main.Path.home", return_value=tmp_path), patch(
+        "hermes_cli.main.subprocess.run"
+    ) as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess([str(script)], 0)
+
+        _update_webui_after_agent_update()
+
+    mock_run.assert_called_once_with([str(script)], cwd=PROJECT_ROOT, text=True)
+    captured = capsys.readouterr()
+    assert "Updating Hermes WebUI" in captured.out
+
+
+def test_update_webui_after_agent_update_ignores_missing_script():
+    missing_home = PROJECT_ROOT / "definitely-missing-home-for-webui-test"
+    with patch("hermes_cli.main.Path.home", return_value=missing_home), patch(
+        "hermes_cli.main.subprocess.run"
+    ) as mock_run:
+        _update_webui_after_agent_update()
+
+    mock_run.assert_not_called()

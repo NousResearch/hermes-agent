@@ -3611,7 +3611,7 @@ class AIAgent:
                     _parent_runtime = self._current_main_runtime()
                     review_agent = AIAgent(
                         model=self.model,
-                        max_iterations=8,
+                        max_iterations=16,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
@@ -3629,6 +3629,14 @@ class AIAgent:
                     review_agent._user_profile_enabled = self._user_profile_enabled
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
+                    # Suppress all status/warning emits from the fork so the
+                    # user only sees the final successful-action summary.
+                    # Without this, mid-review "Iteration budget exhausted",
+                    # rate-limit retries, compression warnings, and other
+                    # lifecycle messages bubble up through _emit_status ->
+                    # _vprint and leak past the stdout redirect (they go via
+                    # _print_fn/status_callback, which bypass sys.stdout).
+                    review_agent.suppress_status_output = True
 
                     review_agent.run_conversation(
                         user_message=prompt,

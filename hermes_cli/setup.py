@@ -1328,15 +1328,13 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
 
-        # CWD for messaging
+        # Gateway/cron working directory
         print()
-        print_info("Working directory for messaging sessions:")
-        print_info("  When using Hermes via Telegram/Discord, this is where")
-        print_info(
-            "  the agent starts. CLI mode always starts in the current directory."
-        )
+        print_info("Gateway working directory:")
+        print_info("  Used by Telegram/Discord/cron sessions.")
+        print_info("  CLI/TUI always uses your launch directory instead.")
         current_cwd = cfg_get(config, "terminal", "cwd", default="")
-        cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
+        cwd = prompt("  Gateway working directory", current_cwd or str(Path.home()))
         if cwd:
             config["terminal"]["cwd"] = cwd
 

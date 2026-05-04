@@ -271,6 +271,58 @@ class TestShellFileOpsHelpers:
         ops = ShellFileOperations(env)
         assert ops.cwd == "/"
 
+    def test_read_file_strips_leaked_terminal_fence_markers(self, mock_env):
+        leaked = (
+            "'\x07__HERMES_FENCE_a9f7b3__\x1b]0;cat "
+            "'/tmp/test/a.py' 2> /dev/null\x07\n"
+            "print('ok')\n"
+            "__HERMES_FENCE_a9f7b3__\x07'\n"
+        )
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "12\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "print('ok')\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": leaked, "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.py")
+
+        assert result.error is None
+        assert "HERMES_FENCE" not in result.content
+        assert "\x1b]" not in result.content
+        assert "\x07" not in result.content
+        assert "     1|print('ok')" in result.content
+
+    def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
+        leaked = (
+            "__HERMES_FENCE_a9f7b3__\x07'\n"
+            "alpha\n"
+            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
+        )
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "6\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "alpha\n", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": leaked, "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file_raw("/tmp/test/a.txt")
+
+        assert result.error is None
+        assert result.content == "alpha\n"
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""

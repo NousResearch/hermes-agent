@@ -107,6 +107,61 @@ class TestSystemdServiceRefresh:
         ]
 
 
+    def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
+        """run_gateway() should refresh the systemd unit on boot so that
+        restart settings take effect even when the process was respawned
+        via exit-code-75 (bypassing `hermes gateway restart`)."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        # Prevent run_gateway from actually starting the gateway
+        def fake_start_gateway(**kwargs):
+            import asyncio
+            f = asyncio.Future()
+            f.set_result(True)
+            return f
+
+        monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+
+        gateway_cli.run_gateway()
+
+        assert unit_path.read_text(encoding="utf-8") == "new unit\n"
+        assert ["systemctl", "--user", "daemon-reload"] in calls
+
+
+class TestRequireServiceInstalled:
+    def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli._require_service_installed("start")
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "not installed" in out
+        assert "hermes gateway install" in out
+
+    def test_passes_when_unit_exists(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Unit]\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        gateway_cli._require_service_installed("start")
+
+
 class TestGeneratedSystemdUnits:
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
         unit = gateway_cli.generate_systemd_unit(system=False)
@@ -487,6 +542,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
@@ -541,6 +597,7 @@ class TestGatewaySystemServiceRouting:
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",

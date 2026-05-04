@@ -236,6 +236,13 @@ class TestTelegramBotCommands:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
+    def test_excludes_commands_with_required_args(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "background" not in names
+        assert "queue" not in names
+        assert "steer" not in names
+        assert "background" in GATEWAY_KNOWN_COMMANDS
+
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):
@@ -820,6 +827,103 @@ class TestClampTelegramNames:
         result = _clamp_telegram_names(entries, set())
         assert len(result) == 1
         assert result[0] == ("foo", "d1")
+
+
+class TestClampCommandNamesTriples:
+    """Tests for _clamp_command_names with 3-tuples (name, desc, cmd_key).
+
+    Skill entries pass through _clamp_command_names as 3-tuples so the
+    original cmd_key survives name truncation.  Before the fix in PR #18951,
+    the code stripped cmd_key into a side-dict keyed by the *original*
+    (name, desc) pair — after truncation the lookup key no longer matched,
+    silently losing the cmd_key.
+    """
+
+    def test_short_triple_preserved(self):
+        entries = [("skill", "A skill", "/skill")]
+        result = _clamp_command_names(entries, set())
+        assert result == [("skill", "A skill", "/skill")]
+
+    def test_long_name_preserves_cmd_key(self):
+        long = "a" * 50
+        cmd_key = f"/{long}"
+        result = _clamp_command_names([(long, "desc", cmd_key)], set())
+        assert len(result) == 1
+        name, desc, key = result[0]
+        assert len(name) == _CMD_NAME_LIMIT
+        assert key == cmd_key, "cmd_key must survive name clamping"
+
+    def test_collision_preserves_cmd_key(self):
+        prefix = "x" * _CMD_NAME_LIMIT
+        long = "x" * 50
+        result = _clamp_command_names(
+            [(long, "desc", "/long-skill")], reserved={prefix},
+        )
+        assert len(result) == 1
+        name, _desc, key = result[0]
+        assert name == "x" * (_CMD_NAME_LIMIT - 1) + "0"
+        assert key == "/long-skill"
+
+    def test_multiple_long_names_preserve_respective_keys(self):
+        base = "y" * 40
+        entries = [
+            (base + "_alpha", "d1", "/alpha-skill"),
+            (base + "_beta", "d2", "/beta-skill"),
+        ]
+        result = _clamp_command_names(entries, set())
+        assert len(result) == 2
+        assert result[0][2] == "/alpha-skill"
+        assert result[1][2] == "/beta-skill"
+
+    def test_backward_compat_with_pairs(self):
+        """Legacy 2-tuple callers (Telegram) must still work."""
+        entries = [("help", "Show help"), ("status", "Show status")]
+        result = _clamp_command_names(entries, set())
+        assert result == entries
+
+
+class TestDiscordSkillCmdKeyDispatch:
+    """Integration: discord_skill_commands preserves cmd_key for long names.
+
+    This tests the full pipeline: skill_commands → _collect_gateway_skill_entries
+    → _clamp_command_names → returned triples, verifying that skills with names
+    exceeding Discord's 32-char limit still have their original cmd_key for
+    dispatch.
+    """
+
+    def test_long_skill_name_retains_cmd_key(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        long_name = "this-is-a-very-long-skill-name-that-exceeds-limit"
+        cmd_key = f"/{long_name}"
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir(exist_ok=True)
+        # Use resolved path — macOS /var → /private/var symlink
+        # causes SKILLS_DIR.resolve() to differ from tmp_path.
+        resolved_dir = str(fake_skills_dir.resolve())
+
+        fake_cmds = {
+            cmd_key: {
+                "name": long_name,
+                "description": "A skill with a long name",
+                "skill_md_path": f"{resolved_dir}/{long_name}/SKILL.md",
+                "skill_dir": f"{resolved_dir}/{long_name}",
+            },
+        }
+
+        with patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds), \
+             patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+            entries, hidden = discord_skill_commands(
+                max_slots=100, reserved_names=set(),
+            )
+
+        assert len(entries) == 1
+        name, desc, key = entries[0]
+        assert len(name) <= _CMD_NAME_LIMIT, "Name should be clamped to 32 chars"
+        assert key == cmd_key, (
+            f"cmd_key must be the original /{long_name}, got {key!r}"
+        )
 
 
 class TestTelegramMenuCommands:
@@ -1563,6 +1667,19 @@ class TestPluginCommandEnumeration:
         })
         names = {name for name, _desc in telegram_bot_commands()}
         assert "metricas" in names
+
+    def test_plugin_command_with_required_args_excluded_from_telegram_menu(self, monkeypatch):
+        """Telegram BotCommand selections cannot supply required arguments."""
+        self._patch_plugin_commands(monkeypatch, {
+            "background-job": {
+                "handler": lambda _a: "ok",
+                "description": "Run a background job",
+                "args_hint": "<prompt>",
+                "plugin": "jobs-plugin",
+            }
+        })
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "background_job" not in names
 
     def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
         """/hermes metricas must route through the Slack subcommand map."""

@@ -8,13 +8,29 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.config import HomeChannel, Platform
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
 )
+
+
+# ── restart marker helpers ───────────────────────────────────────────────
+
+
+def test_restart_notification_pending_false_without_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    assert gateway_run._restart_notification_pending() is False
+
+
+def test_restart_notification_pending_true_with_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.json").write_text("{}")
+
+    assert gateway_run._restart_notification_pending() is True
 
 
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
@@ -143,6 +159,184 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     assert calls[1][1]["platform"] == "telegram"
 
 
+@pytest.mark.asyncio
+async def test_sethome_updates_running_config_for_same_process_restart(tmp_path, monkeypatch):
+    """/sethome persists to env and updates in-memory config before restart."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    saved = {}
+
+    def _fake_save_env_value(key, value):
+        saved[key] = value
+
+    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="home-42")
+    source.chat_name = "Ops Home"
+    event = MessageEvent(
+        text="/sethome",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m-home",
+    )
+
+    result = await runner._handle_set_home_command(event)
+
+    home = runner.config.get_home_channel(Platform.TELEGRAM)
+    assert "Home channel set" in result
+    assert saved["TELEGRAM_HOME_CHANNEL"] == "home-42"
+    assert home is not None
+    assert home.chat_id == "home-42"
+    assert home.name == "Ops Home"
+
+
+@pytest.mark.asyncio
+async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path, monkeypatch):
+    """/sethome from a topic/thread stores the thread-aware home target."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    saved = {}
+
+    def _fake_save_env_value(key, value):
+        saved[key] = value
+
+    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="parent-42", thread_id="topic-7")
+    source.chat_name = "Ops Topic"
+    event = MessageEvent(
+        text="/sethome",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m-home-thread",
+    )
+
+    result = await runner._handle_set_home_command(event)
+
+    home = runner.config.get_home_channel(Platform.TELEGRAM)
+    assert "Home channel set" in result
+    assert saved["TELEGRAM_HOME_CHANNEL"] == "parent-42"
+    assert saved["TELEGRAM_HOME_CHANNEL_THREAD_ID"] == "topic-7"
+    assert home is not None
+    assert home.chat_id == "parent-42"
+    assert home.thread_id == "topic-7"
+
+
+# ── home-channel startup notifications ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_to_configured_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_preserves_thread_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="parent-42",
+        name="Ops Topic",
+        thread_id="topic-7",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "parent-42", "topic-7")}
+    adapter.send.assert_called_once_with(
+        "parent-42",
+        "♻️ Gateway online — Hermes is back and ready.",
+        metadata={"thread_id": "topic-7"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_skips_restart_target(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications(
+        skip_targets={("telegram", "42", None)}
+    )
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_does_not_skip_different_thread(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications(
+        skip_targets={("telegram", "42", "topic-7")}
+    )
+
+    assert delivered == {("telegram", "42", None)}
+    adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_ignores_false_send_result(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=False, error="network down"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_called_once()
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 
@@ -160,8 +354,9 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock()
 
-    await runner._send_restart_notification()
+    delivered_target = await runner._send_restart_notification()
 
+    assert delivered_target == ("telegram", "42", None)
     adapter.send.assert_called_once()
     call_args = adapter.send.call_args
     assert call_args[0][0] == "42"  # chat_id
@@ -185,8 +380,9 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock()
 
-    await runner._send_restart_notification()
+    delivered_target = await runner._send_restart_notification()
 
+    assert delivered_target == ("telegram", "99", "topic_7")
     call_args = adapter.send.call_args
     assert call_args[1]["metadata"] == {"thread_id": "topic_7"}
     assert not notify_path.exists()
@@ -240,9 +436,10 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock(side_effect=RuntimeError("network down"))
 
-    await runner._send_restart_notification()
+    delivered_target = await runner._send_restart_notification()
 
     # File cleaned up even though send raised.
+    assert delivered_target is None
     assert not notify_path.exists()
 
 
@@ -274,7 +471,7 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     )
 
     with caplog.at_level("DEBUG", logger="gateway.run"):
-        await runner._send_restart_notification()
+        delivered_target = await runner._send_restart_notification()
 
     success_lines = [
         r for r in caplog.records
@@ -286,6 +483,7 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
         and "was not delivered" in r.getMessage()
         and "Chat not found" in r.getMessage()
     ]
+    assert delivered_target is None
     assert not success_lines, (
         "Expected no INFO 'Sent restart notification' line when send failed, "
         f"got: {[r.getMessage() for r in success_lines]}"
@@ -317,12 +515,13 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
 
     with caplog.at_level("DEBUG", logger="gateway.run"):
-        await runner._send_restart_notification()
+        delivered_target = await runner._send_restart_notification()
 
     success_lines = [
         r for r in caplog.records
         if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
     ]
+    assert delivered_target == ("telegram", "42", None)
     assert success_lines, (
         "Expected INFO 'Sent restart notification' when send succeeded; "
         f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"

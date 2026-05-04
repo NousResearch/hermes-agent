@@ -268,7 +268,7 @@
 }
 
 .hermes-kanban-drawer {
-  width: min(480px, 92vw);
+  width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
   height: 100vh;
   background: var(--color-card);
   border-left: 1px solid var(--color-border);
@@ -334,7 +334,7 @@
 .hermes-kanban-meta-row {
   display: flex;
   gap: 0.5rem;
-  font-size: 0.72rem;
+  font-size: 0.8rem;
 }
 .hermes-kanban-meta-label {
   width: 92px;
@@ -367,14 +367,15 @@
 
 .hermes-kanban-pre {
   margin: 0;
-  padding: 0.45rem 0.55rem;
+  padding: 0.5rem 0.6rem;
   white-space: pre-wrap;
   word-break: break-word;
   background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.72rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
   color: var(--color-foreground);
 }
 
@@ -605,8 +606,8 @@
 /* ---- Markdown rendering -------------------------------------------- */
 
 .hermes-kanban-md {
-  font-size: 0.8rem;
-  line-height: 1.55;
+  font-size: 0.85rem;
+  line-height: 1.6;
   color: var(--color-foreground);
 }
 .hermes-kanban-md p  { margin: 0.25rem 0; }
@@ -632,15 +633,22 @@
 }
 .hermes-kanban-md code {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   padding: 0.05rem 0.3rem;
   background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
   border-radius: 3px;
+  color: inherit;
 }
+/* Fenced code block. Set a visible background even when --color-foreground
+ * is empty (color-mix falls through to transparent in that case), and force
+ * color: inherit so the text tracks the drawer foreground rather than the
+ * UA default on <code> elements — otherwise themes that don't set
+ * --color-foreground leave code text rendering near-black on dark themes
+ * (see issue #18576). */
 .hermes-kanban-md-code {
   margin: 0.35rem 0;
   padding: 0.5rem 0.6rem;
-  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   overflow-x: auto;
@@ -648,8 +656,9 @@
 .hermes-kanban-md-code code {
   background: transparent;
   padding: 0;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   white-space: pre;
+  color: inherit;
 }
 .hermes-kanban-md strong { font-weight: 600; }
 
@@ -684,11 +693,11 @@
 /* ---- Worker log pane ------------------------------------------------ */
 
 .hermes-kanban-log {
-  max-height: 340px;
+  max-height: 360px;
   overflow: auto;
   white-space: pre;
-  font-size: 0.7rem;
-  line-height: 1.45;
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
 
@@ -739,7 +748,8 @@
   color: var(--color-muted-foreground);
 }
 .hermes-kanban-run-summary {
-  font-size: 0.75rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
   padding: 0.2rem 0 0;
   color: var(--color-foreground);
 }
@@ -751,10 +761,65 @@
 }
 .hermes-kanban-run-meta {
   display: block;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
   padding: 0.15rem 0 0;
   color: var(--color-muted-foreground);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* -------------------------------------------------------------------------
+   Multi-project: board switcher + create-board dialog
+   ------------------------------------------------------------------------- */
+.hermes-kanban-boardswitcher {
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.02));
+}
+.hermes-kanban-boardswitcher-inner {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-boardswitcher-compact {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.25rem;
+}
+.hermes-kanban-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hermes-kanban-dialog {
+  background: var(--color-card, #121421);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  border-radius: 0.5rem;
+  padding: 1.1rem 1.2rem 1rem;
+  width: 28rem;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.hermes-kanban-dialog-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.hermes-kanban-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
 }

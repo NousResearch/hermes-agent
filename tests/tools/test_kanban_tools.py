@@ -467,8 +467,8 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
         skip_memory=True,
     )
     prompt = a._build_system_prompt()
-    # Header phrase
-    assert "You are a Kanban worker" in prompt
+    # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
+    assert "Kanban task execution protocol" in prompt
     # Lifecycle signals
     assert "kanban_show()" in prompt
     assert "kanban_complete" in prompt
@@ -492,3 +492,121 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     assert 1_500 < len(KANBAN_GUIDANCE) < 4_096, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
     )
+
+
+# ---------------------------------------------------------------------------
+# Worker task-ownership enforcement (regression tests for #19534)
+# ---------------------------------------------------------------------------
+#
+# A worker process has HERMES_KANBAN_TASK set to its own task id. The
+# destructive tools (kanban_complete, kanban_block, kanban_heartbeat)
+# must refuse to operate on any OTHER task id, even if the caller
+# supplies an explicit `task_id` argument. Workers legitimately call
+# kanban_show / kanban_comment / kanban_create / kanban_link on other
+# tasks, so those are unrestricted.
+#
+# Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
+# exempt — their job is routing, and they sometimes close out child
+# tasks on behalf of the child.
+
+
+def test_worker_complete_rejects_foreign_task_id(worker_env):
+    """A worker cannot complete a task that isn't its own (#19534)."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="sibling")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "HIJACK"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "refusing to mutate" in d.get("error", "")
+
+    # Sibling task must be untouched.
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_worker_block_rejects_foreign_task_id(worker_env):
+    """A worker cannot block a task that isn't its own (#19534)."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="sibling")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"task_id": other, "reason": "evil"})
+    d = json.loads(out)
+    assert "refusing to mutate" in d.get("error", "")
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_worker_heartbeat_rejects_foreign_task_id(worker_env):
+    """A worker cannot heartbeat a task that isn't its own (#19534)."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="sibling")
+        # Put sibling in running state so heartbeat would otherwise succeed.
+        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_heartbeat({"task_id": other})
+    d = json.loads(out)
+    assert "refusing to mutate" in d.get("error", "")
+
+
+def test_worker_complete_own_task_still_works(worker_env):
+    """The ownership check doesn't break the normal own-task happy path."""
+    from tools import kanban_tools as kt
+    # Both implicit (no task_id arg) and explicit (matching env) must work.
+    out = kt._handle_complete({"task_id": worker_env, "summary": "explicit own"})
+    d = json.loads(out)
+    assert d.get("ok") is True and d.get("task_id") == worker_env
+
+
+def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
+    """Orchestrator profiles (no HERMES_KANBAN_TASK) can still complete
+    any task via explicit task_id. The check only applies to workers."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="child to close out")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
+    d = json.loads(out)
+    assert d.get("ok") is True and d.get("task_id") == tid

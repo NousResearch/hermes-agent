@@ -4085,7 +4085,14 @@ class FeishuAdapter(BasePlatformAdapter):
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        # Infer receive_id_type from chat_id prefix to support open_id (ou_) and union_id (on_)
+        if chat_id.startswith("ou_"):
+            rid_type = "open_id"
+        elif chat_id.startswith("on_"):
+            rid_type = "union_id"
+        else:
+            rid_type = "chat_id"
+        request = self._build_create_message_request(rid_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod

@@ -5278,6 +5278,30 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _voice_cfg_dict() -> dict:
+    """Shape-safe accessor for the ``voice:`` block in config.yaml.
+
+    ``_load_cfg()`` returns raw ``yaml.safe_load()`` output, so both the
+    root AND ``voice`` may be any YAML scalar / list / None. A hand-edit
+    like ``voice: true`` or a malformed top-level config that parses to
+    a scalar would otherwise break ``.get("…")`` and take every
+    ``voice.*`` branch down with it (Copilot round-3..7 review on
+    #19835). Coerce through ``isinstance`` at every level so malformed
+    config falls back to an empty dict instead of crashing /voice.
+    """
+    cfg = _load_cfg()
+    voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
+
+    return voice_cfg if isinstance(voice_cfg, dict) else {}
+
+
+def _voice_record_key() -> str:
+    """Current ``voice.record_key`` value, documented default on error."""
+    record_key = _voice_cfg_dict().get("record_key")
+
+    return str(record_key) if isinstance(record_key, str) and record_key else "ctrl+b"
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
     """CLI parity for the ``/voice`` slash command.
@@ -5298,8 +5322,13 @@ def _(rid, params: dict) -> dict:
         # Mirror CLI's _show_voice_status: include STT/TTS provider
         # availability so the user can tell at a glance *why* voice mode
         # isn't working ("STT provider: MISSING ..." is the common case).
+        # ``record_key`` mirrors the configured ``voice.record_key`` so the
+        # TUI can both bind it (frontend ``isVoiceToggleKey``) and display
+        # it in /voice status — previously the TUI hardcoded Ctrl+B and
+        # ignored the config (#18994).
         payload: dict = {
             "enabled": _voice_mode_enabled(),
+            "record_key": _voice_record_key(),
             "tts": _voice_tts_enabled(),
         }
         try:
@@ -5336,7 +5365,14 @@ def _(rid, params: dict) -> dict:
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
 
-        return _ok(rid, {"enabled": enabled, "tts": _voice_tts_enabled()})
+        return _ok(
+            rid,
+            {
+                "enabled": enabled,
+                "record_key": _voice_record_key(),
+                "tts": _voice_tts_enabled(),
+            },
+        )
 
     if action == "tts":
         if not _voice_mode_enabled():
@@ -5344,7 +5380,18 @@ def _(rid, params: dict) -> dict:
         new_value = not _voice_tts_enabled()
         # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
-        return _ok(rid, {"enabled": True, "tts": new_value})
+        # Include ``record_key`` on every branch so a /voice tts toggle
+        # doesn't reset the TUI's cached shortcut to the default when a
+        # user has a custom binding configured (Copilot review, round 2
+        # on #19835). Keeps parity with the status/on/off branches above.
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "record_key": _voice_record_key(),
+                "tts": new_value,
+            },
+        )
 
     return _err(rid, 4013, f"unknown voice action: {action}")
 
@@ -5376,15 +5423,26 @@ def _(rid, params: dict) -> dict:
 
             from hermes_cli.voice import start_continuous
 
-            voice_cfg = _load_cfg().get("voice", {})
+            # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
+            # must not crash /voice with a 5025 — fall back to VAD defaults.
+            #
+            # Exclude ``bool`` from the numeric check since Python's bool is
+            # a subclass of int — a hand-edit like ``silence_threshold: true``
+            # would otherwise forward as ``1`` instead of falling back to
+            # the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
+            voice_cfg = _voice_cfg_dict()
+            threshold = voice_cfg.get("silence_threshold")
+            duration = voice_cfg.get("silence_duration")
+            safe_threshold = threshold if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) else 200
+            safe_duration = duration if isinstance(duration, (int, float)) and not isinstance(duration, bool) else 3.0
             start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}
                 ),
-                silence_threshold=voice_cfg.get("silence_threshold", 200),
-                silence_duration=voice_cfg.get("silence_duration", 3.0),
+                silence_threshold=safe_threshold,
+                silence_duration=safe_duration,
             )
             return _ok(rid, {"status": "recording"})
 

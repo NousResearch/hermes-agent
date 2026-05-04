@@ -204,8 +204,6 @@ def run_doctor(args):
     elif py_version >= (3, 10):
         check_ok(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}")
         check_warn("Python 3.11+ recommended for RL Training tools (tinker requires >= 3.11)")
-    elif py_version >= (3, 8):
-        check_warn(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ recommended)")
     else:
         check_fail(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ required)")
         issues.append("Upgrade Python to 3.10+")

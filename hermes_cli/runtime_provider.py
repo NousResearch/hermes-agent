@@ -346,6 +346,44 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _try_resolve_from_named_custom_pool(
+    custom_provider: Dict[str, Any],
+    base_url: str,
+    provider_label: str,
+    api_mode_override: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a custom provider pool by its explicit name before base_url."""
+    names = [
+        str(custom_provider.get("provider_key", "") or "").strip(),
+        str(custom_provider.get("name", "") or "").strip(),
+    ]
+    for name in names:
+        if not name:
+            continue
+        pool_key = f"custom:{_normalize_custom_provider_name(name)}"
+        try:
+            pool = load_pool(pool_key)
+            if not pool.has_credentials():
+                continue
+            entry = pool.select()
+            if entry is None:
+                continue
+            pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+            if not pool_api_key:
+                continue
+            return {
+                "provider": provider_label,
+                "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+                "base_url": base_url,
+                "api_key": pool_api_key,
+                "source": f"pool:{pool_key}",
+                "credential_pool": pool,
+            }
+        except Exception:
+            continue
+    return None
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
@@ -520,8 +558,15 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
-    # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+    # Prefer the exact named custom provider pool before falling back to
+    # base_url matching. Multiple providers can share one gateway URL while
+    # using different keys/groups upstream.
+    pool_result = (
+        _try_resolve_from_named_custom_pool(
+            custom_provider, base_url, "custom", custom_provider.get("api_mode")
+        )
+        or _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.

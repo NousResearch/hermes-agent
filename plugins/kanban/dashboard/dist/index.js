@@ -1996,7 +1996,10 @@
     return h("div", { className: "hermes-kanban-actions" },
       b("→ triage",  { status: "triage" },   t.status !== "triage"),
       b("→ ready",   { status: "ready" },    t.status !== "ready"),
-      b("→ running", { status: "running" },  t.status !== "running"),
+      // No direct → running button: /tasks/:id PATCH rejects status=running
+      // with 400 (issue #19535). Tasks enter running only through the
+      // dispatcher's claim_task path, which atomically creates the run row,
+      // claim lock, and worker process metadata.
       b("Block",     { status: "blocked" },
         t.status === "running" || t.status === "ready",
         DESTRUCTIVE_TRANSITIONS.blocked),

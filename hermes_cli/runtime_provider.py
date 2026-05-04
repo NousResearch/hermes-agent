@@ -378,7 +378,7 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
-    requested_norm = (requested_provider or "").strip().lower()
+    requested_norm = (str(requested_provider) if isinstance(requested_provider, str) else "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()

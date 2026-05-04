@@ -1,0 +1,88 @@
+model:
+  default: cloudflare:kimi-k2.6
+  fallback:
+  - nvidia:meta/llama-3.3-70b-instruct
+  provider:
+    cloudflare: true
+    nvidia: true
+    openrouter: true
+    deepseek: true
+    custom:
+      cloudflare:
+        base_url: https://api.cloudflare.com/client/v4/accounts/YOUR_CF_ACCOUNT_ID/ai
+        api_key_env: CLOUDFLARE_API_TOKEN
+        models:
+        - id: kimi-k2.6
+          name: Kimi K2.6 (Free)
+          context_window: 131072
+      nvidia:
+        base_url: https://integrate.api.nvidia.com/v1
+        api_key_env: NVIDIA_API_KEY
+        models:
+        - id: minimaxai/minimax-m2.7
+          name: NVIDIA MiniMax M2.7
+          context_window: 200000
+        - id: nemotron-120b-a12b
+          name: NVIDIA Nemotron 120B a12b
+          context_window: 200000
+        - id: meta/llama-3.3-70b-instruct
+          name: Llama 3.3 70B
+          context_window: 128000
+
+providers: {}
+
+custom_providers:
+- name: cloudflare
+  base_url: https://api.cloudflare.com/client/v4/accounts/YOUR_CF_ACCOUNT_ID/ai
+  api_key: YOUR_CLOUDFLARE_API_TOKEN
+- name: nvidia
+  base_url: https://integrate.api.nvidia.com/v1
+  api_key: YOUR_NVIDIA_API_KEY
+
+# Fallback chain: tries these providers in order when primary fails (429, 402, 503)
+fallback_providers:
+- provider: nvidia
+  model: meta/llama-3.3-70b-instruct
+- provider: nvidia
+  model: nvidia/llama-3.3-nemotron-super-49b-v1
+- provider: openrouter
+  model: minimax/minimax-m2.5:free
+toolsets:
+- hermes-cli
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  restart_drain_timeout: 60
+  service_tier: ''
+  tool_use_enforcement: auto
+  gateway_timeout_warning: 900
+  gateway_notify_interval: 600
+terminal:
+  backend: local
+  modal_mode: auto
+  cwd: .
+  timeout: 180
+  env_passthrough: []
+  docker_image: nikolaik/python-nodejs:python3.11-nodejs20
+  persistent_shell: true
+browser:
+  inactivity_timeout: 120
+  command_timeout: 30
+  record_sessions: false
+  allow_private_urls: false
+checkpoints:
+  enabled: true
+  max_snapshots: 50
+display:
+  compact: false
+  personality: kawaii
+  streaming: false
+  inline_diffs: true
+  show_cost: false
+approvals:
+  mode: manual
+  timeout: 60
+security:
+  redact_secrets: true
+  tirith_enabled: true
+_config_version: 16

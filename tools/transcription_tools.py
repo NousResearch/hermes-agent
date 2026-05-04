@@ -440,7 +440,15 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             Path(file_path).name, model_name, info.language, info.duration,
         )
 
-        return {"success": True, "transcript": transcript, "provider": "local"}
+        return {
+            "success": True,
+            "transcript": transcript,
+            "provider": "local",
+            "segments": [
+                {"start": segment.start, "end": segment.end, "text": segment.text.strip()}
+                for segment in segments
+            ],
+        }
 
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)

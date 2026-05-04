@@ -130,6 +130,8 @@ class TestTranscribeLocal:
 
         mock_segment = MagicMock()
         mock_segment.text = "Hello world"
+        mock_segment.start = 0.0
+        mock_segment.end = 1.5
         mock_info = MagicMock()
         mock_info.language = "en"
         mock_info.duration = 2.5
@@ -145,6 +147,16 @@ class TestTranscribeLocal:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
+        assert "segments" in result
+        assert isinstance(result["segments"], list)
+        assert len(result["segments"]) == 1
+        seg = result["segments"][0]
+        assert "start" in seg
+        assert "end" in seg
+        assert "text" in seg
+        assert seg["text"] == "Hello world"
+        assert seg["start"] == 0.0
+        assert seg["end"] == 1.5
 
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):

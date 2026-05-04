@@ -143,6 +143,10 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
+        self._flush_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._shutdown_requested = threading.Event()
+        self._shutdown_complete = threading.Event()
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -151,6 +155,9 @@ class HonchoSessionManager:
                 daemon=True,
             )
             self._async_thread.start()
+            self._shutdown_complete.clear()
+        else:
+            self._shutdown_complete.set()
 
     @property
     def honcho(self) -> Honcho:
@@ -421,51 +428,61 @@ class HonchoSessionManager:
 
     def _flush_session(self, session: HonchoSession) -> bool:
         """Internal: write unsynced messages to Honcho synchronously."""
-        if not session.messages:
-            return True
+        with self._flush_lock:
+            if not session.messages:
+                return True
 
-        user_peer = self._get_or_create_peer(session.user_peer_id)
-        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
+            user_peer = self._get_or_create_peer(session.user_peer_id)
+            assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+            honcho_session = self._sessions_cache.get(session.honcho_session_id)
 
-        if not honcho_session:
-            honcho_session, _ = self._get_or_create_honcho_session(
-                session.honcho_session_id, user_peer, assistant_peer
-            )
+            if not honcho_session:
+                honcho_session, _ = self._get_or_create_honcho_session(
+                    session.honcho_session_id, user_peer, assistant_peer
+                )
 
-        new_messages = [m for m in session.messages if not m.get("_synced")]
-        if not new_messages:
-            return True
+            new_messages = [m for m in session.messages if not m.get("_synced")]
+            if not new_messages:
+                return True
 
-        honcho_messages = []
-        for msg in new_messages:
-            peer = user_peer if msg["role"] == "user" else assistant_peer
-            honcho_messages.append(peer.message(msg["content"]))
-
-        try:
-            honcho_session.add_messages(honcho_messages)
+            honcho_messages = []
             for msg in new_messages:
-                msg["_synced"] = True
-            logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
-            with self._cache_lock:
-                self._cache[session.key] = session
-            return True
-        except Exception as e:
-            for msg in new_messages:
-                msg["_synced"] = False
-            logger.error("Failed to sync messages to Honcho: %s", e)
-            with self._cache_lock:
-                self._cache[session.key] = session
-            return False
+                peer = user_peer if msg["role"] == "user" else assistant_peer
+                honcho_messages.append(peer.message(msg["content"]))
+
+            try:
+                honcho_session.add_messages(honcho_messages)
+                for msg in new_messages:
+                    msg["_synced"] = True
+                logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
+                with self._cache_lock:
+                    self._cache[session.key] = session
+                return True
+            except Exception as e:
+                for msg in new_messages:
+                    msg["_synced"] = False
+                logger.error("Failed to sync messages to Honcho: %s", e)
+                with self._cache_lock:
+                    self._cache[session.key] = session
+                return False
 
     def _async_writer_loop(self) -> None:
         """Background daemon thread: drains the async write queue."""
         while True:
             try:
                 item = self._async_queue.get(timeout=5)
-                if item is _ASYNC_SHUTDOWN:
-                    break
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error("Honcho async writer error: %s", e)
+                continue
 
+            is_shutdown = item is _ASYNC_SHUTDOWN
+            if is_shutdown:
+                self._async_queue.task_done()
+                break
+
+            try:
                 first_error: Exception | None = None
                 try:
                     success = self._flush_session(item)
@@ -473,29 +490,26 @@ class HonchoSessionManager:
                     success = False
                     first_error = e
 
-                if success:
-                    continue
+                if not success:
+                    if first_error is not None:
+                        logger.warning("Honcho async write failed, retrying once: %s", first_error)
+                    else:
+                        logger.warning("Honcho async write failed, retrying once")
 
-                if first_error is not None:
-                    logger.warning("Honcho async write failed, retrying once: %s", first_error)
-                else:
-                    logger.warning("Honcho async write failed, retrying once")
+                    import time as _time
 
-                import time as _time
-                _time.sleep(2)
+                    _time.sleep(2)
 
-                try:
-                    retry_success = self._flush_session(item)
-                except Exception as e2:
-                    logger.error("Honcho async write retry failed, dropping batch: %s", e2)
-                    continue
+                    try:
+                        success = self._flush_session(item)
+                    except Exception as e2:
+                        logger.error("Honcho async write retry failed, dropping batch: %s", e2)
+                        success = False
 
-                if not retry_success:
-                    logger.error("Honcho async write retry failed, dropping batch")
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error("Honcho async writer error: %s", e)
+                    if not success:
+                        logger.error("Honcho async write retry failed, dropping batch")
+            finally:
+                self._async_queue.task_done()
 
     def save(self, session: HonchoSession) -> None:
         """Save messages to Honcho, respecting write_frequency.
@@ -511,7 +525,9 @@ class HonchoSessionManager:
 
         if wf == "async":
             if self._async_queue is not None:
-                self._async_queue.put(session)
+                with self._lifecycle_lock:
+                    if not self._shutdown_requested.is_set():
+                        self._async_queue.put(session)
         elif wf == "turn":
             self._flush_session(session)
         elif wf == "session":
@@ -527,6 +543,11 @@ class HonchoSessionManager:
         Called at session end for "session" write_frequency, or to force
         a sync before process exit regardless of mode.
         """
+        # Wait for all in-flight async writes first so we do not flush the
+        # same session concurrently from both paths.
+        if self._async_queue is not None:
+            self._async_queue.join()
+
         with self._cache_lock:
             sessions = list(self._cache.values())
         for session in sessions:
@@ -535,22 +556,24 @@ class HonchoSessionManager:
             except Exception as e:
                 logger.error("Honcho flush_all error for %s: %s", session.key, e)
 
-        # Drain async queue synchronously if it exists
-        if self._async_queue is not None:
-            while not self._async_queue.empty():
-                try:
-                    item = self._async_queue.get_nowait()
-                    if item is not _ASYNC_SHUTDOWN:
-                        self._flush_session(item)
-                except queue.Empty:
-                    break
-
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Flush pending messages and stop the async writer, if present."""
         if self._async_queue is not None and self._async_thread is not None:
-            self.flush_all()
-            self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=10)
+            with self._lifecycle_lock:
+                if self._shutdown_requested.is_set():
+                    return
+
+                self._shutdown_requested.set()
+                try:
+                    self.flush_all()
+                    self._async_queue.put(_ASYNC_SHUTDOWN)
+                    self._async_queue.join()
+                    self._async_thread.join(timeout=10)
+                finally:
+                    self._shutdown_complete.set()
+            return
+
+        self.flush_all()
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""

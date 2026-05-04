@@ -10,14 +10,17 @@ Covers:
 """
 
 import json
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
 
+from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
+    _ASYNC_SHUTDOWN,
 )
 
 
@@ -306,27 +309,78 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         assert not mgr._async_thread.is_alive()
 
+    def test_shutdown_twice_is_idempotent(self):
+        mgr = _make_manager(write_frequency="async")
+        sess = _make_session(key="shutdown-idempotent")
+        sess.add_message("user", "before shutdown")
+        mgr.save(sess)
+
+        mgr.shutdown()
+        assert mgr._shutdown_requested.is_set()
+        assert mgr._shutdown_complete.is_set()
+        assert mgr._async_queue is not None
+        assert mgr._async_queue.unfinished_tasks == 0
+        assert not mgr._async_thread.is_alive()
+
+        mgr.shutdown()
+        assert mgr._shutdown_complete.is_set()
+        assert mgr._async_queue.unfinished_tasks == 0
+        assert not mgr._async_thread.is_alive()
+
+    def test_concurrent_shutdown_calls_enqueue_single_sentinel(self):
+        mgr = _make_manager(write_frequency="async")
+
+        sentinels_put = []
+        put_lock = threading.Lock()
+
+        original_put = mgr._async_queue.put
+
+        def tracking_put(item, *args, **kwargs):
+            if item is _ASYNC_SHUTDOWN:
+                with put_lock:
+                    sentinels_put.append(item)
+            return original_put(item, *args, **kwargs)
+
+        thread_done: list[threading.Event] = [threading.Event(), threading.Event()]
+
+        def _run(idx: int):
+            mgr.shutdown()
+            thread_done[idx].set()
+
+        with patch.object(mgr._async_queue, "put", side_effect=tracking_put):
+            t1 = threading.Thread(target=_run, args=(0,))
+            t2 = threading.Thread(target=_run, args=(1,))
+            t1.start()
+            t2.start()
+
+            assert thread_done[0].wait(timeout=2.0)
+            assert thread_done[1].wait(timeout=2.0)
+
+            t1.join(timeout=2.0)
+            t2.join(timeout=2.0)
+
+        assert len(sentinels_put) == 1
+        assert not mgr._async_thread.is_alive()
+        assert mgr._async_queue.unfinished_tasks == 0
+
     def test_async_writer_calls_flush(self):
         mgr = _make_manager(write_frequency="async")
         sess = _make_session()
         sess.add_message("user", "async msg")
 
-        flushed = []
+        flushed = threading.Event()
 
         def capture(s):
-            flushed.append(s)
+            assert s is sess
+            flushed.set()
             return True
 
         mgr._flush_session = capture
         mgr._async_queue.put(sess)
-        # Give the daemon thread time to process
-        deadline = time.time() + 2.0
-        while not flushed and time.time() < deadline:
-            time.sleep(0.05)
+        assert flushed.wait(timeout=2.0)
 
         mgr.shutdown()
-        assert len(flushed) == 1
-        assert flushed[0] is sess
+        assert flushed.is_set()
 
     def test_shutdown_sentinel_stops_loop(self):
         mgr = _make_manager(write_frequency="async")
@@ -334,6 +388,175 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+    def test_racing_shutdown_and_save(self):
+        mgr = _make_manager(write_frequency="async")
+
+        pre_shutdown_session = _make_session(key="pre-shutdown")
+        pre_shutdown_session.add_message("user", "before shutdown")
+        post_shutdown_session = _make_session(key="post-shutdown")
+        post_shutdown_session.add_message("user", "after shutdown")
+
+        pre_put = threading.Event()
+        pre_flush_started = threading.Event()
+        pre_flush_done = threading.Event()
+        allow_flush = threading.Event()
+        post_put = []
+
+        original_flush = mgr._flush_session
+        original_put = mgr._async_queue.put
+
+        def tracking_flush(session: HonchoSession):
+            if session is pre_shutdown_session:
+                pre_flush_started.set()
+                allow_flush.wait()
+                pre_flush_done.set()
+            return original_flush(session)
+
+        def tracking_put(item, *args, **kwargs):
+            if item is pre_shutdown_session:
+                pre_put.set()
+            if item is post_shutdown_session:
+                post_put.append(item)
+            return original_put(item, *args, **kwargs)
+
+        mgr._flush_session = tracking_flush
+
+        with patch.object(mgr._async_queue, "put", side_effect=tracking_put):
+            pre_thread = threading.Thread(target=mgr.save, args=(pre_shutdown_session,))
+            pre_thread.start()
+            assert pre_put.wait(timeout=1.0)
+            pre_thread.join(timeout=1.0)
+
+            shutdown_thread = threading.Thread(target=mgr.shutdown)
+            shutdown_thread.start()
+
+            assert pre_flush_started.wait(timeout=1.0)
+            post_thread = threading.Thread(target=mgr.save, args=(post_shutdown_session,))
+            post_thread.start()
+
+            allow_flush.set()
+            shutdown_thread.join(timeout=2.0)
+            post_thread.join(timeout=2.0)
+
+        assert pre_flush_done.is_set()
+        assert not post_put
+        assert mgr._shutdown_requested.is_set()
+        assert mgr._async_queue.unfinished_tasks == 0
+        assert not mgr._async_thread.is_alive()
+
+    def test_async_writer_and_flush_all_do_not_double_submit_unsynced_message(self):
+        mgr = _make_manager(write_frequency="async")
+        sess = _make_session()
+        sess.add_message("user", "async duplicate test")
+        mgr._cache[sess.key] = sess
+
+        call_count = {"count": 0}
+        call_count_lock = threading.Lock()
+        first_submit_started = threading.Event()
+        second_submit_seen = threading.Event()
+        release_submit = threading.Event()
+        flush_all_done = threading.Event()
+
+        class _FakePeer:
+            def message(self, content):
+                return {"content": content}
+
+        class _FakeHonchoSession:
+            def add_messages(self, _messages):
+                with call_count_lock:
+                    call_count["count"] += 1
+                    nth = call_count["count"]
+
+                if nth == 1:
+                    # Hold the first submission while the main test thread
+                    # invokes flush_all() to create the race.
+                    first_submit_started.set()
+                    release_submit.wait()
+                else:
+                    # If a second concurrent submission enters, mark it and
+                    # let both writers continue.
+                    second_submit_seen.set()
+                    release_submit.set()
+
+        mgr._peers_cache[sess.user_peer_id] = _FakePeer()
+        mgr._peers_cache[sess.assistant_peer_id] = _FakePeer()
+        mgr._sessions_cache[sess.honcho_session_id] = _FakeHonchoSession()
+
+        mgr._async_queue.put(sess)
+        assert first_submit_started.wait(timeout=1.0)
+
+        def _run_flush_all():
+            mgr.flush_all()
+            flush_all_done.set()
+
+        flush_thread = threading.Thread(target=_run_flush_all, daemon=True)
+        flush_thread.start()
+
+        assert not second_submit_seen.wait(timeout=1.0)
+        release_submit.set()
+        assert flush_all_done.wait(timeout=1.0)
+
+        flush_thread.join(timeout=2.0)
+        mgr.shutdown()
+
+        assert call_count["count"] == 1
+
+    def test_flush_all_waits_for_queue_completion_when_retries_fail(self):
+        mgr = _make_manager(write_frequency="async")
+        sess = _make_session()
+        sess.add_message("user", "pending")
+
+        call_count = {"count": 0}
+        failures = threading.Event()
+
+        def always_fail(_session):
+            call_count["count"] += 1
+            if call_count["count"] >= 2:
+                failures.set()
+            raise RuntimeError("broken")
+
+        mgr._flush_session = always_fail
+
+        with patch("time.sleep"):
+            mgr._async_queue.put(sess)
+            flush_thread = threading.Thread(
+                target=lambda: (mgr.flush_all()),
+                name="flush-all-once",
+                daemon=True,
+            )
+            flush_thread.start()
+            assert failures.wait(timeout=1.5)
+            flush_thread.join(timeout=1.5)
+
+        assert call_count["count"] == 2
+        mgr.shutdown()
+
+
+class TestShutdownFlushForNonAsync:
+    def test_shutdown_flushes_session_mode(self):
+        mgr = _make_manager(write_frequency="session")
+        sess = _make_session(key="non-async-session")
+        sess.add_message("user", "shutdown persistence")
+        mgr._cache = {"non-async-session": sess}
+
+        with patch.object(mgr, "_flush_session") as mock_flush:
+            mgr.shutdown()
+            mock_flush.assert_called_once_with(sess)
+
+    def test_shutdown_flushes_integer_cadence_before_threshold(self):
+        mgr = _make_manager(write_frequency=3)
+        sess = _make_session(key="non-async-int")
+        sess.add_message("user", "shutdown pending")
+        mgr._cache = {"non-async-int": sess}
+
+        with patch.object(mgr, "_flush_session") as mock_flush:
+            mgr.save(sess)  # turn 1
+            mgr.save(sess)  # turn 2
+            assert mock_flush.call_count == 0
+
+            mgr.shutdown()
+            assert mock_flush.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -347,20 +570,21 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
+        second_call = threading.Event()
 
         def flaky_flush(s):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("network blip")
+            second_call.set()
             # second call succeeds silently
+            return True
 
         mgr._flush_session = flaky_flush
 
         with patch("time.sleep"):  # skip the 2s sleep in retry
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert second_call.wait(timeout=1.0)
 
         mgr.shutdown()
         assert call_count[0] == 2
@@ -371,18 +595,19 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
+        second_attempt = threading.Event()
 
         def always_fail(s):
             call_count[0] += 1
+            if call_count[0] >= 2:
+                second_attempt.set()
             raise RuntimeError("always broken")
 
         mgr._flush_session = always_fail
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert second_attempt.wait(timeout=1.0)
 
         mgr.shutdown()
         # Should have tried exactly twice (initial + one retry) and not crashed
@@ -395,21 +620,59 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
+        second_call = threading.Event()
 
         def fail_then_succeed(_session):
             call_count[0] += 1
+            if call_count[0] > 1:
+                second_call.set()
             return call_count[0] > 1
 
         mgr._flush_session = fail_then_succeed
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert second_call.wait(timeout=1.0)
 
         mgr.shutdown()
         assert call_count[0] == 2
+
+
+class TestProviderShutdownLifecycle:
+    def test_provider_shutdown_stops_async_writer_and_flushes_pending_work(self):
+        provider = HonchoMemoryProvider()
+        provider._manager = _make_manager(write_frequency="async")
+
+        sess = _make_session()
+        sess.add_message("user", "queued by provider shutdown")
+        provider._manager._cache[sess.key] = sess
+
+        class _FakePeer:
+            def message(self, content):
+                return {"content": content}
+
+        class _FakeHonchoSession:
+            def __init__(self):
+                self.added = threading.Event()
+
+            def add_messages(self, _messages):
+                self.added.set()
+
+        fake_honcho_session = _FakeHonchoSession()
+
+        provider._manager._peers_cache[sess.user_peer_id] = _FakePeer()
+        provider._manager._peers_cache[sess.assistant_peer_id] = _FakePeer()
+        provider._manager._sessions_cache[sess.honcho_session_id] = fake_honcho_session
+
+        assert provider._manager._async_thread is not None and provider._manager._async_thread.is_alive()
+        provider._manager._async_queue.put(sess)
+
+        provider.shutdown()
+
+        assert fake_honcho_session.added.wait(timeout=1.0)
+        assert provider._manager._shutdown_requested.is_set()
+        assert not provider._manager._async_thread.is_alive()
+        assert sess.messages[0].get("_synced") is True
 
 
 class TestMemoryFileMigrationTargets:
@@ -473,4 +736,3 @@ class TestPrefetchCacheAccessors:
 
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
-

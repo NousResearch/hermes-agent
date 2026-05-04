@@ -66,6 +66,296 @@
     });
   }
 
+  const TIER_HEX = {
+    "Copper": "#b87333",
+    "Silver": "#c0c7d2",
+    "Gold": "#f2c94c",
+    "Diamond": "#67e8f9",
+    "Olympian": "#c084fc",
+  };
+
+  function tierHex(tier) {
+    return TIER_HEX[tier] || "#67e8f9";
+  }
+
+  // Render a LUCIDE icon path fragment into a standalone SVG string with an
+  // explicit stroke color so it can be rasterized onto a <canvas> via Image.
+  // The normal render path uses stroke="currentColor" which browsers honor in
+  // DOM but NOT when the SVG is drawn to a canvas from a data URL.
+  function iconSvgForCanvas(iconKey, strokeColor) {
+    const paths = LUCIDE[iconKey] || LUCIDE.secret;
+    return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" " +
+      "stroke=\"" + strokeColor + "\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
+      paths + "</svg>";
+  }
+
+  function loadSvgImage(svgString) {
+    return new Promise(function (resolve, reject) {
+      const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = function (e) { URL.revokeObjectURL(url); reject(e); };
+      img.src = url;
+    });
+  }
+
+  function wrapText(ctx, text, maxWidth) {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const lines = [];
+    let current = "";
+    for (let i = 0; i < words.length; i++) {
+      const candidate = current ? current + " " + words[i] : words[i];
+      if (ctx.measureText(candidate).width <= maxWidth) {
+        current = candidate;
+      } else {
+        if (current) lines.push(current);
+        current = words[i];
+      }
+    }
+    if (current) lines.push(current);
+    return lines;
+  }
+
+  // Build a 1200x630 share card PNG for a single achievement. Returns a Blob.
+  // Pure client-side render via Canvas2D — no external deps, no network.
+  async function buildShareImage(achievement) {
+    const W = 1200;
+    const H = 630;
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+
+    const tier = achievement.tier || achievement.next_tier || "Copper";
+    const color = tierHex(tier);
+
+    // Background: dark charcoal with a tier-tinted radial highlight on the
+    // top-left, echoing the card visual language.
+    ctx.fillStyle = "#0b0d11";
+    ctx.fillRect(0, 0, W, H);
+    const bgGrad = ctx.createRadialGradient(260, 220, 60, 260, 220, 820);
+    bgGrad.addColorStop(0, color + "33");
+    bgGrad.addColorStop(0.55, color + "0a");
+    bgGrad.addColorStop(1, "#0b0d1100");
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Outer border
+    ctx.strokeStyle = color + "66";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, W - 2, H - 2);
+
+    // Icon block — 380x380 on the left
+    try {
+      const svg = iconSvgForCanvas(achievement.icon || "secret", color);
+      const iconImg = await loadSvgImage(svg);
+      const ix = 90;
+      const iy = 125;
+      const isize = 380;
+      // Icon glow
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 40;
+      ctx.drawImage(iconImg, ix, iy, isize, isize);
+      ctx.restore();
+    } catch (_) {
+      // Icon render failure is non-fatal; card still useful without it.
+    }
+
+    // Right column text layout
+    const rx = 520;
+    const rMaxWidth = W - rx - 70;
+
+    // Category label (kicker)
+    ctx.fillStyle = "#8b95a8";
+    ctx.font = "600 22px ui-monospace, 'SF Mono', Menlo, monospace";
+    ctx.textBaseline = "top";
+    ctx.fillText((achievement.category || "").toUpperCase(), rx, 112);
+
+    // Achievement name — wrap to 2 lines if needed
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "780 68px system-ui, -apple-system, 'Segoe UI', sans-serif";
+    const nameLines = wrapText(ctx, achievement.name || "Achievement", rMaxWidth).slice(0, 2);
+    let cursorY = 150;
+    for (let i = 0; i < nameLines.length; i++) {
+      ctx.fillText(nameLines[i], rx, cursorY);
+      cursorY += 76;
+    }
+
+    // Tier badge pill
+    const badgeLabel = tier.toUpperCase() + " TIER";
+    ctx.font = "700 22px ui-monospace, 'SF Mono', Menlo, monospace";
+    const badgeWidth = ctx.measureText(badgeLabel).width + 32;
+    const badgeX = rx;
+    const badgeY = cursorY + 14;
+    const badgeH = 40;
+    ctx.fillStyle = color + "1f";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.rect(badgeX, badgeY, badgeWidth, badgeH);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeLabel, badgeX + 16, badgeY + badgeH / 2 + 1);
+    ctx.textBaseline = "top";
+
+    // Description — wrap up to 3 lines
+    ctx.fillStyle = "#c3cad6";
+    ctx.font = "400 26px system-ui, -apple-system, 'Segoe UI', sans-serif";
+    const descLines = wrapText(ctx, achievement.description || "", rMaxWidth).slice(0, 3);
+    let descY = badgeY + badgeH + 28;
+    for (let i = 0; i < descLines.length; i++) {
+      ctx.fillText(descLines[i], rx, descY);
+      descY += 34;
+    }
+
+    // Progress / stat line (if meaningful)
+    const progressValue = achievement.progress;
+    const threshold = achievement.next_threshold;
+    let statLine = null;
+    if (progressValue && threshold) {
+      statLine = progressValue.toLocaleString() + " / " + threshold.toLocaleString();
+    } else if (progressValue) {
+      statLine = progressValue.toLocaleString();
+    }
+    if (statLine) {
+      ctx.fillStyle = color;
+      ctx.font = "700 28px ui-monospace, 'SF Mono', Menlo, monospace";
+      ctx.fillText(statLine, rx, descY + 14);
+    }
+
+    // Footer watermark
+    ctx.fillStyle = "#8b95a8";
+    ctx.font = "600 20px ui-monospace, 'SF Mono', Menlo, monospace";
+    ctx.textBaseline = "bottom";
+    ctx.fillText("HERMES AGENT  ·  hermes-agent.nousresearch.com", 70, H - 40);
+
+    // "UNLOCKED" stamp upper-right
+    ctx.textBaseline = "top";
+    ctx.fillStyle = color;
+    ctx.font = "800 24px ui-monospace, 'SF Mono', Menlo, monospace";
+    const stamp = "◆ UNLOCKED";
+    const stampW = ctx.measureText(stamp).width;
+    ctx.fillText(stamp, W - 70 - stampW, 70);
+
+    return await new Promise(function (resolve, reject) {
+      canvas.toBlob(function (blob) {
+        if (blob) resolve(blob); else reject(new Error("canvas.toBlob returned null"));
+      }, "image/png");
+    });
+  }
+
+  function ShareDialog({ achievement, onClose }) {
+    const [status, setStatus] = hooks.useState("rendering"); // rendering | ready | copied | error
+    const [errorMsg, setErrorMsg] = hooks.useState(null);
+    const [previewUrl, setPreviewUrl] = hooks.useState(null);
+    const blobRef = React.useRef(null);
+
+    hooks.useEffect(function () {
+      let cancelled = false;
+      let createdUrl = null;
+      buildShareImage(achievement).then(function (blob) {
+        if (cancelled) return;
+        blobRef.current = blob;
+        createdUrl = URL.createObjectURL(blob);
+        setPreviewUrl(createdUrl);
+        setStatus("ready");
+      }).catch(function (err) {
+        if (cancelled) return;
+        setErrorMsg(String(err && err.message || err));
+        setStatus("error");
+      });
+      return function () {
+        cancelled = true;
+        if (createdUrl) URL.revokeObjectURL(createdUrl);
+      };
+    }, [achievement.id]);
+
+    function download() {
+      if (!blobRef.current) return;
+      const url = URL.createObjectURL(blobRef.current);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "hermes-achievement-" + (achievement.id || "badge") + ".png";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+
+    async function copyToClipboard() {
+      if (!blobRef.current) return;
+      try {
+        if (!navigator.clipboard || !window.ClipboardItem) {
+          throw new Error("Clipboard image copy not supported in this browser — use Download instead.");
+        }
+        await navigator.clipboard.write([
+          new window.ClipboardItem({ "image/png": blobRef.current }),
+        ]);
+        setStatus("copied");
+        setTimeout(function () { setStatus("ready"); }, 1800);
+      } catch (err) {
+        setErrorMsg(String(err && err.message || err));
+        setStatus("error");
+      }
+    }
+
+    // Build the pre-filled tweet text. Keep it short so X doesn't truncate
+    // when the user hasn't attached the PNG yet — they'll copy-image and
+    // paste in the same flow.
+    function tweetText() {
+      const tierPart = achievement.tier ? (achievement.tier + " tier ") : "";
+      return "Just unlocked " + tierPart + "\"" + achievement.name + "\" in Hermes Agent ☤\n\n" +
+        "@NousResearch · https://hermes-agent.nousresearch.com";
+    }
+
+    function shareOnX() {
+      const url = "https://x.com/intent/post?text=" + encodeURIComponent(tweetText());
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+
+    return React.createElement("div", {
+      className: "ha-share-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) onClose(); },
+    },
+      React.createElement("div", { className: "ha-share-dialog", role: "dialog", "aria-label": "Share achievement" },
+        React.createElement("div", { className: "ha-share-head" },
+          React.createElement("strong", null, "Share: " + achievement.name),
+          React.createElement("button", { className: "ha-share-close", onClick: onClose, "aria-label": "Close" }, "×")
+        ),
+        React.createElement("div", { className: "ha-share-preview" },
+          status === "rendering" && React.createElement("div", { className: "ha-share-placeholder" }, "Rendering…"),
+          previewUrl && React.createElement("img", { src: previewUrl, alt: achievement.name + " share card" })
+        ),
+        status === "error" && React.createElement("div", { className: "ha-share-error" }, errorMsg || "Something went wrong."),
+        React.createElement("div", { className: "ha-share-actions" },
+          React.createElement("button", {
+            className: "ha-share-btn ha-share-btn-primary",
+            onClick: shareOnX,
+            title: "Opens X with a pre-filled post",
+          }, "Share on X"),
+          React.createElement("button", {
+            className: "ha-share-btn",
+            onClick: copyToClipboard,
+            disabled: status !== "ready" && status !== "copied",
+            title: "Copy the image to paste into your post",
+          }, status === "copied" ? "Copied ✓" : "Copy image"),
+          React.createElement("button", {
+            className: "ha-share-btn",
+            onClick: download,
+            disabled: status !== "ready" && status !== "copied",
+          }, "Download PNG")
+        ),
+        React.createElement("p", { className: "ha-share-hint" },
+          "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere."
+        )
+      )
+    );
+  }
+
   function StatCard(props) {
     return React.createElement(C.Card, { className: "ha-stat" },
       React.createElement(C.CardContent, { className: "ha-stat-content" },
@@ -170,6 +460,7 @@
     const targetTier = achievement.next_tier || achievement.tier;
     const tierLabel = achievement.tier ? achievement.tier : (targetTier ? "Target " + targetTier : (state === "secret" ? "Hidden" : (unlocked ? "Complete" : "Objective")));
     const progressText = state === "secret" ? "hidden" : (progress + (achievement.next_threshold ? " / " + achievement.next_threshold : ""));
+    const [shareOpen, setShareOpen] = hooks.useState(false);
     return React.createElement(C.Card, { className: cn("ha-card", "ha-state-" + state, tierClass(achievement.tier || achievement.next_tier)) },
       React.createElement(C.CardContent, { className: "ha-card-content" },
         React.createElement("div", { className: "ha-card-head" },
@@ -180,7 +471,13 @@
           ),
           React.createElement("div", { className: "ha-badges" },
             React.createElement("span", { className: "ha-state-badge" }, stateLabel),
-            React.createElement("span", { className: "ha-tier-badge" }, tierLabel)
+            React.createElement("span", { className: "ha-tier-badge" }, tierLabel),
+            state === "unlocked" && React.createElement("button", {
+              className: "ha-share-trigger",
+              onClick: function () { setShareOpen(true); },
+              title: "Share this achievement",
+              "aria-label": "Share " + achievement.name,
+            }, "Share")
           )
         ),
         React.createElement("p", { className: "ha-description" }, achievement.description),
@@ -200,7 +497,11 @@
           ),
           React.createElement("span", { className: "ha-progress-text" }, progressText)
         )
-      )
+      ),
+      shareOpen && React.createElement(ShareDialog, {
+        achievement: achievement,
+        onClose: function () { setShareOpen(false); },
+      })
     );
   }
 

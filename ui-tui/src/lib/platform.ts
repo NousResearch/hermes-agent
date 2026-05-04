@@ -106,8 +106,8 @@ export const DEFAULT_VOICE_RECORD_KEY: ParsedVoiceRecordKey = {
  * so one ``voice.record_key`` value binds the same shortcut in both
  * runtimes (Copilot round-9 review on #19835). The ``super`` /
  * ``win`` / ``windows`` spellings are TUI-only — prompt_toolkit has no
- * super modifier, so the CLI will loudly reject them at startup rather
- * than silently binding the wrong chord. */
+ * super modifier, so the CLI falls back to the documented default and
+ * logs a warning at startup (Copilot round-11 review on #19835). */
 const _MOD_ALIASES: Record<string, VoiceRecordKeyMod> = {
   alt: 'alt',
   control: 'ctrl',

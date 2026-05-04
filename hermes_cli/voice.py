@@ -29,12 +29,16 @@ from typing import Any, Callable, Optional
 
 # Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts``)
 # ``_MOD_ALIASES`` table — the contract that removes the cross-runtime
-# mismatch Copilot flagged in round-9 on #19835. ``super``/``win``/
-# ``windows`` are intentionally absent: prompt_toolkit has no super/meta
-# modifier for the Cmd key, so those spellings are TUI-only; the
-# normalizer passes them through unchanged and prompt_toolkit's
-# ``add()`` call loudly rejects them at startup rather than silently
-# binding the wrong chord.
+# mismatch Copilot flagged in round-9 on #19835.
+#
+# ``super``/``win``/``windows`` are intentionally absent: prompt_toolkit
+# has no super/meta modifier for the Cmd key, so those spellings are
+# TUI-only. The normalizer below returns the documented default
+# (``c-b``) for them — a silent fallback was preferred to a hard
+# startup crash (Copilot round-11). The CLI binding site
+# (``_register_voice_handler`` in cli.py) logs a warning when that
+# fallback fires so users see why their TUI-only shortcut isn't
+# bound in the classic CLI.
 _VOICE_MOD_ALIASES = {
     "ctrl": "c-",
     "control": "c-",
@@ -104,8 +108,10 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     * single-char keys: ``ctrl+o`` → ``c-o``
     * named keys: ``ctrl+space`` → ``c-space`` (aliases collapse:
       ``ctrl+return`` → ``c-enter``)
-    * ``super`` / ``win`` / ``windows`` pass through unrewritten so
-      prompt_toolkit rejects them loudly at startup (TUI-only bindings)
+    * ``super`` / ``win`` / ``windows`` → ``c-b`` (TUI-only modifiers —
+      prompt_toolkit has no super mod; the CLI binding site is
+      expected to warn when this fallback fires so users see the
+      cross-runtime split, Copilot round-11 on #19835)
     """
     if not isinstance(raw, str):
         return _DEFAULT_PT_KEY

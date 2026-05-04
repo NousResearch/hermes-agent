@@ -10421,6 +10421,15 @@ class AIAgent:
         from hermes_logging import set_session_context
         set_session_context(self.session_id)
 
+        # Bind the skill write-origin ContextVar for this thread so tool
+        # handlers (e.g. skill_manage create) can tell whether they are
+        # running inside the background self-improvement review fork vs.
+        # a foreground user-directed turn. Set at the top of each call;
+        # the review fork runs on its own thread with a fresh context,
+        # so the foreground value here does not leak into it.
+        from tools.skill_provenance import set_current_write_origin
+        set_current_write_origin(getattr(self, "_memory_write_origin", "assistant_tool"))
+
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).

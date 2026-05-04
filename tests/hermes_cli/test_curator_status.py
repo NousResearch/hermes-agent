@@ -114,6 +114,12 @@ def test_status_shows_most_and_least_used_sections(curator_status_env):
     env["make_skill"]("top-dog")
     env["make_skill"]("middling")
     env["make_skill"]("never-used")
+    # Mark all three as agent-created so they enter the curator's catalog.
+    # Under the provenance-marker semantics, skills must be explicitly opted
+    # into curator management (normally via the background-review fork when
+    # it creates a skill through skill_manage).
+    for n in ("top-dog", "middling", "never-used"):
+        env["skill_usage"].mark_agent_created(n)
 
     # Bump use_count differentially. All three counters (use/view/patch) feed
     # into activity_count, so bumping use alone is enough to make activity
@@ -150,7 +156,9 @@ def test_status_hides_most_active_when_all_zero(curator_status_env):
     env = curator_status_env
     env["make_skill"]("a")
     env["make_skill"]("b")
-    # No bumps.
+    # Mark both as agent-created so the catalog lists them. No bumps.
+    env["skill_usage"].mark_agent_created("a")
+    env["skill_usage"].mark_agent_created("b")
 
     out = _capture_status(env["curator_cli"])
 

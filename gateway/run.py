@@ -15003,15 +15003,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     runner = GatewayRunner(config)
     
-    # Track whether a signal initiated the shutdown (vs. internal request).
-    # When an unexpected SIGTERM kills the gateway, we exit non-zero so
-    # systemd's Restart=on-failure revives the process.  systemctl stop
-    # is safe: systemd tracks stop-requested state independently of exit
-    # code, so Restart= never fires for a deliberate stop.
+    # Track whether an unexpected signal initiated the shutdown. When an
+    # unexpected SIGTERM kills the gateway, we exit non-zero so service
+    # managers can revive the process. Planned stop paths write a marker
+    # before signalling us so they can exit cleanly instead.
     _signal_initiated_shutdown = False
 
     # Set up signal handlers
-    def shutdown_signal_handler():
+    def shutdown_signal_handler(received_signal=None):
         nonlocal _signal_initiated_shutdown
         # Planned --replace takeover check: when a sibling gateway is
         # taking over via --replace, it wrote a marker naming this PID
@@ -15027,9 +15026,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         except Exception as e:
             logger.debug("Takeover marker check failed: %s", e)
 
+        # Planned stop check: service managers and `hermes gateway stop`
+        # also send SIGTERM, which is indistinguishable from an unexpected
+        # external kill unless the CLI marks it first. SIGINT comes from an
+        # interactive Ctrl+C and is likewise an intentional foreground stop.
+        planned_stop = False
+        if received_signal == signal.SIGINT:
+            planned_stop = True
+        elif not planned_takeover:
+            try:
+                from gateway.status import consume_planned_stop_marker_for_self
+                planned_stop = consume_planned_stop_marker_for_self()
+            except Exception as e:
+                logger.debug("Planned stop marker check failed: %s", e)
+
         if planned_takeover:
             logger.info(
                 "Received SIGTERM as a planned --replace takeover — exiting cleanly"
+            )
+        elif planned_stop:
+            logger.info(
+                "Received SIGTERM/SIGINT as a planned gateway stop — exiting cleanly"
             )
         else:
             _signal_initiated_shutdown = True
@@ -15066,7 +15083,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, shutdown_signal_handler)
+                loop.add_signal_handler(sig, shutdown_signal_handler, sig)
             except NotImplementedError:
                 pass
         if hasattr(signal, "SIGUSR1"):
@@ -15164,14 +15181,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
 
-    # When a signal (SIGTERM/SIGINT) caused the shutdown and it wasn't a
-    # planned restart (/restart, /update, SIGUSR1), exit non-zero so
-    # systemd's Restart=on-failure revives the process.  This covers:
+    # When an unexpected SIGTERM caused the shutdown and it wasn't a planned
+    # restart (/restart, /update, SIGUSR1), exit non-zero so systemd's
+    # Restart=on-failure revives the process.  This covers:
     #   - hermes update killing the gateway mid-work
     #   - External kill commands
     #   - WSL2/container runtime sending unexpected signals
-    # systemctl stop is safe: systemd tracks "stop requested" state
-    # independently of exit code, so Restart= never fires for it.
+    # `hermes gateway stop` and interactive Ctrl+C are handled above as
+    # planned stops and should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "

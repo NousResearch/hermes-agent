@@ -702,3 +702,88 @@ class TestTakeoverMarker:
 
         # We are not the target — must NOT consume as planned
         assert result is False
+
+
+class TestPlannedStopMarker:
+    """Tests for intentional service/manual gateway stop markers."""
+
+    def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        ok = status.write_planned_stop_marker(target_pid=12345)
+
+        assert ok is True
+        marker = tmp_path / ".gateway-planned-stop.json"
+        assert marker.exists()
+        payload = json.loads(marker.read_text())
+        assert payload["target_pid"] == 12345
+        assert payload["target_start_time"] == 42
+        assert payload["stopper_pid"] == os.getpid()
+        assert "written_at" in payload
+
+    def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_planned_stop_marker(target_pid=os.getpid())
+        assert ok is True
+
+        result = status.consume_planned_stop_marker_for_self()
+
+        assert result is True
+        assert not (tmp_path / ".gateway-planned-stop.json").exists()
+
+    def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_planned_stop_marker(target_pid=os.getpid() + 9999)
+        assert ok is True
+
+        result = status.consume_planned_stop_marker_for_self()
+
+        assert result is False
+        assert not (tmp_path / ".gateway-planned-stop.json").exists()
+
+    def test_consume_returns_false_for_stale_marker(self, tmp_path, monkeypatch):
+        from datetime import datetime, timezone, timedelta
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-planned-stop.json"
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 123,
+            "stopper_pid": 99999,
+            "written_at": stale_time,
+        }))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        result = status.consume_planned_stop_marker_for_self()
+
+        assert result is False
+        assert not marker_path.exists()
+
+    def test_clear_planned_stop_marker_is_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+
+        status.clear_planned_stop_marker()
+        status.write_planned_stop_marker(target_pid=12345)
+        assert (tmp_path / ".gateway-planned-stop.json").exists()
+
+        status.clear_planned_stop_marker()
+
+        assert not (tmp_path / ".gateway-planned-stop.json").exists()
+        status.clear_planned_stop_marker()
+
+    def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(status, "_write_json_file", raise_oserror)
+
+        ok = status.write_planned_stop_marker(target_pid=12345)
+
+        assert ok is False

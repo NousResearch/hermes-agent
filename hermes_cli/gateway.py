@@ -786,6 +786,12 @@ def stop_profile_gateway() -> bool:
         return False
 
     try:
+        from gateway.status import write_planned_stop_marker
+        write_planned_stop_marker(pid)
+    except Exception:
+        pass
+
+    try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass  # Already gone
@@ -2043,6 +2049,13 @@ def systemd_stop(system: bool = False):
     if system:
         _require_root_for_system_service("stop")
     _require_service_installed("stop", system=system)
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+        pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
     _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
@@ -2404,6 +2417,13 @@ def launchd_start():
 def launchd_stop():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+        pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
     # immediately restarts it because KeepAlive.SuccessfulExit = false.

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway_cli
+from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -106,6 +107,30 @@ class TestSystemdServiceRefresh:
             ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
         ]
 
+    def test_systemd_stop_marks_running_gateway_as_planned_stop(self, monkeypatch):
+        calls = []
+        markers = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 321)
+        monkeypatch.setattr(
+            status,
+            "write_planned_stop_marker",
+            lambda pid: markers.append(pid) or True,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_stop()
+
+        assert markers == [321]
+        assert calls == [["stop", gateway_cli.get_service_name()]]
+
 
     def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
         """run_gateway() should refresh the systemd unit on boot so that
@@ -127,11 +152,8 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         # Prevent run_gateway from actually starting the gateway
-        def fake_start_gateway(**kwargs):
-            import asyncio
-            f = asyncio.Future()
-            f.set_result(True)
-            return f
+        async def fake_start_gateway(**kwargs):
+            return True
 
         monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
 
@@ -163,7 +185,16 @@ class TestRequireServiceInstalled:
 
 
 class TestGeneratedSystemdUnits:
-    def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
+    def _expected_timeout_stop_sec(self) -> str:
+        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
+        return f"TimeoutStopSec={timeout}"
+
+    def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         assert "ExecStart=" in unit
@@ -173,7 +204,7 @@ class TestGeneratedSystemdUnits:
         # TimeoutStopSec must exceed the default drain_timeout (60s) so
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
-        assert "TimeoutStopSec=90" in unit
+        assert self._expected_timeout_stop_sec() in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -219,7 +250,12 @@ class TestGeneratedSystemdUnits:
 
         assert "/mnt/c/WINDOWS/system32" in unit
 
-    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
+    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
         unit = gateway_cli.generate_systemd_unit(system=True)
 
         assert "ExecStart=" in unit
@@ -229,7 +265,7 @@ class TestGeneratedSystemdUnits:
         # TimeoutStopSec must exceed the default drain_timeout (60s) so
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
-        assert "TimeoutStopSec=90" in unit
+        assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
 
 

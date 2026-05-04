@@ -870,6 +870,12 @@ def _click_join(page, state: _BotState) -> None:
     expanded_other_ways = False
     dismissed_switch_hint = False
     while time.time() < deadline:
+        # https://meet.google.com/new can auto-create and enter a meeting for a
+        # signed-in user, skipping the pre-join lobby entirely. Treat that as
+        # success instead of waiting for a non-existent Join button.
+        if _detect_admission(page):
+            return
+
         if not dismissed_switch_hint:
             try:
                 got_it = page.get_by_role("button", name="Got it", exact=True).first

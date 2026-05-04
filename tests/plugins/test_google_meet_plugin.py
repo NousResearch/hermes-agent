@@ -741,6 +741,28 @@ def test_detect_admission_true_when_probe_returns_true():
     assert _detect_admission(_FakePage()) is True
 
 
+def test_click_join_noops_when_already_in_call(monkeypatch):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    class _FakePage:
+        def __init__(self):
+            self.clicked = False
+
+        def evaluate(self, _js):
+            return True
+
+        def get_by_role(self, *args, **kwargs):
+            self.clicked = True
+            raise AssertionError("should not search for join buttons once admitted")
+
+    state = _BotState(out_dir=Path(os.environ["HERMES_HOME"]) / "already-in-call",
+                      meeting_id="x-y-z", url="https://meet.google.com/x-y-z")
+    page = _FakePage()
+    _click_join(page, state)
+    assert page.clicked is False
+    assert state.error is None
+
+
 def test_detect_denied_returns_false_on_error():
     from plugins.google_meet.meet_bot import _detect_denied
 

@@ -414,24 +414,26 @@ Visually the target is the familiar Linear / Fusion layout: dark theme, column h
 The GUI is strictly a **read-through-the-DB + write-through-kanban_db** layer with no domain logic of its own:
 
 ```
-┌────────────────────────┐      WebSocket (tails task_events)
-│   React SPA (plugin)   │ ◀──────────────────────────────────┐
-│   HTML5 drag-and-drop  │                                    │
-└──────────┬─────────────┘                                    │
-           │ REST over fetchJSON                              │
-           ▼                                                  │
-┌────────────────────────┐     writes call kanban_db.*        │
-│  FastAPI router        │     directly — same code path      │
-│  plugins/kanban/       │     the CLI /kanban verbs use      │
-│  dashboard/plugin_api.py                                    │
-└──────────┬─────────────┘                                    │
-           │                                                  │
-           ▼                                                  │
-┌────────────────────────┐                                    │
-│  ~/.hermes/kanban.db   │ ───── append task_events ──────────┘
+┌────────────────────────┐
+│   React SPA (plugin)   │
+│   HTML5 drag-and-drop  │
+└──────────┬─────────────┘
+           │ REST over fetchJSON
+           ▼
+┌────────────────────────┐
+│  FastAPI router        │
+│  plugins/kanban/       │
+│  dashboard/plugin_api  │
+└──────────┬─────────────┘
+           │ writes call kanban_db.*
+           ▼
+┌────────────────────────┐
+│  ~/.hermes/kanban.db   │
 │  (WAL, shared)         │
 └────────────────────────┘
 ```
+
+The SPA also opens a WebSocket that tails `task_events`; router writes go through the same `kanban_db` code path used by the CLI `/kanban` verbs.
 
 ### REST surface
 

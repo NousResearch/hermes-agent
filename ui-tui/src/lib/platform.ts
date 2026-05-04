@@ -130,13 +130,15 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
   tab: 'tab'
 }
 
-/** ``useInputHandlers()`` intercepts these before the voice check runs,
- * so a binding like ``ctrl+c`` (interrupt), ``ctrl+d`` (quit), or
- * ``ctrl+l`` (clear screen) would be advertised in /voice status but
- * never actually fire push-to-talk. Reject at parse time so the user
- * gets the documented Ctrl+B instead of a dead shortcut (Copilot
- * round-4 review on #19835). */
-const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
+/** ``useInputHandlers()`` and terminal-level shortcuts intercept these
+ * before the voice check runs, so bindings like ``ctrl+c`` (interrupt),
+ * ``ctrl+d`` (quit), ``ctrl+l`` (clear screen), or ``ctrl+x`` (queue-edit
+ * cut) would be advertised in /voice status but never reliably fire
+ * push-to-talk. On macOS the same dead action chords also apply to
+ * ``super+c`` / ``super+d`` / ``super+l`` when the parser treats them as
+ * action-modifier bindings. Reject them at parse time so the user gets
+ * the documented working shortcut instead of a dead one. */
+const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l', 'x'])
 
 /** On macOS the action-modifier also intercepts standard editor chords
  * via ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:

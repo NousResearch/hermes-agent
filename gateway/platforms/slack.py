@@ -348,6 +348,11 @@ class SlackAdapter(BasePlatformAdapter):
         # (channel_id, user_id) to avoid cross-user collisions.
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # Busy-session button state.  ``_busy_session_button_map`` keyed
+        # by session_key holds (channel_id, ts) of the message currently
+        # carrying the [Steer][Interrupt][Stop] block.
+        self._busy_session_button_map: Dict[str, Tuple[str, str]] = {}
+        self._busy_control_bubble_ids: Dict[str, Tuple[str, str]] = {}
 
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
@@ -681,6 +686,14 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Register Block Kit action handlers for busy-session buttons.
+            for _action_id in (
+                "hermes_busy_steer",
+                "hermes_busy_interrupt",
+                "hermes_busy_stop",
+            ):
+                self._app.action(_action_id)(self._handle_busy_session_action)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -876,16 +889,40 @@ class SlackAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Slack message."""
+        """Edit a previously sent Slack message.
+
+        If ``message_id`` is currently anchoring a busy-session keyboard,
+        we re-render the message with both the new text AND the actions
+        block so the buttons survive the edit — Slack's chat_update
+        otherwise drops blocks if only ``text`` is supplied.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            update_kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "ts": message_id,
+                "text": formatted,
+            }
+            # Re-attach busy-session action block if this message is the
+            # current anchor (value-side lookup against the small map).
+            try:
+                anchored_session = next(
+                    (
+                        sk
+                        for sk, coords in self._busy_session_button_map.items()
+                        if coords == (chat_id, message_id)
+                    ),
+                    None,
+                )
+                if anchored_session:
+                    update_kwargs["blocks"] = self._busy_session_blocks(
+                        anchored_session, formatted or " "
+                    )
+            except Exception:
+                pass
+            await self._get_client(chat_id).chat_update(**update_kwargs)
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
@@ -3025,3 +3062,444 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+    # ----- Busy-session controls -----
+
+    @staticmethod
+    def _busy_buttons_enabled() -> bool:
+        raw = os.getenv("HERMES_GATEWAY_BUSY_BUTTONS")
+        if raw is None:
+            return True
+        return raw.strip().lower() not in ("0", "false", "no", "off")
+
+    # Slack's section-text mrkdwn field has a hard 3000-char cap.  Long
+    # tool-progress bubbles can exceed it; rendering them inside a section
+    # block triggers `invalid_blocks` from chat_update.  We truncate here
+    # so the buttons can attach without breaking the underlying message.
+    # The fallback `text` field on chat_update preserves the full body for
+    # legacy clients.
+    _BUSY_SECTION_TEXT_CAP = 2900  # leave headroom under Slack's 3000 limit
+
+    @classmethod
+    def _truncate_for_block(cls, text: str) -> str:
+        if not text:
+            return ""
+        if len(text) <= cls._BUSY_SECTION_TEXT_CAP:
+            return text
+        return text[: cls._BUSY_SECTION_TEXT_CAP - 1] + "…"
+
+    def _busy_session_blocks(
+        self,
+        session_key: str,
+        summary_text: str,
+    ) -> List[Dict[str, Any]]:
+        """Build the Block Kit blocks carrying [Steer][Interrupt][Stop]."""
+        section_text = self._truncate_for_block(summary_text) or "_Working…_"
+        return [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": section_text},
+            },
+            {
+                "type": "actions",
+                "block_id": f"hermes_busy::{session_key}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "action_id": "hermes_busy_steer",
+                        "text": {"type": "plain_text", "text": "Steer", "emoji": True},
+                        "value": session_key,
+                        "style": "primary",
+                    },
+                    {
+                        "type": "button",
+                        "action_id": "hermes_busy_interrupt",
+                        "text": {"type": "plain_text", "text": "Interrupt", "emoji": True},
+                        "value": session_key,
+                    },
+                    {
+                        "type": "button",
+                        "action_id": "hermes_busy_stop",
+                        "text": {"type": "plain_text", "text": "Stop", "emoji": True},
+                        "value": session_key,
+                        "style": "danger",
+                    },
+                ],
+            },
+        ]
+
+    def _channel_ts_for_session(
+        self, session_key: str
+    ) -> Optional[Tuple[str, str]]:
+        """Return (channel_id, ts) where the keyboard is currently anchored."""
+        return self._busy_session_button_map.get(session_key)
+
+    def _resolve_busy_channel_id(self, session_key: str) -> Optional[str]:
+        """Resolve a Slack channel id for ``session_key`` from runner state."""
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        if runner is None:
+            return None
+        followups = getattr(runner, "_pending_followups", {}) or {}
+        for ev in reversed(followups.get(session_key) or []):
+            chat_id = getattr(getattr(ev, "source", None), "chat_id", None)
+            if chat_id:
+                return str(chat_id)
+        return None
+
+    async def _fetch_slack_message_text(
+        self,
+        channel_id: str,
+        message_id: str,
+        thread_ts: Optional[str] = None,
+    ) -> str:
+        """Best-effort fetch of an existing Slack message's text.
+
+        ``conversations_history`` only returns top-level channel messages
+        — thread replies are NOT addressable by ts.  When the message is
+        a thread reply, fall back to ``conversations_replies`` and locate
+        the target ts in the reply list.  Returns "" if the message
+        can't be found, so callers fall back gracefully.
+        """
+        if not self._app:
+            return ""
+        client = self._get_client(channel_id)
+        # Top-level: history works.
+        try:
+            hist = await client.conversations_history(
+                channel=channel_id, latest=message_id,
+                inclusive=True, limit=1,
+            )
+            msgs = hist.get("messages") if hasattr(hist, "get") else None
+            if msgs:
+                got = msgs[0]
+                if got.get("ts") == message_id:
+                    return got.get("text") or ""
+        except Exception:
+            pass
+        # Thread reply: look it up via replies.  We don't always know the
+        # parent thread_ts; try the explicit one first, then probe with
+        # the message ts as the parent (single-reply threads).
+        candidates: List[str] = []
+        if thread_ts:
+            candidates.append(thread_ts)
+        candidates.append(message_id)
+        for parent_ts in candidates:
+            try:
+                replies = await client.conversations_replies(
+                    channel=channel_id, ts=parent_ts, limit=200,
+                )
+                for m in replies.get("messages", []) if hasattr(replies, "get") else []:
+                    if m.get("ts") == message_id:
+                        return m.get("text") or ""
+            except Exception:
+                continue
+        return ""
+
+    async def attach_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Attach the busy-session block to ``message_id`` (Slack ts).
+
+        Re-renders the target message via ``chat_update`` so the actions
+        block (Steer / Interrupt / Stop) appears underneath the existing
+        body.  ``message_id`` IS the Slack message ts.  The runner pairs
+        it with a channel id resolved from the most-recent follow-up's
+        source.
+        """
+        if not self._busy_buttons_enabled() or not self._app:
+            return False
+        channel_id = self._resolve_busy_channel_id(session_key)
+        if not channel_id:
+            return False
+        existing = self._busy_session_button_map.get(session_key)
+        if existing == (channel_id, message_id):
+            return True
+        try:
+            client = self._get_client(channel_id)
+            # Resolve thread_ts from runner state for the most recent
+            # follow-up so the threaded-message text lookup uses the
+            # correct API.
+            thread_ts = self._resolve_busy_thread_ts(session_key)
+            current_text = await self._fetch_slack_message_text(
+                channel_id, message_id, thread_ts=thread_ts,
+            )
+            # If we still couldn't fetch the body, abort the chat_update
+            # rather than blanking the message with "Working…".  The
+            # buttons attach on the next progress edit instead.
+            if not current_text:
+                logger.debug(
+                    "[%s] busy-button attach skipped for %s on %s: body fetch returned empty",
+                    self.name, session_key, message_id,
+                )
+                return False
+            blocks = self._busy_session_blocks(session_key, current_text)
+            await client.chat_update(
+                channel=channel_id,
+                ts=message_id,
+                text=current_text,
+                blocks=blocks,
+            )
+            self._busy_session_button_map[session_key] = (channel_id, message_id)
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] attach_busy_session_buttons failed for %s on %s: %s",
+                self.name, session_key, message_id, exc,
+            )
+            return False
+
+    def _resolve_busy_thread_ts(self, session_key: str) -> Optional[str]:
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        if runner is None:
+            return None
+        followups = getattr(runner, "_pending_followups", {}) or {}
+        for ev in reversed(followups.get(session_key) or []):
+            thread_id = getattr(getattr(ev, "source", None), "thread_id", None)
+            if thread_id:
+                return str(thread_id)
+        return None
+
+    async def clear_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Drop the busy-session actions block from ``message_id``.
+
+        Operates on the SPECIFIC ``message_id`` requested (not just the
+        stored mapping) so that clearing the latest anchor doesn't
+        leave older anchors with live keyboards.  Re-renders the
+        message with its existing body but no actions block — the chat
+        history stays intact, only the buttons go away.
+        """
+        if not self._app:
+            return False
+        channel_id = self._resolve_busy_channel_id(session_key)
+        if not channel_id:
+            # Fallback to the stored mapping if we still have it.
+            coords = self._busy_session_button_map.get(session_key)
+            channel_id = coords[0] if coords else None
+        if not channel_id or not message_id:
+            self._busy_session_button_map.pop(session_key, None)
+            return False
+        # Pop the mapping ONLY when clearing the currently-tracked anchor,
+        # so callers iterating multiple anchors don't break each other.
+        tracked = self._busy_session_button_map.get(session_key)
+        if tracked == (channel_id, message_id):
+            self._busy_session_button_map.pop(session_key, None)
+        try:
+            client = self._get_client(channel_id)
+            thread_ts = self._resolve_busy_thread_ts(session_key)
+            current_text = await self._fetch_slack_message_text(
+                channel_id, message_id, thread_ts=thread_ts,
+            )
+            # If we couldn't recover the body, skip the destructive
+            # chat_update — leaving the keyboard attached is much less
+            # bad than overwriting an unrelated message.  The keyboard
+            # will eventually clear when the cached message ages out.
+            if not current_text:
+                logger.debug(
+                    "[%s] busy-button clear skipped for %s on %s: body fetch returned empty",
+                    self.name, session_key, message_id,
+                )
+                return False
+            section_text = self._truncate_for_block(current_text)
+            await client.chat_update(
+                channel=channel_id,
+                ts=message_id,
+                # Preserve the body text; keyboard goes away by sending
+                # an empty blocks list (top-level text remains).
+                text=current_text,
+                blocks=[
+                    {"type": "section", "text": {"type": "mrkdwn", "text": section_text or " "}}
+                ],
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] clear_busy_session_buttons failed for %s on %s: %s",
+                self.name, session_key, message_id, exc,
+            )
+            return False
+
+    async def send_or_update_busy_control_bubble(
+        self,
+        session_key: str,
+        source: Any,
+        summary_text: str,
+    ) -> Optional[str]:
+        if not self._busy_buttons_enabled() or not self._app:
+            return None
+        channel_id = getattr(source, "chat_id", None) if source else None
+        if not channel_id:
+            return None
+        thread_ts = getattr(source, "thread_id", None) if source else None
+        blocks = self._busy_session_blocks(session_key, summary_text)
+        existing = self._busy_control_bubble_ids.get(session_key)
+        try:
+            client = self._get_client(channel_id)
+            if existing:
+                _, ts = existing
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=ts,
+                    text=summary_text,
+                    blocks=blocks,
+                )
+                self._busy_session_button_map[session_key] = (channel_id, ts)
+                return ts
+            kwargs: Dict[str, Any] = {
+                "channel": channel_id,
+                "text": summary_text,
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            result = await client.chat_postMessage(**kwargs)
+            ts = result.get("ts") if isinstance(result, dict) else getattr(result, "data", {}).get("ts")
+            if not ts:
+                return None
+            self._busy_control_bubble_ids[session_key] = (channel_id, str(ts))
+            self._busy_session_button_map[session_key] = (channel_id, str(ts))
+            return str(ts)
+        except Exception as exc:
+            logger.debug(
+                "[%s] busy control-bubble send/update failed for %s: %s",
+                self.name, session_key, exc,
+            )
+            return None
+
+    async def delete_busy_control_bubble(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        coords = self._busy_control_bubble_ids.pop(session_key, None)
+        if not coords or not self._app:
+            return False
+        channel_id, ts = coords
+        try:
+            await self._get_client(channel_id).chat_delete(
+                channel=channel_id, ts=ts,
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] delete_busy_control_bubble failed for %s: %s",
+                self.name, session_key, exc,
+            )
+            return False
+
+    async def set_busy_reaction(self, event: MessageEvent, emoji: str) -> bool:
+        chat_id = getattr(event.source, "chat_id", None) if event and event.source else None
+        ts = getattr(event, "message_id", None) if event else None
+        if not chat_id or not ts:
+            return False
+        # Slack reaction names are textual (e.g. "thumbsup"), not glyphs.
+        slack_name = self._slack_reaction_name(emoji)
+        if not slack_name:
+            return False
+        return await self._add_reaction(chat_id, str(ts), slack_name)
+
+    @staticmethod
+    def _slack_reaction_name(emoji: str) -> Optional[str]:
+        """Translate a glyph to a Slack reaction shortcode."""
+        return {
+            "👍": "thumbsup",
+            "⚡": "zap",
+            "🙊": "speak_no_evil",
+            "🙈": "see_no_evil",
+            "👀": "eyes",
+            "✅": "white_check_mark",
+            "❌": "x",
+        }.get(emoji)
+
+    async def _handle_busy_session_action(self, ack, body, action) -> None:
+        """Handle a busy-session button click from Block Kit."""
+        await ack()
+        action_id = action.get("action_id", "")
+        session_key = action.get("value", "")
+        user_id = body.get("user", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        channel_id = body.get("channel", {}).get("id", "")
+
+        primitive_map = {
+            "hermes_busy_steer": "steer",
+            "hermes_busy_interrupt": "interrupt",
+            "hermes_busy_stop": "stop",
+        }
+        primitive = primitive_map.get(action_id)
+        if not primitive or not session_key:
+            return
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        handler = getattr(runner, "_handle_busy_session_button_tap", None)
+        if not callable(handler):
+            return
+
+        try:
+            from gateway.session import SessionSource
+            # Match how inbound messages build the source.  Slack DMs
+            # come from channels prefixed with "D" (im/mpim).  The
+            # action body's `message` carries `thread_ts` for thread
+            # context; top-level messages set thread_ts == ts == the
+            # message's own ts in tests, so we read it directly from
+            # the action payload.
+            ch_type_hint = body.get("channel", {}).get("channel_type", "") or ""
+            is_dm = ch_type_hint in ("im", "mpim") or channel_id.startswith("D")
+            msg_meta = body.get("message", {}) or {}
+            thread_ts = msg_meta.get("thread_ts") or msg_meta.get("ts") or None
+            source = SessionSource(
+                platform=Platform.SLACK,
+                chat_id=channel_id,
+                chat_type="dm" if is_dm else "group",
+                user_id=user_id,
+                user_name=user_name,
+                thread_id=str(thread_ts) if thread_ts else None,
+            )
+        except Exception as exc:
+            logger.debug("[Slack] could not build SessionSource for busy action: %s", exc)
+            return
+
+        # Route through the runner's full authorization stack so
+        # GATEWAY_ALLOWED_USERS / pairing / org-level rules apply,
+        # not just SLACK_ALLOWED_USERS.  Block Kit actions skip the
+        # normal message handler so without this check any workspace
+        # user could steer/interrupt/stop another user's session.
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                if not auth_fn(source):
+                    logger.warning(
+                        "[Slack] Unauthorized busy-session click by %s (%s) — ignoring",
+                        user_name, user_id,
+                    )
+                    return
+            except Exception:
+                logger.debug("[Slack] auth check raised — denying busy-action", exc_info=True)
+                return
+        else:
+            # No runner auth available — fall back to SLACK_ALLOWED_USERS
+            # only if it's set; if it's empty in this fallback path we
+            # FAIL CLOSED rather than allow-all.
+            allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+            if not allowed_csv:
+                logger.warning(
+                    "[Slack] No runner auth + empty SLACK_ALLOWED_USERS — denying busy-action"
+                )
+                return
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized busy-session click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        try:
+            await handler(session_key, primitive, source)
+        except Exception as exc:
+            logger.error(
+                "[Slack] busy-session action dispatch failed: %s", exc, exc_info=True,
+            )

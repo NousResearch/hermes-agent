@@ -93,12 +93,15 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
 
-    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+    # Default is now "queue" — interrupt-by-default has been retired in
+    # favor of buffering follow-ups (with explicit per-message override
+    # via the inline-keyboard buttons on the tool bubble).
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "queue"
 
     (tmp_path / "config.yaml").write_text(
-        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
+        "display:\n  busy_input_mode: interrupt\n", encoding="utf-8"
     )
-    assert gateway_run.GatewayRunner._load_busy_input_mode() == "queue"
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
 
     (tmp_path / "config.yaml").write_text(
         "display:\n  busy_input_mode: steer\n", encoding="utf-8"
@@ -111,9 +114,9 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "steer")
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "steer"
 
-    # Unknown values fall through to the safe default
+    # Unknown values fall through to the safe default ("queue").
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "bogus")
-    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "queue"
 
 
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(

@@ -1527,6 +1527,71 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    # ------------------------------------------------------------------
+    # Busy-session controls (per-message inline buttons + reactions)
+    #
+    # Default implementations are no-ops so platforms without inline-UI
+    # support (Matrix, Feishu, DingTalk, WhatsApp, iMessage…) inherit
+    # silently and the runner's busy handler can call them
+    # unconditionally.  Telegram, Discord, and Slack override.
+    # ------------------------------------------------------------------
+
+    async def set_busy_reaction(self, event: "MessageEvent", emoji: str) -> bool:
+        """Emit an acknowledgement reaction on a user follow-up message.
+
+        Called from the runner after a busy-session button tap (👍 / ⚡
+        / 🙊) and after a halt-phrase match.  Returns True on success,
+        False on failure.  Default: no-op.
+        """
+        return False
+
+    async def attach_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Attach the [/steer][/interrupt][/stop] keyboard to ``message_id``.
+
+        ``message_id`` is the current tool-progress bubble for the session.
+        Default: no-op.
+        """
+        return False
+
+    async def clear_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Remove the busy-session keyboard from ``message_id``.
+
+        Called on turn end and on every tool-bubble reset.  Default: no-op.
+        """
+        return False
+
+    async def send_or_update_busy_control_bubble(
+        self,
+        session_key: str,
+        source: Any,  # SessionSource — kept as Any to avoid circular import.
+        summary_text: str,
+    ) -> Optional[str]:
+        """Send a standalone control message when no tool bubble exists.
+
+        Returns the platform's message id of the control bubble so the
+        runner can edit / delete it later.  Default: no-op (returns
+        None).
+        """
+        return None
+
+    async def delete_busy_control_bubble(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Delete the standalone control bubble previously sent by
+        ``send_or_update_busy_control_bubble``.  Default: no-op.
+        """
+        return False
     
     def set_session_store(self, session_store: Any) -> None:
         """

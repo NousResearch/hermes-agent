@@ -461,6 +461,21 @@ class TelegramAdapter(BasePlatformAdapter):
         if (metadata or {}).get("notify"):
             return {}
         return {"disable_notification": True}
+        # Busy-session button state: session_key → message_id of the bubble
+        # currently carrying the [/steer][/interrupt][/stop] keyboard.  Used
+        # by edit_message() to re-attach the keyboard on every progress
+        # edit (a plain edit_message_text would otherwise strip it).
+        self._busy_session_button_map: Dict[str, str] = {}
+        # Long-session-key callback handle table (#hash → session_key).
+        # Telegram callback_data is capped at 64 bytes; long group/forum
+        # session keys overflow, so we substitute a hashed handle and
+        # resolve it back here on tap.  Populated from
+        # build_buttons_with_handles().handle_map at attach time.
+        self._busy_session_handles: Dict[str, str] = {}
+        # Standalone busy-session control-bubble state: session_key → msg_id.
+        # Tracked separately from the tool-progress bubble so the runner can
+        # delete the control bubble at turn end without touching the tool log.
+        self._busy_control_bubble_ids: Dict[str, str] = {}
 
     def _is_callback_user_authorized(
         self,
@@ -485,8 +500,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
                 if normalized_chat_type == "private":
                     normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
+                elif normalized_chat_type in ("supergroup", "group"):
+                    # Telegram inbound messages key both group and supergroup
+                    # (incl. forum topics) as chat_type="group" plus thread_id.
+                    # Match that here so the runner's session_key reconstruction
+                    # produces the SAME key as the original inbound message.
+                    normalized_chat_type = "group"
 
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
@@ -1714,6 +1733,12 @@ class TelegramAdapter(BasePlatformAdapter):
         existing message with the first chunk and send the rest as
         continuation messages, returning the final chunk's id so subsequent
         edits target the most recent visible message.
+
+        If ``message_id`` is currently anchoring a busy-session keyboard,
+        we re-attach that keyboard on the edit — Telegram's
+        ``edit_message_text`` strips ``reply_markup`` unless explicitly
+        included, which would otherwise wipe the [/steer][/interrupt]
+        [/stop] row on every tool-progress update.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -1725,33 +1750,59 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id, message_id, content, finalize=finalize,
             )
 
+        # Re-attach the busy-session keyboard if this message is currently
+        # the keyboard's anchor.  Done via a value-side lookup against the
+        # map (small dict; max ~few active sessions).
+        busy_keyboard = None
+        try:
+            anchored_session = next(
+                (
+                    sk
+                    for sk, mid in self._busy_session_button_map.items()
+                    if str(mid) == str(message_id)
+                ),
+                None,
+            )
+            if anchored_session:
+                busy_keyboard = self._build_busy_session_keyboard(anchored_session)
+        except Exception:
+            busy_keyboard = None
         try:
             if not finalize:
-                await self._bot.edit_message_text(
+                edit_kwargs: Dict[str, Any] = dict(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=content,
                 )
+                if busy_keyboard is not None:
+                    edit_kwargs["reply_markup"] = busy_keyboard
+                await self._bot.edit_message_text(**edit_kwargs)
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
             try:
-                await self._bot.edit_message_text(
+                edit_kwargs: Dict[str, Any] = dict(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
+                if busy_keyboard is not None:
+                    edit_kwargs["reply_markup"] = busy_keyboard
+                await self._bot.edit_message_text(**edit_kwargs)
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
+                fallback_kwargs: Dict[str, Any] = dict(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=content,
                 )
+                if busy_keyboard is not None:
+                    fallback_kwargs["reply_markup"] = busy_keyboard
+                await self._bot.edit_message_text(**fallback_kwargs)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -1783,11 +1834,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
-                    await self._bot.edit_message_text(
+                    retry_kwargs: Dict[str, Any] = dict(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
                         text=content,
                     )
+                    if busy_keyboard is not None:
+                        retry_kwargs["reply_markup"] = busy_keyboard
+                    await self._bot.edit_message_text(**retry_kwargs)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     logger.error(
@@ -2905,6 +2959,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+        # --- Busy-session button callbacks (bs:primitive:session_key) ---
+        if data.startswith("bs:"):
+            await self._handle_busy_session_callback(
+                query,
+                data,
+                chat_id=query_chat_id,
+                chat_type=query_chat_type,
+                thread_id=query_thread_id,
+                user_name=query_user_name,
+            )
             return
 
         # --- Update prompt callbacks ---
@@ -4835,3 +4899,374 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id,
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )
+
+    # ── Busy-session buttons + reactions ─────────────────────────────────
+
+    @staticmethod
+    def _busy_buttons_enabled() -> bool:
+        """Whether to render the [/steer][/interrupt][/stop] keyboard.
+
+        Toggle via env (HERMES_GATEWAY_BUSY_BUTTONS) or
+        ``display.busy_buttons`` in the gateway config.  Default on.
+        """
+        raw = os.getenv("HERMES_GATEWAY_BUSY_BUTTONS")
+        if raw is None:
+            return True
+        return raw.strip().lower() not in ("0", "false", "no", "off")
+
+    def _build_busy_session_keyboard(self, session_key: str) -> Optional[Any]:
+        """Build the InlineKeyboardMarkup for the busy-session control row.
+
+        Registers any hashed handle in ``self._busy_session_handles`` so
+        the callback handler can resolve it back to ``session_key`` even
+        when the literal key would have overflowed Telegram's 64-byte
+        callback_data cap.
+        """
+        if InlineKeyboardMarkup is None or InlineKeyboardButton is None:
+            return None
+        if InlineKeyboardMarkup is Any:  # python-telegram-bot not installed
+            return None
+        from gateway.busy_session_buttons import build_buttons_with_handles
+        spec = build_buttons_with_handles(session_key)
+        if spec.handle_map:
+            self._busy_session_handles.update(spec.handle_map)
+        row = [
+            InlineKeyboardButton(text=b.label, callback_data=b.callback_data)
+            for b in spec.buttons
+        ]
+        return InlineKeyboardMarkup([row])
+
+    async def attach_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Attach (or replace) the busy-session keyboard on ``message_id``."""
+        if not self._busy_buttons_enabled():
+            return False
+        if not self._bot or not message_id:
+            return False
+        # Resolve chat_id from runner state (runner stores last-known chat
+        # via SessionSource on the most recent follow-up).  We piggyback on
+        # the runner's _pending_followups (deduplication set) to find it.
+        chat_id = self._chat_id_for_session(session_key)
+        if not chat_id:
+            return False
+        keyboard = self._build_busy_session_keyboard(session_key)
+        if keyboard is None:
+            return False
+        try:
+            await self._bot.edit_message_reply_markup(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=keyboard,
+            )
+        except Exception as exc:
+            # "message is not modified" is benign (same keyboard already
+            # attached after a prior progress edit re-applied it).
+            err = str(exc).lower()
+            if "not modified" in err:
+                self._busy_session_button_map[session_key] = str(message_id)
+                return True
+            logger.debug(
+                "[%s] attach_busy_session_buttons failed for session %s on %s: %s",
+                self.name,
+                session_key,
+                message_id,
+                exc,
+            )
+            return False
+        self._busy_session_button_map[session_key] = str(message_id)
+        return True
+
+    async def clear_busy_session_buttons(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Detach the busy-session keyboard from ``message_id``."""
+        recorded = self._busy_session_button_map.pop(session_key, None)
+        if not self._bot or not message_id:
+            return False
+        chat_id = self._chat_id_for_session(session_key)
+        if not chat_id:
+            return False
+        try:
+            await self._bot.edit_message_reply_markup(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=None,
+            )
+        except Exception as exc:
+            err = str(exc).lower()
+            # Common, harmless: the bubble was already deleted, or the
+            # keyboard already removed by a prior edit.
+            if "not modified" in err or "message to edit not found" in err:
+                return True
+            logger.debug(
+                "[%s] clear_busy_session_buttons failed for session %s on %s: %s",
+                self.name,
+                session_key,
+                message_id,
+                exc,
+            )
+            return False
+        return True
+
+    async def send_or_update_busy_control_bubble(
+        self,
+        session_key: str,
+        source: Any,
+        summary_text: str,
+    ) -> Optional[str]:
+        """Send/update a standalone control bubble when no tool bubble exists."""
+        if not self._busy_buttons_enabled():
+            return None
+        if not self._bot:
+            return None
+        chat_id_raw = getattr(source, "chat_id", None) if source else None
+        if not chat_id_raw:
+            return None
+        keyboard = self._build_busy_session_keyboard(session_key)
+        if keyboard is None:
+            return None
+        thread_id = getattr(source, "thread_id", None) if source else None
+
+        existing = self._busy_control_bubble_ids.get(session_key)
+        if existing:
+            try:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id_raw),
+                    message_id=int(existing),
+                    text=summary_text,
+                    reply_markup=keyboard,
+                )
+                return existing
+            except Exception as exc:
+                err = str(exc).lower()
+                if "not modified" not in err:
+                    logger.debug(
+                        "[%s] control-bubble edit failed for %s, falling back to send: %s",
+                        self.name,
+                        session_key,
+                        exc,
+                    )
+                    self._busy_control_bubble_ids.pop(session_key, None)
+                else:
+                    return existing
+
+        try:
+            send_kwargs = {
+                "chat_id": int(chat_id_raw),
+                "text": summary_text,
+                "reply_markup": keyboard,
+            }
+            if thread_id:
+                try:
+                    send_kwargs["message_thread_id"] = int(thread_id)
+                except (TypeError, ValueError):
+                    pass
+            sent = await self._bot.send_message(**send_kwargs)
+        except Exception as exc:
+            logger.debug(
+                "[%s] control-bubble send failed for %s: %s",
+                self.name,
+                session_key,
+                exc,
+            )
+            return None
+        msg_id = getattr(sent, "message_id", None)
+        if msg_id is not None:
+            self._busy_control_bubble_ids[session_key] = str(msg_id)
+            self._busy_session_button_map[session_key] = str(msg_id)
+            return str(msg_id)
+        return None
+
+    async def delete_busy_control_bubble(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Delete the standalone control bubble for ``session_key``."""
+        self._busy_control_bubble_ids.pop(session_key, None)
+        if not self._bot or not message_id:
+            return False
+        chat_id = self._chat_id_for_session(session_key)
+        if not chat_id:
+            return False
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+            )
+        except Exception as exc:
+            err = str(exc).lower()
+            if "message to delete not found" in err or "message can't be deleted" in err:
+                return True
+            logger.debug(
+                "[%s] delete_busy_control_bubble failed for %s on %s: %s",
+                self.name,
+                session_key,
+                message_id,
+                exc,
+            )
+            return False
+        return True
+
+    async def set_busy_reaction(self, event: MessageEvent, emoji: str) -> bool:
+        """Emit a busy-session acknowledgement reaction on ``event``.
+
+        Uses ``ReactionTypeEmoji`` explicitly to avoid python-telegram-bot's
+        variation-selector serialization bug — bare emoji strings with VS-16
+        (e.g. ⚡️) are otherwise mis-routed as ``custom_emoji_id`` and rejected.
+        """
+        if not self._bot or not emoji:
+            return False
+        chat_id = getattr(event.source, "chat_id", None) if event and event.source else None
+        message_id = getattr(event, "message_id", None) if event else None
+        if not chat_id or not message_id:
+            return False
+        try:
+            from telegram import ReactionTypeEmoji  # type: ignore
+            reaction = [ReactionTypeEmoji(emoji=emoji)]
+        except Exception:
+            reaction = emoji  # fallback — older telegram lib
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reaction=reaction,
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[%s] set_busy_reaction(%s) failed: %s",
+                self.name,
+                emoji,
+                exc,
+            )
+            return False
+
+    def _chat_id_for_session(self, session_key: str) -> Optional[str]:
+        """Resolve a Telegram chat_id for a session_key.
+
+        The busy-session APIs receive only ``session_key + message_id`` from
+        the runner; Telegram's edit/delete APIs need the chat_id too.  Pull
+        it from the runner's pending follow-up event (the most recent inbound
+        message in this busy turn) which has it on its ``source``.
+        """
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        if runner is None:
+            return None
+        followups = getattr(runner, "_pending_followups", {}) or {}
+        events = followups.get(session_key) or []
+        for event in reversed(events):
+            chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+            if chat_id:
+                return str(chat_id)
+        # Fallback: look up from active running-agents source if exposed.
+        running = getattr(runner, "_running_agents", {}) or {}
+        agent = running.get(session_key)
+        source = getattr(agent, "_session_source", None)
+        if source is not None:
+            chat_id = getattr(source, "chat_id", None)
+            if chat_id:
+                return str(chat_id)
+        return None
+
+    async def _handle_busy_session_callback(
+        self,
+        query: Any,
+        data: str,
+        *,
+        chat_id: Optional[Any],
+        chat_type: Optional[Any],
+        thread_id: Optional[Any],
+        user_name: Optional[Any],
+    ) -> None:
+        """Dispatch a ``bs:<primitive>:<session_key>`` button tap."""
+        from gateway.busy_session_buttons import parse_callback_data
+
+        parsed = parse_callback_data(
+            data, handle_resolver=self._busy_session_handles
+        )
+        if parsed is None:
+            try:
+                await query.answer(text="Invalid button data.")
+            except Exception:
+                pass
+            return
+        primitive, session_key = parsed
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=chat_id,
+            chat_type=str(chat_type) if chat_type is not None else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+            user_name=user_name,
+        ):
+            try:
+                await query.answer(text="⛔ You are not authorized to control this run.")
+            except Exception:
+                pass
+            return
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        handler = getattr(runner, "_handle_busy_session_button_tap", None)
+        if not callable(handler):
+            try:
+                await query.answer(text="Busy-session controls unavailable.")
+            except Exception:
+                pass
+            return
+
+        # Reconstruct a SessionSource for the dispatch.
+        try:
+            from gateway.session import SessionSource
+
+            normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+            if normalized_chat_type == "private":
+                normalized_chat_type = "dm"
+            elif normalized_chat_type in ("supergroup", "group"):
+                # Inbound messages key both group and supergroup (incl.
+                # forum topics) as chat_type="group" + thread_id.
+                # Match that here so the runner's session_key
+                # reconstruction produces the SAME key as the
+                # original inbound message.
+                normalized_chat_type = "group"
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(chat_id) if chat_id is not None else "",
+                chat_type=normalized_chat_type,
+                user_id=caller_id,
+                user_name=user_name,
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
+        except Exception as exc:
+            logger.debug("[%s] could not build SessionSource for bs callback: %s", self.name, exc)
+            try:
+                await query.answer(text="Couldn't apply that — try again.")
+            except Exception:
+                pass
+            return
+
+        try:
+            toast = await handler(session_key, primitive, source)
+        except Exception as exc:
+            logger.error(
+                "[%s] busy-session button dispatch failed: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            try:
+                await query.answer(text="Couldn't apply that — see logs.")
+            except Exception:
+                pass
+            return
+
+        try:
+            await query.answer(text=toast or "Done.")
+        except Exception:
+            pass

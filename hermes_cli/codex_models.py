@@ -80,8 +80,10 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         if not isinstance(slug, str) or not slug.strip():
             continue
         slug = slug.strip()
-        if item.get("supported_in_api") is False:
-            continue
+        # Codex CLI's catalog uses ``supported_in_api`` for the public OpenAI
+        # API, not for the OAuth-backed Codex backend that this provider uses.
+        # Some valid Codex CLI models (for example gpt-5.3-codex-spark) are
+        # marked false here but are still accepted by the Codex route.
         visibility = item.get("visibility", "")
         if isinstance(visibility, str) and visibility.strip().lower() in ("hide", "hidden"):
             continue
@@ -130,8 +132,9 @@ def _read_cache_models(codex_home: Path) -> List[str]:
             if not isinstance(slug, str) or not slug.strip():
                 continue
             slug = slug.strip()
-            if item.get("supported_in_api") is False:
-                continue
+            # Do not filter on ``supported_in_api`` here.  It describes the
+            # public OpenAI API, while Hermes openai-codex talks to the same
+            # OAuth-backed Codex backend as Codex CLI.
             visibility = item.get("visibility")
             if isinstance(visibility, str) and visibility.strip().lower() in ("hide", "hidden"):
                 continue

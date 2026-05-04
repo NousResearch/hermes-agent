@@ -3619,16 +3619,22 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+    """Recursively expand ``${VAR}`` and ``$VAR`` references in config values.
 
     Only string values are processed; dict keys, numbers, booleans, and
-    None are left untouched.  Unresolved references (variable not in
+    None are left untouched. Unresolved references (variable not in
     ``os.environ``) are kept verbatim so callers can detect them.
     """
     if isinstance(obj, str):
+        def _replace(match):
+            braced = match.group(1)
+            plain = match.group(2)
+            key = braced or plain
+            return os.environ.get(key, match.group(0))
+
         return re.sub(
-            r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
+            r"\${([^}]+)}|\$([A-Za-z_][A-Za-z0-9_]*)",
+            _replace,
             obj,
         )
     if isinstance(obj, dict):

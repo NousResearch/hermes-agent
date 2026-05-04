@@ -1529,7 +1529,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, model), model
 
 
-def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -1539,10 +1539,10 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     if pool_present:
         if entry is None:
             return None, None
-        token = _pool_runtime_api_key(entry)
+        token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
         entry = None
-        token = resolve_anthropic_token()
+        token = explicit_api_key or resolve_anthropic_token()
     if not token:
         return None, None
 
@@ -2336,7 +2336,7 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic()
+            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None

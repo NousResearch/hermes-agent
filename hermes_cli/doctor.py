@@ -141,6 +141,150 @@ def check_fail(text: str, detail: str = ""):
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
+def _mask_secret(secret: str) -> str:
+    s = (secret or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 10:
+        return s[:2] + "..." + s[-2:]
+    return s[:4] + "..." + s[-4:]
+
+
+def _candidate_api_bases(base_url: str) -> list[str]:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return []
+    candidates = [base]
+    if not base.endswith("/v1"):
+        candidates.append(f"{base}/v1")
+    return candidates
+
+
+def _response_is_html(resp) -> bool:
+    content_type = str(getattr(resp, "headers", {}).get("content-type", "") or "").lower()
+    if "text/html" in content_type:
+        return True
+    body = str(getattr(resp, "text", "") or "").lstrip().lower()
+    return body.startswith("<!doctype html") or body.startswith("<html")
+
+
+def _pick_custom_endpoint_api_base(httpx_module, candidate_bases: list[str], headers: dict[str, str]) -> tuple[str | None, object | None]:
+    last_response = None
+    for candidate in candidate_bases:
+        resp = httpx_module.get(f"{candidate}/models", headers=headers, timeout=8)
+        last_response = resp
+        if resp.status_code == 200 and not _response_is_html(resp):
+            return candidate, resp
+    return None, last_response
+
+
+def _probe_custom_endpoint(config: dict, issues: list[str]) -> None:
+    """
+    If the active model is configured to a custom endpoint (model.provider=custom),
+    probe a minimal inference request to detect upstream/proxy failures.
+    """
+    try:
+        model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+        provider = str(model_cfg.get("provider", "") or "").strip().lower()
+        base_url = str(model_cfg.get("base_url", "") or "").strip().rstrip("/")
+        model = str(model_cfg.get("default", "") or "").strip()
+        api_key = str(model_cfg.get("api_key", "") or "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+
+        if provider != "custom" or not base_url:
+            return
+        if "openrouter.ai" in base_url.lower():
+            return
+
+        import httpx
+
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        candidate_bases = _candidate_api_bases(base_url)
+        api_base, r_models = _pick_custom_endpoint_api_base(httpx, candidate_bases, headers)
+        if not api_base:
+            detail = "(no usable JSON response)"
+            if r_models is not None:
+                ct = str(getattr(r_models, "headers", {}).get("content-type", "") or "")
+                detail = f"(HTTP {r_models.status_code}, type={ct or 'unknown'})"
+            check_warn("Custom endpoint /models", detail)
+            issues.append(f"Custom endpoint /models probe failed for base {base_url}")
+            return
+
+        if not model:
+            check_ok("Custom endpoint /models OK", f"(base={api_base})")
+            return
+
+        def _post_json_ok(endpoint: str, payload: dict) -> tuple[object, bool]:
+            resp = httpx.post(
+                endpoint,
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=12,
+            )
+            return resp, resp.status_code < 400 and not _response_is_html(resp)
+
+        inference_bases = [api_base] + [b for b in candidate_bases if b != api_base]
+
+        is_gpt5 = model.lower().split("/")[-1].startswith("gpt-5")
+        if is_gpt5:
+            # Hermes will prefer /responses for GPT-5.x.
+            payload = {"model": model, "input": "ping", "max_output_tokens": 1}
+            payload2 = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+            last_responses = None
+            last_chat = None
+            for inference_base in inference_bases:
+                r, ok = _post_json_ok(f"{inference_base}/responses", payload)
+                last_responses = r
+                if ok:
+                    check_ok("Custom endpoint inference OK", f"(responses, model={model})")
+                    return
+
+                r2, ok2 = _post_json_ok(f"{inference_base}/chat/completions", payload2)
+                last_chat = r2
+                if ok2:
+                    check_ok("Custom endpoint inference OK", f"(chat fallback, model={model})")
+                    return
+
+            check_fail(
+                "Custom endpoint inference failed",
+                f"(model={model} responses={getattr(last_responses, 'status_code', 'ERR')} chat={getattr(last_chat, 'status_code', 'ERR')} base={api_base} key={_mask_secret(api_key) or 'none'})",
+            )
+            issues.append(
+                f"Custom endpoint inference failed (responses={getattr(last_responses, 'status_code', 'ERR')}, chat={getattr(last_chat, 'status_code', 'ERR')})"
+            )
+            return
+
+        # Non-GPT5 default: try chat first.
+        payload = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+        payload2 = {"model": model, "input": "ping", "max_output_tokens": 1}
+        last_chat = None
+        last_responses = None
+        for inference_base in inference_bases:
+            r, ok = _post_json_ok(f"{inference_base}/chat/completions", payload)
+            last_chat = r
+            if ok:
+                check_ok("Custom endpoint inference OK", f"(chat, model={model})")
+                return
+
+            r2, ok2 = _post_json_ok(f"{inference_base}/responses", payload2)
+            last_responses = r2
+            if ok2:
+                check_ok("Custom endpoint inference OK", f"(responses fallback, model={model})")
+                return
+
+        check_fail(
+            "Custom endpoint inference failed",
+            f"(model={model} chat={getattr(last_chat, 'status_code', 'ERR')} responses={getattr(last_responses, 'status_code', 'ERR')} base={api_base} key={_mask_secret(api_key) or 'none'})",
+        )
+        issues.append(
+            f"Custom endpoint inference failed (chat={getattr(last_chat, 'status_code', 'ERR')}, responses={getattr(last_responses, 'status_code', 'ERR')})"
+        )
+    except Exception as e:
+        # Doctor should never crash on probe failures.
+        check_warn("Custom endpoint probe", f"({e})")
+
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
@@ -994,6 +1138,12 @@ def run_doctor(args):
     # =========================================================================
     print()
     print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _cfg = _load_cfg()
+    except Exception:
+        _cfg = {}
     
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
@@ -1027,6 +1177,10 @@ def run_doctor(args):
             issues.append("Check network connectivity")
     else:
         check_warn("OpenRouter API", "(not configured)")
+
+    # If using a custom endpoint, probe real inference so "models OK" doesn't
+    # mask upstream proxy failures.
+    _probe_custom_endpoint(_cfg, issues)
     
     from hermes_cli.auth import get_anthropic_key
     anthropic_key = get_anthropic_key()

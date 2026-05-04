@@ -528,7 +528,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    (home / ".env").write_text("KIMI_CN_API_KEY=sk-test\n", encoding="utf-8")
+    (home / ".env").write_text("KIMI_CN_API_KEY=***", encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 
@@ -576,7 +576,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    (home / ".env").write_text("OPENCODE_GO_API_KEY=***\n", encoding="utf-8")
+    (home / ".env").write_text("OPENCODE_GO_API_KEY=***", encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 
@@ -623,3 +623,53 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     )
     assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, content_type="application/json", text="{}"):
+        self.status_code = status_code
+        self.headers = {"content-type": content_type}
+        self.text = text
+
+
+def test_probe_custom_endpoint_ignores_html_success_and_uses_v1_chat(monkeypatch):
+    config = {
+        "model": {
+            "provider": "custom",
+            "base_url": "http://relay.example.com",
+            "default": "gpt-4o-mini",
+        }
+    }
+    issues = []
+    seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen.append(("GET", url))
+        if url == "http://relay.example.com/models":
+            return _FakeResponse(content_type="text/html; charset=utf-8", text="<html>ui</html>")
+        if url == "http://relay.example.com/v1/models":
+            return _FakeResponse(text='{"data": [{"id": "gpt-4o-mini"}]}')
+        raise AssertionError(f"unexpected GET {url}")
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen.append(("POST", url))
+        if url == "http://relay.example.com/chat/completions":
+            return _FakeResponse(content_type="text/html; charset=utf-8", text="<html>ui</html>")
+        if url == "http://relay.example.com/v1/chat/completions":
+            return _FakeResponse(text='{"id": "chatcmpl_123"}')
+        raise AssertionError(f"unexpected POST {url}")
+
+    fake_httpx = types.SimpleNamespace(get=fake_get, post=fake_post)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    ok_messages = []
+    monkeypatch.setattr(doctor_mod, "check_ok", lambda text, detail="": ok_messages.append((text, detail)))
+    monkeypatch.setattr(doctor_mod, "check_warn", lambda text, detail="": None)
+    monkeypatch.setattr(doctor_mod, "check_fail", lambda text, detail="": None)
+
+    doctor_mod._probe_custom_endpoint(config, issues)
+
+    assert issues == []
+    assert ("GET", "http://relay.example.com/v1/models") in seen
+    assert ("POST", "http://relay.example.com/v1/chat/completions") in seen
+    assert ok_messages == [("Custom endpoint inference OK", "(chat, model=gpt-4o-mini)")]

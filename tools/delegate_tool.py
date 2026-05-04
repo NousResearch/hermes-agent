@@ -888,13 +888,9 @@ def _resolve_isolation(
             "permission_mode='read_only' automatically enables isolation='readonly'"
         )
 
-    # worktree is not implemented until Phase C
+    # worktree isolation (Phase C)
     if effective == "worktree":
-        return (
-            "worktree",
-            warnings,
-            "worktree isolation is not implemented yet; use 'shared' or 'readonly'.",
-        )
+        return "worktree", warnings, None
 
     # Validate isolation value
     if effective not in ("shared", "readonly"):
@@ -1015,6 +1011,342 @@ def get_subagent_usage(subagent_id: str) -> Optional[Dict[str, Any]]:
         }
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Phase C: Worktree isolation
+# ---------------------------------------------------------------------------
+
+_WORKTREE_BASE_DIR = None  # Path | None
+
+
+def _get_worktree_base_dir():
+    """Return the base directory for worktrees (~/.hermes/worktrees)."""
+    global _WORKTREE_BASE_DIR
+    if _WORKTREE_BASE_DIR is not None:
+        return _WORKTREE_BASE_DIR
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        from pathlib import Path as _P
+        def get_hermes_home() -> _P:
+            return _P.home() / ".hermes"
+    _WORKTREE_BASE_DIR = get_hermes_home() / "worktrees"
+    return _WORKTREE_BASE_DIR
+
+
+def _create_worktree(
+    subagent_id: str,
+    *,
+    parent_agent=None,
+) -> Dict[str, Any]:
+    """Create a git worktree for an isolated subagent.
+
+    Returns dict with: {worktree_path, worktree_branch, original_head, repo_path, error}
+    If error is non-empty, the worktree could not be created.
+    """
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    result: Dict[str, Any] = {
+        "worktree_path": None,
+        "worktree_branch": None,
+        "original_head": None,
+        "repo_path": None,
+        "error": None,
+    }
+
+    # Find the parent's git repo — prefer TERMINAL_CWD, then parent's workspace hint
+    repo_candidate = None
+    try:
+        repo_candidate = os.environ.get("TERMINAL_CWD") or os.getcwd()
+    except Exception:
+        repo_candidate = os.getcwd()
+
+    # Verify this is a git repo
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(repo_candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            result["error"] = f"Cannot find git repository at {repo_candidate}"
+            return result
+        repo_path = _Path(proc.stdout.strip())
+    except (FileNotFoundError, _sp.TimeoutExpired) as exc:
+        result["error"] = f"Git command failed: {exc}"
+        return result
+
+    # Get current HEAD
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            result["error"] = "Cannot resolve HEAD"
+            return result
+        original_head = proc.stdout.strip()
+    except Exception as exc:
+        result["error"] = f"Failed to get HEAD: {exc}"
+        return result
+
+    # Create the worktree
+    safe_id = subagent_id.replace("/", "_").replace("\\", "_")
+    worktree_name = f"hermes-{safe_id}"
+    worktree_base = _get_worktree_base_dir()
+    try:
+        worktree_base.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        result["error"] = f"Cannot create worktree base dir: {exc}"
+        return result
+    worktree_path = worktree_base / worktree_name
+
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(repo_path), "worktree", "add", "--detach",
+             str(worktree_path), original_head],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            result["error"] = f"git worktree add failed: {proc.stderr.strip()}"
+            return result
+    except Exception as exc:
+        result["error"] = f"git worktree add failed: {exc}"
+        return result
+
+    result["worktree_path"] = str(worktree_path)
+    result["worktree_branch"] = worktree_name
+    result["original_head"] = original_head
+    result["repo_path"] = str(repo_path)
+    return result
+
+
+def _cleanup_worktree(
+    worktree_path: str,
+    original_head: str,
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Clean up a git worktree. Fail-closed: only remove when safe.
+
+    Returns dict with: {removed, kept, reason, diff_summary}
+    """
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    wpath = _Path(worktree_path)
+    result: Dict[str, Any] = {
+        "removed": False,
+        "kept": True,
+        "reason": "",
+        "diff_summary": "",
+    }
+
+    if not wpath.exists():
+        result["reason"] = "worktree path does not exist"
+        result["kept"] = False
+        return result
+
+    if not str(wpath).startswith(str(_get_worktree_base_dir())):
+        result["reason"] = (
+            "worktree path is not under Hermes managed directory — refusing to delete"
+        )
+        return result
+
+    # Check for changes
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(wpath), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode != 0:
+            result["reason"] = (
+                f"git status failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()[:200]}"
+            )
+            return result
+        dirty = proc.stdout.strip()
+    except FileNotFoundError:
+        result["reason"] = "git not found"
+        return result
+    except _sp.TimeoutExpired:
+        result["reason"] = "git status timed out"
+        return result
+
+    # Check for .git lock file
+    lock_file = wpath / ".git" / "index.lock"
+    if lock_file.exists():
+        result["reason"] = ".git/index.lock exists — refusing to delete"
+        return result
+
+    if dirty and not force:
+        try:
+            diff_proc = _sp.run(
+                ["git", "-C", str(wpath), "diff", "--stat"],
+                capture_output=True, text=True, timeout=10,
+            )
+            result["diff_summary"] = diff_proc.stdout.strip()[:500]
+        except Exception:
+            result["diff_summary"] = "(diff unavailable)"
+        result["reason"] = (
+            f"Worktree has uncommitted changes — kept at {worktree_path}"
+        )
+        return result
+
+    try:
+        _sp.run(
+            ["git", "-C", str(wpath.parent), "worktree", "remove", "--force", str(wpath)],
+            capture_output=True, text=True, timeout=15,
+            check=True,
+        )
+        result["removed"] = True
+        result["kept"] = False
+        result["reason"] = "worktree removed (no changes)"
+    except _sp.CalledProcessError as exc:
+        result["reason"] = f"git worktree remove failed: {exc.stderr.strip()[:200]}"
+    except Exception as exc:
+        result["reason"] = f"cleanup failed: {exc}"
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Phase C: Transcript JSONL
+# ---------------------------------------------------------------------------
+
+
+def _get_transcript_dir():
+    """Return the base directory for subagent transcripts."""
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        from pathlib import Path as _P
+        def get_hermes_home() -> _P:
+            return _P.home() / ".hermes"
+    return get_hermes_home() / "subagents"
+
+
+def _write_transcript_event(
+    session_id: str,
+    subagent_id: str,
+    event_type: str,
+    *,
+    tool: Optional[str] = None,
+    preview: str = "",
+    usage: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
+):
+    """Append a single JSONL line to the subagent's transcript.
+
+    Returns the transcript file path, or None on failure.
+    """
+    try:
+        transcript_dir = _get_transcript_dir() / session_id
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = transcript_dir / f"{subagent_id}.jsonl"
+
+        entry = {
+            "timestamp": time.time(),
+            "event_type": event_type,
+            "subagent_id": subagent_id,
+            "agent_id": agent_id,
+            "tool": tool,
+            "preview": preview[:500],
+            "usage": usage or {},
+        }
+        with open(transcript_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return transcript_path
+    except Exception as exc:
+        logger.warning("Failed to write transcript event: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Phase C: Coordinator / Swarm prep
+# ---------------------------------------------------------------------------
+
+
+# Tools allowed for coordinator_mode agents (orchestration only)
+COORDINATOR_ALLOWED_TOOLSETS = frozenset({"delegation", "file"})
+COORDINATOR_BLOCKED_TOOLS = frozenset({
+    "terminal", "process", "write_file", "patch",
+    "send_message", "memory", "execute_code",
+    "browser_navigate", "browser_snapshot", "browser_click",
+})
+
+
+def _apply_coordinator_mode(
+    agent_config: dict,
+    toolsets: List[str],
+    blocked_tools: set,
+    warnings: List[str],
+) -> tuple:
+    """Restrict tools for coordinator_mode agents.
+
+    When agent_config has coordinator_mode: true, only orchestration
+    toolsets are allowed. All write/mutate tools are blocked.
+
+    Returns (filtered_toolsets, updated_blocked_tools, updated_warnings).
+    """
+    coord_mode = agent_config.get("coordinator_mode", False)
+    if not coord_mode:
+        return toolsets, blocked_tools, warnings
+
+    warnings.append("coordinator_mode: restricting to orchestration toolsets")
+    filtered = [ts for ts in toolsets if ts in COORDINATOR_ALLOWED_TOOLSETS]
+    new_blocked = set(blocked_tools) | COORDINATOR_BLOCKED_TOOLS
+    return filtered, new_blocked, warnings
+
+
+def claim_task(task_id: str, agent_id: str) -> bool:
+    """Atomically claim a task using SQLite WAL INSERT OR IGNORE.
+
+    Returns True if the claim was successful (first to claim).
+    Returns False if the task was already claimed by another agent.
+
+    Uses a simple SQLite database at ~/.hermes/swarm_claims.db.
+    Thread-safe via WAL mode.
+
+    IMPORTANT: This guarantees atomicity only on local filesystems
+    (APFS, ext4, NTFS). For distributed coordination, a proper lock
+    service (etcd, Redis Redlock, PostgreSQL advisory lock) is needed.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        from pathlib import Path as _P
+        def get_hermes_home() -> _P:
+            return _P.home() / ".hermes"
+
+    db_path = get_hermes_home() / "swarm_claims.db"
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS claims ("
+            "  task_id TEXT PRIMARY KEY,"
+            "  agent_id TEXT NOT NULL,"
+            "  claimed_at REAL NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO claims (task_id, agent_id, claimed_at) "
+            "VALUES (?, ?, ?)",
+            (task_id, agent_id, time.time()),
+        )
+        conn.commit()
+        # Check if we got the claim
+        row = conn.execute(
+            "SELECT agent_id FROM claims WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        conn.close()
+        return row is not None and row[0] == agent_id
+    except Exception as exc:
+        logger.warning("claim_task failed: %s", exc)
+        return False
 
 
 def _build_child_progress_callback(
@@ -1363,11 +1695,16 @@ def _build_child_agent(
     if _effective_isolation == "readonly":
         child_toolsets_before_readonly = list(child_toolsets)
         child_toolsets = _apply_readonly_isolation(child_toolsets)
-        # Add any write tools that got stripped by toolset removal to blocked
         stripped_ts = set(child_toolsets_before_readonly) - set(child_toolsets)
         for ts in stripped_ts:
             effective_blocked.add(ts)
             warnings.append(f"readonly isolation: stripped toolset '{ts}'")
+
+    # ── Phase C: Coordinator mode ──────────────────────────────────────
+    if agent_config and agent_config.get("coordinator_mode"):
+        child_toolsets, effective_blocked, warnings = _apply_coordinator_mode(
+            agent_config, child_toolsets, effective_blocked, warnings,
+        )
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -1729,6 +2066,7 @@ def _try_log_subagent_event(
     duration_seconds: float = 0.0,
     api_calls: int = 0,
     tokens: Optional[Dict[str, int]] = None,
+    transcript_path: Optional[str] = None,
 ) -> None:
     """Fire a subagent lifecycle event, swallowing all failures.
 
@@ -1766,6 +2104,7 @@ def _try_log_subagent_event(
                 duration_seconds=duration_seconds,
                 api_calls=api_calls,
                 tokens=tokens or {},
+                transcript_path=transcript_path,
             )
         elif event_type == "failed":
             elog.log_subagent_failed(
@@ -1972,6 +2311,57 @@ def _run_single_child(
         effective_toolsets=_safe_toolsets,
         blocked_tools=_safe_blocked,
     )
+
+    # ── Phase C: Worktree / Transcript initialization ──────────────────
+    _worktree_info: Dict[str, Any] = {}
+    _transcript_path: Optional[str] = None
+    _child_isolation_mode = getattr(child, "_subagent_isolation", "shared") or "shared"
+    if _child_isolation_mode == "worktree":
+        _wt_result = _create_worktree(
+            subagent_id=_subagent_id or f"subagent-{task_index}",
+            parent_agent=parent_agent,
+        )
+        if _wt_result.get("error"):
+            # Worktree creation failed — return error as result
+            _try_log_subagent_event(
+                "failed",
+                subagent_id=_safe_subagent_id,
+                parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                agent_id=_safe_agent_id,
+                role=_safe_role,
+                task_id=_parent_task_id,
+                session_id=_parent_session_id,
+                error=_wt_result["error"],
+            )
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "subagent_id": _safe_subagent_id,
+                "parent_id": _child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                "agent_id": _safe_agent_id,
+                "role": _safe_role,
+                "effective_toolsets": _safe_toolsets,
+                "blocked_tools": _safe_blocked,
+                "isolation": "worktree",
+                "warnings": [_wt_result["error"]],
+                "error": _wt_result["error"],
+                "api_calls": 0,
+                "duration_seconds": 0,
+                "_child_role": _safe_role,
+            }
+        _worktree_info = _wt_result
+        # Register worktree path as cwd override for terminal/file tools
+        _wt_path = _wt_result.get("worktree_path")
+        if _wt_path and _subagent_id:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+                register_task_env_overrides(_subagent_id, {"cwd": _wt_path})
+            except Exception as exc:
+                logger.warning(
+                    "Failed to register worktree cwd override for %s: %s",
+                    _subagent_id, exc,
+                )
 
     try:
         if child_progress_cb:
@@ -2222,6 +2612,10 @@ def _run_single_child(
             "blocked_tools": _safe_blocked,
             "isolation": _child_isolation,
             "warnings": _child_warnings,
+            "worktree_path": _worktree_info.get("worktree_path") if _child_isolation_mode == "worktree" else None,
+            "worktree_branch": _worktree_info.get("worktree_branch") if _child_isolation_mode == "worktree" else None,
+            "diff_summary": _cleanup_result.get("diff_summary", "") if _child_isolation_mode == "worktree" else None,
+            "transcript_path": _transcript_path,
             "usage": {
                 "input_tokens": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -2356,6 +2750,29 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        # ── Phase C: Transcript recording ──────────────────────────────
+        _transcript_path: Optional[str] = None
+        if _parent_session_id and _subagent_id:
+            _tw = _write_transcript_event(
+                session_id=_parent_session_id,
+                subagent_id=_subagent_id,
+                event_type="final",
+                tool=None,
+                preview=summary[:500] if summary else entry.get("error", ""),
+                usage={
+                    "input_tokens": (
+                        int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
+                    ),
+                    "output_tokens": (
+                        int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0
+                    ),
+                    "api_calls": int(api_calls) if isinstance(api_calls, (int, float)) else 0,
+                },
+                agent_id=_safe_agent_id,
+            )
+            if _tw:
+                _transcript_path = str(_tw)
+
         # ── Phase A: subagent lifecycle event ─────────────────────────
         _child_api_calls = entry.get("api_calls", 0)
         _child_tokens = entry.get("tokens", {})
@@ -2386,14 +2803,15 @@ def _run_single_child(
                 "completed",
                 subagent_id=_subagent_id,
                 parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
-                agent_id=_child_agent_id,
-                role=_child_role,
+                agent_id=_safe_agent_id,
+                role=_safe_role,
                 task_id=_parent_task_id,
                 session_id=_parent_session_id,
                 status=status,
                 duration_seconds=duration,
                 api_calls=_child_api_calls,
                 tokens=_child_tokens,
+                transcript_path=_transcript_path,
             )
 
         return entry
@@ -2433,6 +2851,24 @@ def _run_single_child(
         }
 
     finally:
+        # ── Phase C: Worktree cleanup ──────────────────────────────────
+        _wt_path = _worktree_info.get("worktree_path")
+        _wt_head = _worktree_info.get("original_head")
+        _cleanup_result: Dict[str, Any] = {}
+        if _wt_path and _wt_head:
+            try:
+                _cleanup_result = _cleanup_worktree(_wt_path, _wt_head)
+            except Exception as exc:
+                logger.warning("Worktree cleanup failed: %s", exc)
+                _cleanup_result = {"reason": str(exc), "kept": True}
+            # Unregister task env overrides
+            if _subagent_id:
+                try:
+                    from tools.terminal_tool import clear_task_env_overrides
+                    clear_task_env_overrides(_subagent_id)
+                except Exception:
+                    pass
+
         # Stop the heartbeat thread so it doesn't keep touching parent activity
         # after the child has finished (or failed).
         _heartbeat_stop.set()

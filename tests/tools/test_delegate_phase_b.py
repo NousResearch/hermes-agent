@@ -47,12 +47,13 @@ class TestResolveIsolation:
         )
         assert iso == "shared"
 
-    def test_worktree_returns_error(self):
+    def test_worktree_no_longer_returns_error(self):
+        """Phase C: worktree isolation is now implemented."""
         iso, warns, err = _resolve_isolation(
             requested_isolation="worktree", profile_isolation=None, permission_mode=None,
         )
-        assert err is not None
-        assert "not implemented" in err
+        assert iso == "worktree"
+        assert err is None
 
     def test_read_only_permission_auto_readonly(self):
         """permission_mode='read_only' auto-enables readonly isolation."""

@@ -2705,6 +2705,42 @@ class GatewayRunner:
         except Exception:
             pass
 
+
+    def _openviking_fallback_commit(self, session_id: str) -> None:
+        """Directly commit an OpenViking session when no cached agent exists.
+
+        When the idle-expiry watcher fires but the AIAgent has already been
+        evicted from the cache, the normal cleanup path
+        (shutdown_memory_provider -> on_session_end) cannot run.  If
+        OpenViking is configured and turns were synced during the session,
+        this fallback ensures the session is committed so memory extraction
+        still happens.  See #19831.
+        """
+        import os as _os
+        endpoint = _os.environ.get('OPENVIKING_ENDPOINT', '')
+        if not endpoint:
+            return
+        try:
+            from plugins.memory.openviking import _VikingClient
+            api_key = _os.environ.get('OPENVIKING_API_KEY', '')
+            account = _os.environ.get('OPENVIKING_ACCOUNT', 'default')
+            user = _os.environ.get('OPENVIKING_USER', 'default')
+            agent = _os.environ.get('OPENVIKING_AGENT', 'hermes')
+            client = _VikingClient(
+                endpoint, api_key,
+                account=account, user=user, agent=agent,
+            )
+            client.post(f'/api/v1/sessions/{session_id}/commit')
+            logger.info(
+                'OpenViking fallback commit succeeded for session %s',
+                session_id,
+            )
+        except Exception as e:
+            logger.debug(
+                'OpenViking fallback commit failed for session %s: %s',
+                session_id, e,
+            )
+
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
@@ -3441,6 +3477,13 @@ class GatewayRunner:
                             _cached_agent = self._running_agents.get(key)
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
                             self._cleanup_agent_resources(_cached_agent)
+                        elif not _cached_agent or _cached_agent is _AGENT_PENDING_SENTINEL:
+                            # No cached agent — the AIAgent was already evicted
+                            # or never created.  If OpenViking is configured and
+                            # turns may have been synced, perform a direct
+                            # fallback commit so memories are not silently lost
+                            # (#19831).
+                            self._openviking_fallback_commit(entry.session_id)
                         # Drop the cache entry so the AIAgent (and its LLM
                         # clients, tool schemas, memory provider refs) can
                         # be garbage-collected.  Otherwise the cache grows

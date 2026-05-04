@@ -243,3 +243,154 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
         f"on_session_finalize was not fired during idle expiry; "
         f"got session_ids={session_ids} (regression of #14981)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for OpenViking fallback commit on idle expiry (#19831)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_openviking_fallback_commit_on_no_agent(mock_invoke_hook, monkeypatch):
+    """When no cached agent exists at expiry time, _openviking_fallback_commit fires.
+
+    Regression test for #19831: OpenViking sessions left uncommitted when
+    the AIAgent is evicted before the idle-expiry watcher runs.
+    """
+    from datetime import datetime, timedelta
+
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:9999")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.adapters = {Platform.TELEGRAM: MagicMock()}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._running = True
+    runner._agent_cache = {}
+    runner._agent_cache_lock = __import__("threading").Lock()
+    runner._running_agents = {}
+
+    session_key = "agent:main:telegram:dm:99"
+    expired_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-orphan",
+        created_at=datetime.now() - timedelta(hours=2),
+        updated_at=datetime.now() - timedelta(hours=2),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    expired_entry.expiry_finalized = False
+
+    runner.session_store = MagicMock()
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {session_key: expired_entry}
+    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._lock = MagicMock()
+    runner.session_store._lock.__enter__ = MagicMock(return_value=None)
+    runner.session_store._lock.__exit__ = MagicMock(return_value=None)
+    runner.session_store._save = MagicMock()
+
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._sweep_idle_cached_agents = MagicMock(return_value=0)
+
+    fallback_calls = []
+    runner._openviking_fallback_commit = lambda sid: fallback_calls.append(sid)
+
+    _orig_sleep = __import__("asyncio").sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    def _hook_and_stop(*a, **kw):
+        runner._running = False
+        return None
+
+    mock_invoke_hook.side_effect = _hook_and_stop
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await runner._session_expiry_watcher(interval=0)
+
+    assert "sess-orphan" in fallback_calls, (
+        f"_openviking_fallback_commit was not called for orphaned session; "
+        f"got {fallback_calls} (regression of #19831)"
+    )
+    assert expired_entry.expiry_finalized is True
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_openviking_fallback_not_called_when_agent_cached(mock_invoke_hook, monkeypatch):
+    """When a cached agent exists, the normal cleanup path runs — no fallback."""
+    from datetime import datetime, timedelta
+
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:9999")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.adapters = {Platform.TELEGRAM: MagicMock()}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._running = True
+    runner._running_agents = {}
+
+    mock_agent = MagicMock()
+    session_key = "agent:main:telegram:dm:100"
+    runner._agent_cache = {session_key: (mock_agent, None)}
+    runner._agent_cache_lock = __import__("threading").Lock()
+
+    expired_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-cached",
+        created_at=datetime.now() - timedelta(hours=2),
+        updated_at=datetime.now() - timedelta(hours=2),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    expired_entry.expiry_finalized = False
+
+    runner.session_store = MagicMock()
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {session_key: expired_entry}
+    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._lock = MagicMock()
+    runner.session_store._lock.__enter__ = MagicMock(return_value=None)
+    runner.session_store._lock.__exit__ = MagicMock(return_value=None)
+    runner.session_store._save = MagicMock()
+
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._sweep_idle_cached_agents = MagicMock(return_value=0)
+
+    fallback_calls = []
+    runner._openviking_fallback_commit = lambda sid: fallback_calls.append(sid)
+
+    _orig_sleep = __import__("asyncio").sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    def _hook_and_stop(*a, **kw):
+        runner._running = False
+        return None
+
+    mock_invoke_hook.side_effect = _hook_and_stop
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await runner._session_expiry_watcher(interval=0)
+
+    assert fallback_calls == [], (
+        f"Fallback commit should not fire when agent is cached; got {fallback_calls}"
+    )
+    # Normal cleanup should have been called instead
+    runner._cleanup_agent_resources.assert_called_once()

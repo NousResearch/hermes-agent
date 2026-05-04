@@ -682,14 +682,21 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
                 conn, title="long job", assignee="worker",
                 max_runtime_seconds=1,  # one second cap
             )
-            # Spawn by hand: claim + set pid + set started_at to the past.
+            # Spawn by hand: claim + set pid + set active run start to the past.
             kb.claim_task(conn, tid)
             kb._set_worker_pid(conn, tid, os.getpid())   # any live pid works
-            # Backdate started_at so elapsed > limit.
+            # Backdate both the task-level first-start timestamp and the active
+            # run timestamp so elapsed > limit under the per-run runtime model.
+            old_started = int(time.time()) - 30
             with kb.write_txn(conn):
                 conn.execute(
                     "UPDATE tasks SET started_at = ? WHERE id = ?",
-                    (int(time.time()) - 30, tid),
+                    (old_started, tid),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? "
+                    "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                    (old_started, tid),
                 )
 
             timed_out = kb.enforce_max_runtime(conn, signal_fn=_signal_fn)
@@ -769,10 +776,16 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         )
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, os.getpid())
+        old_started = int(time.time()) - 30
         with kb.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
-                (int(time.time()) - 30, tid),
+                (old_started, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old_started, tid),
             )
         # Use enforce_max_runtime directly with our signal stub — dispatch_once
         # uses the default os.kill, but integration-wise calling

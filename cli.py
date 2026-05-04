@@ -310,6 +310,13 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            # Force one tool call per turn so the model emits a fresh
+            # <think> block before each tool. Useful for models like
+            # DSv4-Flash that contractually emit one <think> per turn
+            # but support multi-step reasoning chained across turns.
+            # Off by default — costs ~2× wall time even with prefix
+            # cache hits, only worth it for adaptive agent tasks.
+            "interleaved_thinking": False,
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -2175,6 +2182,11 @@ class HermesCLI:
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        # Force one tool call per turn so the model emits a fresh <think>
+        # block before each tool. See AIAgent.__init__ for full rationale.
+        self.interleaved_thinking = bool(
+            CLI_CONFIG["agent"].get("interleaved_thinking", False)
+        )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -3601,6 +3613,7 @@ class HermesCLI:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                interleaved_thinking=self.interleaved_thinking,
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
@@ -6472,6 +6485,8 @@ class HermesCLI:
             self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "interleaved":
+            self._handle_interleaved_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
@@ -6743,6 +6758,7 @@ class HermesCLI:
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
+                    interleaved_thinking=self.interleaved_thinking,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,
@@ -7528,6 +7544,57 @@ class HermesCLI:
 
         # Typed form preserved — delegate to the shared apply path.
         self._apply_reasoning_arg(parts[1])
+
+    def _handle_interleaved_command(self, cmd: str):
+        """Handle /interleaved — toggle one-tool-per-turn agent loop.
+
+        When enabled, Hermes truncates the assistant's tool_calls list to
+        just the FIRST call before execution. After the result returns,
+        the next API call gets a fresh `<think>` block. Trades ~2× wall
+        time for finer-grained reasoning between tools — only worth it
+        for adaptive agent tasks on models like DSv4-Flash that emit one
+        thinking block per turn but support reasoning chained across
+        turns.
+
+        Usage:
+            /interleaved              Show current state
+            /interleaved on           Enable (saves to config)
+            /interleaved off          Disable (saves to config)
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            state = "on" if self.interleaved_thinking else "off"
+            _cprint(f"  {_ACCENT}Interleaved thinking: {state}{_RST}")
+            _cprint(
+                f"  {_DIM}One tool call per turn so the model emits a fresh "
+                f"<think> block before each tool. ~2× wall time.{_RST}"
+            )
+            _cprint(f"  {_DIM}Usage: /interleaved [on|off]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg in ("on", "true", "enable", "enabled", "yes", "1"):
+            new_value = True
+        elif arg in ("off", "false", "disable", "disabled", "no", "0"):
+            new_value = False
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /interleaved [on|off]{_RST}")
+            return
+
+        self.interleaved_thinking = new_value
+        if self.agent is not None:
+            self.agent.interleaved_thinking = new_value
+        if save_config_value("agent.interleaved_thinking", new_value):
+            _cprint(
+                f"  {_ACCENT}✓ Interleaved thinking: "
+                f"{'ON' if new_value else 'OFF'} (saved){_RST}"
+            )
+        else:
+            _cprint(
+                f"  {_ACCENT}✓ Interleaved thinking: "
+                f"{'ON' if new_value else 'OFF'} (session only){_RST}"
+            )
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.

@@ -935,6 +935,11 @@ class AIAgent:
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
+        # Force one tool call per turn so the model emits a fresh
+        # <think> block before each tool. Useful for models that
+        # contractually emit one <think> per turn but support
+        # multi-step reasoning chained across turns (DSv4-Flash, etc).
+        interleaved_thinking: bool = False,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
@@ -1219,6 +1224,7 @@ class AIAgent:
                 pass
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
+        self.interleaved_thinking = bool(interleaved_thinking)
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
@@ -9295,8 +9301,33 @@ class AIAgent:
         Dispatches to concurrent execution only for batches that look
         independent: read-only tools may always share the parallel path, while
         file reads/writes may do so only when their target paths do not overlap.
+
+        When ``self.interleaved_thinking`` is True, truncates the tool_calls
+        list to just the FIRST call before execution. This forces the agent
+        loop to make a fresh model call after each tool result, which gives
+        the model a fresh `<think>` block per tool. The remaining
+        previously-planned tool calls are dropped — the model re-decides
+        them next turn based on the actual result.
+
+        Only worth enabling for models like DSv4-Flash that emit one
+        `<think>` per turn but are designed for multi-step reasoning
+        chained across turns. Costs ~2× wall time per agent task.
         """
         tool_calls = assistant_message.tool_calls
+
+        if self.interleaved_thinking and isinstance(tool_calls, list) and len(tool_calls) > 1:
+            _dropped = len(tool_calls) - 1
+            assistant_message.tool_calls = tool_calls[:1]
+            try:
+                logger.debug(
+                    "interleaved_thinking: executing first tool_call only "
+                    "(%d call%s deferred to next turn)",
+                    _dropped,
+                    "" if _dropped == 1 else "s",
+                )
+            except Exception:
+                pass
+            tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True

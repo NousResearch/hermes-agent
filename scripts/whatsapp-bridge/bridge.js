@@ -23,6 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
+import { formatContactCard } from './contact-card.js';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
@@ -316,6 +317,12 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download document:', err.message);
         }
+      } else if (messageContent.contactMessage) {
+        body = formatContactCard(messageContent.contactMessage);
+        mediaType = 'contact';
+      } else if (messageContent.contactsArrayMessage) {
+        body = formatContactCard(messageContent.contactsArrayMessage);
+        mediaType = 'contact';
       }
 
       // For media without caption, use a placeholder so the API message is never empty

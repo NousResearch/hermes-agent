@@ -5189,19 +5189,26 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
-    try:
-        from hermes_cli.plugins import (
-            get_plugin_command_handler,
-            resolve_plugin_command_result,
-        )
+    plugin_handler = None
+    resolve_plugin_command_result = None
+    if _cmd_base:
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_handler,
+                resolve_plugin_command_result,
+            )
 
-        if _cmd_base:
             plugin_handler = get_plugin_command_handler(_cmd_base)
-            if plugin_handler:
-                result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
-                return _ok(rid, {"output": str(result or "(no output)")})
-    except Exception as e:
-        return _err(rid, 4018, f"plugin command error: {e}")
+        except Exception:
+            plugin_handler = None
+            resolve_plugin_command_result = None
+
+    if plugin_handler and resolve_plugin_command_result:
+        try:
+            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            return _ok(rid, {"output": str(result or "(no output)")})
+        except Exception as e:
+            return _ok(rid, {"output": f"Plugin command error: {e}"})
 
     worker = session.get("slash_worker")
     if not worker:

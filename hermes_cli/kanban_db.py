@@ -2712,16 +2712,23 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT id, worker_pid, started_at, max_runtime_seconds, claim_lock "
-        "FROM tasks "
-        "WHERE status = 'running' AND max_runtime_seconds IS NOT NULL "
-        "  AND started_at IS NOT NULL AND worker_pid IS NOT NULL"
+        "SELECT t.id, t.worker_pid, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       t.max_runtime_seconds, t.claim_lock "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
+        "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
-        elapsed = now - int(row["started_at"])
+        # Runtime is per attempt, not lifetime-of-task. ``tasks.started_at``
+        # intentionally records the first time a task ever started, so retries
+        # must be measured from the active task_runs row when present.
+        elapsed = now - int(row["active_started_at"])
         if elapsed < int(row["max_runtime_seconds"]):
             continue
 

@@ -1114,6 +1114,73 @@ def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 
+def test_named_custom_provider_gpt5_auto_upgrades_to_responses(monkeypatch):
+    """Named custom GPT-5 models should infer codex_responses when api_mode is omitted."""
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "Aixj.vip",
+            "base_url": "https://aixj.vip/v1",
+            "api_key": "***",
+            "model": "gpt-5.4",
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:aixj.vip")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["model"] == "gpt-5.4"
+
+
+def test_named_custom_provider_pool_gpt5_auto_upgrades_to_responses(monkeypatch):
+    """Pool-backed named custom GPT-5 providers should also infer codex_responses."""
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "Aixj.vip",
+            "base_url": "https://aixj.vip/v1",
+            "api_key": "***",
+            "model": "gpt-5.4",
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda base_url, provider_label, api_mode_override=None: {
+            "provider": provider_label,
+            "api_mode": api_mode_override or "chat_completions",
+            "base_url": base_url,
+            "api_key": "pool-key",
+            "source": "pool:custom:aixj.vip",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:aixj.vip")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["api_key"] == "pool-key"
+    assert resolved["model"] == "gpt-5.4"
+
+
+def test_named_custom_provider_explicit_chat_completions_is_preserved(monkeypatch):
+    """Explicit api_mode should continue to win over GPT-5 model inference."""
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "Aixj.vip",
+            "base_url": "https://aixj.vip/v1",
+            "api_key": "***",
+            "api_mode": "chat_completions",
+            "model": "gpt-5.4",
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:aixj.vip")
+
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_anthropic_messages_in_valid_api_modes():
     """anthropic_messages should be accepted by _parse_api_mode."""
     assert rp._parse_api_mode("anthropic_messages") == "anthropic_messages"

@@ -86,6 +86,28 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _model_requires_responses_api(model: str) -> bool:
+    """Return True for models that require the Responses API path.
+
+    Mirrors the generic GPT-5 detection used by the main agent runtime for
+    OpenAI-compatible providers. Provider-specific exceptions should continue
+    to use explicit ``api_mode`` overrides.
+    """
+    normalized = (model or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized.startswith("gpt-5")
+
+
+def _maybe_upgrade_api_mode_for_model(api_mode: Optional[str], model: str) -> Optional[str]:
+    """Fill in api_mode from model requirements when no explicit mode is set."""
+    if api_mode is not None:
+        return api_mode
+    if _model_requires_responses_api(model):
+        return "codex_responses"
+    return None
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -520,8 +542,13 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
+    resolved_api_mode = _maybe_upgrade_api_mode_for_model(
+        custom_provider.get("api_mode") or _detect_api_mode_for_url(base_url),
+        str(custom_provider.get("model", "") or ""),
+    )
+
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+    pool_result = _try_resolve_from_custom_pool(base_url, "custom", resolved_api_mode)
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -541,9 +568,7 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": resolved_api_mode or "chat_completions",
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",

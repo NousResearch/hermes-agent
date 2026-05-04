@@ -143,7 +143,26 @@ def _read_hub_installed_names() -> Set[str]:
         if isinstance(data, dict):
             installed = data.get("installed") or {}
             if isinstance(installed, dict):
-                return {str(k) for k in installed.keys()}
+                names = {str(k) for k in installed.keys()}
+                skills_dir = _skills_dir()
+                for entry in installed.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    install_path = entry.get("install_path")
+                    if not isinstance(install_path, str) or not install_path.strip():
+                        continue
+                    skill_dir = Path(install_path)
+                    if not skill_dir.is_absolute():
+                        skill_dir = skills_dir / skill_dir
+                    try:
+                        resolved = skill_dir.resolve()
+                        resolved.relative_to(skills_dir.resolve())
+                    except (OSError, ValueError):
+                        continue
+                    skill_md = resolved / "SKILL.md"
+                    if skill_md.exists():
+                        names.add(_read_skill_name(skill_md, fallback=resolved.name))
+                return names
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
     return set()

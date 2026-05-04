@@ -225,6 +225,47 @@ def test_agent_created_excludes_hub_installed(skills_home):
     assert "hub-skill" not in names
 
 
+def test_agent_created_excludes_hub_installed_frontmatter_name(skills_home):
+    from tools.skill_usage import is_agent_created, list_agent_created_skill_names
+
+    skills_dir = skills_home / "skills"
+    hub_skill = skills_dir / "productivity" / "getnote"
+    hub_skill.mkdir(parents=True)
+    (hub_skill / "SKILL.md").write_text(
+        """---
+name: Get笔记
+description: test skill
+---
+
+# body
+""",
+        encoding="utf-8",
+    )
+    _write_skill(skills_dir, "my-skill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installed": {
+                    "getnote": {
+                        "source": "taps/main",
+                        "install_path": "productivity/getnote",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    names = list_agent_created_skill_names()
+    assert "my-skill" in names
+    assert "Get笔记" not in names
+    assert is_agent_created("Get笔记") is False
+    assert is_agent_created("getnote") is False
+
+
 def test_is_agent_created(skills_home):
     from tools.skill_usage import is_agent_created
     skills_dir = skills_home / "skills"

@@ -9,6 +9,11 @@ description: "Extend Hermes with custom tools, hooks, and integrations via the p
 
 Hermes has a plugin system for adding custom tools, hooks, and integrations without modifying core code.
 
+If you want to create a custom tool for yourself, your team, or one project,
+this is usually the right path. The developer guide's
+[Adding Tools](/docs/developer-guide/adding-tools) page is for built-in Hermes
+core tools that live in `tools/` and `toolsets.py`.
+
 **→ [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin)** — step-by-step guide with a complete working example.
 
 ## Quick overview
@@ -42,6 +47,8 @@ description: A minimal example plugin
 ```python
 """Minimal Hermes plugin — registers a tool and a hook."""
 
+import json
+
 
 def register(ctx):
     # --- Tool: hello_world ---
@@ -60,11 +67,18 @@ def register(ctx):
         },
     }
 
-    def handle_hello(params):
+    def handle_hello(params, **kwargs):
+        del kwargs
         name = params.get("name", "World")
-        return f"Hello, {name}! 👋  (from the hello-world plugin)"
+        return json.dumps({"success": True, "greeting": f"Hello, {name}!"})
 
-    ctx.register_tool("hello_world", schema, handle_hello)
+    ctx.register_tool(
+        name="hello_world",
+        toolset="hello_world",
+        schema=schema,
+        handler=handle_hello,
+        description="Return a friendly greeting for the given name.",
+    )
 
     # --- Hook: log every tool call ---
     def on_tool_call(tool_name, params, result):
@@ -81,7 +95,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 
 | Capability | How |
 |-----------|-----|
-| Add tools | `ctx.register_tool(name, schema, handler)` |
+| Add tools | `ctx.register_tool(name=..., toolset=..., schema=..., handler=...)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |

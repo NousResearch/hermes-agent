@@ -1356,3 +1356,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
+
+    # Generic plugin platform home channel support:
+    # For any platform (built-in or plugin), check if {PLATFORM}_HOME_CHANNEL
+    # is set and apply it automatically. This handles plugin platforms that
+    # set HOME_CHANNEL in .env but weren't getting it applied.
+    for platform in config.platforms:
+        if config.platforms[platform].enabled:
+            prefix = platform.name.upper().replace("-", "_")
+            home_channel_env = os.getenv(f"{prefix}_HOME_CHANNEL")
+            if home_channel_env and not config.platforms[platform].home_channel:
+                config.platforms[platform].home_channel = HomeChannel(
+                    platform=platform,
+                    chat_id=home_channel_env,
+                    name=os.getenv(f"{prefix}_HOME_CHANNEL_NAME", "Home"),
+                )

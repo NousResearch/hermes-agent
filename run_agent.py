@@ -8287,9 +8287,10 @@ class AIAgent:
         if codex_message_items:
             msg["codex_message_items"] = codex_message_items
 
-        if assistant_message.tool_calls:
+        tool_calls_attr = getattr(assistant_message, "tool_calls", None)
+        if tool_calls_attr and hasattr(tool_calls_attr, "__iter__") and not isinstance(tool_calls_attr, (str, dict)):
             tool_calls = []
-            for tool_call in assistant_message.tool_calls:
+            for tool_call in tool_calls_attr:
                 raw_id = getattr(tool_call, "id", None)
                 call_id = getattr(tool_call, "call_id", None)
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -8762,7 +8763,7 @@ class AIAgent:
         independent: read-only tools may always share the parallel path, while
         file reads/writes may do so only when their target paths do not overlap.
         """
-        tool_calls = assistant_message.tool_calls
+        tool_calls = getattr(assistant_message, "tool_calls", None) or []
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True

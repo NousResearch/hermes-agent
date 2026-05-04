@@ -388,6 +388,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "model": entry.get("model"),
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -1119,6 +1120,10 @@ class GatewayRunner:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # If fallback provider included an explicit model, apply it
+        runtime_model = runtime_kwargs.pop("model", None)
+        if runtime_model:
+            model = runtime_model
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
@@ -4418,8 +4423,11 @@ class GatewayRunner:
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
+                # If fallback provider included an explicit model, use it
+                _msg_fallback_model = _msg_runtime.pop("model", None)
+                _msg_effective_model = _msg_fallback_model or self._model
                 _msg_ctx_len = get_model_context_length(
-                    self._model,
+                    _msg_effective_model,
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                 )

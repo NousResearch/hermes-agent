@@ -909,7 +909,41 @@ def _build_child_agent(
 
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        # Expand composite toolsets (like hermes-cli) into their constituent tools
+        # so that intersection works correctly at the tool level, not toolset-name level.
+        import model_tools
+
+        # Get all tools available to parent via their toolsets
+        parent_tool_names = set()
+        for ts_name in parent_toolsets:
+            ts = TOOLSETS.get(ts_name)
+            if ts:
+                # Add tools defined directly in this toolset
+                parent_tool_names.update(ts.get("tools", []))
+                # Add tools from included toolsets
+                for included_ts in ts.get("includes", []):
+                    inc_ts = TOOLSETS.get(included_ts)
+                    if inc_ts:
+                        parent_tool_names.update(inc_ts.get("tools", []))
+
+        # For each requested toolset, check if parent has access to its tools
+        child_toolsets = []
+        for ts_name in toolsets:
+            if ts_name in parent_toolsets:
+                # Direct match (e.g., parent has "terminal", child asks for "terminal")
+                child_toolsets.append(ts_name)
+            else:
+                # Check if this toolset's tools are available in parent
+                ts = TOOLSETS.get(ts_name)
+                if ts:
+                    ts_tools = set(ts.get("tools", []))
+                    for included_ts in ts.get("includes", []):
+                        inc_ts = TOOLSETS.get(included_ts)
+                        if inc_ts:
+                            ts_tools.update(inc_ts.get("tools", []))
+                    # If parent's tools include all tools from this toolset, add it
+                    if ts_tools and ts_tools.issubset(parent_tool_names):
+                        child_toolsets.append(ts_name)
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets

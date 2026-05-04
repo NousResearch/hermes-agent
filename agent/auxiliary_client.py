@@ -2384,10 +2384,43 @@ def get_text_auxiliary_client(
     Args:
         task: Optional task name ("compression", "web_extract") to check
               for a task-specific provider override.
+        main_runtime: Optional live runtime dict with provider/model/base_url/
+              api_key/api_mode. When provided, this takes priority over config
+              file values for consistent runtime behavior with main loop.
 
     Callers may override the returned model via config.yaml
     (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
+    # When main_runtime is provided, use it directly to ensure aux tasks
+    # respect runtime mutations (model switch, provider override, etc.)
+    # consistent with the main conversation loop.
+    if main_runtime and any(main_runtime.get(k) for k in ("provider", "model", "base_url", "api_key")):
+        runtime = _normalize_main_runtime(main_runtime)
+        runtime_provider = runtime.get("provider", "")
+        runtime_model = runtime.get("model", "")
+        runtime_base_url = runtime.get("base_url", "")
+        runtime_api_key = runtime.get("api_key", "")
+        runtime_api_mode = runtime.get("api_mode", "")
+
+        # Handle custom provider case with explicit base_url
+        if runtime_base_url and (runtime_provider == "custom" or runtime_provider.startswith("custom:")):
+            return resolve_provider_client(
+                "custom",
+                model=runtime_model,
+                explicit_base_url=runtime_base_url,
+                explicit_api_key=runtime_api_key,
+                api_mode=runtime_api_mode or None,
+            )
+
+        # Use main provider directly for aux tasks
+        if runtime_provider and runtime_provider not in ("auto", ""):
+            return resolve_provider_client(
+                runtime_provider,
+                model=runtime_model,
+                api_mode=runtime_api_mode or None,
+            )
+
+    # Fallback to config-based resolution (legacy path for gateway/cron)
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
         provider,
@@ -2405,7 +2438,42 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     For standard providers returns (AsyncOpenAI, model). For Codex returns
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
+
+    When main_runtime is provided, this takes priority over config file values
+    for consistent runtime behavior with main loop.
     """
+    # When main_runtime is provided, use it directly to ensure aux tasks
+    # respect runtime mutations (model switch, provider override, etc.)
+    # consistent with the main conversation loop.
+    if main_runtime and any(main_runtime.get(k) for k in ("provider", "model", "base_url", "api_key")):
+        runtime = _normalize_main_runtime(main_runtime)
+        runtime_provider = runtime.get("provider", "")
+        runtime_model = runtime.get("model", "")
+        runtime_base_url = runtime.get("base_url", "")
+        runtime_api_key = runtime.get("api_key", "")
+        runtime_api_mode = runtime.get("api_mode", "")
+
+        # Handle custom provider case with explicit base_url
+        if runtime_base_url and (runtime_provider == "custom" or runtime_provider.startswith("custom:")):
+            return resolve_provider_client(
+                "custom",
+                model=runtime_model,
+                async_mode=True,
+                explicit_base_url=runtime_base_url,
+                explicit_api_key=runtime_api_key,
+                api_mode=runtime_api_mode or None,
+            )
+
+        # Use main provider directly for aux tasks
+        if runtime_provider and runtime_provider not in ("auto", ""):
+            return resolve_provider_client(
+                runtime_provider,
+                model=runtime_model,
+                async_mode=True,
+                api_mode=runtime_api_mode or None,
+            )
+
+    # Fallback to config-based resolution (legacy path for gateway/cron)
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
         provider,
@@ -2481,6 +2549,7 @@ def resolve_vision_provider_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     *,
+    main_runtime: Optional[Dict[str, Any]] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
@@ -2491,7 +2560,29 @@ def resolve_vision_provider_client(
     provider overrides still use the generic provider router for non-standard
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
+
+    When main_runtime is provided, this takes priority over config file values
+    for consistent runtime behavior with main loop.
     """
+    # When main_runtime is provided, use it directly to ensure vision tasks
+    # respect runtime mutations (model switch, provider override, etc.)
+    # consistent with the main conversation loop.
+    if main_runtime and any(main_runtime.get(k) for k in ("provider", "model", "base_url", "api_key")):
+        runtime = _normalize_main_runtime(main_runtime)
+        runtime_provider = runtime.get("provider", "")
+        runtime_model = runtime.get("model", "")
+
+        if runtime_provider and runtime_provider not in ("auto", ""):
+            # Use main provider for vision
+            client, resolved = resolve_provider_client(
+                runtime_provider,
+                model=runtime_model,
+                is_vision=True,
+                async_mode=async_mode,
+            )
+            if client is not None:
+                return runtime_provider, client, resolved or runtime_model
+
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )

@@ -2031,9 +2031,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
             )
+            # Handle exceptions with empty message (e.g., ClosedResourceError)
+            exc_str = str(exc).strip() if str(exc) else repr(exc)
             return json.dumps({
                 "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+                    f"MCP call failed: {type(exc).__name__}: {exc_str}"
                 )
             }, ensure_ascii=False)
 
@@ -2090,7 +2092,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             )
             return json.dumps({
                 "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+                    f"MCP call failed: {type(exc).__name__}: {(str(exc).strip() if str(exc) else repr(exc))}"
                 )
             }, ensure_ascii=False)
 
@@ -2149,7 +2151,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             )
             return json.dumps({
                 "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+                    f"MCP call failed: {type(exc).__name__}: {(str(exc).strip() if str(exc) else repr(exc))}"
                 )
             }, ensure_ascii=False)
 
@@ -2211,7 +2213,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             )
             return json.dumps({
                 "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+                    f"MCP call failed: {type(exc).__name__}: {(str(exc).strip() if str(exc) else repr(exc))}"
                 )
             }, ensure_ascii=False)
 
@@ -2281,7 +2283,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             )
             return json.dumps({
                 "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+                    f"MCP call failed: {type(exc).__name__}: {(str(exc).strip() if str(exc) else repr(exc))}"
                 )
             }, ensure_ascii=False)
 

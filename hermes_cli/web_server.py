@@ -3269,9 +3269,15 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
-        return
+    # P-003: upstream v0.12.0+ also gates this on _DASHBOARD_EMBEDDED_CHAT_ENABLED,
+    # which only flips on with `hermes dashboard --tui` / HERMES_DASHBOARD_TUI=1.
+    # That makes sense for the embedded Chat tab + /api/pty PTY bridge, but the
+    # gateway RPC channel is also what external dashboard clients (e.g. our v2
+    # web UI at :9545) use for model.options / prompt.submit / approval.respond.
+    # Locking it behind --tui means every dashboard restart breaks v2 unless
+    # users remember the flag. Keep the loopback + token guards below — those
+    # are the actual security boundary — and drop the embedded-chat gate.
+    # See v2/UPSTREAM_PATCHES.md.
 
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):

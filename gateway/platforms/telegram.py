@@ -646,6 +646,135 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
 
+    def _question_sessions_enabled(self) -> bool:
+        """Return whether Telegram question-session topic spawning is enabled."""
+        cfg = self.config.extra.get("question_sessions", {})
+        return bool(cfg.get("enabled")) if isinstance(cfg, dict) else False
+
+    def _parse_question_session_payload(self, text: str) -> tuple[str, str] | None:
+        """Parse ``/qopen <title>`` into a topic title and first prompt body.
+
+        The first non-empty line after the command is the visible session title.
+        Remaining lines become the first user prompt in the newly-created topic.
+        If no body is supplied, use the title as the first prompt so the new
+        session still has useful content to answer.
+        """
+        raw = text or ""
+        match = re.match(r"^/qopen(?:@\w+)?(?:\s+(.*))?$", raw, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        payload = (match.group(1) or "").strip()
+        if not payload:
+            return None
+        lines = payload.splitlines()
+        title = ""
+        body_start = 0
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped:
+                title = stripped
+                body_start = idx + 1
+                break
+        if not title:
+            return None
+        body = "\n".join(lines[body_start:]).strip()
+        return title, body or title
+
+    def _question_session_topic_name(self, title: str) -> str:
+        """Return a Telegram-safe visible topic name for a question session."""
+        compact = re.sub(r"\s+", " ", (title or "").strip()) or "Untitled question"
+        return _prefix_within_utf16_limit(f"Q · {compact}", 128)
+
+    async def _handle_question_session_command(self, update: Update) -> bool:
+        """Create a new Telegram forum topic and dispatch the prompt there.
+
+        This is the Telegram-native MVP for session-like one-off questions.  It
+        intentionally uses ``/qopen`` rather than ``/q`` because ``/q`` is already
+        the global alias for ``/queue`` in Hermes.
+        """
+        message = getattr(update, "message", None)
+        if not message or not getattr(message, "text", None):
+            return False
+        if not re.match(r"^/qopen(?:@\w+)?(?:\s|$)", message.text or "", flags=re.IGNORECASE):
+            return False
+        if not self._question_sessions_enabled():
+            return False
+
+        parsed = self._parse_question_session_payload(message.text)
+        if parsed is None:
+            if self._bot:
+                await self._bot.send_message(
+                    chat_id=message.chat.id,
+                    text="Usage: /qopen <title>\n\n<first prompt>",
+                    reply_to_message_id=getattr(message, "message_id", None),
+                    **self._link_preview_kwargs(),
+                )
+            return True
+
+        title, body = parsed
+        topic_name = self._question_session_topic_name(title)
+        if not self._bot:
+            return True
+
+        try:
+            topic = await self._bot.create_forum_topic(
+                chat_id=message.chat.id,
+                name=topic_name,
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to create question session topic '%s': %s", self.name, topic_name, exc)
+            await self._bot.send_message(
+                chat_id=message.chat.id,
+                text=(
+                    "Could not create a new question topic. Make sure this chat "
+                    "has forum topics enabled and the bot can manage topics."
+                ),
+                reply_to_message_id=getattr(message, "message_id", None),
+                **self._link_preview_kwargs(),
+            )
+            return True
+
+        thread_id = getattr(topic, "message_thread_id", None)
+        if thread_id is None:
+            await self._bot.send_message(
+                chat_id=message.chat.id,
+                text="Created the topic, but Telegram did not return a message_thread_id.",
+                reply_to_message_id=getattr(message, "message_id", None),
+                **self._link_preview_kwargs(),
+            )
+            return True
+
+        seed_text = f"New question session: {title}\n\n{body}"
+        seed_message = await self._bot.send_message(
+            chat_id=message.chat.id,
+            message_thread_id=int(thread_id),
+            text=seed_text,
+            **self._link_preview_kwargs(),
+        )
+
+        chat = message.chat
+        user = getattr(message, "from_user", None)
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=getattr(chat, "title", None) or (getattr(chat, "full_name", None) if hasattr(chat, "full_name") else None),
+            chat_type="group" if getattr(chat, "type", None) in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup") else "dm",
+            user_id=str(user.id) if user else None,
+            user_name=getattr(user, "full_name", None) if user else None,
+            thread_id=str(thread_id),
+            chat_topic=topic_name,
+        )
+        event = MessageEvent(
+            text=body,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=seed_message,
+            message_id=str(getattr(seed_message, "message_id", getattr(message, "message_id", ""))),
+            platform_update_id=getattr(update, "update_id", None),
+            timestamp=getattr(message, "date", None),
+        )
+        await self.handle_message(event)
+        return True
+
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
 
@@ -3767,6 +3896,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
         if not self._should_process_message(update.message, is_command=True):
+            return
+        if await self._handle_question_session_command(update):
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)

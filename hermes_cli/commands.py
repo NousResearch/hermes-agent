@@ -100,6 +100,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
+    CommandDef("qopen", "Open a fresh Telegram question session topic", "Session",
+               gateway_only=True, args_hint="<title> [first prompt]"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",

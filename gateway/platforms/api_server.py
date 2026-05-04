@@ -932,6 +932,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
+        #
+        # If the requested session has been compressed, SessionDB records the
+        # active continuation as a child session.  Clients can keep sending the
+        # original stable ID; internally we read/write against the compression
+        # tip so new messages do not land back in an ended parent session.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
             if not self._api_key:
@@ -954,10 +959,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             session_id = provided_session_id
+            response_session_id = provided_session_id
             try:
                 db = self._ensure_session_db()
                 if db is not None:
-                    history = db.get_messages_as_conversation(session_id)
+                    effective_session_id = provided_session_id
+                    get_compression_tip = getattr(db, "get_compression_tip", None)
+                    if callable(get_compression_tip):
+                        candidate = get_compression_tip(provided_session_id)
+                        if isinstance(candidate, str) and candidate.strip():
+                            effective_session_id = candidate
+                    if effective_session_id != provided_session_id:
+                        logger.info(
+                            "session compression tip resolved: %s -> %s",
+                            provided_session_id, effective_session_id,
+                        )
+                    history = db.get_messages_as_conversation(effective_session_id)
+                    session_id = effective_session_id
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
@@ -972,6 +990,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     first_user = cm.get("content", "")
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
+            response_session_id = session_id
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -1063,7 +1082,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
-                agent_task, agent_ref, session_id=session_id,
+                agent_task, agent_ref, session_id=response_session_id,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -1122,7 +1141,7 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        return web.json_response(response_data, headers={"X-Hermes-Session-Id": response_session_id})
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,

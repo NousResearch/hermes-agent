@@ -2542,6 +2542,56 @@ class TestSessionIdHeader:
             assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
+    async def test_provided_session_id_uses_compression_tip_for_history_and_writes(self, auth_adapter):
+        """Stable client ids resolve to the active compressed session tip."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        db_history = [
+            {"role": "user", "content": "compressed summary"},
+            {"role": "assistant", "content": "compressed reply"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_compression_tip.return_value = "tip-session"
+        mock_db.get_messages_as_conversation.return_value = db_history
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "root-session", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "new question"}]},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Session-Id") == "root-session"
+            mock_db.get_compression_tip.assert_called_once_with("root-session")
+            mock_db.get_messages_as_conversation.assert_called_once_with("tip-session")
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == "tip-session"
+            assert call_kwargs["conversation_history"] == db_history
+            assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_requires_api_key_configuration(self, adapter):
+        """Session continuation is rejected on unauthenticated API-server deployments."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "some-session"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+
+            assert resp.status == 403
+            assert not mock_run.called
+            body = await resp.json()
+            assert body["error"]["type"] == "invalid_request_error"
+            assert "requires API key authentication" in body["error"]["message"]
+
+    @pytest.mark.asyncio
     async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}

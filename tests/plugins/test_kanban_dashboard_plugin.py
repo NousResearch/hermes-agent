@@ -253,6 +253,33 @@ def test_patch_invalid_status(client):
     assert r.status_code == 400
 
 
+def test_patch_status_running_rejected(client):
+    """Dashboard PATCH cannot transition a task directly to 'running'.
+
+    The only legitimate path into 'running' is through the dispatcher's
+    ``claim_task`` — which atomically creates a ``task_runs`` row,
+    claim_lock, expiry, and worker-PID metadata. Allowing a direct set
+    creates orphaned 'running' tasks with no run row or claim, which
+    violate the board's run-history invariants. See issue #19535.
+    """
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "running"},
+    )
+    assert r.status_code == 400
+    assert "running" in r.json()["detail"]
+    # Task's status should still be its pre-request value — the direct-set
+    # was rejected before any mutation.
+    board = client.get("/api/plugins/kanban/board").json()
+    statuses = {
+        tt["id"]: col["name"]
+        for col in board["columns"]
+        for tt in col["tasks"]
+    }
+    assert statuses.get(t["id"]) != "running"
+
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------

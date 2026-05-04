@@ -1830,11 +1830,28 @@ class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""
 
-    def _write_plugin(self, tmp_path, name, manifest):
+    def _write_plugin_config(self, tmp_path, *, enabled=None, disabled=None):
+        import yaml
+
+        cfg = {"plugins": {}}
+        if enabled is not None:
+            cfg["plugins"]["enabled"] = list(enabled)
+        if disabled is not None:
+            cfg["plugins"]["disabled"] = list(disabled)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    def _write_plugin(self, tmp_path, name, manifest, *, enabled=True, disabled=False):
         import json
         plug_dir = tmp_path / "plugins" / name / "dashboard"
         plug_dir.mkdir(parents=True)
         (plug_dir / "manifest.json").write_text(json.dumps(manifest))
+        enabled_names = [name] if enabled else []
+        disabled_names = [name] if disabled else []
+        self._write_plugin_config(
+            tmp_path,
+            enabled=enabled_names,
+            disabled=disabled_names,
+        )
         return plug_dir
 
     def test_override_and_hidden_carried_through(self, tmp_path, monkeypatch):
@@ -1938,6 +1955,48 @@ class TestDashboardPluginManifestExtensions:
             "cron:bottom",
             "chat:top",
         ]
+
+    def test_user_dashboard_plugin_requires_plugins_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "inactive-dashboard", {
+            "name": "inactive-dashboard",
+            "label": "Inactive",
+            "tab": {"path": "/inactive"},
+            "entry": "dist/index.js",
+        }, enabled=False)
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+
+        assert "inactive-dashboard" not in {p["name"] for p in plugins}
+
+    def test_disabled_dashboard_plugin_api_is_not_imported(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker = tmp_path / "api-imported.txt"
+        plug_dir = self._write_plugin(tmp_path, "disabled-dashboard-api", {
+            "name": "disabled-dashboard-api",
+            "label": "Disabled API",
+            "tab": {"path": "/disabled-api"},
+            "entry": "dist/index.js",
+            "api": "plugin_api.py",
+        }, enabled=True, disabled=True)
+        (plug_dir / "plugin_api.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed')\n"
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n",
+            encoding="utf-8",
+        )
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        assert "disabled-dashboard-api" not in {p["name"] for p in plugins}
+
+        web_server._mount_plugin_api_routes()
+
+        assert not marker.exists()
 
 
 # ---------------------------------------------------------------------------

@@ -3555,6 +3555,74 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+def _dashboard_plugin_config_sets() -> Tuple[Optional[set[str]], set[str]]:
+    """Return dashboard plugin allow/deny lists from config.yaml."""
+    try:
+        config = load_config()
+    except Exception:
+        return None, set()
+
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return None, set()
+
+    raw_enabled = plugins_cfg.get("enabled")
+    enabled = (
+        {str(item) for item in raw_enabled if isinstance(item, str)}
+        if isinstance(raw_enabled, list)
+        else None
+    )
+
+    raw_disabled = plugins_cfg.get("disabled")
+    disabled = (
+        {str(item) for item in raw_disabled if isinstance(item, str)}
+        if isinstance(raw_disabled, list)
+        else set()
+    )
+    return enabled, disabled
+
+
+def _dashboard_plugin_yaml_names(plugin_dir: Path) -> set[str]:
+    """Read names from plugin.yaml/yml without importing plugin code."""
+    names = set()
+    for manifest_name in ("plugin.yaml", "plugin.yml"):
+        manifest_file = plugin_dir / manifest_name
+        if not manifest_file.exists():
+            continue
+        try:
+            data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            _log.warning("Bad plugin manifest %s: %s", manifest_file, exc)
+            return names
+        if isinstance(data, dict):
+            raw_name = data.get("name")
+            if isinstance(raw_name, str) and raw_name.strip():
+                names.add(raw_name.strip())
+        return names
+    return names
+
+
+def _dashboard_plugin_lookup_keys(plugin_dir: Path, manifest_data: dict) -> set[str]:
+    """Names accepted by plugins.enabled/plugins.disabled for dashboard plugins."""
+    keys = {plugin_dir.name}
+    raw_name = manifest_data.get("name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        keys.add(raw_name.strip())
+    keys.update(_dashboard_plugin_yaml_names(plugin_dir))
+    return keys
+
+
+def _dashboard_plugin_is_enabled(
+    source: str,
+    lookup_keys: set[str],
+    enabled: Optional[set[str]],
+) -> bool:
+    """Dashboard discovery policy matching hermes_cli.plugins trust boundaries."""
+    if source == "bundled":
+        return True
+    return enabled is not None and bool(lookup_keys & enabled)
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -3565,6 +3633,7 @@ def _discover_dashboard_plugins() -> list:
     """
     plugins = []
     seen_names: set = set()
+    enabled_plugins, disabled_plugins = _dashboard_plugin_config_sets()
 
     from hermes_cli.plugins import get_bundled_plugins_dir
     bundled_root = get_bundled_plugins_dir()
@@ -3587,7 +3656,26 @@ def _discover_dashboard_plugins() -> list:
                 continue
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
-                name = data.get("name", child.name)
+                lookup_keys = _dashboard_plugin_lookup_keys(child, data)
+                if lookup_keys & disabled_plugins:
+                    _log.debug(
+                        "Skipping disabled dashboard plugin '%s'",
+                        child.name,
+                    )
+                    continue
+                if not _dashboard_plugin_is_enabled(source, lookup_keys, enabled_plugins):
+                    _log.debug(
+                        "Skipping dashboard plugin '%s' (not in plugins.enabled)",
+                        child.name,
+                    )
+                    continue
+
+                raw_name = data.get("name", child.name)
+                name = (
+                    raw_name.strip()
+                    if isinstance(raw_name, str) and raw_name.strip()
+                    else child.name
+                )
                 if name in seen_names:
                     continue
                 seen_names.add(name)

@@ -340,7 +340,7 @@ Refresh the dashboard after creating the file. Switch themes live from the heade
 
 ## Plugins
 
-A dashboard plugin is a directory with a `manifest.json`, a pre-built JS bundle, and optionally a CSS file and a Python file with FastAPI routes. Plugins live next to other Hermes plugins in `~/.hermes/plugins/<name>/` — the dashboard extension is a `dashboard/` subfolder inside that plugin directory, so one plugin can extend both the CLI/gateway and the dashboard from a single install.
+A dashboard plugin is a directory with a `manifest.json`, a pre-built JS bundle, and optionally a CSS file and a Python file with FastAPI routes. Plugins live next to other Hermes plugins in `~/.hermes/plugins/<name>/` — the dashboard extension is a `dashboard/` subfolder inside that plugin directory, so one plugin can extend both the CLI/gateway and the dashboard from a single install. User and project dashboard plugins are opt-in: the plugin name must be listed in `plugins.enabled`, and `plugins.disabled` always wins.
 
 Plugins don't bundle React or UI components. They use the **Plugin SDK** exposed on `window.__HERMES_PLUGIN_SDK__`. This keeps plugin bundles tiny (typically a few KB) and avoids version conflicts.
 
@@ -397,7 +397,13 @@ Write the JS bundle (a plain IIFE — no build step needed):
 })();
 ```
 
-Refresh the dashboard — your tab appears in the nav bar, after **Skills**.
+Enable it, then refresh the dashboard:
+
+```bash
+hermes plugins enable my-plugin
+```
+
+Your tab appears in the nav bar, after **Skills**.
 
 :::tip Skip React.createElement
 If you prefer JSX, use any bundler (esbuild, Vite, rollup) with React as an external and IIFE output. The only hard requirement is that the final file is a single JS file loadable via `<script>`. React is never bundled; it comes from `SDK.React`.
@@ -793,6 +799,8 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
 
 Discovery results are cached per dashboard process. After adding a new plugin, either:
+
+User and project plugins are only discovered after their directory name, `dashboard/manifest.json:name`, or `plugin.yaml:name` appears in `plugins.enabled`. Add the same name to `plugins.disabled` to prevent both the JavaScript bundle and any `dashboard/plugin_api.py` routes from loading.
 
 ```bash
 # Force a rescan without restart

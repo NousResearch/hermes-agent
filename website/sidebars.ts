@@ -168,6 +168,7 @@ const sidebars: SidebarsConfig = {
         'guides/use-voice-mode-with-hermes',
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
+        'guides/cron-script-only',
         'guides/automation-templates',
         'guides/cron-troubleshooting',
         'guides/work-with-skills',

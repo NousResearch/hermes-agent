@@ -41,7 +41,71 @@ Use no-agent mode for:
 
 Use a normal (LLM-driven) cron job when you need the agent to **decide** what to say — summarize a long document, pick interesting items from a feed, draft a human-friendly message. The no-agent path is for cases where the script's stdout already IS the message.
 
+## Create One from Chat
+
+The real win of no-agent mode is that the agent itself can set up the watchdog for you — no editor, no shell, no remembering CLI flags. You describe what you want, Hermes writes the script, schedules it, and tells you when it'll fire.
+
+### Example transcript
+
+> **You:** ping me on telegram if RAM is over 85% every 5 minutes
+>
+> **Hermes:** *(writes `~/.hermes/scripts/memory-watchdog.sh`, then calls `cronjob(...)` with `no_agent=true`)*
+>
+> Set up. Runs every 5 min, alerts Telegram only when RAM is over 85%. Script: `memory-watchdog.sh`. Job ID: `abc123`.
+
+Under the hood, the agent makes two tool calls:
+
+```python
+# 1. Write the check script
+write_file(
+    path="~/.hermes/scripts/memory-watchdog.sh",
+    content='''#!/usr/bin/env bash
+ram_pct=$(free | awk '/^Mem:/ {printf "%d", $3 * 100 / $2}')
+if [ "$ram_pct" -ge 85 ]; then
+  echo "RAM ${ram_pct}% on $(hostname)"
+fi
+# Empty stdout = silent tick; no message sent.
+''',
+)
+
+# 2. Schedule it — no_agent=True skips the LLM on every tick
+cronjob(
+    action="create",
+    schedule="every 5m",
+    script="memory-watchdog.sh",
+    no_agent=True,
+    deliver="telegram",
+    name="memory-watchdog",
+)
+```
+
+From that point on every tick is free: the scheduler runs the script, pipes its stdout to Telegram if non-empty, and never touches a model.
+
+### What the agent decides for you
+
+When you phrase a request like "alert me when X" or "every N minutes check Y and tell me if Z", Hermes' `cronjob` tool description tells it to reach for `no_agent=True` whenever the message content is fully determined by the script. It falls back to the normal LLM-driven path when the request needs reasoning (*"summarize the new issues"*, *"pick the most interesting headlines"*, *"draft a friendly reminder"*).
+
+You don't have to specify `--no-agent` yourself. Just describe the behavior.
+
+### Managing watchdogs from chat
+
+The agent can pause, resume, edit, and remove jobs the same way it creates them:
+
+> **You:** stop the memory watchdog for tonight
+>
+> **Hermes:** *(calls `cronjob(action='pause', job_id='abc123')`)*
+>
+> Paused. Resume with "turn it back on" or via `hermes cron resume abc123`.
+
+> **You:** change it to every 15 minutes
+>
+> **Hermes:** *(calls `cronjob(action='update', job_id='abc123', schedule='every 15m')`)*
+
+The full lifecycle (create / list / update / pause / resume / run-now / remove) is available to the agent without you learning any CLI commands.
+
 ## Create One from the CLI
+
+Prefer the shell? The CLI path gives you the same result with three commands:
 
 ```bash
 # 1. Write your script
@@ -70,18 +134,6 @@ hermes cron run <job_id>    # fire it once to test
 
 That's the whole thing. No prompt, no skill, no model.
 
-## Create One from Chat
-
-You can also ask the agent to set one up conversationally. The `cronjob` tool now accepts a `no_agent` parameter:
-
-> *"Ping me on Telegram if RAM is over 85%, every 5 minutes."*
-
-The agent will:
-
-1. Write the check script to `~/.hermes/scripts/` via `write_file`.
-2. Call `cronjob(action='create', schedule='every 5m', script='memory-watchdog.sh', no_agent=true, deliver='telegram')`.
-
-This is the same scheduler the agent already uses for LLM-driven jobs; `no_agent=true` just picks the script-only code path.
 
 ## How Script Output Maps to Delivery
 

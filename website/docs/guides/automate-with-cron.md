@@ -15,7 +15,7 @@ Cron jobs run in fresh agent sessions with no memory of your current chat. Promp
 :::
 
 :::tip Don't need the LLM? Use no-agent mode.
-For recurring watchdogs where the script already produces the exact message you want to send (memory alerts, disk alerts, CI pings, heartbeats), skip the LLM entirely with [script-only cron jobs](/docs/guides/cron-script-only). Zero tokens, same scheduler.
+For recurring watchdogs where the script already produces the exact message you want to send (memory alerts, disk alerts, CI pings, heartbeats), skip the LLM entirely with [script-only cron jobs](/docs/guides/cron-script-only). Zero tokens, same scheduler. You can ask Hermes to set one up for you in chat — the `cronjob` tool knows when to pick `no_agent=True` and writes the script for you.
 :::
 
 ---

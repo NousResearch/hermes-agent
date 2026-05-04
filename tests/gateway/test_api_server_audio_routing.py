@@ -336,6 +336,49 @@ class TestChatCompletionsAudioRouting:
             assert "couldn't transcribe" in user_msg.lower()
 
     @pytest.mark.asyncio
+    async def test_transcription_backend_timeout_fallback(self, monkeypatch):
+        """Catastrophic exception in transcribe_audio produces graceful fallback, not 500."""
+        adapter = _make_adapter()
+        app = _create_app(adapter)
+
+        monkeypatch.setattr(
+            "agent.audio_routing.decide_audio_input_mode",
+            lambda *a, **kw: "text",
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools.transcribe_audio",
+            lambda path, model=None: (_ for _ in ()).throw(
+                TimeoutError("simulated provider timeout")
+            ),
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new=MagicMock()) as mock_run:
+                async def _stub(**kwargs):
+                    mock_run.captured = kwargs
+                    return (
+                        {"final_response": "ok", "messages": [], "api_calls": 1},
+                        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    )
+
+                mock_run.side_effect = _stub
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": _audio_content_parts()},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200, await resp.text()
+            user_msg = mock_run.captured["user_message"]
+            assert isinstance(user_msg, str)
+            assert "something went wrong" in user_msg.lower()
+
+    @pytest.mark.asyncio
     async def test_routing_failure_passes_through(self, monkeypatch):
         """When the routing decision itself fails, audio passes through unchanged."""
         adapter = _make_adapter()

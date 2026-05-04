@@ -2250,9 +2250,15 @@ def launchd_install(force: bool = False):
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
-    
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-    
+    try:
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    except subprocess.CalledProcessError as bootstrap_err:
+        if bootstrap_err.returncode == 5:
+            # I/O error on newer macOS — fall back to load which is more reliable
+            subprocess.run(["launchctl", "load", "-w", str(plist_path)], check=True, timeout=30)
+        else:
+            raise
+
     print()
     print("✓ Service installed and loaded!")
     print()
@@ -2281,7 +2287,13 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        try:
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        except subprocess.CalledProcessError as bootstrap_err:
+            if bootstrap_err.returncode == 5:
+                subprocess.run(["launchctl", "load", "-w", str(plist_path)], check=True, timeout=30)
+            else:
+                raise
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
@@ -2293,7 +2305,13 @@ def launchd_start():
         if e.returncode not in (3, 113):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        try:
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        except subprocess.CalledProcessError as bootstrap_err:
+            if bootstrap_err.returncode == 5:
+                subprocess.run(["launchctl", "load", "-w", str(plist_path)], check=True, timeout=30)
+            else:
+                raise
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     print("✓ Service started")
 
@@ -2384,7 +2402,13 @@ def launchd_restart():
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        try:
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        except subprocess.CalledProcessError as bootstrap_err:
+            if bootstrap_err.returncode == 5:
+                subprocess.run(["launchctl", "load", "-w", str(plist_path)], check=True, timeout=30)
+            else:
+                raise
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
 

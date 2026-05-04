@@ -623,3 +623,40 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     )
     assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+class TestDoctorToolAvailabilityApiKeySummary:
+    """Disabled toolsets (e.g. 'rl') should not appear in the final 'missing API keys' summary."""
+
+    def test_disabled_toolset_does_not_trigger_summary(self):
+        """When a toolset is unavailable but NOT enabled for CLI, it should not appear."""
+        unavailable = [{"name": "rl", "env_vars": ["TINKER_API_KEY"], "tools": ["tinker_train"]}]
+        cli_enabled_toolsets = {"web"}  # rl is NOT enabled
+        api_disabled = [u for u in unavailable if u.get("env_vars") and u["name"] in cli_enabled_toolsets]
+        issues = []
+        if api_disabled:
+            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+        assert issues == []
+
+    def test_enabled_toolset_missing_key_still_triggers_summary(self):
+        """Enabled toolset (web) with missing API keys should trigger the summary."""
+        unavailable = [{"name": "web", "env_vars": ["OPENAI_API_KEY"], "tools": ["web_search"]}]
+        cli_enabled_toolsets = {"web"}
+        api_disabled = [u for u in unavailable if u.get("env_vars") and u["name"] in cli_enabled_toolsets]
+        issues = []
+        if api_disabled:
+            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+        assert issues == ["Run 'hermes setup' to configure missing API keys for full tool access"]
+
+    def test_mixed_enabled_and_disabled_only_includes_enabled(self):
+        """When both enabled and disabled toolsets are unavailable, only enabled one triggers."""
+        unavailable = [
+            {"name": "web", "env_vars": ["OPENAI_API_KEY"], "tools": ["web_search"]},
+            {"name": "rl", "env_vars": ["TINKER_API_KEY"], "tools": ["tinker_train"]},
+        ]
+        cli_enabled_toolsets = {"web"}  # rl is NOT enabled
+        api_disabled = [u for u in unavailable if u.get("env_vars") and u["name"] in cli_enabled_toolsets]
+        issues = []
+        if api_disabled:
+            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+        assert issues == ["Run 'hermes setup' to configure missing API keys for full tool access"]

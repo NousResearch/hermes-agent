@@ -481,6 +481,141 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
         )
 
 
+@pytest.mark.parametrize(
+    "provider_name",
+    [
+        # Local endpoint aliases: auth.resolve_provider routes them to "custom"
+        # but resolve_provider_full returns None, so the previous
+        # `catalog_provider is None` short-circuit rejected them despite the
+        # runtime-resolved id being a valid provider.
+        "ollama",
+        "vllm",
+        "llamacpp",
+        # bedrock and lmstudio are regression guards — they used to be on this
+        # list (#16085) but were fixed independently by adding a HERMES_OVERLAYS
+        # entry / a PROVIDER_REGISTRY entry, respectively.
+        "bedrock",
+        "lmstudio",
+    ],
+)
+def test_run_doctor_accepts_provider_when_catalog_resolution_returns_none(
+    monkeypatch, tmp_path, provider_name
+):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        f"  provider: {provider_name}\n"
+        "  default: dummy-model\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert f"model.provider '{provider_name}' is not a recognised provider" not in out
+    assert f"model.provider '{provider_name}' is unknown" not in out
+
+
+def test_run_doctor_validator_invariant_holds_for_every_known_provider():
+    # Acceptance invariant: every name doctor prints in its "Valid providers"
+    # list must also pass doctor's "is it valid" check. The two used to be
+    # built from registries (PROVIDER_REGISTRY vs HERMES_OVERLAYS) that
+    # disagreed on canonical ids, producing self-contradicting errors.
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+    from hermes_cli.providers import (
+        ALIASES,
+        HERMES_OVERLAYS,
+        normalize_provider,
+        resolve_provider_full,
+    )
+
+    known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+    acceptable_ids = (
+        known_providers
+        | set(HERMES_OVERLAYS.keys())
+        | set(ALIASES.values())
+    )
+
+    failed = []
+    for name in sorted(known_providers):
+        if name in ("auto", "custom", "openrouter"):
+            continue
+        candidates = {name, normalize_provider(name)}
+        try:
+            runtime_id = resolve_provider(name)
+            if runtime_id:
+                candidates.add(runtime_id)
+        except Exception:
+            pass
+        pdef = resolve_provider_full(name, None, [])
+        if pdef is not None and pdef.id:
+            candidates.add(pdef.id)
+        if not (candidates & acceptable_ids):
+            failed.append((name, sorted(candidates)))
+
+    assert not failed, (
+        "Provider names printed as valid by doctor that fail its own validator: "
+        f"{failed}"
+    )
+
+
+def test_run_doctor_still_flags_unknown_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: completely-made-up\n"
+        "  default: foo\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'completely-made-up' is not a recognised provider" in out
+
+
 def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

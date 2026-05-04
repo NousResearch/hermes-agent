@@ -375,10 +375,11 @@ def run_doctor(args):
                     provider_ids_to_accept.add(catalog_provider)
 
             if provider and provider != "auto":
-                if catalog_provider is None or (
-                    known_providers
-                    and not (provider_ids_to_accept & valid_provider_ids)
-                ):
+                # Don't reject solely because catalog_provider is None: local
+                # endpoints (ollama/vllm/llamacpp) have no catalog entry but
+                # auth.resolve_provider routes them to "custom", which is in
+                # PROVIDER_REGISTRY. Let the intersection check decide.
+                if known_providers and not (provider_ids_to_accept & valid_provider_ids):
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     check_fail(
                         f"model.provider '{provider_raw}' is not a recognised provider",

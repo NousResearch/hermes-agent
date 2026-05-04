@@ -3553,6 +3553,11 @@ class GatewayRunner:
         if interval < 1.0:
             interval = 1.0  # sanity floor — tighter than this is a footgun
 
+        # Read max_spawn config to limit concurrent kanban tasks
+        max_spawn = kanban_cfg.get("max_spawn", None)
+        if max_spawn is not None:
+            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -3576,7 +3581,7 @@ class GatewayRunner:
                     _kb.init_db()  # idempotent, handles first-run
                 except Exception:
                     pass
-                return _kb.dispatch_once(conn)
+                return _kb.dispatch_once(conn, max_spawn=max_spawn)
             except Exception:
                 logger.exception("kanban dispatcher: tick failed")
                 return None

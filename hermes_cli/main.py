@@ -10007,7 +10007,15 @@ Examples:
     )
     mcp_add_p.add_argument("name", help="Server name (used as config key)")
     mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
-    mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
+    # dest="mcp_command" so this flag does not clobber the top-level
+    # subparser's args.command attribute, which the dispatcher reads to
+    # route to cmd_mcp.  Without an explicit dest, argparse derives
+    # dest="command" from the flag name and sets it to None when the
+    # flag is omitted, causing `hermes mcp add ...` to fall through to
+    # interactive chat.
+    mcp_add_p.add_argument(
+        "--command", dest="mcp_command", help="Stdio command (e.g. npx)"
+    )
     mcp_add_p.add_argument(
         "--args", nargs="*", default=[], help="Arguments for stdio command"
     )

@@ -262,6 +262,18 @@ function SessionRow({
     }
   }, [isExpanded, session.id, messages, loading]);
 
+  // Poll for new messages when viewing an active session
+  useEffect(() => {
+    if (!isExpanded || !session.is_active) return;
+    const interval = setInterval(() => {
+      api
+        .getSessionMessages(session.id)
+        .then((resp) => setMessages(resp.messages))
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isExpanded, session.is_active, session.id]);
+
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
@@ -383,21 +395,33 @@ export default function SessionsPage() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const { t } = useI18n();
 
-  const loadSessions = useCallback((p: number) => {
-    setLoading(true);
-    api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
-      .then((resp) => {
-        setSessions(resp.sessions);
-        setTotal(resp.total);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const loadSessions = useCallback(
+    (p: number, silent = false) => {
+      if (!silent) setLoading(true);
+      api
+        .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+        .then((resp) => {
+          setSessions(resp.sessions);
+          setTotal(resp.total);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!silent) setLoading(false);
+        });
+    },
+    [],
+  );
 
   useEffect(() => {
     loadSessions(page);
   }, [loadSessions, page]);
+
+  // Poll sessions list to update is_active status and detect new messages
+  useEffect(() => {
+    if (search.trim()) return; // don't poll while searching
+    const interval = setInterval(() => loadSessions(page, true), 10000);
+    return () => clearInterval(interval);
+  }, [loadSessions, page, search]);
 
   // Debounced FTS search
   useEffect(() => {

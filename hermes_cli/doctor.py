@@ -60,6 +60,9 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GEMINI_BASE_URL",
 )
 
 
@@ -1083,6 +1086,36 @@ def run_doctor(args):
                 print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
+
+    # -- Google/Gemini provider --
+    # Primary setup for gemini provider is GOOGLE_API_KEY or GEMINI_API_KEY with
+    # native REST endpoint health check via query-string auth (not Authorization header).
+    google_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if google_key:
+        print("  Checking Google/Gemini API...", end="", flush=True)
+        try:
+            import httpx
+
+            google_base = (os.getenv("GEMINI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+            if google_base.endswith("/openai"):
+                google_base = google_base[:-len("/openai")]
+            response = httpx.get(
+                f"{google_base}/models",
+                headers={"User-Agent": _HERMES_USER_AGENT},
+                params={"key": google_key},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                print(f"\r  {color('✓', Colors.GREEN)} Google/Gemini API                      ")
+            elif response.status_code in (401, 403):
+                print(f"\r  {color('✗', Colors.RED)} Google/Gemini API {color('(invalid API key)', Colors.DIM)}    ")
+                issues.append("Check GOOGLE_API_KEY or GEMINI_API_KEY in .env")
+            else:
+                print(f"\r  {color('⚠', Colors.YELLOW)} Google/Gemini API {color(f'(HTTP {response.status_code})', Colors.DIM)}")
+        except Exception as e:
+            print(f"\r  {color('⚠', Colors.YELLOW)} Google/Gemini API {color(f'({e})', Colors.DIM)}")
+    else:
+        check_warn("Google/Gemini API", "(not configured)")
 
     # -- API-key providers --
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)

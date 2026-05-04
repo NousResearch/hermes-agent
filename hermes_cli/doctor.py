@@ -985,9 +985,16 @@ def run_doctor(args):
                         f"{label} deps",
                         f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
                     )
-                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                    issues.append(
+                        f"{label} has {total} npm "
+                        f"{'vulnerability' if total == 1 else 'vulnerabilities'}"
+                    )
                 else:
-                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+                    check_ok(
+                        f"{label} deps",
+                        f"({moderate} moderate "
+                        f"{'vulnerability' if moderate == 1 else 'vulnerabilities'})",
+                    )
             except Exception:
                 pass
 

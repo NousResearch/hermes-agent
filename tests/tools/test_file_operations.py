@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from tools.file_operations import (
     _is_write_denied,
+    _get_macos_protected_search_excludes,
     WRITE_DENIED_PATHS,
     WRITE_DENIED_PREFIXES,
     ReadResult,
@@ -207,6 +208,59 @@ class TestShellFileOpsHelpers:
 
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
+
+    def test_macos_protected_excludes_for_home_root(self, monkeypatch):
+        monkeypatch.setattr("tools.file_operations.sys.platform", "darwin")
+        excludes = _get_macos_protected_search_excludes(str(Path.home()))
+        assert "Desktop" in excludes
+        assert "Documents" in excludes
+        assert "Library/Messages" in excludes
+
+    def test_macos_protected_excludes_not_added_for_explicit_desktop(self, monkeypatch):
+        monkeypatch.setattr("tools.file_operations.sys.platform", "darwin")
+        excludes = _get_macos_protected_search_excludes(str(Path.home() / "Desktop"))
+        assert "Desktop" not in excludes
+
+    def test_search_with_rg_includes_macos_protected_globs(self, file_ops):
+        file_ops._exec = MagicMock(return_value=MagicMock(stdout="", exit_code=1))
+        file_ops._search_with_rg(
+            pattern="garbage",
+            path=str(Path.home()),
+            file_glob=None,
+            limit=10,
+            offset=0,
+            output_mode="files_only",
+            context=0,
+            macos_excludes=["Desktop", "Library/Messages"],
+        )
+        cmd = file_ops._exec.call_args[0][0]
+        assert "--glob '!Desktop'" in cmd
+        assert "--glob '!Desktop/**'" in cmd
+        assert "--glob '!Library/Messages/**'" in cmd
+
+    def test_search_with_grep_includes_macos_protected_excludes(self, file_ops):
+        file_ops._exec = MagicMock(return_value=MagicMock(stdout="", exit_code=1))
+        file_ops._search_with_grep(
+            pattern="garbage",
+            path=str(Path.home()),
+            file_glob=None,
+            limit=10,
+            offset=0,
+            output_mode="files_only",
+            context=0,
+            macos_excludes=["Desktop", "Library/Messages"],
+        )
+        cmd = file_ops._exec.call_args[0][0]
+        assert "--exclude-dir='Desktop'" in cmd
+        assert "--exclude-dir='Messages'" in cmd
+
+    def test_search_files_find_includes_macos_protected_excludes(self, file_ops):
+        file_ops._has_command = MagicMock(side_effect=lambda cmd: cmd == "find")
+        file_ops._exec = MagicMock(return_value=MagicMock(stdout="", exit_code=0))
+        file_ops._search_files("*garbage*", str(Path.home()), limit=10, offset=0)
+        cmd = file_ops._exec.call_args[0][0]
+        assert "Desktop" in cmd
+        assert "Library/Messages" in cmd
 
     def test_escape_shell_arg_with_quotes(self, file_ops):
         result = file_ops._escape_shell_arg("it's")

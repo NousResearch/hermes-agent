@@ -345,6 +345,8 @@ hermes kanban <action> [options]
 
 Multi-profile collaboration board. Tasks live in `~/.hermes/kanban.db` (WAL-mode SQLite); every profile reads and writes the same board. A `cron`-driven dispatcher (`hermes kanban dispatch`) atomically claims ready tasks and spawns the assigned profile as its own process with an isolated workspace.
 
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/docs/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`) instead of shelling to `hermes kanban`. Both surfaces route through the same `kanban_db` layer, so state is consistent either way.
+
 | Action | Purpose |
 |--------|---------|
 | `init` | Create `kanban.db` if missing. Idempotent. |
@@ -355,7 +357,7 @@ Multi-profile collaboration board. Tasks live in `~/.hermes/kanban.db` (WAL-mode
 | `link <parent> <child>` | Add a dependency. Cycle-detected. |
 | `unlink <parent> <child>` | Remove a dependency. |
 | `claim <id>` | Atomically claim a ready task. Prints resolved workspace path. |
-| `comment <id> "<text>"` | Append a comment. Visible to the next worker that runs the task. |
+| `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
 | `complete <id>` | Mark task done. Flag: `--result "<summary>"` (goes into children's parent-result context). |
 | `block <id> "<reason>"` | Mark task blocked. Also appends the reason as a comment. |
 | `unblock <id>` | Return a blocked task to ready. |

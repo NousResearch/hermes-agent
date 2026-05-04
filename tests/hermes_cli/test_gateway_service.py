@@ -107,6 +107,40 @@ class TestSystemdServiceRefresh:
         ]
 
 
+    def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
+        """run_gateway() should refresh the systemd unit on boot so that
+        restart settings take effect even when the process was respawned
+        via exit-code-75 (bypassing `hermes gateway restart`)."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        # Prevent run_gateway from actually starting the gateway
+        def fake_start_gateway(**kwargs):
+            import asyncio
+            f = asyncio.Future()
+            f.set_result(True)
+            return f
+
+        monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+
+        gateway_cli.run_gateway()
+
+        assert unit_path.read_text(encoding="utf-8") == "new unit\n"
+        assert ["systemctl", "--user", "daemon-reload"] in calls
+
+
 class TestGeneratedSystemdUnits:
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
         unit = gateway_cli.generate_systemd_unit(system=False)

@@ -87,6 +87,7 @@ def start(
     out_dir: Optional[Path] = None,
     headed: bool = False,
     auth_state: Optional[str] = None,
+    chrome_profile: Optional[str] = None,
     guest_name: str = "Hermes Agent",
     duration: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -140,6 +141,8 @@ def start(
         env["HERMES_MEET_HEADED"] = "1"
     if auth_state:
         env["HERMES_MEET_AUTH_STATE"] = auth_state
+    if chrome_profile:
+        env["HERMES_MEET_CHROME_PROFILE"] = chrome_profile
     if duration:
         env["HERMES_MEET_DURATION"] = duration
     # v2: realtime mode + passthroughs. The bot defaults to transcribe

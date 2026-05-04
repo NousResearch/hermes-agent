@@ -444,11 +444,41 @@ def _mac_audio_device_index(device_name: str) -> str:
     return "0"
 
 
+def _open_browser_context(pw, *, headed: bool, chrome_args: list, context_args: dict, chrome_profile: str = ""):
+    """Open a Playwright browser context for Meet.
+
+    Without a dedicated profile we use the existing ephemeral Chromium launch +
+    new_context path. With ``chrome_profile`` we use a persistent user data dir
+    so Google login/session state survives bot restarts without reusing the
+    user's everyday Chrome profile.
+
+    Returns ``(context, browser)``. ``browser`` is None for persistent contexts,
+    because Playwright's persistent context owns the browser lifecycle.
+    """
+    if chrome_profile:
+        persistent_args = dict(context_args)
+        # storage_state is only valid for browser.new_context(); persistent
+        # contexts load cookies/local storage from the user data dir itself.
+        persistent_args.pop("storage_state", None)
+        persistent_args.update({
+            "headless": not headed,
+            "args": chrome_args,
+        })
+        return pw.chromium.launch_persistent_context(chrome_profile, **persistent_args), None
+
+    browser = pw.chromium.launch(
+        headless=not headed,
+        args=chrome_args,
+    )
+    return browser.new_context(**context_args), browser
+
+
 def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     url = os.environ.get("HERMES_MEET_URL", "").strip()
     out_dir_env = os.environ.get("HERMES_MEET_OUT_DIR", "").strip()
     headed = os.environ.get("HERMES_MEET_HEADED", "").lower() in ("1", "true", "yes")
     auth_state = os.environ.get("HERMES_MEET_AUTH_STATE", "").strip()
+    chrome_profile = os.environ.get("HERMES_MEET_CHROME_PROFILE", "").strip()
     guest_name = os.environ.get("HERMES_MEET_GUEST_NAME", "Hermes Agent")
     duration_s = _parse_duration(os.environ.get("HERMES_MEET_DURATION", ""))
     # v2: optional realtime mode. Enabled when HERMES_MEET_MODE=realtime.
@@ -554,9 +584,15 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 ),
                 "permissions": ["microphone", "camera"],
             }
-            if auth_state and Path(auth_state).is_file():
+            if auth_state and Path(auth_state).is_file() and not chrome_profile:
                 context_args["storage_state"] = auth_state
-            context = browser.new_context(**context_args)
+            context, browser = _open_browser_context(
+                pw,
+                headed=headed,
+                chrome_args=chrome_args,
+                context_args=context_args,
+                chrome_profile=chrome_profile,
+            )
             page = context.new_page()
 
             try:
@@ -701,7 +737,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 pass
 
             context.close()
-            browser.close()
+            if browser is not None:
+                browser.close()
             # v2: teardown realtime speaker + audio bridge.
             if rt["speaker_stop"]:
                 try:

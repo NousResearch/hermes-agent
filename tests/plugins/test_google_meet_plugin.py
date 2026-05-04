@@ -463,6 +463,72 @@ def test_start_realtime_env_vars_threaded_through():
     assert captured_env["HERMES_MEET_REALTIME_KEY"] == "sk-test"
 
 
+def test_start_threads_chrome_profile_env_var():
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        def __init__(self, pid): self.pid = pid
+
+    captured_env = {}
+    def _fake_popen(argv, **kwargs):
+        captured_env.update(kwargs.get("env") or {})
+        return _FakeProc(22222)
+
+    with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        pm.start(
+            "https://meet.google.com/abc-defg-hij",
+            chrome_profile="/tmp/hermes-meet-profile",
+        )
+
+    assert captured_env["HERMES_MEET_CHROME_PROFILE"] == "/tmp/hermes-meet-profile"
+
+
+def test_open_browser_context_uses_persistent_profile(tmp_path):
+    from plugins.google_meet.meet_bot import _open_browser_context
+
+    calls = []
+
+    class _FakeBrowser:
+        def new_context(self, **kwargs):
+            calls.append(("new_context", kwargs))
+            return "ephemeral-context"
+
+    class _FakeChromium:
+        def launch(self, **kwargs):
+            calls.append(("launch", kwargs))
+            return _FakeBrowser()
+
+        def launch_persistent_context(self, user_data_dir, **kwargs):
+            calls.append(("launch_persistent_context", user_data_dir, kwargs))
+            return "persistent-context"
+
+    class _FakePw:
+        chromium = _FakeChromium()
+
+    context, browser = _open_browser_context(
+        _FakePw(),
+        headed=True,
+        chrome_args=["--flag"],
+        context_args={"viewport": {"width": 1280, "height": 800}, "storage_state": "ignored.json"},
+        chrome_profile=str(tmp_path / "profile"),
+    )
+
+    assert context == "persistent-context"
+    assert browser is None
+    assert calls == [
+        (
+            "launch_persistent_context",
+            str(tmp_path / "profile"),
+            {
+                "headless": False,
+                "args": ["--flag"],
+                "viewport": {"width": 1280, "height": 800},
+            },
+        )
+    ]
+
+
 def test_meet_join_accepts_realtime_mode():
     from plugins.google_meet.tools import handle_meet_join
 

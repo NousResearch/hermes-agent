@@ -46,11 +46,13 @@ class NodeServer:
         host: str = "127.0.0.1",
         port: int = 18789,
         token_path: Optional[Path] = None,
+        chrome_profile: Optional[str] = None,
         display_name: str = "hermes-meet-node",
     ) -> None:
         self.host = host
         self.port = port
         self.display_name = display_name
+        self.chrome_profile = chrome_profile
         self.token_path = Path(token_path) if token_path is not None else _default_token_path()
         self._token: Optional[str] = None
 
@@ -125,9 +127,11 @@ class NodeServer:
                 kwargs = {
                     k: payload[k]
                     for k in ("url", "guest_name", "duration", "headed",
-                              "auth_state", "session_id", "out_dir")
+                              "auth_state", "chrome_profile", "session_id", "out_dir")
                     if k in payload
                 }
+                if self.chrome_profile and not kwargs.get("chrome_profile"):
+                    kwargs["chrome_profile"] = self.chrome_profile
                 if "url" not in kwargs:
                     return _proto.make_error(req_id, "missing 'url' in payload")
                 result = pm.start(**kwargs)

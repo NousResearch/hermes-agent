@@ -30,6 +30,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     run.add_argument("--host", default="0.0.0.0")
     run.add_argument("--port", type=int, default=18789)
     run.add_argument("--display-name", default="hermes-meet-node")
+    run.add_argument("--chrome-profile", default=None,
+                     help="Dedicated Chrome/Chromium user data dir for Meet bot sessions.")
     run.set_defaults(func=node_command)
 
     lst = sp.add_parser("list", help="List approved remote nodes.")
@@ -66,6 +68,7 @@ def node_command(args: argparse.Namespace) -> int:
             host=args.host,
             port=args.port,
             display_name=args.display_name,
+            chrome_profile=args.chrome_profile,
         )
         token = server.ensure_token()
         print(f"[meet-node] display_name={server.display_name}")

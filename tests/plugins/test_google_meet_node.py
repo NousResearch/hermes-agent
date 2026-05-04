@@ -311,7 +311,7 @@ def test_server_handle_request_start_bot_dispatches(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pm, "start", fake_start)
 
-    s = NodeServer(token_path=tmp_path / "t.json")
+    s = NodeServer(token_path=tmp_path / "t.json", chrome_profile="/tmp/node-profile")
     tok = s.ensure_token()
     req = protocol.make_request("start_bot", tok, {
         "url": "https://meet.google.com/abc-defg-hij",
@@ -324,6 +324,7 @@ def test_server_handle_request_start_bot_dispatches(tmp_path, monkeypatch):
     assert captured["url"] == "https://meet.google.com/abc-defg-hij"
     assert captured["guest_name"] == "Bot"
     assert captured["duration"] == "30m"
+    assert captured["chrome_profile"] == "/tmp/node-profile"
 
 
 def test_server_handle_request_start_bot_missing_url(tmp_path):

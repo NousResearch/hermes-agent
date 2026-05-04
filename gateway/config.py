@@ -1271,6 +1271,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
 
+    # Generic HOME_CHANNEL for plugin platforms (and any built-in platform
+    # not covered by the hardcoded blocks above).  When a platform is enabled
+    # but has no home_channel configured yet, check for a {PREFIX}_HOME_CHANNEL
+    # env var (e.g. XMPP_HOME_CHANNEL for an "xmpp" plugin platform).
+    for platform, pconfig in config.platforms.items():
+        if not pconfig.enabled or pconfig.home_channel is not None:
+            continue
+        prefix = platform.value.upper().replace("-", "_")
+        home_val = os.getenv(f"{prefix}_HOME_CHANNEL")
+        if home_val:
+            pconfig.home_channel = HomeChannel(
+                platform=platform,
+                chat_id=home_val,
+                name=os.getenv(f"{prefix}_HOME_CHANNEL_NAME", "Home"),
+            )
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:

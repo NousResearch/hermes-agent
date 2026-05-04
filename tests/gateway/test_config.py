@@ -452,3 +452,73 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestGenericHomeChannelEnvOverride:
+    """Platforms without a dedicated HOME_CHANNEL block in _apply_env_overrides()
+    should still get their home_channel set via the generic loop."""
+
+    def test_whatsapp_home_channel_from_env(self, monkeypatch):
+        """WHATSAPP has no hardcoded HOME_CHANNEL block — generic loop covers it."""
+        config = GatewayConfig(platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True),
+        })
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "chat_abc")
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL_NAME", "My WhatsApp")
+        _apply_env_overrides(config)
+
+        home = config.platforms[Platform.WHATSAPP].home_channel
+        assert home is not None
+        assert home.chat_id == "chat_abc"
+        assert home.name == "My WhatsApp"
+
+    def test_generic_home_channel_default_name(self, monkeypatch):
+        """When _NAME env var is absent, default to 'Home'."""
+        config = GatewayConfig(platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True),
+        })
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "chat_xyz")
+        monkeypatch.delenv("WHATSAPP_HOME_CHANNEL_NAME", raising=False)
+        _apply_env_overrides(config)
+
+        home = config.platforms[Platform.WHATSAPP].home_channel
+        assert home is not None
+        assert home.chat_id == "chat_xyz"
+        assert home.name == "Home"
+
+    def test_generic_does_not_override_existing(self, monkeypatch):
+        """If a platform already has home_channel set, generic loop skips it."""
+        existing = HomeChannel(
+            platform=Platform.WHATSAPP, chat_id="original", name="Orig",
+        )
+        config = GatewayConfig(platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True, home_channel=existing),
+        })
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "overwritten")
+        _apply_env_overrides(config)
+
+        home = config.platforms[Platform.WHATSAPP].home_channel
+        assert home.chat_id == "original"
+        assert home.name == "Orig"
+
+    def test_generic_skips_disabled_platforms(self, monkeypatch):
+        """Disabled platforms should not get home_channel from env."""
+        config = GatewayConfig(platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=False),
+        })
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "chat_abc")
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.WHATSAPP].home_channel is None
+
+    def test_api_server_home_channel_from_env(self, monkeypatch):
+        """API_SERVER also has no dedicated HOME_CHANNEL block."""
+        config = GatewayConfig(platforms={
+            Platform.API_SERVER: PlatformConfig(enabled=True),
+        })
+        monkeypatch.setenv("API_SERVER_HOME_CHANNEL", "server_chat")
+        _apply_env_overrides(config)
+
+        home = config.platforms[Platform.API_SERVER].home_channel
+        assert home is not None
+        assert home.chat_id == "server_chat"

@@ -182,6 +182,9 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
+_BUILTIN_PLATFORM_VALUES = frozenset(platform.value for platform in Platform)
+
+
 @dataclass
 class HomeChannel:
     """

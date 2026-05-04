@@ -1842,6 +1842,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[Dict[str, Any]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1966,19 +1967,45 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model override resolution — per-task > top-level > delegation config
+            task_model_override = t.get("model") or model
+            task_model_name = creds["model"]
+            task_provider = creds["provider"]
+            task_base_url = creds["base_url"]
+            task_api_key = creds["api_key"]
+            task_api_mode = creds["api_mode"]
+            if task_model_override and isinstance(task_model_override, dict):
+                override_model = task_model_override.get("model")
+                if override_model:
+                    task_model_name = override_model
+                override_provider_name = task_model_override.get("provider")
+                if override_provider_name:
+                    try:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        runtime = resolve_runtime_provider(requested=override_provider_name)
+                        task_provider = runtime.get("provider", override_provider_name)
+                        task_base_url = runtime.get("base_url")
+                        task_api_key = runtime.get("api_key")
+                        task_api_mode = runtime.get("api_mode")
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not resolve per-task provider '%s': %s. "
+                            "Falling back to delegation config.",
+                            override_provider_name, exc,
+                        )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model_name,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_provider,
+                override_base_url=task_base_url,
+                override_api_key=task_api_key,
+                override_api_mode=task_api_mode,
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2491,6 +2518,15 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "model": {"type": "string", "description": "Model name for this specific task."},
+                                "provider": {"type": "string", "description": "Provider name. Omit to inherit from parent."}
+                            },
+                            "required": ["model"],
+                            "description": "Per-task model override. Beats top-level 'model' and delegation config."
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2515,6 +2551,21 @@ DELEGATE_TASK_SCHEMA = {
                     "max_spawn_depth or when "
                     "delegation.orchestrator_enabled=false."
                 ),
+            },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Model name (e.g., 'deepseek-v4-flash', 'anthropic/claude-sonnet-4'). Required."
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": "Provider name (e.g., 'deepseek', 'anthropic'). Omit to inherit from parent session — useful when switching models on the same provider."
+                    }
+                },
+                "required": ["model"],
+                "description": "Optional per-invocation model override for ALL spawned subagents. When set, subagents use this model instead of the global delegation.model config or parent inheritance. Per-task 'model' in the tasks array beats this top-level value. To just switch model on the same provider (e.g., Pro → Flash), specify only 'model'; to switch providers, specify both 'provider' and 'model'."
             },
             "acp_command": {
                 "type": "string",
@@ -2555,6 +2606,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

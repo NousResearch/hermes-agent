@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.copilot_acp_client import CopilotACPClient
@@ -144,6 +145,15 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
         self.assertIn("error", response)
         self.assertFalse(outside.exists())
+
+    def test_namespace_acp_args_do_not_crash_client_init(self):
+        client = CopilotACPClient(
+            acp_command="copilot",
+            acp_args=SimpleNamespace(acp_args=["--acp", "--stdio"]),
+            acp_cwd="/tmp",
+        )
+
+        self.assertEqual(client._acp_args, [])
 
 
 if __name__ == "__main__":

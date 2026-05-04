@@ -43,7 +43,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import atomic_replace
+from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -2480,8 +2480,8 @@ def _resolve_verify(
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
     effective_insecure = (
-        bool(insecure) if insecure is not None
-        else bool(tls_state.get("insecure", False))
+        is_truthy_value(insecure, default=False) if insecure is not None
+        else is_truthy_value(tls_state.get("insecure", False), default=False)
     )
     effective_ca = (
         ca_bundle
@@ -3653,7 +3653,7 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -3712,7 +3712,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -4283,7 +4283,8 @@ def _minimax_oauth_login(
     print(f"Portal: {portal_base_url}")
 
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
-                      headers={"Accept": "application/json"}) as client:
+                      headers={"Accept": "application/json"},
+                      follow_redirects=True) as client:
         code_data = _minimax_request_user_code(
             client, portal_base_url=portal_base_url,
             client_id=pconfig.client_id,
@@ -4360,7 +4361,8 @@ def _refresh_minimax_oauth_state(
         return state
 
     portal_base_url = state["portal_base_url"]
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      follow_redirects=True) as client:
         response = client.post(
             f"{portal_base_url}/oauth/token",
             data={

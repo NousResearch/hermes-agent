@@ -123,6 +123,13 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
+    def test_q_alias_queues_prompt(self):
+        """The /q alias should resolve to /queue, not /quit."""
+        cli = _make_cli()
+        cli._agent_running = False
+        assert cli.process_command("/q follow up") is True
+        assert cli._pending_input.get_nowait() == "follow up"
+
     def test_queue_mode_routes_busy_enter_to_pending(self):
         """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
@@ -353,6 +360,49 @@ class TestRootLevelProviderOverride:
         result = _normalize_root_model_keys(config)
         assert result["model"]["provider"] == "correct-provider"
         assert "provider" not in result  # root key still cleaned up
+
+    def test_normalize_root_context_length_migrates_to_model(self):
+        """Root-level context_length is migrated into the model section."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "context_length": 128000,
+            "model": {
+                "default": "my-model",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["context_length"] == 128000
+        assert "context_length" not in result  # root key cleaned up
+
+    def test_normalize_root_context_length_does_not_override_existing(self):
+        """Existing model.context_length is not overridden by root-level key."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "context_length": 256000,
+            "model": {
+                "default": "my-model",
+                "context_length": 128000,
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["context_length"] == 128000  # preserved
+        assert "context_length" not in result  # root key still cleaned up
+
+    def test_normalize_root_context_length_with_string_model(self):
+        """Root-level context_length is migrated even when model is a string."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "context_length": 128000,
+            "model": "my-model",
+        }
+        result = _normalize_root_model_keys(config)
+        assert isinstance(result["model"], dict)
+        assert result["model"]["default"] == "my-model"
+        assert result["model"]["context_length"] == 128000
+        assert "context_length" not in result
 
 
 class TestProviderResolution:

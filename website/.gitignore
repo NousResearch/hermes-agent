@@ -8,6 +8,8 @@
 .docusaurus
 .cache-loader
 src/data/skills.json
+static/llms.txt
+static/llms-full.txt
 
 # Misc
 .DS_Store

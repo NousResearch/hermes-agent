@@ -128,6 +128,15 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
+    # Bare "custom" is an incomplete spec — the canonical form is
+    # "custom:<name>" matching a custom_providers entry. LLMs frequently
+    # supply the bare type because the schema does not advertise the
+    # ":<name>" suffix, which used to bypass the pinning path below and
+    # leave the job stored with an unresolvable "custom" provider. Treat
+    # the bare value as "no provider supplied" so the current main
+    # provider gets pinned instead.
+    if provider_name == "custom":
+        provider_name = None
     if model_name and not provider_name:
         # Pin to the current main provider so the job is stable
         try:
@@ -513,7 +522,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Provider name (e.g. 'openrouter', 'anthropic'). Omit to use and pin the current provider."
+                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider."
                     },
                     "model": {
                         "type": "string",

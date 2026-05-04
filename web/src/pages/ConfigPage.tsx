@@ -27,16 +27,27 @@ import {
   Wrench,
   FileQuestion,
   Filter,
+  Cloud,
+  Sparkles,
+  LayoutDashboard,
+  BookOpen,
+  Route,
+  History,
+  Shield,
+  FileOutput,
+  RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
-import { Button, ListItem, Spinner } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -64,6 +75,15 @@ const CATEGORY_ICONS: Record<
   logging: ClipboardList,
   discord: MessageCircle,
   auxiliary: Wrench,
+  bedrock: Cloud,
+  curator: Sparkles,
+  kanban: LayoutDashboard,
+  model_catalog: BookOpen,
+  openrouter: Route,
+  sessions: History,
+  tool_loop_guardrails: Shield,
+  tool_output: FileOutput,
+  updates: RefreshCw,
 };
 
 function CategoryIcon({

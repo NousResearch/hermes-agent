@@ -350,7 +350,7 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in ("cron", "sessions", "logs", "memories"):
+        for subdir in ("cron", "sessions", "logs", "logs/curator", "memories"):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
@@ -371,6 +371,10 @@ def _ensure_hermes_home_managed(home: Path):
                 f"{d} does not exist. "
                 "Run 'sudo nixos-rebuild switch' first."
             )
+    # Curator reports dir is a sub-path of logs/; create it if missing.
+    # In managed mode the activation script may not know about this subdir,
+    # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
+    (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
     # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
@@ -396,7 +400,12 @@ DEFAULT_CONFIG = {
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
-        "restart_drain_timeout": 60,
+        #
+        # 180s is calibrated for realistic in-flight agent turns: a typical
+        # coding conversation mid-reasoning runs 60–150s per call, so a 60s
+        # budget routinely interrupted legitimate work on /restart. Raise
+        # further in config.yaml if you run very-long-reasoning models.
+        "restart_drain_timeout": 180,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -453,6 +462,7 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        "disabled_toolsets": [],
     },
     
     "terminal": {
@@ -602,6 +612,24 @@ DEFAULT_CONFIG = {
         "max_line_length": 2000,
     },
 
+    # Tool loop guardrails nudge models when they repeat failed or
+    # non-progressing tool calls. Soft warnings are always-on by default;
+    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    "tool_loop_guardrails": {
+        "warnings_enabled": True,
+        "hard_stop_enabled": False,
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
+        "hard_stop_after": {
+            "exact_failure": 5,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
+        },
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
@@ -614,6 +642,18 @@ DEFAULT_CONFIG = {
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
         "cache_ttl": "5m",
+    },
+
+    # OpenRouter-specific settings.
+    # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
+    #   When enabled, identical requests return cached responses for free (zero billing).
+    #   This is separate from Anthropic prompt caching and works alongside it.
+    #   See: https://openrouter.ai/docs/guides/features/response-caching
+    # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
+    #   Default 300 (5 minutes). Only used when response_cache is enabled.
+    "openrouter": {
+        "response_cache": True,
+        "response_cache_ttl": 300,
     },
 
     # AWS Bedrock provider configuration.
@@ -752,6 +792,14 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Auto-delete system-notice replies (e.g. "✨ New session started!",
+        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
+        # that support message deletion (currently Telegram; other platforms
+        # ignore and leave the message in place).  Only affects slash-command
+        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
+        # responses and content messages are never touched.  Default 0
+        # (disabled) preserves prior behavior.
+        "ephemeral_system_ttl": 0,
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
@@ -794,7 +842,7 @@ DEFAULT_CONFIG = {
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
         "xai": {
-            "voice_id": "eve",
+            "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
             "language": "en",
             "sample_rate": 24000,
             "bit_rate": 128000,
@@ -921,7 +969,23 @@ DEFAULT_CONFIG = {
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
-    
+
+    # Goals — persistent cross-turn goals (Ralph-style loop).
+    # After every turn, a lightweight judge call asks the auxiliary model
+    # whether the active /goal is satisfied by the assistant's last
+    # response. If not, Hermes feeds a continuation prompt back into the
+    # same session and keeps working until the goal is done, the turn
+    # budget is exhausted, or the user pauses/clears it. Judge failures
+    # fail OPEN (continue) so a flaky judge never wedges progress — the
+    # turn budget is the real backstop.
+    "goals": {
+        # Max continuation turns before Hermes auto-pauses the goal and
+        # asks the user to /goal resume. Protects against judge false
+        # negatives (goal actually done but judge says continue) and
+        # unbounded model spend on fuzzy / unachievable goals.
+        "max_turns": 20,
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -975,6 +1039,14 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Pre-run backup: before every real curator pass (dry-run is
+        # skipped), snapshot ~/.hermes/skills/ into
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
+        # user can roll back with `hermes curator rollback`.
+        "backup": {
+            "enabled": True,
+            "keep": 5,  # retain last N regular snapshots
+        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -1100,6 +1172,24 @@ DEFAULT_CONFIG = {
         "max_parallel_jobs": None,
     },
 
+    # Kanban multi-agent coordination — controls the dispatcher loop that
+    # spawns workers for ready tasks. The dispatcher ticks every N seconds
+    # (default 60), reclaims stale claims, promotes dependency-satisfied
+    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
+    # each claimable ready task. One dispatcher per profile is sufficient;
+    # running more than one on the same kanban.db will race for claims.
+    "kanban": {
+        # Run the dispatcher inside the gateway process. On by default —
+        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
+        # and gateway is the supervisor users already have. Set to false
+        # only if you run the dispatcher as a separate systemd unit or
+        # don't want the gateway to spawn workers.
+        "dispatch_in_gateway": True,
+        # Seconds between dispatcher ticks (idle or not). Lower = snappier
+        # pickup of newly-ready tasks; higher = less SQL pressure.
+        "dispatch_interval_seconds": 60,
+    },
+
     # execute_code settings — controls the tool used for programmatic tool calls.
     "code_execution": {
         # Execution mode:
@@ -1201,7 +1291,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 22,
+    "_config_version": 23,
 }
 
 # =============================================================================
@@ -2305,19 +2395,55 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
-def _set_nested(config: dict, dotted_key: str, value):
+def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
-    Creates intermediate dicts as needed, e.g. ``_set_nested(c, "a.b.c", 1)``
-    ensures ``c["a"]["b"]["c"] == 1``.
+    Supports both dict and list navigation:
+      _set_nested(c, "a.b.c", 1)     → c["a"]["b"]["c"] = 1
+      _set_nested(c, "a.0.b", 1)     → c["a"][0]["b"] = 1
+      _set_nested(c, "providers.1", "x") → c["providers"][1] = "x"
+
+    Intermediate dicts are created on demand.  List indices are parsed
+    from numeric path segments; the referenced index must already exist
+    (we do not grow lists — the user is navigating into structure they
+    wrote themselves).  If a segment targets a non-container leaf
+    (scalar), the leaf is replaced with a fresh dict so the write can
+    proceed — this preserves the pre-existing behavior for bare scalar
+    overrides (e.g. setting ``a.b.c`` where ``a.b`` was previously a
+    string).
+
+    Guards against #17876: before this fix the code unconditionally
+    replaced any non-dict value (including lists) with ``{}``, silently
+    destroying list-typed config like ``custom_providers`` whenever a
+    caller used an indexed path.
     """
     parts = dotted_key.split(".")
     current = config
     for part in parts[:-1]:
-        if part not in current or not isinstance(current.get(part), dict):
-            current[part] = {}
-        current = current[part]
-    current[parts[-1]] = value
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+            except (TypeError, ValueError):
+                raise TypeError(
+                    f"Cannot navigate into list at key {dotted_key!r}: "
+                    f"segment {part!r} is not a numeric index"
+                )
+            current = current[idx]
+        elif isinstance(current, dict):
+            existing = current.get(part)
+            # Preserve dicts and lists; replace missing/scalar with a fresh dict.
+            if part not in current or not isinstance(existing, (dict, list)):
+                current[part] = {}
+            current = current[part]
+        else:
+            raise TypeError(
+                f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}"
+            )
+    last = parts[-1]
+    if isinstance(current, list):
+        current[int(last)] = value
+    else:
+        current[last] = value
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
@@ -2360,7 +2486,17 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-    all_vars = discover_all_skill_config_vars()
+    try:
+        all_vars = discover_all_skill_config_vars()
+    except Exception as e:
+        # A malformed SKILL.md, unreadable external skill dir, or similar
+        # should never break `hermes update`.  Skill-config prompting is a
+        # post-migration nicety, not a blocker.
+        import logging
+        logging.getLogger(__name__).debug(
+            "discover_all_skill_config_vars failed: %s", e
+        )
+        return []
     if not all_vars:
         return []
 
@@ -3238,6 +3374,90 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "Use `hermes plugins enable <name>` to activate."
                     )
 
+    # ── Version 22 → 23: seed curator defaults + create logs/curator/ ──
+    # The curator (background skill maintenance) was added in PR #16049, but
+    # existing configs from before that PR (or before the April 2026
+    # unification under `auxiliary.curator`) never wrote the curator section
+    # to disk. The runtime deep-merge in `load_config()` fills defaults at
+    # read time, so the curator *functions*; but users can't see/edit the
+    # settings in their `config.yaml`, and `hermes curator status` has no
+    # stable logs dir to point at until the first run mkdir's it.
+    #
+    # This migration:
+    #   1. Writes the `curator` top-level section to config.yaml (enabled,
+    #      interval_hours, min_idle_hours, stale_after_days, archive_after_days)
+    #      — only keys the user hasn't already overridden.
+    #   2. Writes the `auxiliary.curator` aux-task slot (provider, model,
+    #      base_url, api_key, timeout, extra_body) — canonical slot for
+    #      routing the curator fork to a cheaper aux model.
+    #   3. Creates `~/.hermes/logs/curator/` if missing (belt-and-suspenders
+    #      on top of ensure_hermes_home() — old profiles that predate this
+    #      migration still benefit).
+    if current_ver < 23:
+        try:
+            curator_dir = get_hermes_home() / "logs" / "curator"
+            curator_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            results["warnings"].append(f"Could not create {curator_dir}: {e}")
+
+        config = read_raw_config()
+        touched = False
+
+        # (1) Top-level curator section — only add missing keys
+        _curator_defaults = DEFAULT_CONFIG.get("curator", {})
+        raw_curator = config.get("curator")
+        if not isinstance(raw_curator, dict):
+            raw_curator = {}
+        added_curator: List[str] = []
+        for k, v in _curator_defaults.items():
+            if k not in raw_curator:
+                raw_curator[k] = copy.deepcopy(v)
+                added_curator.append(k)
+        if added_curator:
+            config["curator"] = raw_curator
+            touched = True
+
+        # (2) auxiliary.curator task slot
+        _aux_curator_defaults = (
+            DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
+        )
+        raw_aux = config.get("auxiliary")
+        if not isinstance(raw_aux, dict):
+            raw_aux = {}
+        raw_aux_curator = raw_aux.get("curator")
+        if not isinstance(raw_aux_curator, dict):
+            raw_aux_curator = {}
+        added_aux: List[str] = []
+        for k, v in _aux_curator_defaults.items():
+            if k not in raw_aux_curator:
+                raw_aux_curator[k] = copy.deepcopy(v)
+                added_aux.append(k)
+        if added_aux:
+            raw_aux["curator"] = raw_aux_curator
+            config["auxiliary"] = raw_aux
+            touched = True
+
+        if touched:
+            save_config(config)
+            if added_curator:
+                results["config_added"].append(
+                    f"curator ({len(added_curator)} default key(s))"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Seeded curator defaults in config.yaml: "
+                        f"{', '.join(added_curator)}"
+                    )
+            if added_aux:
+                results["config_added"].append(
+                    f"auxiliary.curator ({len(added_aux)} default key(s))"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
+                        f"{', '.join(added_aux)}"
+                    )
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -3510,17 +3730,17 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
 
 
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Move stale root-level provider/base_url into model section.
+    """Move stale root-level provider/base_url/context_length into model section.
 
-    Some users (or older code) placed ``provider:`` and ``base_url:`` at the
-    config root instead of inside ``model:``.  These root-level keys are only
-    used as a fallback when the corresponding ``model.*`` key is empty — they
-    never override an existing ``model.provider`` or ``model.base_url``.
+    Some users (or older code) placed ``provider:``, ``base_url:``, or
+    ``context_length:`` at the config root instead of inside ``model:``.
+    These root-level keys are only used as a fallback when the corresponding
+    ``model.*`` key is empty — they never override an existing value.
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
     """
     # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url"))
+    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
     if not has_root:
         return config
 
@@ -3530,7 +3750,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         model = {"default": model} if model else {}
         config["model"] = model
 
-    for key in ("provider", "base_url"):
+    for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
         if root_val and not model.get(key):
             model[key] = root_val
@@ -4421,15 +4641,11 @@ def set_config_value(key: str, value: str):
         except Exception:
             user_config = {}
     
-    # Handle nested keys (e.g., "tts.provider")
-    parts = key.split('.')
-    current = user_config
-    
-    for part in parts[:-1]:
-        if part not in current or not isinstance(current.get(part), dict):
-            current[part] = {}
-        current = current[part]
-    
+    # Handle nested keys (e.g., "tts.provider") including numeric list
+    # indices (e.g., "custom_providers.0.api_key").  Delegates to
+    # _set_nested which preserves list-typed nodes; before #17876 the
+    # inline navigation here silently overwrote lists with dicts.
+
     # Convert value to appropriate type
     if value.lower() in ('true', 'yes', 'on'):
         value = True
@@ -4439,8 +4655,8 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
-    
-    current[parts[-1]] = value
+
+    _set_nested(user_config, key, value)
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
@@ -4459,7 +4675,9 @@ def set_config_value(key: str, value: str):
         "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "terminal.cwd": "TERMINAL_CWD",
+        # terminal.cwd intentionally excluded — CLI resolves at runtime,
+        # gateway bridges it in gateway/run.py. Persisting to .env causes
+        # stale values to poison child processes.
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",

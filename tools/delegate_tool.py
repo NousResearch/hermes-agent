@@ -1026,6 +1026,12 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Inherit the parent's fallback provider chain so subagents can recover
+    # from rate-limits and credential exhaustion exactly like the top-level
+    # agent does.  _fallback_chain is a list accepted by AIAgent's
+    # fallback_model parameter (which handles both list and dict forms).
+    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1038,6 +1044,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
+        fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -2292,7 +2299,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider)
+        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -2309,7 +2316,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
 
     return {
-        "model": configured_model,
+        "model": configured_model or runtime.get("model") or None,
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
@@ -2330,7 +2337,7 @@ def _load_config() -> dict:
     try:
         from cli import CLI_CONFIG
 
-        cfg = CLI_CONFIG.get("delegation", {})
+        cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
             return cfg
     except Exception:
@@ -2339,7 +2346,7 @@ def _load_config() -> dict:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation", {})
+        return full.get("delegation") or {}
     except Exception:
         return {}
 

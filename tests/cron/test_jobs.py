@@ -647,6 +647,74 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
 
+    def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "cron-recover",
+                "name": "AI Daily Digest",
+                "prompt": "...",
+                "schedule": {"kind": "cron", "expr": "0 12 * * *", "display": "0 12 * * *"},
+                "schedule_display": "0 12 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T09:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        recovered = get_job("cron-recover")["next_run_at"]
+        assert recovered is not None
+        recovered_dt = datetime.fromisoformat(recovered)
+        if recovered_dt.tzinfo is None:
+            recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
+        assert recovered_dt > now
+
+    def test_broken_interval_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "interval-recover",
+                "name": "Hourly heartbeat",
+                "prompt": "...",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "schedule_display": "every 1h",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T09:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        recovered = get_job("interval-recover")["next_run_at"]
+        assert recovered is not None
+        recovered_dt = datetime.fromisoformat(recovered)
+        if recovered_dt.tzinfo is None:
+            recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
+        assert recovered_dt > now
+
 
 class TestEnabledToolsets:
     def test_enabled_toolsets_stored(self, tmp_cron_dir):

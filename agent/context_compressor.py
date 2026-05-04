@@ -344,6 +344,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
 
     def update_model(
         self,
@@ -538,7 +539,7 @@ class ContextCompressor(ContextEngine):
             # Token-budget approach: walk backward accumulating tokens
             accumulated = 0
             boundary = len(result)
-            min_protect = min(protect_tail_count, len(result) - 1)
+            min_protect = min(protect_tail_count, len(result))
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 raw_content = msg.get("content") or ""
@@ -568,6 +569,8 @@ class ContextCompressor(ContextEngine):
             content = msg.get("content") or ""
             # Skip multimodal content (list of content blocks)
             if isinstance(content, list):
+                continue
+            if not isinstance(content, str):
                 continue
             if len(content) < 200:
                 continue
@@ -903,15 +906,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
             )
+            _is_timeout = (
+                _status in (408, 429, 502, 504)
+                or "timeout" in _err_str
+            )
             if (
-                _is_model_not_found
+                (_is_model_not_found or _is_timeout)
                 and self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
                 self._summary_model_fallen_back = True
                 logging.warning(
-                    "Summary model '%s' not available (%s). "
+                    "Summary model '%s' unavailable (%s). "
                     "Falling back to main model '%s' for compression.",
                     self.summary_model, e, self.model,
                 )
@@ -992,8 +999,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     def _get_tool_call_id(tc) -> str:
         """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
         if isinstance(tc, dict):
-            return tc.get("id", "")
-        return getattr(tc, "id", "") or ""
+            return tc.get("call_id", "") or tc.get("id", "") or ""
+        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
 
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.

@@ -293,9 +293,9 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
 - You can keep the bot from responding to ordinary group chatter with `telegram.require_mention: true`
 - With `telegram.require_mention: true`, group messages are accepted when they are:
-  - slash commands
   - replies to one of the bot's messages
   - `@botusername` mentions
+  - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see

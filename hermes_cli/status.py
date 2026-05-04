@@ -125,6 +125,7 @@ def show_status(args):
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
+        "NVIDIA": "NVIDIA_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "StepFun Step Plan": "STEPFUN_API_KEY",
@@ -139,6 +140,7 @@ def show_status(args):
         "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
+        "NVIDIA NIM":      "NVIDIA_API_KEY",
     }
 
     for name, env_var in keys.items():

@@ -1,4 +1,5 @@
-import { Select, SelectOption, Switch } from "@nous-research/ui";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 

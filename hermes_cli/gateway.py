@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +59,13 @@ class GatewayRuntimeSnapshot:
     @property
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
+
+
+@dataclass(frozen=True)
+class ProfileGatewayProcess:
+    profile: str
+    path: Path
+    pid: int
 
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
@@ -180,7 +188,7 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits with code 75.  Both systemd (``Restart=on-failure``
+    seconds), then exits with code 75.  Both systemd (``Restart=always``
     + ``RestartForceExitStatus=75``) and launchd (``KeepAlive.SuccessfulExit
     = false``) relaunch the process after the graceful exit.
 
@@ -229,6 +237,26 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     return False
 
 
+def _get_ancestor_pids() -> set[int]:
+    """Return the set of PIDs in the current process's ancestor chain.
+
+    Walks from the current PID up to PID 1 (init) so that process-table scans
+    never match the calling CLI process or any of its parents.  This prevents
+    ``hermes gateway status`` from falsely counting the ``hermes`` CLI that
+    invoked it as a running gateway instance (see #13242).
+    """
+    ancestors: set[int] = set()
+    pid = os.getpid()
+    # Cap iterations to avoid infinite loops on exotic platforms.
+    for _ in range(64):
+        ancestors.add(pid)
+        parent = _get_parent_pid(pid)
+        if parent is None or parent <= 0 or parent in ancestors:
+            break
+        pid = parent
+    return ancestors
+
+
 def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int]) -> None:
     if pid is None or pid <= 0:
         return
@@ -244,6 +272,10 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
     discover gateways outside the current profile.
     """
+    # Exclude the entire ancestor chain so the CLI process that invoked this
+    # scan (e.g. ``hermes gateway status``) is never mistaken for a running
+    # gateway.  See #13242.
+    exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
     patterns = [
         "hermes_cli.main gateway",
@@ -369,6 +401,83 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     return pids
+
+
+def find_profile_gateway_processes(
+    exclude_pids: set | None = None,
+) -> list[ProfileGatewayProcess]:
+    """Return running gateway PIDs mapped to Hermes profiles via PID files."""
+    _exclude = set(exclude_pids or set())
+    processes: list[ProfileGatewayProcess] = []
+    try:
+        from gateway.status import get_running_pid
+        from hermes_cli.profiles import list_profiles
+    except Exception:
+        return processes
+
+    seen: set[int] = set()
+    for profile in list_profiles():
+        try:
+            pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
+        except Exception:
+            continue
+        if pid is None or pid <= 0 or pid in _exclude or pid in seen:
+            continue
+        seen.add(pid)
+        processes.append(ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid))
+    return processes
+
+
+def _gateway_run_args_for_profile(profile: str) -> list[str]:
+    args = [get_python_path(), "-m", "hermes_cli.main"]
+    if profile != "default":
+        args.extend(["--profile", profile])
+    args.extend(["gateway", "run", "--replace"])
+    return args
+
+
+def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
+    """Relaunch a manually-run profile gateway after its current PID exits."""
+    if old_pid <= 0:
+        return False
+
+    watcher = textwrap.dedent(
+        """
+        import os
+        import subprocess
+        import sys
+        import time
+
+        pid = int(sys.argv[1])
+        cmd = sys.argv[2:]
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            except PermissionError:
+                pass
+            time.sleep(0.2)
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        """
+    ).strip()
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    return True
 
 
 def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
@@ -603,6 +712,32 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
     print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
     print("  This is usually a manual foreground/tmux/nohup run, so `hermes gateway`")
     print("  can refuse to start another copy until this process stops.")
+
+
+def _print_other_profiles_gateway_status() -> None:
+    """Print a summary of gateway status across all profiles.
+
+    Shown at the bottom of ``hermes gateway status`` output so users with
+    multiple profiles can tell at a glance which gateways are running and
+    avoid confusing another profile's process with the current one.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        current = get_active_profile_name()
+        other_processes = [
+            p for p in find_profile_gateway_processes()
+            if p.profile != current
+        ]
+        if not other_processes:
+            return
+
+        print()
+        print("Other profiles:")
+        for proc in other_processes:
+            print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
+    except Exception:
+        pass
 
 
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
@@ -1570,8 +1705,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=600
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -1585,8 +1719,10 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
-RestartSec=30
+Restart=always
+RestartSec=60
+RestartMaxDelaySec=300
+RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -1606,9 +1742,9 @@ WantedBy=multi-user.target
     sane_path = ":".join(path_entries)
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
-After=network.target
-StartLimitIntervalSec=600
-StartLimitBurst=5
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -1617,8 +1753,10 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=on-failure
-RestartSec=30
+Restart=always
+RestartSec=60
+RestartMaxDelaySec=300
+RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -2354,6 +2492,20 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     sys.path.insert(0, str(PROJECT_ROOT))
+
+    # Refresh the systemd unit definition on every boot so that restart
+    # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
+    # when the process was respawned via exit-code-75 (stale-code or
+    # /restart) rather than through `hermes gateway restart` which already
+    # calls refresh_systemd_unit_if_needed().  Without this, a code update
+    # that ships new unit settings won't take effect until the next manual
+    # `hermes gateway start/restart` — leaving the gateway vulnerable to
+    # the exact failure mode the new settings were meant to prevent.
+    if supports_systemd_services():
+        try:
+            refresh_systemd_unit_if_needed(system=False)
+        except Exception:
+            pass  # best-effort; don't block gateway startup
     
     from gateway.run import start_gateway
     
@@ -2366,9 +2518,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print()
     
     # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=on-failure will retry on transient errors
+    # so systemd Restart=always will retry on transient errors
     verbosity = None if quiet else verbose
-    success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+    try:
+        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+    except KeyboardInterrupt:
+        print("\nGateway stopped.")
+        return
     if not success:
         sys.exit(1)
 
@@ -4363,6 +4519,9 @@ def _gateway_command_inner(args):
                 else:
                     print("  hermes gateway install  # Install as user service")
                     print("  sudo hermes gateway install --system  # Install as boot-time system service")
+
+        # Show other profiles' gateway status for multi-profile awareness
+        _print_other_profiles_gateway_status()
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Hermes gateway unit files from

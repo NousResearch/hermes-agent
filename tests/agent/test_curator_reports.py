@@ -157,6 +157,19 @@ def test_report_md_is_human_readable(curator_env):
             final="Consolidated foo-like skills into foo-umbrella.",
             model="claude-opus-4.7",
             provider="openrouter",
+            tool_calls=[
+                # Evidence that `foo` was absorbed into `foo-umbrella`:
+                # write_file under foo-umbrella referencing foo.
+                {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({
+                        "action": "write_file",
+                        "name": "foo-umbrella",
+                        "file_path": "references/foo.md",
+                        "file_content": "# foo\nContent absorbed from the old foo skill.\n",
+                    }),
+                },
+            ],
         ),
     )
     md = (run_dir / "REPORT.md").read_text()
@@ -171,11 +184,12 @@ def test_report_md_is_human_readable(curator_env):
     assert "claude-opus-4.7" in md
     assert "openrouter" in md
 
-    # The added/archived lists are present
-    assert "Skills archived" in md
+    # The consolidated/added lists are present with clear language
+    assert "Consolidated into umbrella skills" in md
     assert "`foo`" in md
-    assert "New skills this run" in md
+    assert "merged into" in md
     assert "`foo-umbrella`" in md
+    assert "New skills this run" in md
 
     # The full LLM final response is included verbatim (no 240-char truncation)
     assert "Consolidated foo-like skills into foo-umbrella." in md
@@ -256,3 +270,167 @@ def test_state_transitions_captured_in_report(curator_env):
     assert "State transitions" in md
     assert "getting-old" in md
     assert "active → stale" in md
+
+
+# ---------------------------------------------------------------------------
+# Cron job skill reference rewriting (curator ↔ cron integration)
+# ---------------------------------------------------------------------------
+#
+# When the curator consolidates skill X into umbrella Y during a run, any
+# cron job that listed X in its ``skills`` field would fail to load X at
+# run time — the scheduler logs a warning and skips it, so the scheduled
+# job runs without the instructions it was scheduled to follow. These
+# tests verify that _write_run_report calls into cron.jobs to repair
+# those references and records what it did in both run.json and
+# cron_rewrites.json.
+
+
+@pytest.fixture
+def curator_env_with_cron(curator_env, monkeypatch):
+    """Extend curator_env with an initialized + repointed cron.jobs module."""
+    home = curator_env["home"]
+    (home / "cron").mkdir(exist_ok=True)
+    (home / "cron" / "output").mkdir(exist_ok=True)
+
+    import importlib
+    import cron.jobs as jobs_mod
+    importlib.reload(jobs_mod)
+    monkeypatch.setattr(jobs_mod, "HERMES_DIR", home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", home / "cron" / "output")
+
+    return {**curator_env, "jobs": jobs_mod}
+
+
+def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_cron):
+    """A skill consolidated into an umbrella should be rewritten in any
+    cron job's skills list; the rewrite should be visible in run.json
+    and cron_rewrites.json."""
+    curator = curator_env_with_cron["curator"]
+    jobs = curator_env_with_cron["jobs"]
+
+    # Create a cron job that depends on a soon-to-be-consolidated skill
+    job = jobs.create_job(
+        prompt="",
+        schedule="every 1h",
+        skills=["foo"],
+        name="foo-watcher",
+    )
+
+    # Simulate a curator pass that consolidated `foo` → `foo-umbrella`
+    before = [{"name": "foo", "state": "active", "pinned": False}]
+    after = [{"name": "foo-umbrella", "state": "active", "pinned": False}]
+
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=3.0,
+        auto_counts={"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="no changes",
+        before_report=before,
+        before_names={"foo"},
+        after_report=after,
+        llm_meta=_make_llm_meta(
+            final="Consolidated foo into foo-umbrella.",
+            tool_calls=[
+                {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({
+                        "action": "write_file",
+                        "name": "foo-umbrella",
+                        "file_path": "references/foo.md",
+                        "file_content": "from foo",
+                    }),
+                },
+            ],
+        ),
+    )
+
+    # Cron job is rewritten on disk
+    loaded = jobs.get_job(job["id"])
+    assert loaded["skills"] == ["foo-umbrella"]
+    assert loaded["skill"] == "foo-umbrella"
+
+    # Rewrite is recorded in run.json
+    payload = json.loads((run_dir / "run.json").read_text())
+    assert payload["cron_rewrites"]["jobs_updated"] == 1
+    assert payload["counts"]["cron_jobs_rewritten"] == 1
+    rewrites = payload["cron_rewrites"]["rewrites"]
+    assert len(rewrites) == 1
+    assert rewrites[0]["mapped"] == {"foo": "foo-umbrella"}
+
+    # Separate cron_rewrites.json is written for convenience
+    cron_file = run_dir / "cron_rewrites.json"
+    assert cron_file.exists()
+    detail = json.loads(cron_file.read_text())
+    assert detail["jobs_updated"] == 1
+
+    # Markdown surfaces the change
+    md = (run_dir / "REPORT.md").read_text()
+    assert "Cron job skill references rewritten" in md
+    assert "foo-watcher" in md
+    assert "foo-umbrella" in md
+
+
+def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
+    """A pruned (no-umbrella) skill should be dropped from the cron
+    job's skill list entirely — there's no forwarding target."""
+    curator = curator_env_with_cron["curator"]
+    jobs = curator_env_with_cron["jobs"]
+
+    job = jobs.create_job(
+        prompt="",
+        schedule="every 1h",
+        skills=["keep", "stale-one"],
+    )
+
+    before = [{"name": "stale-one", "state": "active", "pinned": False}]
+    after: list = []  # stale-one was archived with no target
+
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=1.0,
+        auto_counts={"checked": 1, "marked_stale": 0, "archived": 1, "reactivated": 0},
+        auto_summary="1 archived",
+        before_report=before,
+        before_names={"stale-one"},
+        after_report=after,
+        llm_meta=_make_llm_meta(),  # no tool calls → classifier marks it pruned
+    )
+
+    loaded = jobs.get_job(job["id"])
+    assert loaded["skills"] == ["keep"]
+
+    payload = json.loads((run_dir / "run.json").read_text())
+    assert payload["cron_rewrites"]["jobs_updated"] == 1
+    rewrites = payload["cron_rewrites"]["rewrites"]
+    assert rewrites[0]["dropped"] == ["stale-one"]
+
+
+def test_curator_report_has_no_cron_section_when_nothing_changes(curator_env_with_cron):
+    """When the curator run doesn't touch any skills, cron jobs are
+    untouched and cron_rewrites.json is not even written."""
+    curator = curator_env_with_cron["curator"]
+    jobs = curator_env_with_cron["jobs"]
+
+    jobs.create_job(prompt="", schedule="every 1h", skills=["foo"])
+
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=1.0,
+        auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="no changes",
+        before_report=[{"name": "foo", "state": "active", "pinned": False}],
+        before_names={"foo"},
+        after_report=[{"name": "foo", "state": "active", "pinned": False}],
+        llm_meta=_make_llm_meta(),
+    )
+
+    # No rewrites → no separate file, no section in md
+    assert not (run_dir / "cron_rewrites.json").exists()
+    md = (run_dir / "REPORT.md").read_text()
+    assert "Cron job skill references rewritten" not in md
+
+    payload = json.loads((run_dir / "run.json").read_text())
+    assert payload["cron_rewrites"]["jobs_updated"] == 0
+    assert payload["counts"]["cron_jobs_rewritten"] == 0

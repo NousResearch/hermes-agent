@@ -127,3 +127,66 @@ def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
         "Background review leaked its approval callback into the worker "
         "thread's TLS slot; a recycled thread-id could reuse it."
     )
+
+
+def test_background_review_summary_is_attributed_to_self_improvement_loop(monkeypatch):
+    """The CLI/gateway emission must identify the self-improvement loop.
+
+    Users who miss the line in their terminal have no way to tell that the
+    background review was what modified their skill/memory stores. The
+    summary prefix ``💾 Self-improvement review: …`` makes the origin
+    explicit so both the CLI and gateway deliveries are unambiguous.
+    """
+    import json
+
+    captured_prints: list = []
+    captured_bg_callback: list = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            # Simulate a review that successfully updated memory so
+            # _summarize_background_review_actions returns a real action.
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": json.dumps(
+                        {"success": True, "message": "Entry added", "target": "memory"}
+                    ),
+                }
+            ]
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda *a, **kw: captured_prints.append(" ".join(str(x) for x in a))
+    agent.background_review_callback = lambda msg: captured_bg_callback.append(msg)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    # Exactly one summary should have been emitted, and it must identify
+    # the self-improvement review explicitly.
+    assert len(captured_prints) == 1, captured_prints
+    printed = captured_prints[0]
+    assert "Self-improvement review" in printed, printed
+    assert "Memory updated" in printed, printed
+
+    # Gateway path gets the same prefix.
+    assert len(captured_bg_callback) == 1
+    assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
+        captured_bg_callback[0]
+    )

@@ -159,7 +159,7 @@ The adapter supports sending and receiving media in both directions.
 
 The agent can send media files via `MEDIA:` tags in responses. The following delivery methods are supported:
 
-- **Images** — `send_image_file` sends PNG, JPEG, GIF, WebP as native Signal attachments
+- **Images** — `send_multiple_images` and `send_image_file` send PNG, JPEG, GIF, WebP as native Signal attachments
 - **Voice** — `send_voice` sends audio files (OGG, MP3, WAV, M4A, AAC) as attachments
 - **Video** — `send_video` sends MP4 video files
 - **Documents** — `send_document` sends any file type (PDF, ZIP, etc.)
@@ -167,6 +167,9 @@ The agent can send media files via `MEDIA:` tags in responses. The following del
 All outgoing media goes through Signal's standard attachment API. Unlike some platforms, Signal does not distinguish between voice messages and file attachments at the protocol level.
 
 Attachment size limit: **100 MB** (both directions).
+:::warning
+**Signal servers will rate-limit attachment uploads**, the adapter uses a scheduler for multiple image sending that batches images in groups of 32 and throttles uploads to match the Signal server policy.
+:::
 
 ### Native Formatting, Reply Quotes, and Reactions
 

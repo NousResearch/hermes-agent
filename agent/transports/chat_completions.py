@@ -24,6 +24,18 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if reasoning_config is None or not isinstance(reasoning_config, dict):
         return None
 
+    normalized_model = (model or "").strip().lower()
+    if normalized_model.startswith("google/"):
+        normalized_model = normalized_model.split("/", 1)[1]
+
+    # ``thinking_config`` is a Gemini-only request parameter. The same
+    # ``gemini`` provider also serves Gemma (and historically PaLM/Bard);
+    # those reject the field with HTTP 400 "Unknown name 'thinking_config':
+    # Cannot find field" — including the polite ``{"includeThoughts": False}``
+    # form. Omit the field entirely on non-Gemini models. (#17426)
+    if not normalized_model.startswith("gemini"):
+        return None
+
     if reasoning_config.get("enabled") is False:
         # Gemini can hide thought parts even when internal thinking still
         # happens; omit thinkingLevel to avoid model-specific validation quirks.
@@ -34,9 +46,6 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return {"includeThoughts": False}
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
-    normalized_model = (model or "").strip().lower()
-    if normalized_model.startswith("google/"):
-        normalized_model = normalized_model.split("/", 1)[1]
 
     # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
     # coarse effort levels. ``includeThoughts`` alone is enough to surface
@@ -468,9 +477,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # so keep them apart in provider_data rather than merging.
         reasoning = getattr(msg, "reasoning", None)
         reasoning_content = getattr(msg, "reasoning_content", None)
+        if reasoning_content is None and hasattr(msg, "model_extra"):
+            model_extra = getattr(msg, "model_extra", None) or {}
+            if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
+                reasoning_content = model_extra["reasoning_content"]
 
         provider_data: Dict[str, Any] = {}
-        if reasoning_content:
+        if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
         rd = getattr(msg, "reasoning_details", None)
         if rd:

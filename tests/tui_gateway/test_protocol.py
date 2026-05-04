@@ -594,6 +594,24 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["name"] == "hermes-agent-dev"
 
 
+def test_command_dispatch_awaits_async_plugin_handler(server):
+    async def _handler(arg):
+        return f"async:{arg}"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: _handler if name == "async-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin",
+            "method": "command.dispatch",
+            "params": {"name": "async-cmd", "arg": "hello"},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "async:hello"}
+
+
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 

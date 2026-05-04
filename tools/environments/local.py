@@ -170,22 +170,33 @@ def _harden_against_proc_environ_leak() -> None:
     sanitization done at Popen time.  Dropping dumpable changes the ownership
     of the /proc files to root:root with mode 400, which blocks same-UID
     readers on Linux.  No-op on non-Linux platforms.
+
+    Privileged bypass paths still exist (CAP_SYS_PTRACE in the target's user
+    namespace, ptrace-mode FSCREDS overrides) and are out of scope for this
+    function; pair with /proc hidepid=2 mount option for defense in depth.
     """
     global _PROC_ENVIRON_HARDENED
-    if _PROC_ENVIRON_HARDENED:
-        return
     if platform.system() != "Linux":
         _PROC_ENVIRON_HARDENED = True
         return
     try:
         import ctypes
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        try:
+            libc = ctypes.CDLL(libc_name or "libc.so.6", use_errno=True)
+        except OSError:
+            libc = ctypes.CDLL(None, use_errno=True)
         libc.prctl.argtypes = [
             ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
             ctypes.c_ulong, ctypes.c_ulong,
         ]
         libc.prctl.restype = ctypes.c_int
+        PR_GET_DUMPABLE = 3
         PR_SET_DUMPABLE = 4
+        if libc.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 0:
+            _PROC_ENVIRON_HARDENED = True
+            return
         rc = libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
     except Exception as exc:
         _warn_harden_failed(f"libc/prctl unavailable: {type(exc).__name__}")

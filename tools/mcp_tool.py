@@ -292,8 +292,13 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     explicitly specified by the user in the server config.
 
     This prevents accidentally leaking secrets like API keys, tokens, or
-    credentials to MCP server subprocesses.
+    credentials to MCP server subprocesses. PR_SET_DUMPABLE is also cleared
+    here so an MCP stdio child can't recover the stripped vars by reading
+    /proc/<ppid>/environ — see issue #4427.
     """
+    from tools.environments.local import _harden_against_proc_environ_leak
+    _harden_against_proc_environ_leak()
+
     env = {}
     for key, value in os.environ.items():
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):

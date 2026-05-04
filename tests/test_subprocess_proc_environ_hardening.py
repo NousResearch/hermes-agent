@@ -36,12 +36,12 @@ def _set_dumpable(value: int) -> None:
 
 @pytest.fixture
 def restore_dumpable():
-    original = _get_dumpable()
-    _set_dumpable(1)
     import tools.environments.local as _local
+    original = _get_dumpable()
     original_flag = getattr(_local, "_PROC_ENVIRON_HARDENED", None)
     if original_flag is not None:
         _local._PROC_ENVIRON_HARDENED = False
+    _set_dumpable(1)
     yield
     if original_flag is not None:
         _local._PROC_ENVIRON_HARDENED = original_flag
@@ -64,13 +64,19 @@ class TestProcEnvironHardening:
         _make_run_env({"PATH": "/usr/bin"})
         assert _get_dumpable() == 0
 
-    def test_hardening_runs_only_once(self, restore_dumpable):
+    def test_hardening_reapplies_when_dumpable_resets(self, restore_dumpable):
         from tools.environments.local import _sanitize_subprocess_env
         _sanitize_subprocess_env({})
         assert _get_dumpable() == 0
         _set_dumpable(1)
         _sanitize_subprocess_env({})
+        assert _get_dumpable() == 0
+
+    def test_mcp_build_safe_env_clears_dumpable(self, restore_dumpable):
         assert _get_dumpable() == 1
+        from tools.mcp_tool import _build_safe_env
+        _build_safe_env(None)
+        assert _get_dumpable() == 0
 
     @pytest.mark.skipif(
         os.geteuid() == 0,

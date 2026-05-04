@@ -681,7 +681,11 @@ class TestBuildMessageEvent:
         assert event.source.chat_id == "spaces/S"
         # First message in this thread → main-flow → no thread_id on source.
         assert event.source.thread_id is None
-        assert event.source.user_id_alt == "u@example.com"
+        # Identity convention (post-#14965 absorption): the sender's email
+        # is the canonical ``user_id``; the Chat resource name moves to
+        # ``user_id_alt`` for traceability and Chat-API operations.
+        assert event.source.user_id == "u@example.com"
+        assert event.source.user_id_alt == "users/12345"
         # Cache MUST be empty for main-flow so outbound bot reply lands
         # at top-level (Chat creates a separate thread for it). If we
         # cached the user's auto-thread name and replied with thread.name
@@ -2437,11 +2441,21 @@ class TestSupervisorReconnect:
 
 
 class TestAuthorizationEmailMatch:
-    def test_allowlist_matches_via_user_id_alt(self, monkeypatch):
-        """Regression test: GOOGLE_CHAT_ALLOWED_USERS with email values must
-        match against source.user_id_alt (email) not just source.user_id
-        (which for Google Chat is 'users/{id}'). Without this, the setup
-        wizard's email prompt produces a silent auth-denial."""
+    """`GOOGLE_CHAT_ALLOWED_USERS=email` matches naturally without a bridge.
+
+    Post-#14965 absorption: the adapter sets ``source.user_id =
+    sender_email`` directly, so the generic allowlist match in
+    ``_is_user_authorized`` finds it without any platform-specific
+    code path. Pinning here so the bridge can never silently come
+    back without a test failing.
+    """
+
+    def test_allowlist_matches_when_user_id_is_email(self, monkeypatch):
+        """Email allowlist match — the canonical case.
+
+        The adapter assigns ``user_id = sender_email`` so the generic
+        check_ids path picks it up. No platform-specific bridge needed.
+        """
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource
@@ -2456,9 +2470,9 @@ class TestAuthorizationEmailMatch:
             platform=Platform.GOOGLE_CHAT,
             chat_id="spaces/S",
             chat_type="dm",
-            user_id="users/12345",
+            user_id="alice@example.com",       # post-swap: email is canonical
             user_name="Alice",
-            user_id_alt="alice@example.com",
+            user_id_alt="users/12345",         # resource name moves to alt
         )
         assert runner._is_user_authorized(source) is True
 
@@ -2477,11 +2491,37 @@ class TestAuthorizationEmailMatch:
             platform=Platform.GOOGLE_CHAT,
             chat_id="spaces/S",
             chat_type="dm",
-            user_id="users/99999",
+            user_id="bob@example.com",
             user_name="Bob",
-            user_id_alt="bob@example.com",
+            user_id_alt="users/99999",
         )
         assert runner._is_user_authorized(source) is False
+
+    def test_allowlist_falls_back_to_resource_name_when_no_email(
+        self, monkeypatch
+    ):
+        """If sender has no email, ``user_id`` falls back to the resource
+        name. Operators who allowlist by ``users/{id}`` still match.
+        """
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "users/77777")
+        cfg = GatewayConfig()
+        runner = GatewayRunner(cfg)
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved = MagicMock(return_value=False)
+
+        source = SessionSource(
+            platform=Platform.GOOGLE_CHAT,
+            chat_id="spaces/S",
+            chat_type="dm",
+            user_id="users/77777",  # no email available — resource name wins
+            user_name="System",
+            user_id_alt=None,
+        )
+        assert runner._is_user_authorized(source) is True
 
 
 # ===========================================================================

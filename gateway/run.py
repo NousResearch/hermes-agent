@@ -4416,15 +4416,6 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
-        # Google Chat: source.user_id is "users/{id}" but operators typically
-        # configure GOOGLE_CHAT_ALLOWED_USERS with email addresses (matching
-        # the setup wizard's prompt). Include source.user_id_alt (the sender's
-        # email) in the check_ids set so email-based allowlists actually match.
-        if source.platform == Platform.GOOGLE_CHAT and source.user_id_alt:
-            check_ids.add(source.user_id_alt)
-            if "@" in source.user_id_alt:
-                check_ids.add(source.user_id_alt.split("@")[0])
-
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
             normalized_allowed_ids = set()

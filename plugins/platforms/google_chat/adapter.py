@@ -1511,10 +1511,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
             chat_id=space_name,
             chat_name=space.get("displayName") or space.get("name") or "",
             chat_type=chat_type,
-            user_id=sender_name,
+            # ``user_id`` is the canonical identity used by allowlists,
+            # session keys, and audit. Operators configure
+            # ``GOOGLE_CHAT_ALLOWED_USERS`` with email addresses (the
+            # value Google Chat surfaces in its UI), so the email is
+            # the natural canonical id. The Chat resource name
+            # ``users/{id}`` moves to ``user_id_alt`` for traceability
+            # and Chat-API operations that need it. Falls back to the
+            # resource name when sender has no email (rare — bot-to-bot
+            # or system events). Pattern lifted from PR #14965.
+            user_id=(sender_email or sender_name),
             user_name=sender_display,
             thread_id=session_thread_id,
-            user_id_alt=sender_email or None,
+            user_id_alt=(sender_name or None),
         )
         return MessageEvent(
             text=text,

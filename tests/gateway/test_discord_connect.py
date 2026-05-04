@@ -718,3 +718,77 @@ async def test_safe_sync_detects_contexts_drift():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_awaited_once_with(999, 77)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+def _make_discord_message(*, channel_id=123, content="hello", mentions=None):
+    channel = SimpleNamespace(
+        id=channel_id,
+        name=f"chan-{channel_id}",
+        guild=SimpleNamespace(id=456, name="Test Guild"),
+        topic=None,
+    )
+    return SimpleNamespace(
+        id=789,
+        content=content,
+        channel=channel,
+        guild=channel.guild,
+        author=SimpleNamespace(id=111, name="Alice", display_name="Alice", bot=False),
+        mentions=mentions or [],
+        attachments=[],
+        reference=None,
+        created_at=None,
+        type=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_marks_voice_linked_text_channel_as_voice(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    bot_user = SimpleNamespace(id=999, name="Hermes")
+    adapter._client = SimpleNamespace(user=bot_user)
+    adapter._voice_text_channels = {"voice-channel": "123"}
+    adapter._text_batch_delay_seconds = 0
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["event"] = event
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+    message = _make_discord_message(channel_id=123, content="hello from voice text")
+    await adapter._handle_message(message)
+
+    assert captured["event"].message_type == discord_platform.MessageType.VOICE
+
+
+@pytest.mark.asyncio
+async def test_handle_message_keeps_non_voice_linked_text_channel_as_text(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    bot_user = SimpleNamespace(id=999, name="Hermes")
+    adapter._client = SimpleNamespace(user=bot_user)
+    adapter._voice_text_channels = {"voice-channel": "123"}
+    adapter._text_batch_delay_seconds = 0
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["event"] = event
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+    message = _make_discord_message(
+        channel_id=124,
+        content="<@999> hello from regular text",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    assert captured["event"].message_type == discord_platform.MessageType.TEXT

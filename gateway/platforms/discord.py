@@ -3832,6 +3832,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             msg_type = MessageType.DOCUMENT
                     break
 
+        # Voice-linked channels: treat as VOICE so auto-TTS triggers in base.py.
+        if is_voice_linked_channel and msg_type == MessageType.TEXT:
+            msg_type = MessageType.VOICE
+
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
 

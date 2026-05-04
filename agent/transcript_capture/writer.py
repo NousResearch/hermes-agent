@@ -36,6 +36,24 @@ class TranscriptWriter:
     def __init__(self, config: TranscriptCaptureConfig):
         self.config = config
 
+    def _redact_configured_identifiers(self, body: str, *, session_key: str, session_id: str) -> str:
+        replacements = []
+        replacements.extend((value, "[REDACTED CHAT ID]") for value in self.config.chat_allowlist)
+        replacements.extend((value, "[REDACTED SESSION ID]") for value in self.config.session_allowlist)
+        replacements.extend((value, "[REDACTED TRANSCRIPT ID]") for value in self.config.denylist)
+        replacements.extend(
+            (value, "[REDACTED SESSION ID]")
+            for value in (session_key, session_id)
+            if value
+        )
+        redacted = body
+        for raw, marker in sorted(replacements, key=lambda item: len(str(item[0])), reverse=True):
+            raw_text = str(raw)
+            if not raw_text:
+                continue
+            redacted = redacted.replace(raw_text, marker)
+        return redacted
+
     def final_path(self, date_prefix: str, platform: str, session_key: str, session_id: str) -> Path:
         filename = (
             f"{_safe_component(date_prefix)}-{_safe_component(platform)}-"
@@ -46,6 +64,7 @@ class TranscriptWriter:
 
     def publish(self, date_prefix: str, platform: str, session_key: str, session_id: str, body: str) -> Path:
         body = force_redact_text(body)
+        body = self._redact_configured_identifiers(body, session_key=session_key, session_id=session_id)
         if not body.rstrip().endswith("END_SESSION"):
             raise ValueError("finalized transcript must end with END_SESSION")
         self.config.active_dir.mkdir(parents=True, exist_ok=True)

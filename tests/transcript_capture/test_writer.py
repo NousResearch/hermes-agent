@@ -57,3 +57,27 @@ def test_publish_forces_redaction_at_disk_write_boundary(tmp_path):
     assert raw_secret not in body
     assert "Bearer ***" in body
     assert body.endswith("END_SESSION\n")
+
+
+def test_publish_redacts_configured_raw_chat_identifiers_from_body(tmp_path):
+    raw_chat_id = "1498618695046660267"
+    cfg = TranscriptCaptureConfig(
+        active_dir=tmp_path / "active",
+        corpus_dir=tmp_path / "corpus",
+        state_dir=tmp_path / "state",
+        chat_allowlist=frozenset({raw_chat_id}),
+    )
+    writer = TranscriptWriter(cfg)
+
+    final = writer.publish(
+        "2026-05-04",
+        "discord",
+        "session-key",
+        "session-id",
+        f"quoted rollout note mentioned channel {raw_chat_id}\nEND_SESSION\n",
+    )
+
+    body = final.read_text()
+    assert raw_chat_id not in body
+    assert "[REDACTED CHAT ID]" in body
+    assert body.endswith("END_SESSION\n")

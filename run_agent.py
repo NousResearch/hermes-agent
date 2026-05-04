@@ -7388,6 +7388,22 @@ class AIAgent:
                 self._touch_activity(
                     f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
                 )
+                # User-visible heartbeat: long thinking pauses (large
+                # contexts on slow models, local provider prefill, etc.)
+                # produce zero terminal output for the entire stale-stream
+                # window — by default 180s.  That looks frozen.  Surface a
+                # status line every heartbeat tick once we've been silent
+                # for >= _HEARTBEAT_INTERVAL so the user knows we're alive
+                # and still waiting on the provider.
+                if _waiting_secs >= int(_HEARTBEAT_INTERVAL):
+                    try:
+                        _model_name = api_kwargs.get("model", "unknown")
+                        self._emit_status(
+                            f"⏳ Still waiting on provider — {_waiting_secs}s elapsed "
+                            f"(model: {_model_name})"
+                        )
+                    except Exception:
+                        pass
 
             # Detect stale streams: connections kept alive by SSE pings
             # but delivering no real chunks.  Kill the client so the

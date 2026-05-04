@@ -364,11 +364,15 @@
   letter-spacing: 0.02em;
 }
 .hermes-kanban-home-sub--on {
-  /* Subtly indicate the subscribed state without a hard color change so
-   * dashboard themes stay coherent. Border + tinted background. */
-  border-color: color-mix(in srgb, var(--color-ring) 55%, var(--color-border));
-  background: color-mix(in srgb, var(--color-ring) 14%, transparent);
+  /* Subscribed toggle — use a strong ring-colored accent so the on/off
+   * distinction reads at a glance, not just from the ✓ prefix. Border +
+   * filled background + bolder weight keep the state obvious across
+   * themes (tested on default teal and NERV orange). */
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 32%, transparent);
   color: var(--color-foreground);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ring) 40%, transparent);
 }
 
 .hermes-kanban-section {

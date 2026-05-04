@@ -470,6 +470,11 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Idle timeout: if no output activity for this many seconds, the command
+        # is considered timed out. This allows long-running commands like git clone
+        # to continue as long as they're producing output. Set to 0 to disable and
+        # use only the fixed timeout.
+        "idle_timeout": 60,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.

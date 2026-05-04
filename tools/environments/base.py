@@ -531,6 +531,19 @@ class BaseEnvironment(ABC):
             "start": _now,
         }
 
+        # Get idle timeout from config (adaptive timeout based on output activity)
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _idle_timeout = _cfg.get("terminal", {}).get("idle_timeout", 60)
+            if _idle_timeout <= 0:
+                _idle_timeout = None  # Disable idle timeout
+        except Exception:
+            _idle_timeout = 60  # Fallback default
+
+        _last_output_activity = _now
+        _last_output_count = 0
+
         # --- Debug tracing (opt-in via HERMES_DEBUG_INTERRUPT=1) -------------
         # Captures loop entry/exit, interrupt state changes, and periodic
         # heartbeats so we can diagnose "agent never sees the interrupt"
@@ -566,17 +579,36 @@ class BaseEnvironment(ABC):
                         "output": "".join(output_chunks) + "\n[Command interrupted]",
                         "returncode": 130,
                     }
-                if time.monotonic() > deadline:
+                # Check for output activity (adaptive timeout)
+                _current_output_count = len(output_chunks)
+                if _current_output_count > _last_output_count:
+                    _last_output_activity = time.monotonic()
+                    _last_output_count = _current_output_count
+
+                # Check timeout conditions
+                _now = time.monotonic()
+                _hard_timeout = _now > deadline
+                _idle_timeout_exceeded = (
+                    _idle_timeout is not None and
+                    _now - _last_output_activity > _idle_timeout
+                )
+
+                if _hard_timeout or _idle_timeout_exceeded:
                     if _DEBUG_INTERRUPT:
                         logger.info(
                             "[interrupt-debug] _wait_for_process TIMEOUT "
-                            "tid=%s pid=%s iter=%d timeout=%ss",
-                            _tid, _pid, _iter_count, timeout,
+                            "tid=%s pid=%s iter=%d timeout=%s idle_timeout=%s "
+                            "hard=%s idle=%s",
+                            _tid, _pid, _iter_count, timeout, _idle_timeout,
+                            _hard_timeout, _idle_timeout_exceeded,
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     partial = "".join(output_chunks)
-                    timeout_msg = f"\n[Command timed out after {timeout}s]"
+                    if _idle_timeout_exceeded and not _hard_timeout:
+                        timeout_msg = f"\n[Command timed out after {_now - _activity_state['start']:.0f}s (no output for {_idle_timeout}s)]"
+                    else:
+                        timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
                         "output": partial + timeout_msg
                         if partial

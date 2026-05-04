@@ -133,6 +133,20 @@ def _compute_repo_mtime(repo_root: Path) -> float:
     return newest
 
 
+def _loaded_modules_missing_expected_exports() -> bool:
+    """Return True if loaded ``hermes_cli.config`` or ``utils`` lack expected attributes."""
+    cfg_mod = sys.modules.get("hermes_cli.config")
+    if cfg_mod is not None and not hasattr(cfg_mod, "cfg_get"):
+        return True
+    utils_mod = sys.modules.get("utils")
+    if utils_mod is not None:
+        if not hasattr(utils_mod, "atomic_replace"):
+            return True
+        if not hasattr(utils_mod, "base_url_host_matches"):
+            return True
+    return False
+
+
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
 
@@ -1019,6 +1033,13 @@ class GatewayRunner:
             self._boot_repo_mtime: float = _compute_repo_mtime(
                 self._repo_root_for_staleness,
             )
+            if self._boot_repo_mtime <= 0.0 and self._boot_wall_time:
+                logger.warning(
+                    "Stale-code mtime baseline unavailable (no readable sentinel "
+                    "files under %s). Export-based detection still applies. "
+                    "See Issue #17648.",
+                    self._repo_root_for_staleness,
+                )
         except Exception:
             self._boot_wall_time = 0.0
             self._repo_root_for_staleness = Path(".")
@@ -2637,6 +2658,8 @@ class GatewayRunner:
         sentinel file is readable, to avoid false-positive restart loops
         in unusual checkouts (sparse clones, read-only filesystems).
         """
+        if _loaded_modules_missing_expected_exports():
+            return True
         if not self._boot_wall_time or not self._boot_repo_mtime:
             return False
         try:

@@ -9,15 +9,15 @@ and ``_trigger_stale_code_restart()`` triggers a graceful restart.
 """
 
 import os
+import sys
 import time
+import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from gateway.run import (
     GatewayRunner,
     _compute_repo_mtime,
+    _loaded_modules_missing_expected_exports,
     _STALE_CODE_SENTINELS,
 )
 
@@ -94,6 +94,33 @@ def test_detect_stale_code_false_when_files_unchanged(tmp_path):
 
     runner = _make_runner(repo, boot_mtime=baseline, boot_wall=baseline)
     assert runner._detect_stale_code() is False
+
+
+def test_loaded_modules_missing_expected_exports_detects_stale_config(monkeypatch):
+    stale_cfg = types.ModuleType("hermes_cli.config")
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", stale_cfg)
+    assert _loaded_modules_missing_expected_exports() is True
+
+
+def test_loaded_modules_missing_expected_exports_detects_stale_utils(monkeypatch):
+    stale_utils = types.ModuleType("utils")
+    monkeypatch.setitem(sys.modules, "utils", stale_utils)
+    assert _loaded_modules_missing_expected_exports() is True
+
+
+def test_detect_stale_code_true_when_sys_modules_config_lacks_cfg_get(
+    tmp_path, monkeypatch
+):
+    stale_cfg = types.ModuleType("hermes_cli.config")
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", stale_cfg)
+
+    repo = _make_tmp_repo(tmp_path)
+    baseline = time.time() - 100
+    for rel in _STALE_CODE_SENTINELS:
+        os.utime(repo / rel, (baseline, baseline))
+
+    runner = _make_runner(repo, boot_mtime=baseline, boot_wall=baseline)
+    assert runner._detect_stale_code() is True
 
 
 def test_detect_stale_code_true_after_update(tmp_path):

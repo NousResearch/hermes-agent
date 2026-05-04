@@ -85,10 +85,12 @@ class TestValidateProfileName:
         # Should not raise
         validate_profile_name(name)
 
-    def test_uppercase_accepted_via_normalization(self):
-        validate_profile_name("Jules")
+    def test_uppercase_rejected(self):
+        # validate_profile_name is strict — callers normalize first, then validate.
+        with pytest.raises(ValueError):
+            validate_profile_name("Jules")
 
-    @pytest.mark.parametrize("name", ["has space", ".hidden", "-leading"])
+    @pytest.mark.parametrize("name", ["UPPER", "has space", ".hidden", "-leading"])
     def test_invalid_names_rejected(self, name):
         with pytest.raises(ValueError):
             validate_profile_name(name)

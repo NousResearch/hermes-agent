@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -11,6 +11,10 @@ Provides speech-to-text transcription with six providers:
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
+  - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+    Defaults to ``scribe_v2``; 99 languages, word-level timestamps, optional
+    diarization. Additional keys (``ELEVENLABS_API_KEY_2``, ``_3``, ...) are
+    used as fallbacks when the primary key hits its quota.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -95,6 +99,13 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
+DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+ELEVENLABS_STT_MODELS = {"scribe_v1", "scribe_v1_experimental", "scribe_v2"}
+# How far to scan ELEVENLABS_API_KEY_<N> when collecting fallback keys for
+# quota rotation.  Ten is well past anything a real user would set up but
+# keeps the env scan bounded.
+ELEVENLABS_MAX_FALLBACK_KEYS = 10
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -138,6 +149,29 @@ def _has_openai_audio_backend() -> bool:
         return True
     except ValueError:
         return False
+
+
+def _get_elevenlabs_api_keys() -> list:
+    """Return the ordered list of ElevenLabs API keys for STT.
+
+    Reads ``ELEVENLABS_API_KEY`` first, then ``ELEVENLABS_API_KEY_2``,
+    ``_3``, ... up to ``ELEVENLABS_MAX_FALLBACK_KEYS``.  Empty entries
+    are skipped and duplicates dropped while preserving order, so the
+    primary key is always tried first when rotating on quota errors.
+    """
+    keys: list = []
+    primary = get_env_value("ELEVENLABS_API_KEY")
+    if primary:
+        keys.append(primary)
+    for n in range(2, ELEVENLABS_MAX_FALLBACK_KEYS + 1):
+        extra = get_env_value(f"ELEVENLABS_API_KEY_{n}")
+        if extra and extra not in keys:
+            keys.append(extra)
+    return keys
+
+
+def _has_elevenlabs_credentials() -> bool:
+    return bool(_get_elevenlabs_api_keys())
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -234,6 +268,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "openai",
     "mistral",
     "xai",
+    "elevenlabs",
 })
 
 
@@ -739,7 +774,11 @@ def _get_provider(stt_config: dict) -> str:
 
     When ``stt.provider`` is explicitly set in config, that choice is
     honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq (free) > openai (paid).
+    auto-detect tries: local > groq > elevenlabs > openai > xai.  Free
+    providers (local, groq) come first; among paid providers, Scribe v2
+    is preferred over whisper-1 on accuracy and language coverage.
+    ``mistral`` is intentionally skipped while ``mistralai`` is quarantined
+    on PyPI (malicious 2.4.6 release on 2026-05-12).
     """
     if not is_stt_enabled(stt_config):
         return "none"
@@ -815,9 +854,22 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "elevenlabs":
+            if _has_elevenlabs_credentials():
+                return "elevenlabs"
+            logger.warning(
+                "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
+    # --- Auto-detect (no explicit provider) -------------------------------
+    # Priority: local > groq > elevenlabs > openai > xai.
+    # Free providers (local, groq) still beat paid ones; among paid, Scribe
+    # v2's accuracy and 99-language coverage make it the better default than
+    # whisper-1 when both keys happen to be present.  Anyone with a strong
+    # opinion sets ``stt.provider`` explicitly.
     # mistral is intentionally skipped while `mistralai` is quarantined on
     # PyPI (malicious 2.4.6 release on 2026-05-12).
 
@@ -831,6 +883,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
+    if _has_elevenlabs_credentials():
+        logger.info("No local STT available, using ElevenLabs Scribe API")
+        return "elevenlabs"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
@@ -1502,6 +1557,198 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: ElevenLabs (Scribe API)
+# ---------------------------------------------------------------------------
+
+
+# HTTP statuses we treat as "this key is exhausted, try the next one".
+# 401 covers an outright-revoked key, 402 covers payment-required (paid plans
+# that have hit a hard cap), 429 covers rate/quota limits.
+_ELEVENLABS_QUOTA_STATUSES = {401, 402, 429}
+
+# Substrings (lowercased) we look for in the response body to detect quota
+# exhaustion even when the HTTP status doesn't make it obvious.
+_ELEVENLABS_QUOTA_BODY_MARKERS = (
+    "quota_exceeded",
+    "out_of_credits",
+    "insufficient_credits",
+    "quota exceeded",
+)
+
+
+def _summarise_elevenlabs_error(response) -> str:
+    """Best-effort one-liner describing an ElevenLabs error response."""
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return (response.text or "")[:300]
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, dict):
+            return str(
+                detail.get("message")
+                or detail.get("status")
+                or detail
+            )[:300]
+        if isinstance(detail, str):
+            return detail[:300]
+        message = body.get("message") or body.get("error")
+        if isinstance(message, str):
+            return message[:300]
+    return str(body)[:300]
+
+
+def _is_elevenlabs_quota_response(response) -> bool:
+    """Return True when the response indicates we should rotate keys."""
+    if response.status_code in _ELEVENLABS_QUOTA_STATUSES:
+        return True
+    body_text = (response.text or "").lower()
+    return any(marker in body_text for marker in _ELEVENLABS_QUOTA_BODY_MARKERS)
+
+
+def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using the ElevenLabs Scribe API.
+
+    Uses ``POST /v1/speech-to-text`` with multipart/form-data and the
+    ``xi-api-key`` header.  Defaults to ``scribe_v2`` for accuracy; callers
+    may opt into ``scribe_v1`` or ``scribe_v1_experimental`` via
+    ``stt.elevenlabs.model``.
+
+    Supports key rotation: when the primary ``ELEVENLABS_API_KEY`` returns
+    a quota/auth error (HTTP 401/402/429 or a JSON body indicating
+    ``quota_exceeded``), the next key in ``ELEVENLABS_API_KEY_2``,
+    ``_3``, ... is tried automatically.  Non-quota errors (e.g. 400, 5xx)
+    are not retried — the same fault would burn through every key.
+    """
+    api_keys = _get_elevenlabs_api_keys()
+    if not api_keys:
+        return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
+
+    # Empty / falsy model names fall back to the documented default.  Unknown
+    # but truthy names pass through so users can opt into models released
+    # after this code shipped (e.g. a future scribe_v3) — the API is the
+    # authoritative gate, not this module.
+    if not model_name:
+        model_name = DEFAULT_ELEVENLABS_STT_MODEL
+    elif model_name not in ELEVENLABS_STT_MODELS:
+        logger.debug(
+            "ElevenLabs STT model '%s' is not in the known set %s; "
+            "passing through to the API anyway.",
+            model_name,
+            sorted(ELEVENLABS_STT_MODELS),
+        )
+
+    stt_config = _load_stt_config()
+    el_config = stt_config.get("elevenlabs", {}) or {}
+    base_url = str(
+        el_config.get("base_url")
+        or get_env_value("ELEVENLABS_STT_BASE_URL")
+        or ELEVENLABS_STT_BASE_URL
+    ).strip().rstrip("/")
+    language_code = str(el_config.get("language_code") or "").strip()
+    diarize = is_truthy_value(el_config.get("diarize", False))
+    tag_audio_events = is_truthy_value(el_config.get("tag_audio_events", False))
+    timestamps_granularity = str(
+        el_config.get("timestamps_granularity") or ""
+    ).strip().lower()
+
+    try:
+        import requests
+    except ImportError:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "requests package not installed",
+        }
+
+    form_data: Dict[str, str] = {"model_id": model_name}
+    if language_code:
+        form_data["language_code"] = language_code
+    if diarize:
+        form_data["diarize"] = "true"
+    if tag_audio_events:
+        form_data["tag_audio_events"] = "true"
+    if timestamps_granularity in {"none", "word", "character"}:
+        form_data["timestamps_granularity"] = timestamps_granularity
+
+    last_error = ""
+    for index, api_key in enumerate(api_keys):
+        key_label = f"key #{index + 1}" if len(api_keys) > 1 else "key"
+        try:
+            with open(file_path, "rb") as audio_file:
+                response = requests.post(
+                    f"{base_url}/speech-to-text",
+                    headers={"xi-api-key": api_key},
+                    files={"file": (Path(file_path).name, audio_file)},
+                    data=form_data,
+                    timeout=120,
+                )
+        except PermissionError:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Permission denied: {file_path}",
+            }
+        except Exception as e:
+            logger.error(
+                "ElevenLabs STT request failed (%s): %s", key_label, e, exc_info=True,
+            )
+            last_error = f"Request failed: {type(e).__name__}: {e}"
+            # Network-level failures aren't a per-key problem — break so we
+            # don't retry the same flaky network N times.
+            break
+
+        if response.status_code == 200:
+            try:
+                result = response.json() or {}
+            except ValueError:
+                last_error = "ElevenLabs STT returned non-JSON response"
+                break
+            transcript_text = (result.get("text") or "").strip()
+            if not transcript_text:
+                last_error = "ElevenLabs STT returned empty transcript"
+                break
+            logger.info(
+                "Transcribed %s via ElevenLabs (%s, lang=%s, %d chars, %s)",
+                Path(file_path).name,
+                model_name,
+                result.get("language_code") or language_code or "auto",
+                len(transcript_text),
+                key_label,
+            )
+            return {
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "elevenlabs",
+                "model": model_name,
+                "language_code": result.get("language_code"),
+                "language_probability": result.get("language_probability"),
+            }
+
+        summary = _summarise_elevenlabs_error(response)
+        last_error = (
+            f"ElevenLabs STT error (HTTP {response.status_code}, {key_label}): "
+            f"{summary}"
+        )
+        if _is_elevenlabs_quota_response(response) and index + 1 < len(api_keys):
+            logger.warning(
+                "ElevenLabs %s exhausted (HTTP %d): %s — rotating to next key",
+                key_label,
+                response.status_code,
+                summary,
+            )
+            continue
+        # Non-quota fault — bail rather than retry on every key.
+        break
+
+    return {
+        "success": False,
+        "transcript": "",
+        "error": last_error or "ElevenLabs STT failed",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1512,7 +1759,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
+      2. Auto-detect: local > groq > elevenlabs > openai > xai
+         (``mistral`` is skipped while ``mistralai`` is quarantined on PyPI —
+          malicious 2.4.6 release on 2026-05-12)
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -1574,6 +1823,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
+    if provider == "elevenlabs":
+        el_cfg = stt_config.get("elevenlabs", {}) or {}
+        model_name = model or el_cfg.get("model", DEFAULT_ELEVENLABS_STT_MODEL)
+        return _transcribe_elevenlabs(file_path, model_name)
+
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in
     # elif chain — built-in names short-circuit upstream so a user's
@@ -1624,7 +1878,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

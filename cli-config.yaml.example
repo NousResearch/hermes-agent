@@ -816,8 +816,10 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
+# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) |
+#            mistral (Voxtral Transcribe) | xai (Grok STT) | elevenlabs (Scribe).
+# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY,
+# XAI_API_KEY, or ELEVENLABS_API_KEY.
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
@@ -828,6 +830,14 @@ stt:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  # elevenlabs:
+  #   model: "scribe_v2"             # scribe_v2 | scribe_v1 | scribe_v1_experimental
+  #   # language_code: "en"          # ISO code; omit for auto-detect (99 langs)
+  #   # diarize: false                # speaker labels in `words[]`
+  #   # tag_audio_events: false       # mark laughter/applause/etc.
+  #   # timestamps_granularity: "none" # "none" | "word" | "character"
+  #   # Quota fallback: set ELEVENLABS_API_KEY_2, ELEVENLABS_API_KEY_3, ... in
+  #   # ~/.hermes/.env to rotate to the next key on 401/402/429.
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

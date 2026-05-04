@@ -94,10 +94,11 @@ Add to `~/.hermes/.env`:
 # Speech-to-Text — local provider needs NO key at all
 # pip install faster-whisper          # Free, runs locally, recommended
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
+ELEVENLABS_API_KEY=your-key           # ElevenLabs Scribe — paid (cloud), highest accuracy, 99 languages
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
 # Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
-ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
+# ELEVENLABS_API_KEY above also enables ElevenLabs TTS
 # VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 ```
 
@@ -400,9 +401,11 @@ stt:
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
-  provider: "local"                  # "local" (free) | "groq" | "openai"
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "elevenlabs"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
+  # elevenlabs:
+  #   model: "scribe_v2"             # scribe_v2 | scribe_v1 | scribe_v1_experimental
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -430,13 +433,19 @@ tts:
 # Speech-to-Text providers (local needs no key)
 # pip install faster-whisper        # Free local STT — no API key needed
 GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
+ELEVENLABS_API_KEY=...              # ElevenLabs Scribe (paid, highest accuracy, 99 languages)
+# Optional fallbacks for ElevenLabs quota rotation:
+# ELEVENLABS_API_KEY_2=...          # Tried when the primary key returns 401/402/429
+# ELEVENLABS_API_KEY_3=...          # Up to ELEVENLABS_API_KEY_10
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
 
 # STT advanced overrides (optional)
 STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
 STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
+STT_ELEVENLABS_MODEL=scribe_v2           # Override default ElevenLabs STT model
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
+ELEVENLABS_STT_BASE_URL=https://api.elevenlabs.io/v1  # Custom ElevenLabs STT endpoint
 
 # Text-to-Speech providers (Edge TTS and NeuTTS need no key)
 ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
@@ -456,10 +465,13 @@ DISCORD_ALLOWED_USERS=...
 | **Local** | `large-v3` | Slow | Best | Free | No |
 | **Groq** | `whisper-large-v3-turbo` | Very fast (~0.5s) | Good | Free tier | Yes |
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
+| **ElevenLabs** | `scribe_v2` | Fast (~1s) | Best | Paid | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
 
-Provider priority (automatic fallback): **local** > **groq** > **openai**
+Provider priority (automatic fallback): **local** > **groq** > **elevenlabs** > **openai**
+
+ElevenLabs Scribe supports multi-key quota fallback: set `ELEVENLABS_API_KEY_2`, `_3`, ... in `.env` to rotate to the next key when the primary returns 401/402/429.
 
 ### TTS Provider Comparison
 

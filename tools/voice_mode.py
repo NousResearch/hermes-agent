@@ -1084,15 +1084,24 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")
     elif stt_provider == "local":
         details_parts.append("STT provider: OK (local faster-whisper)")
+    elif stt_provider == "local_command":
+        details_parts.append("STT provider: OK (local whisper CLI)")
     elif stt_provider == "groq":
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "mistral":
+        details_parts.append("STT provider: OK (Mistral Voxtral)")
+    elif stt_provider == "xai":
+        details_parts.append("STT provider: OK (xAI Grok STT)")
+    elif stt_provider == "elevenlabs":
+        details_parts.append("STT provider: OK (ElevenLabs Scribe)")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "
             "`pip install faster-whisper` also works if pip is on PATH, "
-            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
+            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY / XAI_API_KEY / "
+            "ELEVENLABS_API_KEY)"
         )
 
     for warning in env_check["warnings"]:

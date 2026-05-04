@@ -1286,7 +1286,170 @@ def setup_tts(config: dict):
 
 
 # =============================================================================
-# Section 2: Terminal Backend Configuration
+# Section 2: Speech-to-Text Configuration
+# =============================================================================
+
+
+_STT_PROVIDER_LABELS = {
+    "local": "Local faster-whisper (free, runs on your machine)",
+    "local_command": "Local whisper CLI (free, uses HERMES_LOCAL_STT_COMMAND)",
+    "groq": "Groq Whisper (free tier, fast cloud)",
+    "openai": "OpenAI Whisper (paid, high quality)",
+    "mistral": "Mistral Voxtral (multilingual)",
+    "xai": "xAI Grok STT (high accuracy, ITN, diarization)",
+    "elevenlabs": "ElevenLabs Scribe v2 (99 languages, multi-key fallback)",
+}
+
+
+def _setup_elevenlabs_stt_keys() -> bool:
+    """Collect ElevenLabs API key(s) for Scribe STT.
+
+    The primary key reuses ``ELEVENLABS_API_KEY`` (shared with TTS so users
+    aren't asked twice).  Extra keys go into ``ELEVENLABS_API_KEY_2``,
+    ``_3``, ... and are tried in order when the primary hits a quota or
+    rate-limit error.  Returns True iff at least one key ends up set.
+    """
+    from hermes_constants import display_hermes_home as _dhh
+    from tools.transcription_tools import ELEVENLABS_MAX_FALLBACK_KEYS
+
+    env_path = f"{_dhh()}/.env"
+
+    primary = get_env_value("ELEVENLABS_API_KEY")
+    if primary:
+        print_success("ELEVENLABS_API_KEY already set (shared with TTS).")
+        print_info(
+            "Heads up: TTS and STT share ELEVENLABS_API_KEY.  If you need "
+            "different plans for voice output vs transcription, edit "
+            f"{env_path} and split them — or use ELEVENLABS_API_KEY_2 etc. "
+            "as Scribe-only fallbacks."
+        )
+    else:
+        print()
+        api_key = prompt("ElevenLabs API key", password=True)
+        if not api_key:
+            print_warning("No API key provided — STT provider not changed.")
+            return False
+        save_env_value("ELEVENLABS_API_KEY", api_key)
+        print_success("ElevenLabs API key saved")
+
+    existing = [
+        n for n in range(2, ELEVENLABS_MAX_FALLBACK_KEYS + 1)
+        if get_env_value(f"ELEVENLABS_API_KEY_{n}")
+    ]
+    if existing:
+        joined = ", ".join(f"ELEVENLABS_API_KEY_{n}" for n in existing)
+        print_info(f"Existing fallback keys: {joined}")
+
+    print()
+    print_info(
+        "Scribe rotates to a fallback key when the primary returns a quota "
+        f"or rate-limit error.  Add more here, or later by editing {env_path}."
+    )
+
+    next_slot = (max(existing) + 1) if existing else 2
+    while next_slot <= ELEVENLABS_MAX_FALLBACK_KEYS:
+        if not prompt_yes_no("Add another ElevenLabs API key for quota fallback?", False):
+            break
+        api_key = prompt(f"  ElevenLabs API key #{next_slot}", password=True)
+        if not api_key:
+            break
+        save_env_value(f"ELEVENLABS_API_KEY_{next_slot}", api_key)
+        print_success(f"  Saved as ELEVENLABS_API_KEY_{next_slot}")
+        next_slot += 1
+
+    if next_slot > ELEVENLABS_MAX_FALLBACK_KEYS:
+        print_info(
+            f"Reached the {ELEVENLABS_MAX_FALLBACK_KEYS}-key cap.  "
+            f"Add more by editing {env_path}."
+        )
+    return True
+
+
+def _setup_stt_provider(config: dict):
+    """Interactive STT provider selection used by both the full wizard and
+    ``hermes setup stt``."""
+    stt_config = config.get("stt", {}) or {}
+    current_provider = stt_config.get("provider") or "local"
+    current_label = _STT_PROVIDER_LABELS.get(current_provider, current_provider)
+
+    print()
+    print_header("Speech-to-Text Provider (optional)")
+    print_info(f"Current: {current_label}")
+    print()
+
+    providers = ["local", "groq", "openai", "mistral", "xai", "elevenlabs"]
+    choices = [_STT_PROVIDER_LABELS[p] for p in providers]
+    choices.append(f"Keep current ({current_label})")
+    keep_idx = len(choices) - 1
+    idx = prompt_choice("Select STT provider:", choices, keep_idx)
+
+    if idx == keep_idx:
+        return
+
+    selected = providers[idx]
+
+    # Each branch returns False to abort the provider switch when the user
+    # declines to enter the credentials the provider needs.  Local is always
+    # ready (faster-whisper auto-downloads its model on first use).
+    proceed = True
+    if selected == "groq":
+        if not get_env_value("GROQ_API_KEY"):
+            print()
+            api_key = prompt("Groq API key", password=True)
+            if api_key:
+                save_env_value("GROQ_API_KEY", api_key)
+                print_success("Groq API key saved")
+            else:
+                proceed = False
+    elif selected == "openai":
+        if not (get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")):
+            print()
+            api_key = prompt("OpenAI API key for STT", password=True)
+            if api_key:
+                save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
+                print_success("OpenAI STT API key saved")
+            else:
+                proceed = False
+    elif selected == "mistral":
+        if not get_env_value("MISTRAL_API_KEY"):
+            print()
+            api_key = prompt("Mistral API key", password=True)
+            if api_key:
+                save_env_value("MISTRAL_API_KEY", api_key)
+                print_success("Mistral API key saved")
+            else:
+                proceed = False
+    elif selected == "xai":
+        if not get_env_value("XAI_API_KEY"):
+            print()
+            api_key = prompt("xAI API key", password=True)
+            if api_key:
+                save_env_value("XAI_API_KEY", api_key)
+                print_success("xAI API key saved")
+            else:
+                proceed = False
+    elif selected == "elevenlabs":
+        proceed = _setup_elevenlabs_stt_keys()
+
+    if not proceed:
+        print_warning("No API key provided — STT provider not changed.")
+        return
+
+    if "stt" not in config:
+        config["stt"] = {}
+    config["stt"]["provider"] = selected
+    config["stt"].setdefault("enabled", True)
+    save_config(config)
+    print_success(f"STT provider set to: {_STT_PROVIDER_LABELS.get(selected, selected)}")
+
+
+def setup_stt(config: dict):
+    """Standalone STT setup (for 'hermes setup stt')."""
+    _setup_stt_provider(config)
+
+
+# =============================================================================
+# Section 3: Terminal Backend Configuration
 # =============================================================================
 
 
@@ -1618,7 +1781,7 @@ def setup_terminal_backend(config: dict):
 
 
 # =============================================================================
-# Section 3: Agent Settings
+# Section 4: Agent Settings
 # =============================================================================
 
 
@@ -1824,7 +1987,7 @@ def setup_agent_settings(config: dict):
 
 
 # =============================================================================
-# Section 4: Messaging Platforms (Gateway)
+# Section 5: Messaging Platforms (Gateway)
 # =============================================================================
 
 
@@ -2480,7 +2643,7 @@ def setup_gateway(config: dict):
 
 
 # =============================================================================
-# Section 5: Tool Configuration (delegates to unified tools_config.py)
+# Section 6: Tool Configuration (delegates to unified tools_config.py)
 # =============================================================================
 
 
@@ -2904,6 +3067,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
+    ("stt", "Speech-to-Text", setup_stt),
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
@@ -3031,6 +3195,7 @@ def run_setup_wizard(args):
       hermes setup           — full or quick (auto-detected)
       hermes setup model     — just model/provider
       hermes setup tts       — just text-to-speech
+      hermes setup stt       — just speech-to-text
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration

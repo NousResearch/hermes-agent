@@ -5,6 +5,7 @@ model auto-correction, config loading, validation edge cases, and
 end-to-end dispatch.  All external dependencies are mocked.
 """
 
+import json
 import os
 import sys
 import struct
@@ -64,6 +65,11 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_STT_BASE_URL", raising=False)
+    for n in range(2, 11):
+        monkeypatch.delenv(f"ELEVENLABS_API_KEY_{n}", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -1437,3 +1443,409 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+# ============================================================================
+# _get_provider — ElevenLabs
+# ============================================================================
+
+
+class TestGetProviderElevenLabs:
+    def test_explicit_with_key(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "elevenlabs"}) == "elevenlabs"
+
+    def test_explicit_no_key_returns_none(self):
+        """Explicit elevenlabs without a key never silently falls through."""
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "elevenlabs"}) == "none"
+
+    def test_auto_detect_uses_elevenlabs_when_only_key_available(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "elevenlabs"
+
+    def test_auto_detect_prefers_local_over_elevenlabs(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "local"
+
+    def test_auto_detect_prefers_groq_over_elevenlabs(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "groq"
+
+    def test_auto_detect_prefers_elevenlabs_over_openai(self, monkeypatch):
+        # Among paid providers, Scribe v2's accuracy beats whisper-1, so
+        # auto-detect prefers it when both keys are configured.
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._has_openai_audio_backend", return_value=True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "elevenlabs"
+
+    def test_auto_detect_prefers_elevenlabs_over_mistral(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        monkeypatch.setenv("MISTRAL_API_KEY", "ms-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "elevenlabs"
+
+    def test_auto_detect_prefers_elevenlabs_over_xai(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+        monkeypatch.setenv("XAI_API_KEY", "xai-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "elevenlabs"
+
+
+# ============================================================================
+# _get_elevenlabs_api_keys — fallback key collection
+# ============================================================================
+
+
+class TestElevenLabsApiKeys:
+    def test_no_keys_set(self):
+        from tools.transcription_tools import _get_elevenlabs_api_keys
+        assert _get_elevenlabs_api_keys() == []
+
+    def test_primary_only(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "primary")
+        from tools.transcription_tools import _get_elevenlabs_api_keys
+        assert _get_elevenlabs_api_keys() == ["primary"]
+
+    def test_primary_and_fallbacks_in_order(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "primary")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "second")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_3", "third")
+        from tools.transcription_tools import _get_elevenlabs_api_keys
+        assert _get_elevenlabs_api_keys() == ["primary", "second", "third"]
+
+    def test_skips_gaps(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "primary")
+        # No _2; jump straight to _3.
+        monkeypatch.setenv("ELEVENLABS_API_KEY_3", "third")
+        from tools.transcription_tools import _get_elevenlabs_api_keys
+        assert _get_elevenlabs_api_keys() == ["primary", "third"]
+
+    def test_dedupes_repeated_values(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "same")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "same")
+        from tools.transcription_tools import _get_elevenlabs_api_keys
+        assert _get_elevenlabs_api_keys() == ["same"]
+
+    def test_fallback_only_no_primary(self, monkeypatch):
+        # Edge case: user removed primary but still has _2 around.  We honour
+        # whatever they set rather than refusing.
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "second")
+        from tools.transcription_tools import _get_elevenlabs_api_keys
+        assert _get_elevenlabs_api_keys() == ["second"]
+
+
+# ============================================================================
+# _transcribe_elevenlabs
+# ============================================================================
+
+
+def _make_response(*, status_code=200, json_body=None, text=None):
+    resp = MagicMock()
+    resp.status_code = status_code
+    if text is not None:
+        resp.text = text
+    elif json_body is None:
+        resp.text = ""
+    else:
+        resp.text = json.dumps(json_body)
+    if json_body is None:
+        resp.json.side_effect = ValueError("no body")
+    else:
+        resp.json.return_value = json_body
+    return resp
+
+
+class TestTranscribeElevenLabs:
+    def test_no_key_returns_failure(self):
+        from tools.transcription_tools import _transcribe_elevenlabs
+        result = _transcribe_elevenlabs("/tmp/test.ogg", "scribe_v2")
+        assert result["success"] is False
+        assert "ELEVENLABS_API_KEY" in result["error"]
+
+    def test_successful_transcription_returns_metadata(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        resp = _make_response(json_body={
+            "text": "  hej hvordan har du det  ",
+            "language_code": "da",
+            "language_probability": 0.97,
+        })
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=resp) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hej hvordan har du det"
+        assert result["provider"] == "elevenlabs"
+        assert result["model"] == "scribe_v2"
+        assert result["language_code"] == "da"
+        assert result["language_probability"] == 0.97
+
+        # Endpoint, header, and model_id must all be correct on the wire.
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs["headers"]["xi-api-key"] == "k1"
+        assert call_kwargs["data"]["model_id"] == "scribe_v2"
+        assert mock_post.call_args.args[0].endswith("/speech-to-text")
+
+    def test_unknown_model_passes_through_to_api(self, monkeypatch, sample_ogg):
+        # Future-proofing: don't silently rewrite a model name the user may
+        # have set on purpose (e.g. a future scribe_v3 released after this
+        # ships).  Let ElevenLabs reject it if it's actually invalid.
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        resp = _make_response(json_body={"text": "ok"})
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=resp) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v99_made_up")
+
+        assert result["success"] is True
+        assert mock_post.call_args.kwargs["data"]["model_id"] == "scribe_v99_made_up"
+
+    def test_empty_model_falls_back_to_default(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        resp = _make_response(json_body={"text": "ok"})
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=resp) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "")
+
+        assert result["success"] is True
+        assert mock_post.call_args.kwargs["data"]["model_id"] == "scribe_v2"
+
+    def test_optional_form_fields_passed_through(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        resp = _make_response(json_body={"text": "ok"})
+        cfg = {
+            "elevenlabs": {
+                "language_code": "da",
+                "diarize": True,
+                "tag_audio_events": True,
+                "timestamps_granularity": "word",
+            }
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("requests.post", return_value=resp) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        data = mock_post.call_args.kwargs["data"]
+        assert data["language_code"] == "da"
+        assert data["diarize"] == "true"
+        assert data["tag_audio_events"] == "true"
+        assert data["timestamps_granularity"] == "word"
+
+    def test_invalid_timestamps_granularity_dropped(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        resp = _make_response(json_body={"text": "ok"})
+        cfg = {"elevenlabs": {"timestamps_granularity": "BOGUS"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("requests.post", return_value=resp) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert "timestamps_granularity" not in mock_post.call_args.kwargs["data"]
+
+    def test_rotates_to_fallback_on_401(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "bad")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "good")
+
+        bad = _make_response(status_code=401, json_body={"detail": "unauthorized"})
+        good = _make_response(json_body={"text": "rescued"})
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=[bad, good]) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is True
+        assert result["transcript"] == "rescued"
+        assert mock_post.call_count == 2
+        # Second call must use the second key.
+        assert mock_post.call_args_list[1].kwargs["headers"]["xi-api-key"] == "good"
+
+    def test_rotates_on_429(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "primary")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "secondary")
+
+        rl = _make_response(status_code=429, json_body={"detail": "rate limited"})
+        ok = _make_response(json_body={"text": "after rotation"})
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=[rl, ok]):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is True
+        assert result["transcript"] == "after rotation"
+
+    def test_rotates_on_quota_body_with_2xx_status(self, monkeypatch, sample_ogg):
+        # Some plans report quota exhaustion in the body even with HTTP 200/4xx
+        # mismatches.  The body marker alone should still trigger rotation.
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "primary")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "secondary")
+
+        spent = _make_response(
+            status_code=400,
+            json_body={"detail": {"status": "quota_exceeded", "message": "no credits"}},
+        )
+        ok = _make_response(json_body={"text": "saved by fallback"})
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=[spent, ok]):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is True
+        assert result["transcript"] == "saved by fallback"
+
+    def test_does_not_rotate_on_400_invalid_audio(self, monkeypatch, sample_ogg):
+        # A bad-audio 400 isn't a per-key problem — burning every key on it
+        # would just delay the inevitable failure.
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "k2")
+        bad = _make_response(
+            status_code=400,
+            json_body={"detail": "Invalid audio format"},
+        )
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=bad) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert mock_post.call_count == 1
+        assert "HTTP 400" in result["error"]
+        assert "Invalid audio format" in result["error"]
+
+    def test_returns_last_error_when_all_keys_exhausted(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "k2")
+
+        spent1 = _make_response(status_code=429, json_body={"detail": "rate limited"})
+        spent2 = _make_response(status_code=429, json_body={"detail": "still limited"})
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=[spent1, spent2]) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert mock_post.call_count == 2
+        assert "key #2" in result["error"]
+        assert "HTTP 429" in result["error"]
+
+    def test_empty_transcript_does_not_burn_other_keys(self, monkeypatch, sample_ogg):
+        # A 200 with empty text is a content problem, not a quota problem.
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "k2")
+
+        empty = _make_response(json_body={"text": "   "})
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=empty) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert "empty transcript" in result["error"]
+        assert mock_post.call_count == 1
+
+    def test_network_error_does_not_burn_other_keys(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "k2")
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=ConnectionError("boom")) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert "boom" in result["error"]
+        assert mock_post.call_count == 1
+
+    def test_permission_error_returns_immediately(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "k1")
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("builtins.open", side_effect=PermissionError("denied")):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert "Permission denied" in result["error"]
+
+
+# ============================================================================
+# transcribe_audio dispatch — ElevenLabs
+# ============================================================================
+
+
+class TestTranscribeAudioElevenLabs:
+    def test_dispatches_to_elevenlabs_with_config_model(self, sample_ogg):
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "elevenlabs", "elevenlabs": {"model": "scribe_v1"}},
+        ), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch(
+                 "tools.transcription_tools._transcribe_elevenlabs",
+                 return_value={"success": True, "transcript": "ok"},
+             ) as mock_el:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg)
+
+        assert mock_el.call_args[0][1] == "scribe_v1"
+
+    def test_default_model_is_scribe_v2(self, sample_ogg):
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "elevenlabs"},
+        ), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch(
+                 "tools.transcription_tools._transcribe_elevenlabs",
+                 return_value={"success": True, "transcript": "ok"},
+             ) as mock_el:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg)
+
+        assert mock_el.call_args[0][1] == "scribe_v2"
+
+    def test_caller_model_override_wins(self, sample_ogg):
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "elevenlabs", "elevenlabs": {"model": "scribe_v1"}},
+        ), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch(
+                 "tools.transcription_tools._transcribe_elevenlabs",
+                 return_value={"success": True, "transcript": "ok"},
+             ) as mock_el:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model="scribe_v1_experimental")
+
+        assert mock_el.call_args[0][1] == "scribe_v1_experimental"

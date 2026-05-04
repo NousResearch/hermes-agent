@@ -1330,7 +1330,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "xai" | "elevenlabs"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1340,6 +1340,13 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "elevenlabs": {
+            "model": "scribe_v2",  # scribe_v2, scribe_v1, scribe_v1_experimental
+            # Optional: language_code (e.g. "en"), diarize, tag_audio_events,
+            # timestamps_granularity ("none" | "word" | "character").
+            # Additional API keys for quota fallback are read from
+            # ELEVENLABS_API_KEY_2, ELEVENLABS_API_KEY_3, ... in ~/.hermes/.env.
         },
     },
 

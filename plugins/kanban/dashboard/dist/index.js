@@ -919,6 +919,12 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
+    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
+    // takes a path (dispatcher derives one from the assignee profile otherwise);
+    // `dir` requires a path. Backend enforces the rule — we only hide/show the
+    // input here to save vertical space in the common `scratch` case.
+    const [workspaceKind, setWorkspaceKind] = useState("scratch");
+    const [workspacePath, setWorkspacePath] = useState("");
 
     const submit = function () {
       const trimmed = title.trim();
@@ -938,9 +944,22 @@
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return s.length > 0; });
       if (skillList.length > 0) body.skills = skillList;
+      // Only send workspace_kind when it's non-default. Keeps the request
+      // shape small and interoperable with older dispatcher versions.
+      if (workspaceKind && workspaceKind !== "scratch") {
+        body.workspace_kind = workspaceKind;
+      }
+      const wpTrim = workspacePath.trim();
+      if (wpTrim) body.workspace_path = wpTrim;
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setWorkspaceKind("scratch"); setWorkspacePath("");
     };
+
+    const showPathInput = workspaceKind !== "scratch";
+    const pathPlaceholder = workspaceKind === "dir"
+      ? "workspace path (required, e.g. ~/projects/my-app)"
+      : "workspace path (optional, derived from assignee if blank)";
 
     return h("div", { className: "hermes-kanban-inline-create" },
       h(Input, {
@@ -978,6 +997,24 @@
         title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
         className: "h-7 text-xs",
       }),
+      h("div", { className: "flex gap-2" },
+        h(Select, {
+          value: workspaceKind,
+          onChange: function (e) { setWorkspaceKind(e.target.value); },
+          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
+          className: "h-7 text-xs w-28",
+        },
+          h(SelectOption, { value: "scratch" }, "scratch"),
+          h(SelectOption, { value: "worktree" }, "worktree"),
+          h(SelectOption, { value: "dir" }, "dir"),
+        ),
+        showPathInput ? h(Input, {
+          value: workspacePath,
+          onChange: function (e) { setWorkspacePath(e.target.value); },
+          placeholder: pathPlaceholder,
+          className: "h-7 text-xs flex-1",
+        }) : null,
+      ),
       h(Select, {
         value: parent,
         onChange: function (e) { setParent(e.target.value); },

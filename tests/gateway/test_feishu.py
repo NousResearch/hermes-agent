@@ -158,6 +158,45 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_audio_uses_feishu_speech_to_text_when_present(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="audio",
+            raw_content=json.dumps(
+                {
+                    "file_key": "audio_file_key",
+                    "file_name": "voice.opus",
+                    "speech_to_text": "  飞书已经转写好的语音内容  ",
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.raw_type, "audio")
+        self.assertEqual(normalized.text_content, "飞书已经转写好的语音内容")
+        self.assertEqual(normalized.preferred_message_type, "text")
+        self.assertEqual(normalized.relation_kind, "audio")
+        self.assertEqual(normalized.media_refs, [])
+        self.assertEqual(normalized.metadata, {"source": "feishu_speech_to_text"})
+
+    def test_normalize_audio_without_speech_to_text_keeps_media_fallback(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="audio",
+            raw_content=json.dumps(
+                {
+                    "file_key": "audio_file_key",
+                    "file_name": "voice.opus",
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.text_content, "")
+        self.assertEqual(normalized.preferred_message_type, "audio")
+        self.assertEqual(normalized.relation_kind, "audio")
+        self.assertEqual(len(normalized.media_refs), 1)
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {

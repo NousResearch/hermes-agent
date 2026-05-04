@@ -849,6 +849,18 @@ def normalize_feishu_message(
             mentions=mention_refs,
         )
     if normalized_type in {"file", "audio", "media"}:
+        if normalized_type == "audio":
+            speech_to_text = str(payload.get("speech_to_text", "") or "").strip()
+            if speech_to_text:
+                return FeishuNormalizedMessage(
+                    raw_type=normalized_type,
+                    text_content=_normalize_feishu_text(speech_to_text, mentions_map),
+                    preferred_message_type="text",
+                    relation_kind="audio",
+                    metadata={"source": "feishu_speech_to_text"},
+                    mentions=mention_refs,
+                )
+
         media_ref = _build_media_ref_from_payload(payload, resource_type=normalized_type)
         placeholder = _attachment_placeholder(media_ref.file_name)
         return FeishuNormalizedMessage(

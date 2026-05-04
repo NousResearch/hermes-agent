@@ -247,6 +247,149 @@ def list_active_subagents() -> List[Dict[str, Any]]:
         ]
 
 
+# ---------------------------------------------------------------------------
+# Phase C+: Background execution
+# ---------------------------------------------------------------------------
+
+_background_executor = None
+_background_executor_lock = threading.Lock()
+
+# Completed background subagent results, keyed by subagent_id.
+# Entries are full result dicts from _run_single_child.
+_background_results: Dict[str, Dict[str, Any]] = {}
+_background_results_lock = threading.Lock()
+
+
+def _get_background_executor():
+    """Return (or create) a long-lived thread pool for background subagents."""
+    global _background_executor
+    if _background_executor is not None:
+        return _background_executor
+    with _background_executor_lock:
+        if _background_executor is not None:
+            return _background_executor
+        _background_executor = ThreadPoolExecutor(
+            max_workers=10,
+            thread_name_prefix="hermes-bg-subagent",
+        )
+        return _background_executor
+
+
+def get_subagent_result(subagent_id: str) -> Optional[Dict[str, Any]]:
+    """Return the completed result for a background subagent, or None.
+
+    Once retrieved, the result is removed from storage. Returns None
+    if the subagent is still running or the ID is unknown.
+    """
+    with _background_results_lock:
+        # Check if still running
+        with _active_subagents_lock:
+            if subagent_id in _active_subagents:
+                return {"status": "running", "subagent_id": subagent_id}
+        return _background_results.pop(subagent_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Phase C+: send_message infrastructure
+# ---------------------------------------------------------------------------
+
+# Per-subagent message queues. Messages are stored as {timestamp, sender, content}.
+_subagent_message_queues: Dict[str, List[Dict[str, Any]]] = {}
+_subagent_message_lock = threading.Lock()
+
+
+def send_message(subagent_id: str, message: str, sender: str = "parent") -> bool:
+    """Queue a message for delivery to a running subagent.
+
+    The message is stored and can be retrieved via get_subagent_messages().
+    Returns True if the subagent was found and the message was queued.
+    Returns False if the subagent is not running.
+
+    IMPORTANT: Actual injection of messages into the running LLM conversation
+    requires agent-loop modifications (not yet implemented). Messages are
+    stored and retrievable, but are NOT automatically injected into the
+    subagent's next turn. Use get_subagent_messages() to poll.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return False
+
+    with _subagent_message_lock:
+        if subagent_id not in _subagent_message_queues:
+            _subagent_message_queues[subagent_id] = []
+        _subagent_message_queues[subagent_id].append({
+            "timestamp": time.time(),
+            "sender": sender,
+            "content": message,
+        })
+    return True
+
+
+def get_subagent_messages(
+    subagent_id: str,
+    *,
+    mark_read: bool = True,
+) -> Optional[List[Dict[str, Any]]]:
+    """Retrieve queued messages for a subagent.
+
+    Args:
+        subagent_id: The subagent to query.
+        mark_read: If True, clears the queue after reading (default).
+
+    Returns the list of messages, or None if the subagent is unknown.
+    """
+    with _active_subagents_lock:
+        if subagent_id not in _active_subagents:
+            return None
+    with _subagent_message_lock:
+        messages = list(_subagent_message_queues.get(subagent_id, []))
+        if mark_read:
+            _subagent_message_queues[subagent_id] = []
+    return messages
+
+
+def _deliver_pending_messages(
+    subagent_id: str,
+    child_agent=None,
+) -> List[Dict[str, Any]]:
+    """Deliver pending messages to a subagent by appending them to its
+    conversation as synthetic user messages.
+
+    This is called by the heartbeat thread or progress callback. Returns
+    the list of delivered messages.
+
+    NOTE: This uses child._conversation_history (internal API) to inject
+    messages between turns. This is a pragmatic bridge until full agent-loop
+    support for subagent messaging is implemented.
+    """
+    with _subagent_message_lock:
+        messages = list(_subagent_message_queues.pop(subagent_id, []))
+    if not messages:
+        return []
+
+    if child_agent is None:
+        return messages  # can't deliver without agent ref
+
+    try:
+        for msg in messages:
+            synthetic = {
+                "role": "user",
+                "content": (
+                    f"[Message from {msg['sender']} at "
+                    f"{time.strftime('%H:%M:%S', time.localtime(msg['timestamp']))}]\n"
+                    f"{msg['content']}"
+                ),
+            }
+            history = getattr(child_agent, "_conversation_history", None)
+            if isinstance(history, list):
+                history.append(synthetic)
+    except Exception as exc:
+        logger.warning("Failed to deliver pending messages to %s: %s", subagent_id, exc)
+
+    return messages
+
+
 def _extract_output_tail(
     result: Dict[str, Any],
     *,
@@ -2129,6 +2272,18 @@ def _try_log_subagent_event(
                 agent_id=agent_id,
                 role=role,
             )
+        elif event_type == "backgrounded":
+            # Phase C+: backgrounded has no dedicated EventLog method yet;
+            # log as a completed-style event with status "backgrounded"
+            elog.log_subagent_completed(
+                task_id=sid,
+                session_id=sess,
+                subagent_id=subagent_id or "",
+                status="backgrounded",
+                parent_id=parent_id,
+                agent_id=agent_id,
+                role=role,
+            )
         elog.close()
     except Exception as exc:
         logger.warning("Failed to write subagent %s event: %s", event_type, exc)
@@ -2250,6 +2405,12 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            # ── Phase C+: deliver pending messages ──────────────────
+            if _subagent_id:
+                try:
+                    _deliver_pending_messages(_subagent_id, child_agent=child)
+                except Exception:
+                    pass
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     _heartbeat_thread.start()
@@ -3052,6 +3213,12 @@ def delegate_task(
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
+    if run_in_background and len(task_list) > 1:
+        return tool_error(
+            "run_in_background is only supported for single-task delegation. "
+            "Use separate delegate_task calls for multiple background tasks."
+        )
+
     if not task_list:
         return tool_error("No tasks provided.")
 
@@ -3135,10 +3302,37 @@ def delegate_task(
             return tool_error(iso_err)
 
     if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
+        if run_in_background:
+            # ── Phase C+: Background execution ────────────────────────
+            _sid = getattr(child, "_subagent_id", None)
+            _bg_executor = _get_background_executor()
+
+            def _bg_run(c, g, p):
+                try:
+                    r = _run_single_child(0, g, c, p)
+                except Exception:
+                    r = {
+                        "task_index": 0, "status": "error",
+                        "subagent_id": getattr(c, "_subagent_id", None),
+                        "error": "background subagent crashed",
+                    }
+                with _background_results_lock:
+                    _background_results[getattr(c, "_subagent_id", "")] = r
+
+            _bg_executor.submit(_bg_run, child, _t["goal"], parent_agent)
+            results.append({
+                "task_index": 0,
+                "status": "running",
+                "subagent_id": _sid if isinstance(_sid, str) else None,
+                "goal": (_t["goal"] or "").strip(),
+                "summary": "Background subagent started. Use get_subagent_status() to monitor.",
+                "isolation": getattr(child, "_subagent_isolation", "shared") or "shared",
+                "duration_seconds": 0,
+            })
+        else:
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
@@ -3690,9 +3884,12 @@ DELEGATE_TASK_SCHEMA = {
             "run_in_background": {
                 "type": "boolean",
                 "description": (
-                    "When true, the subagent runs asynchronously and the parent "
-                    "continues immediately. Use get_subagent_status() to query "
-                    "progress. NOT YET IMPLEMENTED — scheduled for Phase C."
+                    "When true, the subagent runs asynchronously in a background "
+                    "thread. The parent returns immediately with status='running' "
+                    "and a subagent_id. Use get_subagent_status(subagent_id) to "
+                    "monitor progress and get_subagent_result(subagent_id) to "
+                    "retrieve the final result. Only supported for single-task "
+                    "delegation (not batch mode)."
                 ),
             },
             "acp_command": {

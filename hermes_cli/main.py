@@ -1314,6 +1314,23 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # --mode: load a mode file as an ephemeral system prompt
+    mode_name = getattr(args, "mode", None)
+    if mode_name:
+        from hermes_constants import get_hermes_home
+        mode_path = get_hermes_home() / "modes" / f"{mode_name}.md"
+        if mode_path.exists():
+            os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"] = mode_path.read_text(encoding="utf-8")
+        else:
+            print(f"Mode not found: {mode_name}")
+            print(f"Create {mode_path} with your instructions, or choose from:")
+            modes_dir = mode_path.parent
+            if modes_dir.exists():
+                available = sorted(p.stem for p in modes_dir.glob("*.md") if p.stem != "README")
+                if available:
+                    print(f"Available modes: {', '.join(available)}")
+            sys.exit(1)
+    
     if use_tui:
         _launch_tui(
             getattr(args, "resume", None),

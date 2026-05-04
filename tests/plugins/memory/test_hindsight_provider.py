@@ -75,6 +75,12 @@ def _make_mock_client():
         return_value=SimpleNamespace(text="Synthesized answer")
     )
     client.aretain_batch = AsyncMock()
+    client._aget_bank_config = AsyncMock(
+        return_value={"bank_id": "test-bank", "config": {}, "overrides": {}}
+    )
+    client._aupdate_bank_config = AsyncMock(
+        return_value={"bank_id": "test-bank", "config": {}, "overrides": {}}
+    )
     client.aclose = AsyncMock()
     return client
 
@@ -238,6 +244,107 @@ class TestConfig:
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+
+
+class TestBankConfigSync:
+    def test_no_desired_bank_config_values_skips_client_calls(self, provider):
+        provider._sync_bank_config_if_needed()
+
+        provider._client._aget_bank_config.assert_not_awaited()
+        provider._client._aupdate_bank_config.assert_not_awaited()
+
+    def test_syncs_both_bank_missions_when_overrides_missing(self, provider):
+        provider._bank_mission = "Reflect like Hermes"
+        provider._bank_retain_mission = "Extract durable facts"
+
+        provider._sync_bank_config_if_needed()
+
+        provider._client._aget_bank_config.assert_awaited_once_with("test-bank")
+        provider._client._aupdate_bank_config.assert_awaited_once_with(
+            "test-bank",
+            {
+                "reflect_mission": "Reflect like Hermes",
+                "retain_mission": "Extract durable facts",
+            },
+        )
+
+    def test_bank_config_sync_is_idempotent_for_matching_overrides(self, provider):
+        provider._bank_mission = "Reflect like Hermes"
+        provider._bank_retain_mission = "Extract durable facts"
+        provider._client._aget_bank_config.return_value = {
+            "bank_id": "test-bank",
+            "config": {},
+            "overrides": {
+                "reflect_mission": "Reflect like Hermes",
+                "retain_mission": "Extract durable facts",
+            },
+        }
+
+        provider._sync_bank_config_if_needed()
+
+        provider._client._aget_bank_config.assert_awaited_once_with("test-bank")
+        provider._client._aupdate_bank_config.assert_not_awaited()
+
+    def test_bank_config_sync_patches_only_changed_values(self, provider):
+        provider._bank_mission = "Reflect like Hermes"
+        provider._bank_retain_mission = "Extract durable facts"
+        provider._client._aget_bank_config.return_value = {
+            "bank_id": "test-bank",
+            "config": {},
+            "overrides": {"reflect_mission": "Reflect like Hermes"},
+        }
+
+        provider._sync_bank_config_if_needed()
+
+        provider._client._aupdate_bank_config.assert_awaited_once_with(
+            "test-bank",
+            {"retain_mission": "Extract durable facts"},
+        )
+
+    def test_bank_config_sync_failure_is_non_fatal(self, provider, caplog):
+        provider._bank_mission = "Reflect like Hermes"
+        provider._client._aget_bank_config.side_effect = RuntimeError("api disabled")
+
+        provider._sync_bank_config_if_needed()
+
+        assert "Hindsight bank config sync skipped" in caplog.text
+        provider._client._aupdate_bank_config.assert_not_awaited()
+
+    def test_initialize_syncs_configured_bank_missions(self, tmp_path, monkeypatch):
+        fake_client = _make_mock_client()
+        config = {
+            "mode": "cloud",
+            "apiKey": "***",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+            "bank_mission": "Reflect like Hermes",
+            "bank_retain_mission": "Extract durable facts",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            HindsightMemoryProvider,
+            "_get_client",
+            lambda self: fake_client,
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        fake_client._aget_bank_config.assert_awaited_once_with("test-bank")
+        fake_client._aupdate_bank_config.assert_awaited_once_with(
+            "test-bank",
+            {
+                "reflect_mission": "Reflect like Hermes",
+                "retain_mission": "Extract durable facts",
+            },
+        )
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""

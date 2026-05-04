@@ -932,6 +932,61 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = client
             return self._run_sync(operation(client))
 
+    def _desired_bank_config_updates(self) -> Dict[str, Any]:
+        """Return bank config overrides requested by Hermes config.
+
+        Empty config values are intentionally ignored. That keeps this sync
+        one-way and non-destructive: Hermes can set explicit missions, but it
+        will not clear or reset existing server-side bank overrides.
+        """
+        desired: Dict[str, Any] = {}
+        bank_mission = str(self._bank_mission or "").strip()
+        if bank_mission:
+            desired["reflect_mission"] = bank_mission
+        bank_retain_mission = str(self._bank_retain_mission or "").strip()
+        if bank_retain_mission:
+            desired["retain_mission"] = bank_retain_mission
+        return desired
+
+    def _sync_bank_config_if_needed(self) -> None:
+        """Idempotently sync configured bank mission overrides to Hindsight.
+
+        The Hindsight bank-config API is optional server-side, so failures are
+        logged and never block provider initialization or memory operations.
+        """
+        desired = self._desired_bank_config_updates()
+        if not desired:
+            return
+
+        try:
+            current = self._run_hindsight_operation(
+                lambda client: client._aget_bank_config(self._bank_id)
+            )
+            overrides = current.get("overrides", {}) if isinstance(current, dict) else {}
+            updates = {
+                key: value
+                for key, value in desired.items()
+                if overrides.get(key) != value
+            }
+            if not updates:
+                logger.debug("Hindsight bank config already up to date for bank=%s", self._bank_id)
+                return
+            logger.info(
+                "Syncing Hindsight bank config for bank=%s keys=%s",
+                self._bank_id,
+                sorted(updates),
+            )
+            self._run_hindsight_operation(
+                lambda client: client._aupdate_bank_config(self._bank_id, updates)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Hindsight bank config sync skipped for bank=%s: %s",
+                self._bank_id,
+                exc,
+                exc_info=True,
+            )
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
@@ -1035,6 +1090,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank options
         self._bank_mission = self._config.get("bank_mission", "")
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
+        self._sync_bank_config_if_needed()
 
         # Tags
         self._retain_tags = _normalize_retain_tags(

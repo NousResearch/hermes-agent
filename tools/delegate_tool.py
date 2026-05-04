@@ -2778,39 +2778,6 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    # User-visible aggregate emit: one line per delegate_task() call summarising
-    # the total spend across all children + new running session total.  Lets
-    # the user see the cost-per-batch of fan-out work and the cumulative
-    # session spend at a glance.
-    try:
-        emit = getattr(parent_agent, "_emit_status", None)
-        if emit and len(results) > 0:
-            session_total = float(
-                getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0
-            )
-            n = len(results)
-            n_ok = sum(1 for r in results if r.get("status") == "completed")
-            children_str = (
-                f"{n_ok}/{n} subagent{'s' if n != 1 else ''} ok"
-                if n_ok < n
-                else f"{n} subagent{'s' if n != 1 else ''} ok"
-            )
-            cost_part = (
-                f" · children=${_children_cost_total:.4f}"
-                if _children_cost_total > 0
-                else ""
-            )
-            session_part = (
-                f" · session=${session_total:.4f}" if session_total > 0 else ""
-            )
-            emit(
-                f"  ┊ 🔀 delegate done · {children_str} · "
-                f"{total_duration:.1f}s{cost_part}{session_part}"
-            )
-    except Exception:
-        logger.debug("delegate rollup emit failed", exc_info=True)
-
-
     return json.dumps(
         {
             "results": results,

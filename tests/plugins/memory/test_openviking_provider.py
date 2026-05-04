@@ -93,6 +93,62 @@ def test_tool_add_resource_uploads_existing_local_file(tmp_path):
     assert result["root_uri"] == "viking://resources/sample"
 
 
+def test_tool_add_resource_uploads_existing_local_directory_and_cleans_zip(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    nested = docs / "nested"
+    nested.mkdir()
+    (nested / "api.md").write_text("# API\n", encoding="utf-8")
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    uploaded_paths = []
+    provider._client.upload_temp_file.side_effect = (
+        lambda path: uploaded_paths.append(path) or "upload_docs.zip"
+    )
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/docs"},
+    }
+
+    result = json.loads(provider._tool_add_resource({
+        "url": str(docs),
+        "reason": "directory test",
+        "wait": True,
+    }))
+
+    assert uploaded_paths
+    assert uploaded_paths[0].suffix == ".zip"
+    assert not uploaded_paths[0].exists()
+    provider._client.post.assert_called_once_with("/api/v1/resources", {
+        "reason": "directory test",
+        "wait": True,
+        "source_name": "docs",
+        "temp_file_id": "upload_docs.zip",
+    })
+    assert result["status"] == "added"
+    assert result["root_uri"] == "viking://resources/docs"
+
+
+def test_tool_add_resource_cleans_local_directory_zip_when_add_fails(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    uploaded_paths = []
+    provider._client.upload_temp_file.side_effect = (
+        lambda path: uploaded_paths.append(path) or "upload_docs.zip"
+    )
+    provider._client.post.side_effect = RuntimeError("add failed")
+
+    with pytest.raises(RuntimeError, match="add failed"):
+        provider._tool_add_resource({"url": str(docs)})
+
+    assert uploaded_paths
+    assert not uploaded_paths[0].exists()
+
+
 def test_tool_add_resource_sends_remote_url_as_path():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -107,6 +163,41 @@ def test_tool_add_resource_sends_remote_url_as_path():
     provider._client.post.assert_called_once_with("/api/v1/resources", {
         "path": "https://example.com/doc.md",
     })
+
+
+def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path, monkeypatch):
+    sample = tmp_path / "sample.md"
+    sample.write_text("# Local resource\n", encoding="utf-8")
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="test-account",
+        user="test-user",
+        agent="test-agent",
+    )
+    captured_kwargs = {}
+
+    def capture_httpx_post(url, **kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"temp_file_id": "upload_sample.md"}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_httpx_post)
+
+    assert client.upload_temp_file(sample) == "upload_sample.md"
+
+    assert "files" in captured_kwargs
+    assert "json" not in captured_kwargs
+    headers = captured_kwargs["headers"]
+    assert headers["X-OpenViking-Account"] == "test-account"
+    assert headers["X-OpenViking-User"] == "test-user"
+    assert headers["X-OpenViking-Agent"] == "test-agent"
+    assert headers["X-API-Key"] == "test-key"
+    assert "Content-Type" not in headers
 
 
 def test_viking_client_raises_structured_server_error():

@@ -416,6 +416,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
+    # separate provider ID with its own base_url_env_var.
+    "alibaba-coding-plan": [
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "qwen3-coder-plus",
+        "qwen3-coder-next",
+        "kimi-k2.5",
+        "glm-5",
+        "glm-4.7",
+        "MiniMax-M2.5",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",

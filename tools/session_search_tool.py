@@ -262,6 +262,11 @@ async def _summarize_session(
 # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
+# Sources demoted to the end of FTS results so user-facing sessions
+# (telegram, cli, discord, api, etc.) surface before automation noise.
+# Fixes #19434 Bug 2 / Bug 4.
+_DEMOTED_SOURCES = frozenset({"cron"})
+
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
@@ -288,22 +293,52 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             except Exception:
                 current_root = current_session_id
 
+        # Helper: walk parent chain to reach the root session.
+        def _walk_to_root(session_id: str) -> str:
+            visited: set = set()
+            sid = session_id
+            while sid and sid not in visited:
+                visited.add(sid)
+                try:
+                    s2 = db.get_session(sid)
+                    parent = s2.get("parent_session_id") if s2 else None
+                    if parent:
+                        sid = parent
+                    else:
+                        break
+                except Exception:
+                    break
+            return sid
+
         results = []
+        seen_roots: set = set()
         for s in sessions:
             sid = s.get("id", "")
-            if current_root and (sid == current_root or sid == current_session_id):
+            # Resolve child sessions (compression continuations, delegation
+            # threads, branch sessions) to their root so we don't list the
+            # same conversation twice under different session IDs.  The
+            # original blanket skip of any session with parent_session_id
+            # hid these sessions entirely -- fixes #19434 Bug 3.
+            root_sid = _walk_to_root(sid) if s.get("parent_session_id") else sid
+            if current_root and (root_sid == current_root or sid == current_session_id):
                 continue
-            # Skip child/delegation sessions (they have parent_session_id)
-            if s.get("parent_session_id"):
+            if root_sid in seen_roots:
                 continue
+            seen_roots.add(root_sid)
+            # Fetch root session metadata so the listing reflects the
+            # conversation anchor, not an intermediate child shard.
+            if root_sid != sid:
+                root_meta = db.get_session(root_sid) or s
+            else:
+                root_meta = s
             results.append({
-                "session_id": sid,
-                "title": s.get("title") or None,
-                "source": s.get("source", ""),
-                "started_at": s.get("started_at", ""),
-                "last_active": s.get("last_active", ""),
-                "message_count": s.get("message_count", 0),
-                "preview": s.get("preview", ""),
+                "session_id": root_sid,
+                "title": root_meta.get("title") or None,
+                "source": root_meta.get("source", ""),
+                "started_at": root_meta.get("started_at", ""),
+                "last_active": root_meta.get("last_active", ""),
+                "message_count": root_meta.get("message_count", 0),
+                "preview": root_meta.get("preview", ""),
             })
             if len(results) >= limit:
                 break
@@ -359,12 +394,16 @@ def session_search(
         if role_filter and role_filter.strip():
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
-        # FTS5 search -- get matches ranked by relevance
+        # FTS5 search -- get matches ranked by relevance.
+        # Scan limit raised from 50 to 300 so that cron/automation sessions
+        # (which produce many repetitive high-BM25 hits) don't crowd out the
+        # first few unique sessions and prevent user sessions from appearing.
+        # Fixes #19434 Bug 4 / Bug 2.
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # Get more matches to find unique sessions
+            limit=300,  # Raised from 50 to allow source-diverse session selection
             offset=0,
         )
 
@@ -376,6 +415,15 @@ def session_search(
                 "count": 0,
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
+
+        # Rerank: demote automation/cron sessions so user-facing sessions
+        # (telegram, cli, discord, api, etc.) surface first.  BM25 ranking
+        # alone over-weights cron sessions because they repeat project
+        # vocabulary constantly.  Stable sort -- FTS rank order preserved
+        # within each bucket.  Fixes #19434 Bug 2 / Bug 4.
+        _primary = [r for r in raw_results if r.get("source") not in _DEMOTED_SOURCES]
+        _secondary = [r for r in raw_results if r.get("source") in _DEMOTED_SOURCES]
+        raw_results = _primary + _secondary
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.

@@ -425,7 +425,8 @@ def _compute_tool_definitions(
                 from tools import discord_tool as _dt
                 schema_fn = getattr(_dt, _discord_schema_fns[discord_tool_name])
                 dynamic = schema_fn()
-            except Exception:
+            except Exception as _schema_err:
+                logger.debug("Discord dynamic schema error for %s: %s", discord_tool_name, _schema_err)
                 dynamic = None
             if dynamic is None:
                 filtered_tools = [

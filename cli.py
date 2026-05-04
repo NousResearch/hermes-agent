@@ -10484,20 +10484,23 @@ class HermesCLI:
                     self._should_exit = True
                     event.app.exit()
 
-        @kb.add('c-S-c')  # Ctrl+Shift+C
-        def handle_ctrl_shift_c(event):
-            """Copy text to clipboard (terminal-native).
+        try:
+            @kb.add('c-S-c')  # Ctrl+Shift+C
+            def handle_ctrl_shift_c(event):
+                """Copy text to clipboard (terminal-native).
 
-            This is a no-op at the application level. Terminal emulators
-            handle the actual copy operation when Ctrl+Shift+C is pressed.
-            This binding prevents Hermes from intercepting the keystroke
-            as an interrupt signal.
+                This is a no-op at the application level. Terminal emulators
+                handle the actual copy operation when Ctrl+Shift+C is pressed.
+                This binding prevents Hermes from intercepting the keystroke
+                as an interrupt signal.
 
-            On macOS the standard copy shortcut is Cmd+C (no Hermes binding
-            needed). On Linux/Windows Ctrl+Shift+C is the conventional
-            terminal copy shortcut.
-            """
-            return  # No-op — let the terminal perform native copy
+                On macOS the standard copy shortcut is Cmd+C (no Hermes binding
+                needed). On Linux/Windows Ctrl+Shift+C is the conventional
+                terminal copy shortcut.
+                """
+                return  # No-op — let the terminal perform native copy
+        except (ValueError, KeyError):
+            pass  # prompt_toolkit < 3.x does not support ControlShift+letter
 
         @kb.add('c-q')  # Ctrl+Q
         def handle_ctrl_q(event):

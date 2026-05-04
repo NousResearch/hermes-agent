@@ -12244,7 +12244,9 @@ class GatewayRunner:
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            # Minimum seconds between edits.  Overridable via env var for tests
+            # (set HERMES_PROGRESS_EDIT_INTERVAL=0 to disable throttling in unit tests).
+            _PROGRESS_EDIT_INTERVAL = float(os.environ.get("HERMES_PROGRESS_EDIT_INTERVAL", "1.5"))
 
             while True:
                 try:
@@ -12324,7 +12326,8 @@ class GatewayRunner:
                         )
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
-                            if "flood" in _err or "retry after" in _err:
+                            _is_flood = "flood" in _err or "retry after" in _err
+                            if _is_flood:
                                 # Flood control hit — disable further edits,
                                 # switch to sending new messages only for
                                 # important updates.  Don't block 23s.
@@ -12332,15 +12335,41 @@ class GatewayRunner:
                                     "[%s] Progress edits disabled due to flood control",
                                     adapter.name,
                                 )
-                            can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                                can_edit = False
+                                await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            else:
+                                # Transient edit failure (e.g. approval card sent
+                                # outside the thread broke the edit target).
+                                # Reset the anchor so the next iteration sends a
+                                # fresh coalescing message and resumes editing.
+                                logger.info(
+                                    "[%s] Progress edit failed (non-flood), resetting "
+                                    "coalesce anchor to resume in-place editing: %s",
+                                    adapter.name,
+                                    _err or "unknown error",
+                                )
+                                progress_msg_id = None
+                                # Send the current accumulated text as a new
+                                # anchor message and resume coalescing from it.
+                                full_text = "\n".join(progress_lines)
+                                send_result = await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                                if send_result.success and send_result.message_id:
+                                    progress_msg_id = send_result.message_id
+                                # can_edit remains True — coalescing resumes on
+                                # the new anchor message.
                     else:
                         if can_edit:
-                            # First tool: send all accumulated text as new message
+                            # First tool (or after coalesce-anchor reset):
+                            # send all accumulated text as a new message.
                             full_text = "\n".join(progress_lines)
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
-                            # Editing unsupported: send just this line
+                            # Editing permanently unsupported (flood control):
+                            # send just this line as a standalone message.
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id

@@ -1012,3 +1012,267 @@ async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, t
     assert VerboseAgent.LONG_CODE not in all_content
     # But should still contain the truncated portion with "..."
     assert "..." in all_content
+
+
+# ---------------------------------------------------------------------------
+# Tests for #9136: progress coalescing resumes after approval card breaks
+# the edit target (can_edit must not be permanently disabled on non-flood
+# edit failures).
+# ---------------------------------------------------------------------------
+
+class EditFailThenSucceedAdapter(BasePlatformAdapter):
+    """Adapter where edit_message fails *once* (simulating post-approval
+    context break) then succeeds for all subsequent calls.
+
+    The first edit_message call returns failure with a generic error so we
+    exercise the non-flood recovery path.  All subsequent edits succeed.
+    Sends always succeed and return incrementing message IDs so we can assert
+    the anchor was reset and resumed.
+    """
+
+    def __init__(self, platform=Platform.TELEGRAM, fail_first_edit=True):
+        super().__init__(PlatformConfig(enabled=True, token="***"), platform)
+        self.sent = []
+        self.edits = []
+        self.typing = []
+        self._fail_first_edit = fail_first_edit
+        self._edit_call_count = 0
+        self._send_call_count = 0
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self._send_call_count += 1
+        msg_id = f"msg-{self._send_call_count}"
+        self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata, "message_id": msg_id})
+        return SendResult(success=True, message_id=msg_id)
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self._edit_call_count += 1
+        if self._fail_first_edit and self._edit_call_count == 1:
+            # Simulate stale message_id after approval card was sent outside thread
+            self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content, "success": False})
+            return SendResult(success=False, error="message to edit not found")
+        self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content, "success": True})
+        return SendResult(success=True, message_id=message_id)
+
+    async def send_typing(self, chat_id, metadata=None) -> None:
+        self.typing.append({"chat_id": chat_id})
+
+    async def get_chat_info(self, chat_id: str):
+        return {"id": chat_id}
+
+
+class FloodControlAdapter(EditFailThenSucceedAdapter):
+    """Adapter where edit_message always fails with a flood-control error.
+
+    Verifies that flood-control failures keep can_edit=False permanently
+    (original correct behaviour is not regressed).
+    """
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self._edit_call_count += 1
+        self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content, "success": False})
+        return SendResult(success=False, error="Too Many Requests: retry after 23")
+
+
+class ThreeToolAgent:
+    """Emits three sequential tool.started events with pauses so the
+    progress loop processes each one individually (no throttle batching).
+
+    With HERMES_PROGRESS_EDIT_INTERVAL=0 the loop sends immediately:
+      tool-1  → initial send (anchor established)
+      tool-2  → edit attempt on anchor (fails once for EditFailThenSucceed)
+                → anchor reset, new send
+      tool-3  → edit on new anchor (coalescing resumed)
+    """
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", "ls", {})
+        time.sleep(0.35)   # let progress loop drain + send before next event
+        cb("tool.started", "read_file", "/etc/passwd", {})
+        time.sleep(0.35)   # let progress loop attempt edit (fails first time)
+        cb("tool.started", "write_file", "out.txt", {})
+        time.sleep(0.35)   # let progress loop edit new anchor
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+def _make_runner_with(adapter):
+    """Build a minimal GatewayRunner wired to *adapter*."""
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {adapter.platform: adapter}
+    runner._voice_mode = {}
+    runner._prefill_messages = []
+    runner._ephemeral_system_prompt = ""
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._session_db = None
+    runner._running_agents = {}
+    runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.config = SimpleNamespace(
+        thread_sessions_per_user=False,
+        group_sessions_per_user=False,
+        stt_enabled=False,
+    )
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_progress_coalescing_resumes_after_edit_failure(monkeypatch, tmp_path):
+    """#9136: non-flood edit failure must reset the coalesce anchor, not
+    permanently disable editing.  After recovery, subsequent progress
+    updates should be coalesced via edit_message on the new anchor.
+
+    Timeline (throttle disabled via HERMES_PROGRESS_EDIT_INTERVAL=0):
+      send msg-1  (tool-1 anchor)
+      edit msg-1  → FAILS with generic error  → anchor reset
+      send msg-2  (accumulated text as new anchor)
+      edit msg-2  → SUCCEEDS (tool-3 coalesced into msg-2)
+
+    The old buggy code would have set can_edit=False permanently after the
+    first failure, making tool-3 a third standalone send instead of an edit.
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    # Disable edit throttle so each tool fires its own send/edit cycle
+    monkeypatch.setenv("HERMES_PROGRESS_EDIT_INTERVAL", "0")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ThreeToolAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    import tools.terminal_tool  # noqa: F401 — register terminal emoji
+
+    adapter = EditFailThenSucceedAdapter()
+    runner = _make_runner_with(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="42",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-9136",
+        session_key="agent:main:telegram:group:-1001:42",
+    )
+
+    assert result["final_response"] == "done"
+
+    # --- The failed edit must be present (shows the edit was attempted) ---
+    failed_edits = [e for e in adapter.edits if not e.get("success")]
+    assert failed_edits, (
+        "Expected the first edit to fail (simulating post-approval stale anchor), "
+        f"but no failed edit found. edits={adapter.edits}"
+    )
+
+    # --- After recovery, at least one successful edit must exist ---
+    # (proves can_edit was NOT permanently disabled)
+    successful_edits = [e for e in adapter.edits if e.get("success")]
+    assert successful_edits, (
+        "Expected at least one successful edit after coalesce-anchor reset, got none.\n"
+        f"This means can_edit was permanently disabled (the #9136 bug).\n"
+        f"edits={adapter.edits}\n"
+        f"sent={[s['content'] for s in adapter.sent]}"
+    )
+
+    # --- Coalescing resumed: total sends must be ≤ 2 (initial anchor +
+    # one reset anchor).  If can_edit stayed False, we'd see 3 separate sends.
+    assert len(adapter.sent) <= 2, (
+        "Progress messages were NOT coalesced after edit failure recovery — "
+        "each tool became a standalone send (the #9136 bug).\n"
+        f"Expected ≤2 sends (anchor + reset anchor), got {len(adapter.sent)}:\n"
+        + "\n".join(f"  [{i+1}] {s['content']!r}" for i, s in enumerate(adapter.sent))
+    )
+
+    # --- The successful edit must target the *new* anchor (msg-2), not the
+    # stale msg-1 that caused the initial failure ---
+    new_anchor_id = adapter.sent[-1]["message_id"]   # last send = reset anchor
+    assert any(e["message_id"] == new_anchor_id for e in successful_edits), (
+        f"Successful edits targeted the wrong message_id. "
+        f"Expected {new_anchor_id!r} (new anchor), "
+        f"got {[e['message_id'] for e in successful_edits]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_flood_control_still_disables_editing_permanently(monkeypatch, tmp_path):
+    """Flood-control edit failures must still permanently disable can_edit.
+
+    This verifies the #9136 fix does NOT accidentally re-enable editing after
+    a Telegram 429 flood-control response.  Flood errors continue to set
+    can_edit=False permanently, making each subsequent tool a standalone send.
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    monkeypatch.setenv("HERMES_PROGRESS_EDIT_INTERVAL", "0")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ThreeToolAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = FloodControlAdapter()
+    runner = _make_runner_with(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="42",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-9136-flood",
+        session_key="agent:main:telegram:group:-1001:42",
+    )
+
+    assert result["final_response"] == "done"
+
+    # Flood control: edit was attempted exactly once then permanently disabled.
+    assert adapter._edit_call_count == 1, (
+        f"Flood control should disable after 1 edit attempt, got {adapter._edit_call_count} attempts"
+    )
+    # No edit should have succeeded.
+    successful_edits = [e for e in adapter.edits if e.get("success")]
+    assert not successful_edits, (
+        f"Expected no successful edits under flood control, got: {successful_edits}"
+    )
+    # After flood disable, tools become individual sends — should be > 1 send
+    # (initial anchor + at least one more for tool-2/tool-3 standalone).
+    assert len(adapter.sent) >= 2, (
+        f"Expected multiple standalone sends after flood-control disable, "
+        f"got {len(adapter.sent)}: {[s['content'] for s in adapter.sent]}"
+    )

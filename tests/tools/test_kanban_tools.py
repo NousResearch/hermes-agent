@@ -611,6 +611,44 @@ def test_worker_complete_own_task_still_works(worker_env):
     assert d.get("ok") is True and d.get("task_id") == worker_env
 
 
+def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
+    """A retried worker cannot complete the task using an old run token."""
+    from hermes_cli import kanban_db as kb
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        run1 = kb.latest_run(conn, worker_env)
+        kb._set_worker_pid(conn, worker_env, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [worker_env]
+
+        kb.claim_task(conn, worker_env)
+        run2 = kb.latest_run(conn, worker_env)
+        assert run2.id != run1.id
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run1.id))
+    out = kt._handle_complete({"summary": "late stale completion"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run2.id))
+    out = kt._handle_complete({"summary": "current completion"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+
 def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     """Orchestrator profiles (no HERMES_KANBAN_TASK) can still complete
     any task via explicit task_id. The check only applies to workers."""

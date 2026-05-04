@@ -46,7 +46,7 @@ import {
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Ring } from "@/components/loading-ui/ring";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
@@ -596,7 +596,7 @@ export default function App() {
                         aria-live="polite"
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Spinner />
+                          <Ring className="h-4 w-4 shrink-0" aria-hidden />
                           <span>Loading chat…</span>
                         </div>
                       </div>
@@ -752,9 +752,9 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 )}
               >
                 {isPending ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
+                  <Ring className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 ) : isActionRunning && spin ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
+                  <Ring className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 ) : (
                   <Icon
                     className={cn(

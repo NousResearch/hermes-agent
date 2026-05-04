@@ -2140,20 +2140,32 @@ class AIAgent:
                 "from config. Set model.ollama_num_ctx in config.yaml to pin a specific value.",
                 _config_context_length,
             )
-        # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
-        # Without this, GGUF metadata can advertise 256K+ which Ollama honours
-        # by allocating that much VRAM — blowing up small GPUs even though the
-        # user explicitly set a smaller context_length in config.yaml.
+        # Cap or bump auto-detected ollama_num_ctx to match model.context_length.
+        # Cap: GGUF metadata can advertise 256K+, which Ollama honours by allocating
+        # that much VRAM — blowing up small GPUs.  Cap prevents that.
+        # Bump: the model's Modelfile may pin num_ctx to a value below what the user
+        # configured in context_length (e.g. Modelfile has num_ctx 32768 but the user
+        # wants 64K).  Without a bump, Ollama silently truncates conversation history
+        # once messages overflow the Modelfile's lower limit, making the model appear
+        # to forget earlier turns even though hermes is sending the full history.
+        # Refs #14420.
         if (
             self._ollama_num_ctx
             and _config_context_length
             and _ollama_num_ctx_override is None  # don't override explicit ollama_num_ctx
-            and self._ollama_num_ctx > _config_context_length
+            and self._ollama_num_ctx != _config_context_length
         ):
-            logger.info(
-                "Ollama num_ctx capped: %d -> %d (model.context_length override)",
-                self._ollama_num_ctx, _config_context_length,
-            )
+            if self._ollama_num_ctx > _config_context_length:
+                logger.info(
+                    "Ollama num_ctx capped: %d -> %d (model.context_length override)",
+                    self._ollama_num_ctx, _config_context_length,
+                )
+            else:
+                logger.info(
+                    "Ollama num_ctx bumped: %d -> %d (model.context_length override; "
+                    "Modelfile default is below requested context window)",
+                    self._ollama_num_ctx, _config_context_length,
+                )
             self._ollama_num_ctx = _config_context_length
         if self._ollama_num_ctx and not self.quiet_mode:
             logger.info(

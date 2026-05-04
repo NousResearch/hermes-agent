@@ -167,3 +167,22 @@ class TestOllamaNumCtxFallback:
             result = query_ollama_num_ctx("qwen3.5:9b", "http://192.168.21.205:11434/v1")
 
         assert result is None
+
+    def test_modelfile_num_ctx_below_context_length_returns_modelfile_value(self):
+        """query_ollama_num_ctx returns the Modelfile num_ctx even if it is below
+        the user's context_length.  run_agent.py is responsible for bumping it up
+        to match context_length (issue #14420 follow-up)."""
+        show_data = {
+            "model_info": {"qwen2.context_length": 131072},
+            "parameters": "num_ctx 32768\ntemperature 0.6",
+        }
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_num_ctx("qwen3.5:9b", "http://192.168.21.205:11434/v1")
+
+        # The function returns the Modelfile's explicit num_ctx (32768).
+        # run_agent.py will bump this up to model.context_length (64000) if needed.
+        assert result == 32768

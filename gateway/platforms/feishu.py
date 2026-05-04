@@ -4089,15 +4089,18 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        effective_reply_to = reply_to
+        if not effective_reply_to and metadata and metadata.get("thread_id"):
+            effective_reply_to = metadata.get("reply_to_message_id") or metadata.get("reply_to")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
-        if reply_to:
+        if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_reply_message_request(reply_to, body)
+            request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
         body = self._build_create_message_body(

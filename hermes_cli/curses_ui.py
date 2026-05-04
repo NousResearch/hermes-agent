@@ -263,6 +263,33 @@ def curses_radiolist(
                 stdscr.refresh()
                 key = stdscr.getch()
 
+                # Distinguish a lone ESC (cancel) from the leading byte of
+                # an escape sequence emitted by the terminal for unrelated
+                # keys (Shift+digit on some keymaps, mouse events, paste
+                # bracketed sequences, etc.).  Without this guard, typing
+                # `#8` (or anything else that triggers an ESC-prefixed
+                # CSI sequence) drops the user out of the picker.
+                if key == 27:
+                    stdscr.nodelay(True)
+                    try:
+                        next_key = stdscr.getch()
+                    finally:
+                        stdscr.nodelay(False)
+                    if next_key == -1:
+                        # Lone ESC — real cancel.
+                        result_holder[0] = cancel_returns
+                        return
+                    # ESC was the start of a sequence; drain the rest and
+                    # treat the whole thing as a no-op so it doesn't bubble
+                    # to a stray match below.
+                    stdscr.nodelay(True)
+                    try:
+                        while stdscr.getch() != -1:
+                            pass
+                    finally:
+                        stdscr.nodelay(False)
+                    continue
+
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(items)
                 elif key in (curses.KEY_DOWN, ord("j")):
@@ -270,9 +297,12 @@ def curses_radiolist(
                 elif key in (ord(" "), curses.KEY_ENTER, 10, 13):
                     result_holder[0] = cursor
                     return
-                elif key in (27, ord("q")):
+                elif key == ord("q"):
                     result_holder[0] = cancel_returns
                     return
+                # Any other key — silently ignore. Number keys, letters,
+                # punctuation, mouse events: none of them should exit the
+                # picker.
 
         curses.wrapper(_draw)
         flush_stdin()

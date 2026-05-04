@@ -7566,11 +7566,25 @@ class HermesCLI:
             /delegation <role> <model>        Pin role to model
             /delegation <role> clear          Remove the pin (revert to inherit)
             /delegation list                  Print the current map
+            /delegation defaults              Apply curated defaults (preserves
+                                              user pins; only fills empties)
+            /delegation defaults --force      Apply curated defaults, OVERWRITING
+                                              any existing user pins
         """
         parts = cmd.strip().split(maxsplit=2)
 
         if len(parts) >= 2 and parts[1].lower() == "list":
             self._print_delegation_map()
+            return
+
+        if len(parts) >= 2 and parts[1].lower() == "defaults":
+            force = len(parts) >= 3 and parts[2].strip().lower() in (
+                "--force",
+                "force",
+                "-f",
+                "overwrite",
+            )
+            self._apply_delegation_defaults(overwrite=force)
             return
 
         if len(parts) >= 3:
@@ -7586,6 +7600,31 @@ class HermesCLI:
 
         # No args → open the agent picker.
         self._open_delegation_agent_picker()
+
+    def _apply_delegation_defaults(self, *, overwrite: bool) -> None:
+        try:
+            from hermes_cli.ruflo_agents import (
+                apply_suggested_defaults,
+                SUGGESTED_ROLE_MODELS,
+            )
+        except Exception:
+            _cprint(f"  {_DIM}(._.) Delegation module not available{_RST}")
+            return
+        applied, skipped = apply_suggested_defaults(overwrite=overwrite)
+        total = len(SUGGESTED_ROLE_MODELS)
+        if applied == 0 and skipped == 0:
+            _cprint(f"  {_DIM}(>_<) Failed to save defaults{_RST}")
+            return
+        mode = "overwriting existing pins" if overwrite else "preserving existing pins"
+        _cprint(
+            f"  {_ACCENT}✓ Applied curated defaults: {applied} updated, "
+            f"{skipped} kept ({total} curated total, {mode}){_RST}"
+        )
+        if applied > 0:
+            _cprint(
+                f"  {_DIM}Run /delegation list to inspect, /delegation <role> "
+                f"to re-pin individually.{_RST}"
+            )
 
     def _print_delegation_map(self) -> None:
         try:

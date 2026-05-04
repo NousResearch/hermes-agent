@@ -302,3 +302,88 @@ def test_lookup_model_for_role_returns_none_when_unset(monkeypatch):
     assert ruflo_agents.lookup_model_for_role("unset_role") is None
     assert ruflo_agents.lookup_model_for_role("") is None
     assert ruflo_agents.lookup_model_for_role(None) is None
+
+
+# ── apply_suggested_defaults ──────────────────────────────────────────────
+
+
+def test_apply_suggested_defaults_fills_empties(monkeypatch, tmp_path):
+    """First-run case: no existing pins → all suggested defaults applied."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    applied, skipped = ruflo_agents.apply_suggested_defaults()
+    assert applied == len(ruflo_agents.SUGGESTED_ROLE_MODELS)
+    assert skipped == 0
+    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "researcher: claude-haiku-4-5" in written
+    assert "security-architect: claude-opus-4-7" in written
+
+
+def test_apply_suggested_defaults_preserves_user_pins(monkeypatch, tmp_path):
+    """User pin on `researcher` should NOT be overwritten by default mode."""
+    user_pin = "claude-opus-4-7"  # not the suggested default for researcher
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"delegation": {"model_by_role": {"researcher": user_pin}}},
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        f"delegation:\n  model_by_role:\n    researcher: {user_pin}\n",
+        encoding="utf-8",
+    )
+    applied, skipped = ruflo_agents.apply_suggested_defaults(overwrite=False)
+    # researcher kept; everything else freshly applied.
+    assert skipped >= 1
+    assert applied == len(ruflo_agents.SUGGESTED_ROLE_MODELS) - 1
+    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    # User's researcher pin still present, unchanged.
+    assert f"researcher: {user_pin}" in written
+
+
+def test_apply_suggested_defaults_force_overwrites(monkeypatch, tmp_path):
+    """`overwrite=True` clobbers existing pins back to the curated default."""
+    user_pin = "claude-opus-4-7"
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"delegation": {"model_by_role": {"researcher": user_pin}}},
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        f"delegation:\n  model_by_role:\n    researcher: {user_pin}\n",
+        encoding="utf-8",
+    )
+    applied, skipped = ruflo_agents.apply_suggested_defaults(overwrite=True)
+    # researcher gets reset to suggested (haiku); count = full size.
+    assert applied == len(ruflo_agents.SUGGESTED_ROLE_MODELS)
+    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "researcher: claude-haiku-4-5" in written
+    assert f"researcher: {user_pin}" not in written
+
+
+def test_apply_suggested_defaults_idempotent(monkeypatch, tmp_path):
+    """Running defaults twice is a no-op the second time."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    applied1, _ = ruflo_agents.apply_suggested_defaults()
+
+    # Second call sees the now-populated map; reload via load_config patch.
+    map_after_first = dict(ruflo_agents.SUGGESTED_ROLE_MODELS)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"delegation": {"model_by_role": map_after_first}},
+    )
+    applied2, skipped2 = ruflo_agents.apply_suggested_defaults()
+    assert applied2 == 0
+    assert skipped2 == len(ruflo_agents.SUGGESTED_ROLE_MODELS)
+    assert applied1 == len(ruflo_agents.SUGGESTED_ROLE_MODELS)
+
+
+def test_suggested_role_models_only_uses_known_models():
+    """Sanity: every suggested model is one of the three curated choices."""
+    valid = {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"}
+    bad = {
+        role: model
+        for role, model in ruflo_agents.SUGGESTED_ROLE_MODELS.items()
+        if model not in valid
+    }
+    assert not bad, f"Unknown model in defaults: {bad}"

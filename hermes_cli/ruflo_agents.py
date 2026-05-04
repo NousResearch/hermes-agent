@@ -298,6 +298,165 @@ def group_by_category(
     return out
 
 
+# ── Suggested per-role model defaults ─────────────────────────────────────
+#
+# Curated mapping of ruflo agent → model based on what each persona is
+# typically asked to do.  These are *defaults* the user can apply once via
+# the `/delegation` slash command (which writes them into
+# delegation.model_by_role); individual roles can be re-pinned afterwards.
+#
+# Mapping rules:
+# - Haiku 4.5: cheap retrieval / triage / grep / scanning / lookup work that
+#   doesn't require deep reasoning.  Things that mostly read.
+# - Sonnet 4.6: balanced default — coders, testers, reviewers, most swarm
+#   coordinators, github automation, refactoring, day-to-day analysis.
+# - Opus 4.7: deep reasoning, architecture, security audit, novel algorithm
+#   design, complex consensus, multi-step planning under uncertainty.
+
+_HAIKU = "claude-haiku-4-5"
+_SONNET = "claude-sonnet-4-6"
+_OPUS = "claude-opus-4-7"
+
+SUGGESTED_ROLE_MODELS: dict[str, str] = {
+    # ── Haiku — retrieval / triage / monitors / scanners ──────────────────
+    "researcher": _HAIKU,
+    "scout-explorer": _HAIKU,
+    "code-analyzer": _HAIKU,
+    "analyze-code-quality": _HAIKU,
+    "issue-tracker": _HAIKU,
+    "pii-detector": _HAIKU,
+    "project-board-sync": _HAIKU,
+    "sync-coordinator": _HAIKU,
+    "performance-monitor": _HAIKU,
+    "resource-allocator": _HAIKU,
+    "base-template-generator": _HAIKU,
+    "release-manager": _HAIKU,
+    "workflow-automation": _HAIKU,
+    "load-balancer": _HAIKU,
+    "test-long-runner": _HAIKU,
+
+    # ── Sonnet — balanced default for code work ───────────────────────────
+    "coder": _SONNET,
+    "tester": _SONNET,
+    "reviewer": _SONNET,
+    "planner": _SONNET,
+    "code-review-swarm": _SONNET,
+    "pr-manager": _SONNET,
+    "swarm-pr": _SONNET,
+    "swarm-issue": _SONNET,
+    "release-swarm": _SONNET,
+    "multi-repo-swarm": _SONNET,
+    "github-modes": _SONNET,
+    "repo-architect": _SONNET,
+    "dev-backend-api": _SONNET,
+    "data-ml-model": _SONNET,
+    "ops-cicd-github": _SONNET,
+    "docs-api-openapi": _SONNET,
+    "spec-mobile-react-native": _SONNET,
+    "production-validator": _SONNET,
+    "tdd-london-swarm": _SONNET,
+    "test-architect": _SONNET,
+    "python-specialist": _SONNET,
+    "typescript-specialist": _SONNET,
+    "database-specialist": _SONNET,
+    "project-coordinator": _SONNET,
+    "topology-optimizer": _SONNET,
+    "benchmark-suite": _SONNET,
+    "performance-benchmarker": _SONNET,
+    # SPARC stages — mostly tactical, sonnet-tier
+    "specification": _SONNET,
+    "pseudocode": _SONNET,
+    "refinement": _SONNET,
+    # Swarm coordinators (tactical)
+    "adaptive-coordinator": _SONNET,
+    "hierarchical-coordinator": _SONNET,
+    "mesh-coordinator": _SONNET,
+    "worker-specialist": _SONNET,
+    # Codex-side workers
+    "codex-worker": _SONNET,
+    "codex-coordinator": _SONNET,
+    # Reasoning-bank / memory
+    "reasoningbank-learner": _SONNET,
+    "memory-specialist": _SONNET,
+    "swarm-memory-manager": _SONNET,
+    "v3-memory-specialist": _SONNET,
+    # Goal planning (tactical)
+    "agent": _SONNET,
+    "goal-planner": _SONNET,
+    "code-goal-planner": _SONNET,
+    # Sublinear specialty (matrix/pagerank — math but bounded)
+    "matrix-optimizer": _SONNET,
+    "pagerank-analyzer": _SONNET,
+    "performance-optimizer": _SONNET,
+    "consensus-coordinator": _SONNET,
+    "trading-predictor": _SONNET,
+    # Sona / aidefence runtime guardian (high-volume)
+    "sona-learning-optimizer": _SONNET,
+    "aidefence-guardian": _SONNET,
+    "claims-authorizer": _SONNET,
+
+    # ── Opus — deep reasoning, architecture, security, novel design ───────
+    "arch-system-design": _OPUS,
+    "architecture": _OPUS,  # SPARC architecture stage
+    "adr-architect": _OPUS,
+    "security-architect": _OPUS,
+    "security-architect-aidefence": _OPUS,
+    "security-auditor": _OPUS,
+    "v3-security-architect": _OPUS,
+    "ddd-domain-expert": _OPUS,
+    "performance-engineer": _OPUS,
+    "v3-performance-engineer": _OPUS,
+    "v3-integration-architect": _OPUS,
+    "byzantine-coordinator": _OPUS,
+    "raft-manager": _OPUS,
+    "quorum-manager": _OPUS,
+    "crdt-synchronizer": _OPUS,
+    "gossip-coordinator": _OPUS,
+    "security-manager": _OPUS,  # consensus-tier security
+    "queen-coordinator": _OPUS,
+    "v3-queen-coordinator": _OPUS,
+    "sparc-orchestrator": _OPUS,
+    "injection-analyst": _OPUS,
+    "safla-neural": _OPUS,
+    "collective-intelligence-coordinator": _OPUS,
+    "dual-orchestrator": _OPUS,
+}
+
+
+def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
+    """Bulk-apply :data:`SUGGESTED_ROLE_MODELS` to ``delegation.model_by_role``.
+
+    Args:
+        overwrite: When True, replace existing assignments. When False
+            (default), only fill in roles that have no current assignment —
+            user-customised pins are preserved.
+
+    Returns:
+        ``(applied, skipped)`` — counts of roles updated and roles whose
+        existing assignment was kept (or that weren't in the suggested map).
+
+    Persists the merged dict to ``~/.hermes/config.yaml`` in a single write.
+    """
+    current = get_role_model_map()
+    merged = dict(current)
+    applied = 0
+    skipped = 0
+    for role, model in SUGGESTED_ROLE_MODELS.items():
+        if not overwrite and role in current:
+            skipped += 1
+            continue
+        if current.get(role) == model:
+            skipped += 1
+            continue
+        merged[role] = model
+        applied += 1
+    if applied == 0:
+        return (0, skipped)
+    if not _save_to_config_yaml("delegation.model_by_role", merged):
+        return (0, skipped)
+    return (applied, skipped)
+
+
 # ── Per-role model assignment (config-backed) ─────────────────────────────
 
 

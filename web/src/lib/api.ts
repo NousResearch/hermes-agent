@@ -91,6 +91,14 @@ export const api = {
       body: JSON.stringify({ yaml_text }),
     }),
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
+  getCustomProviders: () =>
+    fetchJSON<CustomProvidersResponse>("/api/providers/custom"),
+  createCustomProvider: (body: CustomProviderCreateRequest) =>
+    fetchJSON<CustomProviderCreateResponse>("/api/providers/custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   setEnvVar: (key: string, value: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
       method: "PUT",
@@ -393,6 +401,52 @@ export interface EnvVarInfo {
   advanced: boolean;
 }
 
+
+export interface CustomProviderAuthStatus {
+  logged_in: boolean;
+  pool_key?: string | null;
+  credentials?: number;
+  labels?: string[];
+}
+
+export interface CustomProviderInfo {
+  slug: string;
+  name: string;
+  base_url: string;
+  api_url?: string;
+  transport: string;
+  key_env?: string;
+  discover_models?: boolean;
+  default_model?: string;
+  models?: string[];
+  source?: string;
+  is_user_defined?: boolean;
+  is_current?: boolean;
+  auth?: CustomProviderAuthStatus;
+}
+
+export interface CustomProvidersResponse {
+  providers: CustomProviderInfo[];
+}
+
+export interface CustomProviderCreateRequest {
+  provider_id: string;
+  name?: string;
+  base_url: string;
+  default_model?: string;
+  api_key?: string;
+  key_env?: string;
+  transport?: string;
+  discover_models?: boolean;
+}
+
+export interface CustomProviderCreateResponse {
+  ok: boolean;
+  provider: string;
+  stored_credential: boolean;
+  entry: CustomProviderInfo;
+}
+
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
@@ -593,6 +647,7 @@ export interface ModelOptionProvider {
   is_user_defined?: boolean;
   source?: string;
   warning?: string;
+  api_url?: string;
 }
 
 export interface ModelOptionsResponse {

@@ -280,29 +280,45 @@ def _normalize_custom_pool_name(name: str) -> str:
 
 
 def _iter_custom_providers(config: Optional[dict] = None):
-    """Yield (normalized_name, entry_dict) for each valid custom_providers entry."""
+    """Yield (normalized_name, entry_dict) for every configured custom provider.
+
+    Older configs use ``custom_providers:`` while v12+ configs use the
+    ``providers:`` dict.  Include both forms so credential-pool lookups keep
+    working in mixed configs during migration.
+    """
     if config is None:
         config = _load_config_safe()
     if config is None:
         return
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        # Fall back to the v12+ providers dict via the compatibility layer
-        try:
-            from hermes_cli.config import get_compatible_custom_providers
 
-            custom_providers = get_compatible_custom_providers(config)
-        except Exception:
+    seen: set[tuple[str, str]] = set()
+
+    def _yield_entries(entries):
+        if not entries:
             return
-    if not custom_providers:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+            key = (_normalize_custom_pool_name(name), base_url)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield key[0], entry
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        yield from _yield_entries(custom_providers)
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        yield from _yield_entries(get_compatible_custom_providers(config))
+    except Exception:
         return
-    for entry in custom_providers:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str):
-            continue
-        yield _normalize_custom_pool_name(name), entry
 
 
 def get_custom_provider_pool_key(base_url: str) -> Optional[str]:

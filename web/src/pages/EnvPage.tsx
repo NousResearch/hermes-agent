@@ -5,6 +5,7 @@ import {
   ExternalLink,
   KeyRound,
   MessageSquare,
+  Plus,
   Pencil,
   Save,
   Settings,
@@ -15,7 +16,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { EnvVarInfo } from "@/lib/api";
+import type { CustomProviderInfo, EnvVarInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -481,25 +482,139 @@ function ProviderGroupCard({
   );
 }
 
+
+/* ------------------------------------------------------------------ */
+/*  CustomProviderCard — config-backed providers                       */
+/* ------------------------------------------------------------------ */
+
+function CustomProviderCard({ provider }: { provider: CustomProviderInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  const models = provider.models ?? [];
+  const loggedIn = !!provider.auth?.logged_in;
+  const credentialCount = provider.auth?.credentials ?? 0;
+
+  return (
+    <div className="border border-border bg-primary/5">
+      <ListItem
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        className="justify-between gap-3 px-4 py-3 hover:bg-primary/10"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-sm tracking-wide truncate">
+                {provider.name || provider.slug}
+              </span>
+              <Badge tone="secondary" className="text-[0.6rem]">
+                custom
+              </Badge>
+              {provider.is_current && (
+                <Badge tone="success" className="text-[0.6rem]">
+                  current
+                </Badge>
+              )}
+              {loggedIn && (
+                <Badge tone="success" className="text-[0.6rem]">
+                  authenticated{credentialCount > 1 ? ` ×${credentialCount}` : ""}
+                </Badge>
+              )}
+            </div>
+            <div className="font-mono-ui text-[0.65rem] text-muted-foreground truncate">
+              {provider.slug}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[0.65rem] text-muted-foreground/60">
+            {models.length} model{models.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+      </ListItem>
+
+      {expanded && (
+        <div className="border-t border-border px-4 py-3 grid gap-3">
+          <div className="grid gap-1">
+            <span className="text-[0.65rem] uppercase tracking-wide text-muted-foreground/70">
+              Endpoint
+            </span>
+            <code className="font-mono-ui text-xs break-all bg-muted/30 border border-border px-2 py-1">
+              {provider.base_url || provider.api_url || "---"}
+            </code>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div className="border border-border px-2 py-1.5">
+              <div className="text-[0.65rem] text-muted-foreground/70 uppercase tracking-wide">Transport</div>
+              <div className="font-mono-ui">{provider.transport || "openai_chat"}</div>
+            </div>
+            <div className="border border-border px-2 py-1.5">
+              <div className="text-[0.65rem] text-muted-foreground/70 uppercase tracking-wide">Auth</div>
+              <div>{loggedIn ? "Credential pool" : provider.key_env ? provider.key_env : "Not connected"}</div>
+            </div>
+            <div className="border border-border px-2 py-1.5">
+              <div className="text-[0.65rem] text-muted-foreground/70 uppercase tracking-wide">Models</div>
+              <div>{models.length || 0}</div>
+            </div>
+          </div>
+          {models.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {models.map((model) => (
+                <Badge key={model} tone="outline" className="text-[0.6rem] py-0 px-1.5">
+                  {model}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main page                                                          */
 /* ------------------------------------------------------------------ */
 
 export default function EnvPage() {
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
+  const [customProviders, setCustomProviders] = useState<CustomProviderInfo[]>([]);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [addingProvider, setAddingProvider] = useState(false);
+  const [providerForm, setProviderForm] = useState({
+    provider_id: "",
+    name: "",
+    base_url: "",
+    default_model: "",
+    api_key: "",
+    key_env: "",
+    transport: "openai_chat",
+  });
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+
+  const refreshCustomProviders = useCallback(() => {
+    api
+      .getCustomProviders()
+      .then((resp) => setCustomProviders(resp.providers ?? []))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     api
       .getEnvVars()
       .then(setVars)
       .catch(() => {});
-  }, []);
+    refreshCustomProviders();
+  }, [refreshCustomProviders]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -598,6 +713,42 @@ export default function EnvPage() {
     });
   };
 
+  const handleAddProvider = async () => {
+    if (!providerForm.provider_id.trim() || !providerForm.base_url.trim()) {
+      showToast("Provider id and base URL are required", "error");
+      return;
+    }
+    setAddingProvider(true);
+    try {
+      await api.createCustomProvider({
+        provider_id: providerForm.provider_id.trim(),
+        name: providerForm.name.trim() || providerForm.provider_id.trim(),
+        base_url: providerForm.base_url.trim(),
+        default_model: providerForm.default_model.trim(),
+        api_key: providerForm.api_key.trim(),
+        key_env: providerForm.key_env.trim(),
+        transport: providerForm.transport.trim() || "openai_chat",
+        discover_models: true,
+      });
+      showToast(`${providerForm.provider_id.trim()} added`, "success");
+      setProviderForm({
+        provider_id: "",
+        name: "",
+        base_url: "",
+        default_model: "",
+        api_key: "",
+        key_env: "",
+        transport: "openai_chat",
+      });
+      setShowAddProvider(false);
+      refreshCustomProviders();
+    } catch (e) {
+      showToast(`Failed to add provider: ${e}`, "error");
+    } finally {
+      setAddingProvider(false);
+    }
+  };
+
   /* ---- Build provider groups ---- */
   const { providerGroups, nonProviderGrouped } = useMemo(() => {
     if (!vars) return { providerGroups: [], nonProviderGrouped: [] };
@@ -658,8 +809,10 @@ export default function EnvPage() {
     );
   }
 
-  const totalProviders = providerGroups.length;
-  const configuredProviders = providerGroups.filter((g) => g.hasAnySet).length;
+  const totalProviders = providerGroups.length + customProviders.length;
+  const configuredProviders =
+    providerGroups.filter((g) => g.hasAnySet).length +
+    customProviders.filter((p) => p.auth?.logged_in || (p.models?.length ?? 0) > 0 || p.key_env).length;
 
   const pendingClearKey = keyClear.pendingId;
   const pendingKeyDescription =
@@ -708,18 +861,110 @@ export default function EnvPage() {
 
       <Card>
         <CardHeader className="border-b border-border bg-card">
-          <div className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">{t.env.llmProviders}</CardTitle>
+          <div className="flex items-start justify-between gap-3">
+            <div className="grid gap-1">
+              <div className="flex items-center gap-2">
+                <Zap className="h-5 w-5 text-muted-foreground" />
+                <CardTitle className="text-base">{t.env.llmProviders}</CardTitle>
+              </div>
+              <CardDescription>
+                {t.env.providersConfigured
+                  .replace("{configured}", String(configuredProviders))
+                  .replace("{total}", String(totalProviders))}
+              </CardDescription>
+            </div>
+            <Button
+              size="sm"
+              outlined
+              prefix={<Plus />}
+              onClick={() => setShowAddProvider((v) => !v)}
+            >
+              Add Provider
+            </Button>
           </div>
-          <CardDescription>
-            {t.env.providersConfigured
-              .replace("{configured}", String(configuredProviders))
-              .replace("{total}", String(totalProviders))}
-          </CardDescription>
         </CardHeader>
 
         <CardContent className="grid gap-0 p-0">
+          {showAddProvider && (
+            <div className="border-b border-border bg-muted/20 p-4 grid gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label className="text-[0.7rem]">Provider ID</Label>
+                  <Input
+                    value={providerForm.provider_id}
+                    onChange={(e) => setProviderForm((p) => ({ ...p, provider_id: e.target.value }))}
+                    placeholder="example.provider"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label className="text-[0.7rem]">Display name</Label>
+                  <Input
+                    value={providerForm.name}
+                    onChange={(e) => setProviderForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="Example Provider"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-[0.7rem]">Base URL</Label>
+                <Input
+                  value={providerForm.base_url}
+                  onChange={(e) => setProviderForm((p) => ({ ...p, base_url: e.target.value }))}
+                  placeholder="https://api.example.com/v1"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label className="text-[0.7rem]">Default model</Label>
+                  <Input
+                    value={providerForm.default_model}
+                    onChange={(e) => setProviderForm((p) => ({ ...p, default_model: e.target.value }))}
+                    placeholder="model-id"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label className="text-[0.7rem]">Transport</Label>
+                  <Input
+                    value={providerForm.transport}
+                    onChange={(e) => setProviderForm((p) => ({ ...p, transport: e.target.value }))}
+                    placeholder="openai_chat"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label className="text-[0.7rem]">API key</Label>
+                  <Input
+                    type="password"
+                    value={providerForm.api_key}
+                    onChange={(e) => setProviderForm((p) => ({ ...p, api_key: e.target.value }))}
+                    placeholder="stored in Hermes auth, not config.yaml"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label className="text-[0.7rem]">Key env var</Label>
+                  <Input
+                    value={providerForm.key_env}
+                    onChange={(e) => setProviderForm((p) => ({ ...p, key_env: e.target.value }))}
+                    placeholder="OPTIONAL_API_KEY"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" outlined onClick={() => setShowAddProvider(false)} disabled={addingProvider}>
+                  {t.common.cancel}
+                </Button>
+                <Button size="sm" prefix={<Save />} onClick={handleAddProvider} disabled={addingProvider}>
+                  {addingProvider ? "..." : "Save Provider"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {customProviders.map((provider) => (
+            <CustomProviderCard key={provider.slug} provider={provider} />
+          ))}
+
           {providerGroups.map((group) => (
             <ProviderGroupCard
               key={group.name}

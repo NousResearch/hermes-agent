@@ -187,8 +187,11 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 
-    # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    # Explicit non-loopback bind: require exact host match.
+    # Browsers and DNS tooling may preserve a trailing root dot for FQDNs
+    # (e.g. momo-hermes.tailnet.ts.net.). Treat that as the same host
+    # rather than rejecting the dashboard URL with a confusing 400.
+    return host_only.rstrip(".") == bound_lc.rstrip(".")
 
 
 @app.middleware("http")
@@ -458,6 +461,18 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+
+
+class CustomProviderCreate(BaseModel):
+    """Payload for POST /api/providers/custom — add/update a config provider."""
+    provider_id: str
+    name: str = ""
+    base_url: str
+    default_model: str = ""
+    api_key: str = ""
+    key_env: str = ""
+    transport: str = "openai_chat"
+    discover_models: bool = True
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -906,11 +921,26 @@ def get_model_info():
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
 
-        # Try to get model capabilities from models.dev
+        # Try to get model capabilities from models.dev. This is optional UI
+        # decoration, so keep the dashboard responsive if DNS/network fetches
+        # stall while models.dev cache is cold.
         caps = {}
         try:
+            import threading
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+
+            holder: dict = {}
+
+            def _load_caps() -> None:
+                try:
+                    holder["value"] = get_model_capabilities(provider=provider, model=model_name)
+                except Exception:
+                    holder["value"] = None
+
+            thread = threading.Thread(target=_load_caps, daemon=True)
+            thread.start()
+            thread.join(0.5)
+            mc = holder.get("value")
             if mc is not None:
                 caps = {
                     "supports_tools": mc.supports_tools,
@@ -955,6 +985,201 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "title_generation",
     "curator",
 )
+
+
+
+# ---------------------------------------------------------------------------
+# Custom provider management — v12+ providers: config plus auth-pool secrets.
+# ---------------------------------------------------------------------------
+
+
+def _provider_config_to_model_list(provider_cfg: Dict[str, Any]) -> List[str]:
+    """Extract displayable model ids from a providers: entry without secrets."""
+    models: List[str] = []
+    default_model = str(
+        provider_cfg.get("default_model", "") or provider_cfg.get("model", "") or ""
+    ).strip()
+    if default_model:
+        models.append(default_model)
+    cfg_models = provider_cfg.get("models", [])
+    if isinstance(cfg_models, dict):
+        for model_id in cfg_models:
+            model_id = str(model_id or "").strip()
+            if model_id and model_id not in models:
+                models.append(model_id)
+    elif isinstance(cfg_models, list):
+        for model_id in cfg_models:
+            if isinstance(model_id, dict):
+                model_id = str(model_id.get("id", "") or model_id.get("name", "") or "").strip()
+            else:
+                model_id = str(model_id or "").strip()
+            if model_id and model_id not in models:
+                models.append(model_id)
+    return models
+
+
+def _custom_provider_pool_status(base_url: str) -> Dict[str, Any]:
+    """Return safe credential-pool status for a custom provider endpoint."""
+    try:
+        from agent.credential_pool import get_custom_provider_pool_key, load_pool
+
+        pool_key = get_custom_provider_pool_key(base_url)
+        if not pool_key:
+            return {"logged_in": False, "pool_key": None, "credentials": 0}
+        pool = load_pool(pool_key)
+        entries = pool.entries()
+        return {
+            "logged_in": bool(entries),
+            "pool_key": pool_key,
+            "credentials": len(entries),
+            "labels": [str(getattr(entry, "label", "") or "") for entry in entries],
+        }
+    except Exception:
+        return {"logged_in": False, "pool_key": None, "credentials": 0}
+
+
+@app.get("/api/providers/custom")
+def list_custom_providers():
+    """Return v12+ config-based custom providers without exposing secrets."""
+    try:
+        cfg = load_config()
+        providers_cfg = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+        current_provider = str(model_cfg.get("provider", "") or "")
+        rows = []
+        for provider_id, provider_cfg in sorted(providers_cfg.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            base_url = str(
+                provider_cfg.get("base_url", "")
+                or provider_cfg.get("api", "")
+                or provider_cfg.get("url", "")
+                or ""
+            ).strip()
+            auth = _custom_provider_pool_status(base_url)
+            key_env = str(provider_cfg.get("key_env", "") or "").strip()
+            inline_api_key = str(provider_cfg.get("api_key", "") or "").strip()
+            env_has_key = bool(os.environ.get(key_env, "").strip()) if key_env else False
+            auth["logged_in"] = bool(auth.get("logged_in") or env_has_key or inline_api_key)
+            rows.append({
+                "slug": str(provider_id),
+                "name": str(provider_cfg.get("name", "") or provider_id),
+                "base_url": base_url,
+                "api_url": base_url,
+                "transport": str(provider_cfg.get("transport", "") or provider_cfg.get("api_mode", "") or "openai_chat"),
+                "key_env": key_env,
+                "discover_models": provider_cfg.get("discover_models", True),
+                "default_model": str(provider_cfg.get("default_model", "") or provider_cfg.get("model", "") or ""),
+                "models": _provider_config_to_model_list(provider_cfg),
+                "source": "user-config",
+                "is_user_defined": True,
+                "is_current": str(provider_id) == current_provider,
+                "auth": auth,
+            })
+        return {"providers": rows}
+    except Exception:
+        _log.exception("GET /api/providers/custom failed")
+        raise HTTPException(status_code=500, detail="Failed to list custom providers")
+
+
+@app.post("/api/providers/custom")
+def create_custom_provider(body: CustomProviderCreate):
+    """Add or update a v12+ providers: entry.
+
+    API keys are never written to config.yaml. When provided, they are stored in
+    the Hermes credential pool for the matching custom endpoint.
+    """
+    import re
+    import uuid
+
+    provider_id = (body.provider_id or "").strip()
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="provider_id is required")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}", provider_id):
+        raise HTTPException(status_code=400, detail="provider_id may contain letters, numbers, dot, underscore, colon, or dash")
+
+    base_url = (body.base_url or "").strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="base_url must start with http:// or https://")
+
+    transport = (body.transport or "openai_chat").strip()
+    allowed_transports = {"openai_chat", "chat_completions", "anthropic_messages", "codex_responses", "responses"}
+    if transport not in allowed_transports:
+        raise HTTPException(status_code=400, detail="unsupported transport")
+
+    try:
+        cfg = load_config()
+        providers_cfg = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        entry = dict(providers_cfg.get(provider_id) or {})
+        entry["name"] = (body.name or provider_id).strip()
+        entry["base_url"] = base_url
+        entry["transport"] = transport
+        entry["discover_models"] = bool(body.discover_models)
+        if body.default_model.strip():
+            entry["default_model"] = body.default_model.strip()
+            models = entry.get("models") if isinstance(entry.get("models"), list) else []
+            if body.default_model.strip() not in models:
+                models = [body.default_model.strip(), *models]
+            entry["models"] = models
+        if body.key_env.strip():
+            entry["key_env"] = body.key_env.strip()
+        else:
+            entry.pop("key_env", None)
+        # Never persist plaintext secrets from the dashboard.
+        entry.pop("api_key", None)
+
+        providers_cfg[provider_id] = entry
+        cfg["providers"] = providers_cfg
+        save_config(cfg)
+
+        stored_credential = False
+        if body.api_key.strip():
+            from agent.credential_pool import (
+                AUTH_TYPE_API_KEY,
+                SOURCE_MANUAL,
+                PooledCredential,
+                get_custom_provider_pool_key,
+                load_pool,
+            )
+
+            pool_key = get_custom_provider_pool_key(base_url)
+            if not pool_key:
+                # get_custom_provider_pool_key depends on freshly saved config;
+                # this fallback keeps the secret usable even if compatibility
+                # lookup cannot see the new providers: entry for some reason.
+                pool_key = "custom:" + provider_id.lower().replace(" ", "-")
+            pool = load_pool(pool_key)
+            pool.add_entry(PooledCredential.from_dict(pool_key, {
+                "id": uuid.uuid4().hex[:6],
+                "label": entry["name"],
+                "auth_type": AUTH_TYPE_API_KEY,
+                "source": SOURCE_MANUAL,
+                "access_token": body.api_key.strip(),
+                "base_url": base_url,
+            }))
+            stored_credential = True
+
+        return {
+            "ok": True,
+            "provider": provider_id,
+            "stored_credential": stored_credential,
+            "entry": {
+                "slug": provider_id,
+                "name": entry.get("name", provider_id),
+                "base_url": base_url,
+                "api_url": base_url,
+                "transport": transport,
+                "default_model": entry.get("default_model", ""),
+                "models": _provider_config_to_model_list(entry),
+                "source": "user-config",
+                "is_user_defined": True,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/providers/custom failed")
+        raise HTTPException(status_code=500, detail="Failed to save custom provider")
 
 
 @app.get("/api/model/options")

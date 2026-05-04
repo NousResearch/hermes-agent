@@ -96,10 +96,17 @@ class TestPtyBridgeIO:
 @skip_on_windows
 class TestPtyBridgeResize:
     def test_resize_updates_child_winsize(self):
-        # tput reads COLUMNS/LINES from the TTY ioctl (TIOCGWINSZ).
-        # Spawn a shell, resize, then ask tput for the dimensions.
+        # Query the TTY ioctl directly instead of using tput, which requires
+        # TERM and fails in GitHub Actions' non-interactive environment.
+        winsize_script = (
+            "import fcntl, struct, termios, time; "
+            "time.sleep(0.1); "
+            "rows, cols, *_ = struct.unpack('HHHH', "
+            "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
+            "print(cols); print(rows)"
+        )
         bridge = PtyBridge.spawn(
-            ["/bin/sh", "-c", "sleep 0.1; tput cols; tput lines"],
+            [sys.executable, "-c", winsize_script],
             cols=80,
             rows=24,
         )

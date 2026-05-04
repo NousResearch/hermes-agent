@@ -255,7 +255,8 @@ class TestLaunchdServiceRecovery:
         target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
-            calls.append(cmd)
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
             if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -282,7 +283,8 @@ class TestLaunchdServiceRecovery:
         target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
-            calls.append(cmd)
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
             if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(113, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")

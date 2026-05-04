@@ -539,6 +539,7 @@ def resolve_display_context_length(
     api_key: str = "",
     model_info: Optional[ModelInfo] = None,
     custom_providers: list | None = None,
+    config_context_length: int | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -565,6 +566,7 @@ def resolve_display_context_length(
             api_key=api_key or "",
             provider=provider or None,
             custom_providers=custom_providers,
+            config_context_length=config_context_length,
         )
         if ctx:
             return int(ctx)
@@ -889,14 +891,19 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
-            for up in user_providers:
-                if isinstance(up, dict) and up.get("provider") == target_provider:
-                    cfg_models = up.get("models", [])
-                    if new_model in cfg_models or any(
-                        m.get("name") == new_model for m in cfg_models if isinstance(m, dict)
-                    ):
+            # user_providers is a dict: {provider_slug: config_dict}
+            for slug, cfg in user_providers.items():
+                if slug == target_provider:
+                    cfg_models = cfg.get("models", {})
+                    # Direct membership works for dict (keys) and list (strings)
+                    if new_model in cfg_models:
                         override = True
                         break
+                    # Also accept if models is a list of dicts with 'name' field
+                    if isinstance(cfg_models, list):
+                        if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
+                            override = True
+                            break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:
@@ -1050,6 +1057,45 @@ def list_authenticated_providers(
         if normed:
             _builtin_endpoints.add(normed)
 
+    def _has_fast_aws_sdk_signal() -> bool:
+        """Return True when explicit AWS auth config is present.
+
+        This intentionally avoids botocore's full credential chain. Provider
+        picker/model-switch discovery can run for non-Bedrock providers, and
+        botocore may otherwise probe EC2 IMDS (169.254.169.254) on local
+        machines before returning no credentials.
+        """
+        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip():
+            return True
+        if (
+            os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+            and os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        ):
+            return True
+        return any(
+            os.environ.get(name, "").strip()
+            for name in (
+                "AWS_PROFILE",
+                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "AWS_WEB_IDENTITY_TOKEN_FILE",
+            )
+        )
+
+    def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
+        """Credential check for AWS SDK providers in non-runtime discovery."""
+        slug_norm = str(slug or "").strip().lower()
+        current_norm = str(current_provider or "").strip().lower()
+        if _has_fast_aws_sdk_signal():
+            return True
+        if slug_norm != current_norm:
+            return False
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return bool(has_aws_credentials())
+        except Exception:
+            return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1177,7 +1223,9 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.extra_env_vars:
+        if overlay.auth_type == "aws_sdk":
+            has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
@@ -1317,11 +1365,7 @@ def list_authenticated_providers(
         # credentials come from the boto3 credential chain (env vars,
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
-            try:
-                from agent.bedrock_adapter import has_aws_credentials
-                _cp_has_creds = has_aws_credentials()
-            except Exception:
-                pass
+            _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
         if not _cp_has_creds:
             continue
@@ -1410,14 +1454,17 @@ def list_authenticated_providers(
                         models_list = list(fb)
 
             # Prefer the endpoint's live /models list when credentials are
-            # available. This keeps OpenAI-compatible relays (for example CRS)
-            # in sync when the server catalog changes without requiring the
-            # user to mirror every model into config.yaml.
+            # available, unless the provider explicitly opts out via
+            # discover_models: false (e.g. dedicated endpoints that expose
+            # the entire aggregator catalog via /models).
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            if api_url and api_key:
+            discover = ep_cfg.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.lower() not in ("false", "no", "0")
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1501,7 +1548,14 @@ def list_authenticated_providers(
                     current_base_url
                     and api_url == current_base_url.strip().rstrip("/")
                 ):
-                    slug = current_provider or custom_provider_slug(display_name)
+                    # Guard against bare "custom" slug left by a prior
+                    # failed switch — always resolve to the canonical
+                    # custom:<name> form.  (GH #17478)
+                    slug = (
+                        current_provider
+                        if current_provider and current_provider != "custom"
+                        else custom_provider_slug(display_name)
+                    )
                 else:
                     slug = custom_provider_slug(display_name)
                 groups[group_key] = {

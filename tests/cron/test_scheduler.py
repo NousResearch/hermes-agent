@@ -46,6 +46,29 @@ class TestResolveOrigin:
         job = {"origin": {}}
         assert _resolve_origin(job) is None
 
+    @pytest.mark.parametrize(
+        "non_dict_origin",
+        [
+            "combined-digest-replaces-x-and-y-20260503",
+            123,
+            ["telegram", "12345"],
+            ("platform", "chat_id"),
+            42.0,
+        ],
+    )
+    def test_non_dict_origin_returns_none_instead_of_crashing(self, non_dict_origin):
+        """Non-dict origins (provenance strings from hand-edited or migrated
+        jobs.json) must be treated as missing instead of crashing the
+        scheduler tick on ``origin.get('platform')`` with
+        ``'str' object has no attribute 'get'`` (#18722).
+
+        Before this guard a job in this state crashed every fire attempt
+        forever; ``mark_job_run`` recorded the error but the next tick
+        re-loaded the poisoned origin and crashed identically.
+        """
+        job = {"origin": non_dict_origin}
+        assert _resolve_origin(job) is None
+
 
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):
@@ -116,6 +139,16 @@ class TestResolveDeliveryTarget:
             "platform": "matrix",
             "chat_id": "!room123:example.org",
             "thread_id": None,
+        }
+
+    def test_bare_platform_delivery_preserves_home_thread_id(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL_THREAD_ID", "topic-7")
+
+        assert _resolve_delivery_target({"deliver": "discord"}) == {
+            "platform": "discord",
+            "chat_id": "parent-42",
+            "thread_id": "topic-7",
         }
 
     def test_explicit_telegram_topic_target_with_thread_id(self):
@@ -551,14 +584,14 @@ class TestDeliverResultWrapping:
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
-                "MEDIA:/tmp/voice.ogg",
+                "[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg",
                 adapters={Platform.TELEGRAM: adapter},
                 loop=loop,
             )
 
         # Text send should NOT be called (no text after stripping MEDIA tag)
         adapter.send.assert_not_called()
-        # Audio should still be delivered
+        # Audio should still be delivered as a voice bubble
         adapter.send_voice.assert_called_once()
 
     def test_live_adapter_sends_cleaned_text_not_raw(self):
@@ -934,6 +967,120 @@ class TestRunJobSessionPersistence:
         assert final_response == ""
         # But the output log should show the placeholder
         assert "(No response generated)" in output
+
+    @pytest.mark.parametrize(
+        "agent_result,expected_err_substring",
+        [
+            (
+                {
+                    "final_response": "API call failed after 3 retries: Request timed out.",
+                    "failed": True,
+                    "completed": False,
+                    "error": "API call failed after 3 retries: Request timed out.",
+                },
+                "API call failed",
+            ),
+            (
+                {"final_response": None, "completed": False, "failed": True},
+                "agent reported failure",
+            ),
+            (
+                {"final_response": "", "completed": False},
+                "agent reported failure",
+            ),
+            (
+                {
+                    "final_response": "partial reply before crash",
+                    "failed": True,
+                    "completed": False,
+                    "error": "model abort: connection reset",
+                },
+                "model abort",
+            ),
+        ],
+    )
+    def test_run_job_treats_agent_failure_flag_as_failure(
+        self, tmp_path, agent_result, expected_err_substring
+    ):
+        """Issue #17855: run_conversation returns ``failed=True``/``completed=False``
+        when the agent's API call exhausts retries or aborts mid-run. run_job
+        must surface this as success=False so cron's last_status reflects the
+        failure and the user gets an error notification, instead of treating
+        the (often non-empty) error string in final_response as a legitimate
+        agent reply.
+        """
+        job = {
+            "id": "failing-api-job",
+            "name": "failing api",
+            "prompt": "do something",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = agent_result
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and expected_err_substring in error
+        # Output should be the FAILED template, not the success template.
+        assert "(FAILED)" in output
+        # Ephemeral cron agent must still be closed even on agent-flagged failure.
+        mock_agent.close.assert_called_once()
+
+    def test_run_job_completed_true_without_failed_flag_succeeds(self, tmp_path):
+        """Regression guard: a normal success result (``completed=True``,
+        ``failed`` absent) must not trip the failure-flag check.
+        """
+        job = {
+            "id": "ok-job",
+            "name": "ok",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "all good",
+                "completed": True,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "all good"
 
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,

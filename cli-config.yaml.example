@@ -122,6 +122,18 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# OpenRouter Response Caching (only applies when using OpenRouter)
+# =============================================================================
+# Cache identical API responses at the OpenRouter edge for free instant replays.
+# When enabled, identical requests (same model, messages, parameters) return
+# cached responses with zero billing. Separate from Anthropic prompt caching.
+# See: https://openrouter.ai/docs/guides/features/response-caching
+#
+# openrouter:
+#   response_cache: true         # Enable response caching (default: true)
+#   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple
@@ -288,6 +300,25 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+
+# =============================================================================
+# Tool Loop Guardrails
+# =============================================================================
+# Soft warnings are enabled by default. They append guidance to repeated failed
+# or non-progressing tool results but still let the tool execute. Hard stops are
+# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
+# preferable to spending the full iteration budget.
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)
@@ -570,7 +601,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams
 #
 # Examples:
 #
@@ -600,6 +631,7 @@ agent:
 #   signal:        hermes-signal         (same as telegram)
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
+#   teams:            hermes-teams            (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -611,6 +643,7 @@ platform_toolsets:
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
+  teams: [hermes-teams]
 
 # =============================================================================
 # Gateway Platform Settings

@@ -59,6 +59,28 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_dispatch_rejects_non_object_request():
+    resp = server.dispatch([])
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": "invalid request: expected an object"},
+    }
+
+
+def test_dispatch_rejects_non_object_params():
+    resp = server.dispatch(
+        {"id": "1", "method": "session.create", "params": []}
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "error": {"code": -32602, "message": "invalid params: expected an object"},
+    }
+
+
 def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
 
@@ -115,7 +137,10 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     )
     monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
 
-    assert server._load_enabled_toolsets() == ["memory"]
+    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
+    # _get_platform_tools because it's a non-configurable platform toolset
+    # whose tools live in hermes-cli's universe (see toolsets.py).
+    assert server._load_enabled_toolsets() == ["kanban", "memory"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -134,7 +159,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
 
-    assert server._load_enabled_toolsets() == ["memory"]
+    assert server._load_enabled_toolsets() == ["kanban", "memory"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -978,6 +1003,21 @@ def test_config_busy_get_and_set(monkeypatch):
     )
     assert set_resp["result"]["value"] == "interrupt"
     assert ("display.busy_input_mode", "interrupt") in writes
+
+
+def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "false")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo"},
+        }
+    )
+
+    assert resp["result"]["value"] == "1"
+    assert os.environ.get("HERMES_YOLO_MODE") == "1"
 
 
 def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
@@ -1898,6 +1938,55 @@ def test_input_detect_drop_attaches_image(monkeypatch):
     assert resp["result"]["text"] == "[User attached image: cat.png]"
 
 
+def test_input_detect_drop_path_with_spaces(tmp_path):
+    """input.detect_drop correctly handles image paths containing spaces."""
+    # Create a minimal PNG file with a space in its name
+    img = tmp_path / "screenshot with spaces.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")  # valid PNG header
+
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "input.detect_drop",
+            "params": {"session_id": "sid", "text": str(img)},
+        }
+    )
+
+    assert resp["result"]["matched"] is True
+    assert resp["result"]["is_image"] is True
+    assert resp["result"]["path"] == str(img)
+    assert resp["result"]["text"] == f"[User attached image: {img.name}]"
+    # Verify attachment was recorded in the session
+    assert len(server._sessions["sid"]["attached_images"]) == 1
+    assert server._sessions["sid"]["attached_images"][0] == str(img)
+
+
+def test_input_detect_drop_path_with_spaces_and_remainder(tmp_path):
+    """input.detect_drop splits remainder when path contains spaces."""
+    img = tmp_path / "photo with space.jpg"
+    img.write_bytes(b"\xff\xd8\xff" + b"fakejpeg")  # minimal-ish JPEG header
+
+    server._sessions["sid"] = _session()
+
+    user_input = f"{img} describe this image"
+    resp = server.handle_request(
+        {
+            "id": "3",
+            "method": "input.detect_drop",
+            "params": {"session_id": "sid", "text": user_input},
+        }
+    )
+
+    assert resp["result"]["matched"] is True
+    assert resp["result"]["is_image"] is True
+    assert resp["result"]["path"] == str(img)
+    # Remainder becomes the text sent to the model
+    assert resp["result"]["text"] == "describe this image"
+    assert server._sessions["sid"]["attached_images"][0] == str(img)
+
+
 def test_rollback_restore_resolves_number_and_file_path():
     calls = {}
 
@@ -2544,9 +2633,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # detection entirely and the test would race a non-event.
     build_started = threading.Event()
     release_build = threading.Event()
+    build_entered = threading.Event()
 
     def _slow_make_agent(sid, key, session_id=None):
         build_started.set()
+        build_entered.set()
         release_build.wait(timeout=3.0)
         return _FakeAgent()
 
@@ -2584,6 +2675,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+    assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
     # Wait until the (deferred) build thread has actually entered
     # _make_agent — otherwise session.close pops _sessions[sid] before
@@ -3908,3 +4000,134 @@ def test_reload_env_rpc_surfaces_errors(monkeypatch):
 
     assert "error" in resp
     assert "env path locked" in resp["error"]["message"]
+
+
+# ── max_iterations config reading ─────────────────────────────────────
+
+
+def _setup_make_agent_mocks(monkeypatch, cfg):
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("test-model", None))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
+
+
+def test_make_agent_reads_nested_max_turns(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 200}})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 200
+
+
+def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 500}, "max_turns": 100})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 500
+
+
+def test_make_agent_defaults_to_90(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 90
+
+
+def test_make_agent_handles_null_agent_config(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"agent": None, "max_turns": 80})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 80
+
+
+class _FakeAgentForBackground:
+    base_url = None
+    api_key = None
+    provider = None
+    api_mode = None
+    acp_command = None
+    acp_args = None
+    model = "test-model"
+    enabled_toolsets = None
+    ephemeral_system_prompt = None
+    providers_allowed = None
+    providers_ignored = None
+    providers_order = None
+    provider_sort = None
+    provider_require_parameters = False
+    provider_data_collection = None
+    reasoning_config = None
+    service_tier = None
+    request_overrides = {}
+    _fallback_model = None
+
+
+def test_background_agent_kwargs_reads_nested_max_turns(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"max_turns": 300}})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 300
+
+
+def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 50})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 50
+
+
+def test_background_agent_kwargs_defaults_to_25(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 25
+
+
+def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": None, "max_turns": 40})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 40
+
+
+def test_config_show_displays_nested_max_turns(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {"max_turns": 120}, "enabled_toolsets": [], "verbose": False},
+    )
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    resp = server.handle_request({"id": "1", "method": "config.show", "params": {}})
+    sections = resp["result"]["sections"]
+    agent_rows = next(section["rows"] for section in sections if section["title"] == "Agent")
+
+    assert ["Max Turns", "120"] in agent_rows

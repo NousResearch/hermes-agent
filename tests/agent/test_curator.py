@@ -86,9 +86,22 @@ def test_curator_config_overrides(curator_env, monkeypatch):
 # should_run_now
 # ---------------------------------------------------------------------------
 
-def test_first_run_always_eligible(curator_env):
+def test_first_run_defers(curator_env):
+    """The FIRST observation of the curator (fresh install, no state file)
+    must NOT trigger an immediate run. The curator is designed to run after
+    a full ``interval_hours`` of skill activity, not on the first background
+    tick after installation. Fixes #18373.
+    """
     c = curator_env["curator"]
-    assert c.should_run_now() is True
+    # No state file — should defer and seed last_run_at.
+    assert c.should_run_now() is False
+    state = c.load_state()
+    assert state.get("last_run_at") is not None, (
+        "first observation should seed last_run_at so the interval clock "
+        "starts ticking instead of firing immediately next tick"
+    )
+    # A second immediate call still returns False (seeded, not yet stale).
+    assert c.should_run_now() is False
 
 
 def test_recent_run_blocks(curator_env):
@@ -265,6 +278,77 @@ def test_run_review_records_state(curator_env):
     assert state["last_run_summary"] is not None
 
 
+def test_dry_run_does_not_advance_state(curator_env, monkeypatch):
+    """Dry-run previews must not bump last_run_at or run_count. A preview
+    shouldn't defer the next scheduled real pass or look like a real run in
+    `hermes curator status`. Fixes #18373.
+    """
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+
+    # Stub the LLM so the test doesn't need a provider.
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda prompt: {
+            "final": "", "summary": "dry preview", "model": "", "provider": "",
+            "tool_calls": [], "error": None,
+        },
+    )
+
+    c.run_curator_review(synchronous=True, dry_run=True)
+    state = c.load_state()
+    assert state.get("last_run_at") is None, "dry-run must not seed last_run_at"
+    assert state.get("run_count", 0) == 0, "dry-run must not bump run_count"
+    assert "dry-run" in (state.get("last_run_summary") or ""), (
+        "dry-run summary should be labeled so status output is unambiguous"
+    )
+
+
+def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
+    """The dry-run prompt must carry a banner instructing the LLM not to
+    call any mutating tool. This is defense in depth — the caller also
+    skips automatic transitions — but the LLM prompt is the only guard
+    against the model calling skill_manage directly."""
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+
+    captured = {}
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+
+    c.run_curator_review(synchronous=True, dry_run=True)
+    assert "DRY-RUN" in captured["prompt"]
+    assert "DO NOT" in captured["prompt"]
+
+
+def test_dry_run_skips_automatic_transitions(curator_env, monkeypatch):
+    """Dry-run must not call apply_automatic_transitions — the auto pass
+    archives skills deterministically, and a preview must not touch the
+    filesystem."""
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+
+    called = {"n": 0}
+    def _explode(*_a, **_kw):
+        called["n"] += 1
+        return {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
+    monkeypatch.setattr(c, "apply_automatic_transitions", _explode)
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda p: {"final": "", "summary": "s", "model": "", "provider": "",
+                   "tool_calls": [], "error": None},
+    )
+
+    c.run_curator_review(synchronous=True, dry_run=True)
+    assert called["n"] == 0, "dry-run must skip apply_automatic_transitions"
+
+
 def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
@@ -327,10 +411,30 @@ def test_maybe_run_curator_runs_when_eligible(curator_env, monkeypatch):
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    # Seed last_run_at far in the past so the interval gate opens — the
+    # "no state" path intentionally defers the first run now (#18373).
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=c.get_interval_hours() * 2)
+    c.save_state({"last_run_at": long_ago.isoformat(), "paused": False})
     # Force idle over threshold
     result = c.maybe_run_curator(idle_for_seconds=99999.0)
     assert result is not None
     assert "started_at" in result
+
+
+def test_maybe_run_curator_defers_on_fresh_install(curator_env):
+    """Fresh install (no curator state file) must NOT fire the curator on
+    the first gateway tick. The first observation seeds last_run_at and
+    returns None. Fixes #18373."""
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    # Infinite idle — the only thing that should block the run is the new
+    # deferred-first-run gate.
+    result = c.maybe_run_curator(idle_for_seconds=99999.0)
+    assert result is None
+    # And the next tick still defers (we seeded last_run_at to "now").
+    result2 = c.maybe_run_curator(idle_for_seconds=99999.0)
+    assert result2 is None
 
 
 def test_maybe_run_curator_swallows_exceptions(curator_env, monkeypatch):
@@ -361,6 +465,19 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
     parent = c._state_file().parent
     for p in parent.iterdir():
         assert not p.name.startswith(".curator_state_"), f"tmp leftover: {p.name}"
+
+
+def test_state_preserves_last_report_path(curator_env):
+    c = curator_env["curator"]
+    c.save_state({
+        "last_run_at": "2026-04-30T12:00:00+00:00",
+        "last_run_summary": "ok",
+        "last_report_path": "/tmp/curator-report",
+        "paused": False,
+        "run_count": 1,
+    })
+    state = c.load_state()
+    assert state["last_report_path"] == "/tmp/curator-report"
 
 
 def test_curator_review_prompt_has_invariants():
@@ -485,3 +602,153 @@ def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "bundled" in captured.out.lower() or "hub" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# curator review-model resolution (canonical auxiliary.curator slot)
+#
+# Curator was unified with the rest of the aux task system in Apr 2026 so
+# `hermes model` → auxiliary picker, the dashboard Models tab, and the full
+# per-task config (timeout, base_url, api_key, extra_body) all work for it.
+# Voscko report: curator.auxiliary.{provider,model} was advertised but never
+# read. Fix wires curator through auxiliary.curator with a legacy fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_review_model_defaults_to_main_when_slot_is_auto(curator_env):
+    """auxiliary.curator absent (or auto/empty) → use main model.provider/model."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+    }
+    assert curator._resolve_review_model(cfg) == ("openrouter", "openai/gpt-5.5")
+
+    # Explicit auto/empty slot — still main model.
+    cfg["auxiliary"] = {"curator": {"provider": "auto", "model": ""}}
+    assert curator._resolve_review_model(cfg) == ("openrouter", "openai/gpt-5.5")
+
+
+def test_review_model_honors_auxiliary_curator_slot(curator_env):
+    """auxiliary.curator.{provider,model} fully set → that pair wins."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5.4-mini",
+            },
+        },
+    }
+    assert curator._resolve_review_model(cfg) == (
+        "openrouter", "openai/gpt-5.4-mini",
+    )
+
+
+def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env):
+    """Only one of slot provider/model set → fall back to the main pair.
+
+    Prevents half-configured overrides from sending an empty side to
+    resolve_runtime_provider.
+    """
+    curator = curator_env["curator"]
+    base_main = {"provider": "openrouter", "default": "openai/gpt-5.5"}
+
+    cfg_provider_only = {
+        "model": dict(base_main),
+        "auxiliary": {"curator": {"provider": "openrouter", "model": ""}},
+    }
+    assert curator._resolve_review_model(cfg_provider_only) == (
+        "openrouter", "openai/gpt-5.5",
+    )
+
+    cfg_model_only = {
+        "model": dict(base_main),
+        "auxiliary": {"curator": {"provider": "auto", "model": "gpt-5.4-mini"}},
+    }
+    assert curator._resolve_review_model(cfg_model_only) == (
+        "openrouter", "openai/gpt-5.5",
+    )
+
+
+def test_review_model_legacy_curator_auxiliary_still_works(curator_env, caplog):
+    """Pre-unification users set curator.auxiliary.{provider,model} — honor it.
+
+    Emits a deprecation log line but keeps their config working.
+    """
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "curator": {
+            "auxiliary": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5.4-mini",
+            },
+        },
+    }
+    import logging
+    with caplog.at_level(logging.INFO, logger="agent.curator"):
+        result = curator._resolve_review_model(cfg)
+    assert result == ("openrouter", "openai/gpt-5.4-mini")
+    assert any(
+        "deprecated curator.auxiliary" in rec.message for rec in caplog.records
+    ), "expected deprecation warning when legacy curator.auxiliary is used"
+
+
+def test_review_model_new_slot_wins_over_legacy(curator_env):
+    """When BOTH new and legacy are set, the canonical slot wins."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {"provider": "nous", "model": "new-winner"},
+        },
+        "curator": {
+            "auxiliary": {"provider": "openrouter", "model": "legacy-loser"},
+        },
+    }
+    assert curator._resolve_review_model(cfg) == ("nous", "new-winner")
+
+
+def test_review_model_handles_missing_sections(curator_env):
+    """Missing auxiliary/curator sections never raise — fall back cleanly."""
+    curator = curator_env["curator"]
+    cfg = {"model": {"provider": "anthropic", "model": "claude-sonnet-4-6"}}
+    assert curator._resolve_review_model(cfg) == (
+        "anthropic", "claude-sonnet-4-6",
+    )
+
+    # Completely empty config → ("auto", "") — resolve_runtime_provider
+    # handles the auto-detection chain from there.
+    assert curator._resolve_review_model({}) == ("auto", "")
+
+
+def test_curator_slot_is_canonical_aux_task():
+    """Curator must be a first-class slot in every aux-task registry.
+
+    Four sources of truth, all checked by the shared registry test
+    (test_aux_config.py) for the main tasks — this test pins `curator`
+    specifically so the unification doesn't silently regress.
+    """
+    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_cli.main import _AUX_TASKS
+    from hermes_cli.web_server import _AUX_TASK_SLOTS
+
+    # 1. DEFAULT_CONFIG.auxiliary — schema source
+    assert "curator" in DEFAULT_CONFIG["auxiliary"], \
+        "curator missing from DEFAULT_CONFIG['auxiliary']"
+    slot = DEFAULT_CONFIG["auxiliary"]["curator"]
+    assert slot["provider"] == "auto"
+    assert slot["model"] == ""
+    assert slot["timeout"] > 0, "curator timeout should be set (reviews run long)"
+
+    # 2. hermes_cli/main.py _AUX_TASKS — CLI picker
+    aux_keys = {k for k, _name, _desc in _AUX_TASKS}
+    assert "curator" in aux_keys, "curator missing from _AUX_TASKS (CLI picker)"
+
+    # 3. hermes_cli/web_server.py _AUX_TASK_SLOTS — REST API allowlist
+    assert "curator" in _AUX_TASK_SLOTS, \
+        "curator missing from _AUX_TASK_SLOTS (dashboard REST API)"
+
+    # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
+    #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.

@@ -33,11 +33,15 @@ so plugin-defined tools appear alongside the built-in tools.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import logging
+import os
 import sys
+import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +50,19 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
+
+
+def get_bundled_plugins_dir() -> Path:
+    """Locate the bundled ``plugins/`` directory.
+
+    Honours ``HERMES_BUNDLED_PLUGINS`` (set by the Nix wrapper / packaged
+    installs) so read-only store paths are consulted first.  Falls back to
+    the in-repo path used during development.
+    """
+    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
+    if env_override:
+        return Path(env_override)
+    return Path(__file__).resolve().parent.parent / "plugins"
 
 try:
     import yaml
@@ -156,7 +173,7 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
-_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive"}
+_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform"}
 
 
 @dataclass
@@ -182,6 +199,11 @@ class PluginManifest:
     #              Selection via ``<category>.provider`` config key; the
     #              category's own discovery system handles loading and the
     #              general scanner skips these.
+    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
+    #              platform plugins auto-load so every shipped platform is
+    #              available out of the box; user-installed platform plugins
+    #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
+    #              (untrusted code).
     kind: str = "standalone"
     # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
     # lookups and by ``hermes plugins list``. For a flat plugin at
@@ -445,6 +467,62 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- platform adapter registration ---------------------------------------
+
+    def register_platform(
+        self,
+        name: str,
+        label: str,
+        adapter_factory: Callable,
+        check_fn: Callable,
+        validate_config: Callable | None = None,
+        required_env: list | None = None,
+        install_hint: str = "",
+        **entry_kwargs: Any,
+    ) -> None:
+        """Register a gateway platform adapter.
+
+        The adapter_factory receives a ``PlatformConfig`` and returns a
+        ``BasePlatformAdapter`` subclass instance.  The gateway calls
+        ``check_fn()`` before instantiation to verify dependencies.
+
+        Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        Unknown keys raise TypeError from the dataclass constructor.
+
+        Example::
+
+            ctx.register_platform(
+                name="irc",
+                label="IRC",
+                adapter_factory=lambda cfg: IRCAdapter(cfg),
+                check_fn=lambda: True,
+                emoji="💬",
+                setup_fn=irc_interactive_setup,
+            )
+        """
+        from gateway.platform_registry import platform_registry, PlatformEntry
+
+        entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        entry = PlatformEntry(
+            name=name,
+            label=label,
+            adapter_factory=adapter_factory,
+            check_fn=check_fn,
+            validate_config=validate_config,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+            **entry_kwargs,
+        )
+        platform_registry.register(entry)
+        self._manager._plugin_platform_names.add(name)
+        logger.debug(
+            "Plugin %s registered platform: %s",
+            self.manifest.name,
+            name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -523,6 +601,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -565,15 +644,18 @@ class PluginManager:
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
         #
         # ``memory/`` and ``context_engine/`` are skipped at the top level —
-        # they have their own discovery systems. Porting those to the
-        # category-namespace ``kind: exclusive`` model is a future PR.
-        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        # they have their own discovery systems. ``platforms/`` is a category
+        # holding platform adapters (scanned one level deeper below).
+        repo_plugins = get_bundled_plugins_dir()
         manifests.extend(
             self._scan_directory(
                 repo_plugins,
                 source="bundled",
-                skip_names={"memory", "context_engine"},
+                skip_names={"memory", "context_engine", "platforms"},
             )
+        )
+        manifests.extend(
+            self._scan_directory(repo_plugins / "platforms", source="bundled")
         )
 
         # 2. User plugins (~/.hermes/plugins/)
@@ -631,7 +713,11 @@ class PluginManager:
             # just work. Selection among them (e.g. which image_gen backend
             # services calls) is driven by ``<category>.provider`` config,
             # enforced by the tool wrapper.
-            if manifest.kind == "backend" and manifest.source == "bundled":
+            #
+            # Bundled platform plugins (gateway adapters like IRC) auto-load
+            # for the same reason: every platform Hermes ships must be
+            # available out of the box without the user having to opt in.
+            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
                 self._load_plugin(manifest)
                 continue
 
@@ -1141,6 +1227,55 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+def resolve_plugin_command_result(result: Any) -> Any:
+    """Resolve a plugin command return value, awaiting async handlers when needed.
+
+    Sync CLI/TUI dispatch sites call plugin handlers from plain functions.
+    If a handler is async, await it directly when no loop is running; if
+    we're already inside an active loop, run it in a helper thread with its
+    own loop so the caller still gets a concrete result synchronously. The
+    threaded path is bounded by a 30s timeout so a hung async handler cannot
+    wedge the terminal indefinitely.
+    """
+    if not inspect.isawaitable(result):
+        return result
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+
+    outcome: Dict[str, Any] = {}
+    failure: Dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(result)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_runner,
+        name="hermes-plugin-command-await",
+        daemon=True,
+    )
+    thread.start()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError(
+            "Plugin command async handler did not complete within "
+            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s"
+        )
+    if "exc" in failure:
+        raise failure["exc"]
+    return outcome.get("value")
 
 
 def get_plugin_commands() -> Dict[str, dict]:

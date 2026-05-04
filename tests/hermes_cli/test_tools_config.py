@@ -8,6 +8,7 @@ from hermes_cli.tools_config import (
     _configure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
+    _reconfigure_tool,
     _save_platform_tools,
     _toolset_has_keys,
     CONFIGURABLE_TOOLSETS,
@@ -120,7 +121,16 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
 
     enabled = _get_platform_tools(config, "cli")
 
-    assert enabled == set()
+    # An explicit empty list disables every CONFIGURABLE toolset (web,
+    # terminal, memory, …). Non-configurable platform toolsets that ride
+    # along on the platform's default composite (e.g. `kanban`, whose tools
+    # live in _HERMES_CORE_TOOLS but aren't user-toggleable) are still
+    # auto-recovered by _get_platform_tools so saving via `hermes tools`
+    # doesn't silently drop them. The contract this test guards is the
+    # configurable side: nothing the user could have checked in the TUI
+    # checklist should reappear here.
+    configurable = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert enabled.isdisjoint(configurable)
 
 
 def test_apply_toolset_change_from_default_does_not_enable_default_off_toolsets():
@@ -457,6 +467,33 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     _configure_provider(local_provider, config)
 
     assert config["browser"]["cloud_provider"] == "local"
+
+
+def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web"]}}
+    seen = {}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_has_keys",
+        lambda ts_key, config=None: False,
+    )
+
+    def fake_prompt_choice(question, choices, default=0):
+        seen["choices"] = choices
+        return 0
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_tool_category_for_reconfig",
+        lambda ts_key, cat, config: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    _reconfigure_tool(config)
+
+    assert any("Web Search" in choice for choice in seen["choices"])
+    assert configured == ["web"]
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):

@@ -244,6 +244,46 @@ class TestChatCompletionsBuildKwargs:
             "thinking_level": "low",
         }
 
+    def test_gemma_does_not_receive_thinking_config(self, transport):
+        # The `gemini` provider also serves Gemma (e.g. `gemma-4-31b-it`),
+        # but Gemma rejects `thinking_config` with HTTP 400 (#17426). Even
+        # when Hermes has reasoning enabled, the field must be omitted for
+        # non-Gemini models on this provider.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_gemma_disabled_reasoning_still_omits_thinking_config(self, transport):
+        # The `Unknown name 'thinking_config': Cannot find field` rejection
+        # fires even on `{"includeThoughts": False}` — the entire field must
+        # be absent, not just disabled. (#17426)
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": False},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_google_prefixed_gemma_also_omits_thinking_config(self, transport):
+        # OpenRouter-style `google/gemma-...` IDs hit the same provider path
+        # and must also omit `thinking_config`. The existing `google/`
+        # prefix-stripping must not accidentally classify Gemma as Gemini.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -579,6 +619,41 @@ class TestChatCompletionsNormalize:
         nr = transport.normalize_response(r)
         assert nr.reasoning == "summary text"
         assert nr.provider_data == {"reasoning_content": "detailed scratchpad"}
+
+    def test_empty_reasoning_content_preserved(self, transport):
+        """DeepSeek can require an explicit empty reasoning_content replay field."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content="",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": ""}
+        assert nr.reasoning_content == ""
+
+    def test_reasoning_content_preserved_from_model_extra(self, transport):
+        """OpenAI SDK can expose provider-specific DeepSeek fields via model_extra."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    model_extra={"reasoning_content": "model-extra scratchpad"},
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
 
 
 class TestChatCompletionsCacheStats:

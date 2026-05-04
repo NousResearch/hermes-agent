@@ -1209,10 +1209,20 @@ class MCPServerTask:
             if _oauth_auth is not None:
                 client_kwargs["auth"] = _oauth_auth
 
-            # Caller owns the client lifecycle — the SDK skips cleanup when
-            # http_client is provided, so we wrap in async-with.
+            # Caller owns the client lifecycle, so wrap it in async-with.
+            # The SDK still defaults to a best-effort session DELETE on context
+            # exit even when a caller-owned http_client is supplied. During
+            # interpreter/event-loop shutdown that DELETE can attempt new
+            # network scheduling after executors are already gone, producing
+            # noisy "Session termination failed: cannot schedule new futures
+            # after shutdown" warnings. Closing our httpx client is the
+            # resource cleanup we own; skip the optional remote termination.
             async with httpx.AsyncClient(**client_kwargs) as http_client:
-                async with streamable_http_client(url, http_client=http_client) as (
+                async with streamable_http_client(
+                    url,
+                    http_client=http_client,
+                    terminate_on_close=False,
+                ) as (
                     read_stream, write_stream, _get_session_id,
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:

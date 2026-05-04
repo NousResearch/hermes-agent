@@ -1357,6 +1357,7 @@ class TestHTTPConfig:
 
         server = MCPServerTask("remote")
         captured = {}
+        transport_calls = []
 
         class DummyAsyncClient:
             def __init__(self, **kwargs):
@@ -1401,12 +1402,17 @@ class TestHTTPConfig:
         async def _discover_tools(self):
             self._shutdown_event.set()
 
+        def _new_transport_factory(url, **kwargs):
+            transport_calls.append({"url": url, "kwargs": kwargs})
+            return DummyTransportCtx()
+
         async def _run(config, *, new_http):
             captured.clear()
+            transport_calls.clear()
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
                  patch("tools.mcp_tool._MCP_NEW_HTTP", new_http), \
                  patch("httpx.AsyncClient", DummyAsyncClient), \
-                 patch("tools.mcp_tool.streamable_http_client", return_value=DummyTransportCtx()), \
+                 patch("tools.mcp_tool.streamable_http_client", side_effect=_new_transport_factory), \
                  patch("tools.mcp_tool.streamablehttp_client", side_effect=lambda url, **kwargs: DummyLegacyTransportCtx(**kwargs)), \
                  patch("tools.mcp_tool.ClientSession", DummySession), \
                  patch.object(MCPServerTask, "_discover_tools", _discover_tools):
@@ -1414,6 +1420,9 @@ class TestHTTPConfig:
 
         asyncio.run(_run({"url": "https://example.com/mcp"}, new_http=True))
         assert captured["headers"]["mcp-protocol-version"] == LATEST_PROTOCOL_VERSION
+        assert transport_calls[0]["url"] == "https://example.com/mcp"
+        assert transport_calls[0]["kwargs"]["terminate_on_close"] is False
+        assert transport_calls[0]["kwargs"]["http_client"] is not None
 
         asyncio.run(_run({
             "url": "https://example.com/mcp",

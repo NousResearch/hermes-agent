@@ -17,17 +17,51 @@ import {
   setPluginLoadError,
 } from "./registry";
 
+const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
+
+function getCachedManifests(): PluginManifest[] | null {
+  try {
+    const raw = sessionStorage.getItem(MANIFEST_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as PluginManifest[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheManifests(manifests: PluginManifest[]): void {
+  try {
+    sessionStorage.setItem(MANIFEST_CACHE_KEY, JSON.stringify(manifests));
+  } catch {
+    // sessionStorage unavailable (private browsing, storage full, etc.)
+  }
+}
+
 export function usePlugins() {
-  const [manifests, setManifests] = useState<PluginManifest[]>([]);
+  // Lazy initialisers run once at mount — safe to read sessionStorage here.
+  // This avoids the "cannot access ref during render" lint error that would
+  // occur if we stored the cached value in a useRef and read .current in the
+  // useState initial value expression.
+  const [manifests, setManifests] = useState<PluginManifest[]>(
+    () => getCachedManifests() ?? [],
+  );
   const [plugins, setPlugins] = useState<RegisteredPlugin[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Start loading=false when the cache has manifests so plugin routes are
+  // registered synchronously on the first render after a refresh.
+  // The catch-all in App.tsx is only a safety net for the very first visit
+  // (no cache yet). On subsequent visits this flag starts false immediately.
+  const [loading, setLoading] = useState<boolean>(
+    () => getCachedManifests() === null,
+  );
   const loadedScripts = useRef<Set<string>>(new Set());
 
-  // Fetch manifests on mount.
+  // Always re-fetch in the background to keep the cache fresh.
+  // This handles: new plugins added, plugins removed, manifest changes.
+  // setManifests(list) will update routes if the server list differs from cache.
   useEffect(() => {
     api
       .getPlugins()
       .then((list) => {
+        cacheManifests(list);
         setManifests(list);
         if (list.length === 0) setLoading(false);
       })

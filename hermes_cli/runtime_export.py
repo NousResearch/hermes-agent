@@ -141,6 +141,21 @@ def _ensure_dir(path: Path, *, mode: int = 0o2750) -> None:
         raise ExporterError(f"Failed to enforce directory mode {oct(mode)} on {path}: {exc}") from exc
 
 
+def _ensure_output_root(path: Path) -> None:
+    """Ensure the export root exists without changing an operator-managed root."""
+    if path.is_symlink():
+        raise ExporterError(f"Export root must not be a symlink: {path}")
+    existed = path.exists()
+    path.mkdir(parents=True, exist_ok=True)
+    if not path.is_dir():
+        raise ExporterError(f"Export root is not a directory: {path}")
+    if not existed:
+        try:
+            os.chmod(path, 0o2750)
+        except OSError as exc:
+            raise ExporterError(f"Failed to initialize export root mode on {path}: {exc}") from exc
+
+
 def _chmod_file(path: Path, mode: int = 0o640) -> None:
     try:
         os.chmod(path, mode)
@@ -161,8 +176,11 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _write_bytes(path: Path, data: bytes) -> None:
-    _ensure_dir(path.parent)
+def _write_bytes(path: Path, data: bytes, *, enforce_parent_mode: bool = True) -> None:
+    if enforce_parent_mode:
+        _ensure_dir(path.parent)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
     with os.fdopen(fd, "wb") as handle:
@@ -178,17 +196,17 @@ def _write_bytes(path: Path, data: bytes) -> None:
     _fsync_dir(path.parent)
 
 
-def _write_text(path: Path, text: str) -> None:
-    _write_bytes(path, text.encode("utf-8"))
+def _write_text(path: Path, text: str, *, enforce_parent_mode: bool = True) -> None:
+    _write_bytes(path, text.encode("utf-8"), enforce_parent_mode=enforce_parent_mode)
 
 
-def _write_json(path: Path, payload: Any) -> None:
+def _write_json(path: Path, payload: Any, *, enforce_parent_mode: bool = True) -> None:
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    _write_text(path, text)
+    _write_text(path, text, enforce_parent_mode=enforce_parent_mode)
 
 
-def _copy_file(src: Path, dst: Path) -> None:
-    _write_bytes(dst, src.read_bytes())
+def _copy_file(src: Path, dst: Path, *, enforce_parent_mode: bool = True) -> None:
+    _write_bytes(dst, src.read_bytes(), enforce_parent_mode=enforce_parent_mode)
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
@@ -269,23 +287,19 @@ def _run_checked(command: List[str], *, context: str) -> None:
 
 def _enforce_export_tree_contract(output_root: Path) -> None:
     expected_gid, group_name = _expected_export_group(output_root)
-    try:
-        os.chmod(output_root, 0o2750)
-    except OSError as exc:
-        raise ExporterError(f"Failed to enforce export root mode on {output_root}: {exc}") from exc
+
+    descendants: List[Path] = []
+    for root, dirs, files in os.walk(output_root, followlinks=False):
+        descendants.extend(Path(root) / name for name in dirs + files)
 
     if _can_assign_gid(expected_gid):
-        roots = [output_root]
-        for root, dirs, files in os.walk(output_root, followlinks=False):
-            roots.extend(Path(root) / name for name in dirs + files)
-        for entry in roots:
+        for entry in descendants:
             if entry.is_symlink():
                 raise ExporterError(f"symlink not allowed in export tree: {entry}")
-            if entry != output_root:
-                try:
-                    os.chown(entry, -1, expected_gid)
-                except OSError as exc:
-                    raise ExporterError(f"Failed to assign group {group_name} to {entry}: {exc}") from exc
+            try:
+                os.chown(entry, -1, expected_gid)
+            except OSError as exc:
+                raise ExporterError(f"Failed to assign group {group_name} to {entry}: {exc}") from exc
             try:
                 if entry.is_dir():
                     os.chmod(entry, 0o2750)
@@ -297,7 +311,6 @@ def _enforce_export_tree_contract(output_root: Path) -> None:
 
     root_group = group_name
     root_str = str(output_root)
-    _run_checked(["sudo", "-n", "chmod", "2750", root_str], context="sudo chmod export root")
     _run_checked(
         ["sudo", "-n", "find", root_str, "-mindepth", "1", "-exec", "chgrp", "-h", root_group, "{}", "+"],
         context="sudo chgrp export descendants",
@@ -936,7 +949,7 @@ def export_runtime_snapshot(
         raise ExporterError(f"Hermes home does not exist: {hermes_home}")
 
     output_root = output_root.expanduser().resolve()
-    _ensure_dir(output_root)
+    _ensure_output_root(output_root)
     releases_dir = output_root / "releases"
     _ensure_dir(releases_dir)
 
@@ -1052,12 +1065,24 @@ def export_runtime_snapshot(
         target_path = final_release_dir / export_name
         root_path = output_root / export_name
         if target_path.exists():
-            _copy_file(target_path, root_path)
+            _copy_file(target_path, root_path, enforce_parent_mode=False)
         else:
             _remove_if_exists(root_path)
-    _copy_file(final_release_dir / "exported_at.txt", output_root / "exported_at.txt")
-    _write_text(output_root / "current_release.txt", f"{release_name}\n")
-    _copy_file(final_release_dir / "summary.json", output_root / "summary.json")
+    _copy_file(final_release_dir / "exported_at.txt", output_root / "exported_at.txt", enforce_parent_mode=False)
+    _write_text(output_root / "current_release.txt", f"{release_name}\n", enforce_parent_mode=False)
+    _copy_file(final_release_dir / "summary.json", output_root / "summary.json", enforce_parent_mode=False)
+    for export_name in ("inventory", "ops", "tails"):
+        target_dir = final_release_dir / export_name
+        root_dir = output_root / export_name
+        if target_dir.exists():
+            tmp_dir = output_root / f".{export_name}.tmp.{os.getpid()}"
+            _remove_if_exists(tmp_dir)
+            _copy_tree(target_dir, tmp_dir)
+            _remove_if_exists(root_dir)
+            tmp_dir.rename(root_dir)
+            _fsync_dir(output_root)
+        else:
+            _remove_if_exists(root_dir)
 
     if keep_releases > 0:
         releases = sorted(
@@ -1079,7 +1104,7 @@ def export_runtime_snapshot(
             shutil.rmtree(stale, ignore_errors=True)
         _fsync_dir(releases_dir)
 
-    _write_json(hash_cache.path, hash_cache.data)
+    _write_json(hash_cache.path, hash_cache.data, enforce_parent_mode=False)
     _enforce_export_tree_contract(output_root)
     _verify_export_tree_contract(output_root)
 

@@ -115,6 +115,9 @@ def test_export_runtime_snapshot_excludes_secrets_and_exports_safe_metadata(tmp_
     assert stat.S_IMODE(output_root.stat().st_mode) == 0o2750
     assert stat.S_IMODE((output_root / "releases").stat().st_mode) == 0o2750
     assert stat.S_IMODE((output_root / "summary.json").stat().st_mode) == 0o640
+    assert (output_root / "inventory").is_dir()
+    assert (output_root / "ops").is_dir()
+    assert (output_root / "tails").is_dir()
     assert (release_dir / "summary.json").exists()
     assert (release_dir / "SOUL.md").exists()
     assert (release_dir / "BOOT.md").exists()
@@ -199,3 +202,25 @@ def test_export_runtime_snapshot_rejects_symlink_sources(tmp_path, monkeypatch):
     assert exported["tails"]["update.log"]["symlink_rejected"] is True
     assert "super-secret" not in summary_text
     assert not (output_root / "SOUL.md").exists()
+
+
+def test_export_runtime_snapshot_does_not_rechmod_existing_output_root(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    output_root = tmp_path / "export-root"
+
+    _write(hermes_home / "SOUL.md", "# Soul\n")
+    _write(hermes_home / "BOOT.md", "# Boot\n")
+    _write(hermes_home / "config.yaml", "model:\n  provider: openai-codex\n")
+
+    output_root.mkdir(parents=True)
+    output_root.chmod(0o2770)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(runtime_export, "_run_command", _stub_run_command)
+
+    runtime_export.export_runtime_snapshot(output_root=output_root, keep_releases=1, log_tail_lines=2)
+
+    assert stat.S_IMODE(output_root.stat().st_mode) == 0o2770
+    assert stat.S_IMODE((output_root / "releases").stat().st_mode) == 0o2750
+    assert stat.S_IMODE((output_root / "summary.json").stat().st_mode) == 0o640
+    assert stat.S_IMODE((output_root / "inventory").stat().st_mode) == 0o2750

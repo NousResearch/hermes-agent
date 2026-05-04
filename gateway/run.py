@@ -1066,7 +1066,10 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
-        self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # Legacy text-only fallback for interrupt follow-ups when no platform
+        # adapter queue is available. Prefer adapter._pending_messages so
+        # media metadata survives the next-turn handoff intact.
+        self._pending_messages: Dict[str, str] = {}
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -5175,11 +5178,20 @@ class GatewayRunner:
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    _quick_key,
+                    event,
+                    merge_text=(event.message_type == MessageType.TEXT),
+                )
             running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
-            else:
-                self._pending_messages[_quick_key] = event.text
+            if not adapter:
+                if _quick_key in self._pending_messages:
+                    self._pending_messages[_quick_key] += "\n" + event.text
+                else:
+                    self._pending_messages[_quick_key] = event.text
             return None
 
         # Check for commands

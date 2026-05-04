@@ -159,6 +159,52 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+    async def test_handle_message_interrupt_mode_preserves_voice_followup_event(self):
+        """Media-only interrupt follow-ups must keep their full MessageEvent."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=MagicMock(value="telegram"),
+            chat_id="123",
+            chat_type="private",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=source,
+            message_id="voice1",
+            media_urls=["/tmp/followup.ogg"],
+            media_types=["audio/ogg"],
+        )
+        sk = build_session_key(source)
+
+        running_agent = MagicMock()
+        running_agent.get_activity_summary.return_value = {
+            "api_call_count": 1,
+            "max_iterations": 60,
+            "current_tool": "voice",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "voice",
+            "seconds_since_activity": 0.0,
+        }
+        runner._running_agents[sk] = running_agent
+        runner._running_agents_ts[sk] = time.time() - 5
+        runner.adapters[source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].media_urls == ["/tmp/followup.ogg"]
+        assert sk not in runner._pending_messages
+        running_agent.interrupt.assert_called_once_with("")
+
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()

@@ -31,7 +31,47 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+def _playwright_mcp_args() -> list:
+    """Build @playwright/mcp args with root-safe flags and chromium fallback.
+
+    On Linux root (VPS/Docker), Chrome refuses to start without --no-sandbox.
+    When system Chrome is absent, fall back to the bundled chromium channel.
+    """
+    import os as _os
+    args = ["-y", "@playwright/mcp@latest", "--headless"]
+
+    # Detect missing system Chrome and fall back to bundled chromium
+    if not _os.path.exists("/opt/google/chrome/chrome"):
+        args += ["--browser", "chromium"]
+
+    # Inject --no-sandbox when running as root or AppArmor userns restricted
+    _needs_sandbox_bypass = False
+    if hasattr(_os, "geteuid") and _os.geteuid() == 0:
+        _needs_sandbox_bypass = True
+    else:
+        try:
+            with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") as _f:
+                if _f.read().strip() == "1":
+                    _needs_sandbox_bypass = True
+        except OSError:
+            pass
+    if _needs_sandbox_bypass:
+        args.append("--no-sandbox")
+
+    return args
+
+
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "playwright": {
+        "command": "npx",
+        "args": _playwright_mcp_args(),
+        "description": (
+            "Playwright MCP browser automation — auto-detects root/AppArmor "
+            "sandbox restrictions and falls back to bundled Chromium when "
+            "system Chrome is absent."
+        ),
+    },
+}
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────

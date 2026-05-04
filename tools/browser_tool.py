@@ -954,6 +954,11 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "default": False,
                     "description": "If true, overlay numbered [N] labels on interactive elements. Each [N] maps to ref @eN for subsequent browser commands. Useful for QA and spatial reasoning about page layout."
+                },
+                "full_page": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "If true (default), capture the entire scrollable page. Set to false to capture only the current viewport — useful for long pages where full-page screenshots produce unreadable downscaled images."
                 }
             },
             "required": ["question"]
@@ -2121,7 +2126,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, full_page: bool = True, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
     
@@ -2136,6 +2141,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Args:
         question: What you want to know about the page visually
         annotate: If True, overlay numbered [N] labels on interactive elements
+        full_page: If True (default), capture the full scrollable page. If False, capture only the current viewport.
         task_id: Task identifier for session isolation
         
     Returns:
@@ -2164,7 +2170,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         screenshot_args = []
         if annotate:
             screenshot_args.append("--annotate")
-        screenshot_args.append("--full")
+        if full_page:
+            screenshot_args.append("--full")
         screenshot_args.append(str(screenshot_path))
         result = _run_browser_command(
             effective_task_id, 
@@ -2623,7 +2630,7 @@ registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), full_page=args.get("full_page", True), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👁️",
 )

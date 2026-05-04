@@ -2579,23 +2579,45 @@ class HermesCLI:
             return f"  {txt}  ({elapsed_str})"
         return f"  {txt}"
 
+    def _voice_record_key_label(self) -> str:
+        """Return the configured voice push-to-talk key formatted for UI.
+
+        Shared helper so every voice-facing status line / placeholder /
+        recording hint advertises the SAME label. Without this every
+        site rendered a hardcoded ``Ctrl+B`` even after round-9 wired
+        the formatter into ``/voice on`` and ``/voice status`` —
+        non-default configs left the status bar, recording hint, and
+        composer placeholder all lying about the shortcut (Copilot
+        round-12 on #19835).
+        """
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.voice import (
+                format_voice_record_key_for_status,
+                voice_record_key_from_config,
+            )
+            return format_voice_record_key_for_status(voice_record_key_from_config(load_config()))
+        except Exception:
+            return "Ctrl+B"
+
     def _get_voice_status_fragments(self, width: Optional[int] = None):
         """Return the voice status bar fragments for the interactive TUI."""
         width = width or self._get_tui_terminal_width()
         compact = self._use_minimal_tui_chrome(width=width)
+        label = self._voice_record_key_label()
         if self._voice_recording:
             if compact:
                 return [("class:voice-status-recording", " ● REC ")]
-            return [("class:voice-status-recording", " ● REC  Ctrl+B to stop ")]
+            return [("class:voice-status-recording", f" ● REC  {label} to stop ")]
         if self._voice_processing:
             if compact:
                 return [("class:voice-status", " ◉ STT ")]
             return [("class:voice-status", " ◉ Transcribing... ")]
         if compact:
-            return [("class:voice-status", " 🎤 Ctrl+B ")]
+            return [("class:voice-status", f" 🎤 {label} ")]
         tts = " | TTS on" if self._voice_tts else ""
         cont = " | Continuous" if self._voice_continuous else ""
-        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ")]
+        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
@@ -8288,10 +8310,20 @@ class HermesCLI:
 
         # Apply config-driven silence params (numeric-guarded so YAML
         # scalar corruption doesn't break recording start-up).
+        #
+        # ``bool`` is explicitly excluded from the numeric check — in
+        # Python bool is a subclass of int, so a hand-edited
+        # ``silence_threshold: true`` would otherwise be forwarded as
+        # ``1`` instead of falling back to the 200 default (Copilot
+        # round-12 on #19835).
         _threshold = voice_cfg.get("silence_threshold")
         _duration = voice_cfg.get("silence_duration")
-        self._voice_recorder._silence_threshold = _threshold if isinstance(_threshold, (int, float)) else 200
-        self._voice_recorder._silence_duration = _duration if isinstance(_duration, (int, float)) else 3.0
+        self._voice_recorder._silence_threshold = (
+            _threshold if isinstance(_threshold, (int, float)) and not isinstance(_threshold, bool) else 200
+        )
+        self._voice_recorder._silence_duration = (
+            _duration if isinstance(_duration, (int, float)) and not isinstance(_duration, bool) else 3.0
+        )
 
         def _on_silence():
             """Called by AudioRecorder when silence is detected after speech."""
@@ -8317,12 +8349,13 @@ class HermesCLI:
             with self._voice_lock:
                 self._voice_recording = False
             raise
+        _label = self._voice_record_key_label()
         if getattr(self._voice_recorder, "supports_silence_autostop", True):
-            _recording_hint = "auto-stops on silence | Ctrl+B to stop & exit continuous"
+            _recording_hint = f"auto-stops on silence | {_label} to stop & exit continuous"
         elif _is_termux_environment():
-            _recording_hint = "Termux:API capture | Ctrl+B to stop"
+            _recording_hint = f"Termux:API capture | {_label} to stop"
         else:
-            _recording_hint = "Ctrl+B to stop"
+            _recording_hint = f"{_label} to stop"
         _cprint(f"\n{_ACCENT}● Recording...{_RST} {_DIM}({_recording_hint}){_RST}")
 
         # Periodically refresh prompt to update audio level indicator
@@ -10898,7 +10931,8 @@ class HermesCLI:
 
         def _get_placeholder():
             if cli_ref._voice_recording:
-                return "recording... Ctrl+B to stop, Ctrl+C to cancel"
+                _label = cli_ref._voice_record_key_label()
+                return f"recording... {_label} to stop, Ctrl+C to cancel"
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
@@ -10918,7 +10952,8 @@ class HermesCLI:
             if cli_ref._agent_running:
                 return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
-                return "type or Ctrl+B to record"
+                _label = cli_ref._voice_record_key_label()
+                return f"type or {_label} to record"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))

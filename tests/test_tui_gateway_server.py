@@ -191,6 +191,30 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert captured["silence_threshold"] == 200
         assert captured["silence_duration"] == 3.0
 
+    # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
+    # of ``int``, so the naive ``isinstance(threshold, (int, float))``
+    # guard would forward ``silence_threshold: true`` as ``1`` instead
+    # of falling back to the documented 200 default.
+    for bad_bool_cfg in (
+        {"silence_threshold": True, "silence_duration": False},
+        {"silence_threshold": False},
+        {"silence_duration": True},
+    ):
+        captured.clear()
+        monkeypatch.setattr(server, "_load_cfg", lambda c=bad_bool_cfg: {"voice": c})
+
+        resp = server.dispatch(
+            {"id": "voice-record-bool", "method": "voice.record", "params": {"action": "start"}}
+        )
+
+        assert "result" in resp, f"voice.record raised for bool cfg={bad_bool_cfg!r}"
+        assert captured["silence_threshold"] == 200, (
+            f"bool silence_threshold leaked through for {bad_bool_cfg!r}"
+        )
+        assert captured["silence_duration"] == 3.0, (
+            f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        )
+
 
 def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     """Round-2 Copilot review regression on #19835.

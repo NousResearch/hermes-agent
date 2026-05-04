@@ -100,6 +100,23 @@ const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceR
   return raw ? parseVoiceRecordKey(raw) : DEFAULT_VOICE_RECORD_KEY
 }
 
+/** Fetch ``config.get full`` and fan the result through ``applyDisplay``.
+ *
+ * Extracted so the mtime-reload path can be exercised by the test
+ * suite without a React runtime (Copilot round-12 review on #19835).
+ * Both the initial hydration and the mtime poller use this shared
+ * helper, so a regression in the fetch/apply plumbing now fails the
+ * useConfigSync tests instead of only being visible at runtime. */
+export async function hydrateFullConfig(
+  gw: GatewayClient,
+  setBell: (v: boolean) => void,
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+): Promise<ConfigFullResponse | null> {
+  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+  applyDisplay(cfg, setBell, setVoiceRecordKey)
+  return cfg
+}
+
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
@@ -156,9 +173,7 @@ export function useConfigSync({
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
     })
-    quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r =>
-      applyDisplay(r, setBellOnComplete, setVoiceRecordKey)
-    )
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
   }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
@@ -187,9 +202,7 @@ export function useConfigSync({
         quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
           r => r && turnController.pushActivity('MCP reloaded after config change')
         )
-        quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r =>
-          applyDisplay(r, setBellOnComplete, setVoiceRecordKey)
-        )
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
       })
     }, MTIME_POLL_MS)
 

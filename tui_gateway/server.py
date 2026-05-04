@@ -5425,17 +5425,24 @@ def _(rid, params: dict) -> dict:
 
             # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
             # must not crash /voice with a 5025 — fall back to VAD defaults.
+            #
+            # Exclude ``bool`` from the numeric check since Python's bool is
+            # a subclass of int — a hand-edit like ``silence_threshold: true``
+            # would otherwise forward as ``1`` instead of falling back to
+            # the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
             voice_cfg = _voice_cfg_dict()
             threshold = voice_cfg.get("silence_threshold")
             duration = voice_cfg.get("silence_duration")
+            safe_threshold = threshold if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) else 200
+            safe_duration = duration if isinstance(duration, (int, float)) and not isinstance(duration, bool) else 3.0
             start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}
                 ),
-                silence_threshold=threshold if isinstance(threshold, (int, float)) else 200,
-                silence_duration=duration if isinstance(duration, (int, float)) else 3.0,
+                silence_threshold=safe_threshold,
+                silence_duration=safe_duration,
             )
             return _ok(rid, {"status": "recording"})
 

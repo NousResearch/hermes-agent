@@ -244,6 +244,32 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('super+v').mod).toBe('super')
   })
 
+  it('rejects alt+{c,d,l} on macOS — meta-as-alt collides with isAction', async () => {
+    const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('darwin')
+
+    // hermes-ink reports Alt as ``key.meta`` on many terminals, and
+    // ``isActionMod`` on darwin accepts ``key.meta`` as the action
+    // modifier. So ``alt+c`` / ``alt+d`` / ``alt+l`` get claimed by
+    // isCopyShortcut / isAction('d') / isAction('l') before voice
+    // runs (Copilot round-12 on #19835).
+    expect(parseVoiceRecordKey('alt+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('alt+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('alt+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    // Other alt letters stay usable on darwin.
+    expect(parseVoiceRecordKey('alt+r').mod).toBe('alt')
+    expect(parseVoiceRecordKey('alt+space').mod).toBe('alt')
+  })
+
+  it('allows alt+{c,d,l} on Linux/Windows — non-mac isAction keys off Ctrl', async () => {
+    const { parseVoiceRecordKey } = await importPlatform('linux')
+
+    // On Linux/Windows ``isActionMod`` ignores key.meta, so alt+<letter>
+    // doesn't collide with copy/exit/clear. Those configs stay usable.
+    expect(parseVoiceRecordKey('alt+c').mod).toBe('alt')
+    expect(parseVoiceRecordKey('alt+d').mod).toBe('alt')
+    expect(parseVoiceRecordKey('alt+l').mod).toBe('alt')
+  })
+
   // Round-5 Copilot review regressions on #19835.
   it('super+<key> does NOT fire on key.meta-only events (Alt+X false-fire guard)', async () => {
     const { isVoiceToggleKey, parseVoiceRecordKey } = await importPlatform('darwin')

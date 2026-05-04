@@ -164,6 +164,15 @@ const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
  * non-mac users (Copilot round-8 review on #19835). */
 const _RESERVED_SUPER_CHARS = new Set(['c', 'd', 'l', 'v'])
 
+/** On macOS ``isActionMod`` accepts ``key.meta`` as the action
+ * modifier — but hermes-ink reports Alt as ``key.meta`` on many
+ * terminals. So on darwin a configured ``alt+c`` / ``alt+d`` / ``alt+l``
+ * gets swallowed by ``isCopyShortcut`` / ``isAction`` before the voice
+ * check runs. Block at parse time so /voice status doesn't advertise
+ * a shortcut that actually copies / quits / clears (Copilot round-12
+ * review on #19835). */
+const _RESERVED_ALT_CHARS_MAC = new Set(['c', 'd', 'l'])
+
 interface RuntimeKeyEvent {
   alt?: boolean
   backspace?: boolean
@@ -280,6 +289,15 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
   // globals key off Ctrl (not Super), so kitty/CSI-u ``super+<letter>``
   // bindings stay usable for non-mac users.
   if (isMac && mod === 'super' && last.length === 1 && _RESERVED_SUPER_CHARS.has(last)) {
+    return DEFAULT_VOICE_RECORD_KEY
+  }
+
+  // On macOS hermes-ink reports Alt as ``key.meta``, which ``isActionMod``
+  // accepts as the mac action modifier. So ``alt+c`` / ``alt+d`` / ``alt+l``
+  // collide with copy / exit / clear in ``useInputHandlers()`` before the
+  // voice check. Reject at parse time on darwin only — non-mac ``alt+<letter>``
+  // bindings are still usable (Copilot round-12 review on #19835).
+  if (isMac && mod === 'alt' && last.length === 1 && _RESERVED_ALT_CHARS_MAC.has(last)) {
     return DEFAULT_VOICE_RECORD_KEY
   }
 

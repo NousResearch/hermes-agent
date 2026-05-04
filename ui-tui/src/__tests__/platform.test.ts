@@ -270,6 +270,16 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(isVoiceToggleKey({ ctrl: false, meta: false, super: true }, 'b', superB)).toBe(true)
   })
 
+  it('alt+escape does not fire on bare Esc meta-shape', async () => {
+    const { isVoiceToggleKey, parseVoiceRecordKey } = await importPlatform('darwin')
+    const altEscape = parseVoiceRecordKey('alt+escape')
+
+    // Some terminals surface bare Esc as meta=true + escape=true.
+    expect(isVoiceToggleKey({ ctrl: false, escape: true, meta: true, super: false }, '', altEscape)).toBe(false)
+    // Explicit alt bit (kitty-style) still fires the configured chord.
+    expect(isVoiceToggleKey({ alt: true, ctrl: false, escape: true, meta: false, super: false }, '', altEscape)).toBe(true)
+  })
+
   it('rejects matches when Shift is held (different chord than configured)', async () => {
     const { isVoiceToggleKey, parseVoiceRecordKey } = await importPlatform('linux')
 

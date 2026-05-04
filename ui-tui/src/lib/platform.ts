@@ -322,7 +322,12 @@ export const isVoiceToggleKey = (
       // protocols. Guard against ctrl/super bits so a chord like
       // Ctrl+Alt+<key> or Cmd+Alt+<key> doesn't spuriously fire the
       // alt binding.
-      return (key.alt === true || key.meta) && !key.ctrl && key.super !== true
+      //
+      // Bare Escape on hermes-ink can arrive as ``key.meta=true`` on some
+      // terminals, so a configured ``alt+escape`` must not match that shape;
+      // require an explicit alt bit for escape chords (Copilot round-7
+      // follow-up on #19835).
+      return (key.alt === true || (key.meta && key.escape !== true)) && !key.ctrl && key.super !== true
     case 'ctrl':
       // Require the Ctrl bit AND a clear Alt/Super so a chord like
       // Ctrl+Alt+<key> / Ctrl+Cmd+<key> doesn't spuriously match

@@ -1,11 +1,13 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+import importlib
 from unittest.mock import patch
 
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
     _configure_provider,
+    _DEFAULT_OFF_TOOLSETS,
     _get_platform_tools,
     _platform_toolset_summary,
     _reconfigure_tool,
@@ -116,6 +118,16 @@ def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_m
     assert "homeassistant" not in cron_enabled
 
 
+def test_configurable_toolsets_derive_from_toolset_metadata():
+    from toolsets import (
+        get_configurable_builtin_toolsets,
+        get_default_off_builtin_toolsets,
+    )
+
+    assert CONFIGURABLE_TOOLSETS == get_configurable_builtin_toolsets()
+    assert _DEFAULT_OFF_TOOLSETS == get_default_off_builtin_toolsets()
+
+
 def test_get_platform_tools_preserves_explicit_empty_selection():
     config = {"platform_toolsets": {"cli": []}}
 
@@ -170,6 +182,35 @@ def test_get_platform_tools_handles_null_platform_toolsets():
 
     # Falls through to defaults instead of raising
     assert enabled
+
+
+def test_metadata_defined_builtin_toolset_is_recognized_without_cli_registry_edit():
+    import hermes_cli.tools_config as tc
+    from toolsets import TOOLSETS
+
+    toolset_name = "unit_test_configurable_toolset"
+    TOOLSETS[toolset_name] = {
+        "description": "Temporary toolset for configurator derivation test",
+        "tools": ["todo"],
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🧪 Temp Toolset",
+        "ui_summary": "todo",
+        "default_enabled": True,
+    }
+
+    reloaded = importlib.reload(tc)
+    try:
+        assert any(ts_key == toolset_name for ts_key, _, _ in reloaded.CONFIGURABLE_TOOLSETS)
+        enabled = reloaded._get_platform_tools(
+            {"platform_toolsets": {"cli": [toolset_name]}},
+            "cli",
+            include_default_mcp_servers=False,
+        )
+        assert toolset_name in enabled
+    finally:
+        TOOLSETS.pop(toolset_name, None)
+        importlib.reload(tc)
 
 
 def test_platform_toolset_summary_uses_explicit_platform_list():

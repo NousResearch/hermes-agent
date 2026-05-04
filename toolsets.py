@@ -75,7 +75,11 @@ TOOLSETS = {
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
-        "includes": []  # No other toolsets included
+        "includes": [],  # No other toolsets included
+        "configurable": True,
+        "ui_label": "🔍 Web Search & Scraping",
+        "ui_summary": "web_search, web_extract",
+        "default_enabled": True,
     },
     
     "search": {
@@ -87,7 +91,11 @@ TOOLSETS = {
     "vision": {
         "description": "Image analysis and vision tools",
         "tools": ["vision_analyze"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "👁️  Vision / Image Analysis",
+        "ui_summary": "vision_analyze",
+        "default_enabled": True,
     },
 
     "video": {
@@ -99,25 +107,41 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🎨 Image Generation",
+        "ui_summary": "image_generate",
+        "default_enabled": True,
     },
     
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "💻 Terminal & Processes",
+        "ui_summary": "terminal, process",
+        "default_enabled": True,
     },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
         "tools": ["mixture_of_agents"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🧠 Mixture of Agents",
+        "ui_summary": "mixture_of_agents",
+        "default_enabled": False,
     },
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "📚 Skills",
+        "ui_summary": "list, view, manage",
+        "default_enabled": True,
     },
     
     "browser": {
@@ -129,13 +153,21 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp",
             "browser_dialog", "web_search"
         ],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🌐 Browser Automation",
+        "ui_summary": "navigate, click, type, scroll",
+        "default_enabled": True,
     },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "⏰ Cron Jobs",
+        "ui_summary": "create/list/update/pause/resume/run, with optional attached skills",
+        "default_enabled": True,
     },
     
     "messaging": {
@@ -153,55 +185,91 @@ TOOLSETS = {
             "rl_stop_training", "rl_get_results",
             "rl_list_runs", "rl_test_inference"
         ],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🧪 RL Training",
+        "ui_summary": "Tinker-Atropos training tools",
+        "default_enabled": False,
     },
     
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "📁 File Operations",
+        "ui_summary": "read, write, patch, search",
+        "default_enabled": True,
     },
     
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
         "tools": ["text_to_speech"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🔊 Text-to-Speech",
+        "ui_summary": "text_to_speech",
+        "default_enabled": True,
     },
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",
         "tools": ["todo"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "📋 Task Planning",
+        "ui_summary": "todo",
+        "default_enabled": True,
     },
     
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "💾 Memory",
+        "ui_summary": "persistent memory across sessions",
+        "default_enabled": True,
     },
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🔎 Session Search",
+        "ui_summary": "search past conversations",
+        "default_enabled": True,
     },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "❓ Clarifying Questions",
+        "ui_summary": "clarify",
+        "default_enabled": True,
     },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "⚡ Code Execution",
+        "ui_summary": "execute_code",
+        "default_enabled": True,
     },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "👥 Task Delegation",
+        "ui_summary": "delegate_task",
+        "default_enabled": True,
     },
 
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
@@ -210,7 +278,11 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
-        "includes": []
+        "includes": [],
+        "configurable": True,
+        "ui_label": "🏠 Home Assistant",
+        "ui_summary": "smart home device control",
+        "default_enabled": False,
     },
 
     "kanban": {
@@ -506,6 +578,35 @@ TOOLSETS = {
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
     }
 }
+
+
+def get_configurable_builtin_toolsets() -> List[tuple[str, str, str]]:
+    """Return user-facing built-in toolsets for the tools configurator.
+
+    The configurator only shows built-in toolsets that explicitly opt in via
+    metadata on ``TOOLSETS``. This keeps internal/composite toolsets hidden
+    while making built-in configurability derive from the toolset source of
+    truth instead of a second hardcoded registry.
+    """
+    result: List[tuple[str, str, str]] = []
+    for name, toolset in TOOLSETS.items():
+        if not toolset.get("configurable"):
+            continue
+        label = str(toolset.get("ui_label", "")).strip()
+        summary = str(toolset.get("ui_summary", "")).strip()
+        if not label or not summary:
+            continue
+        result.append((name, label, summary))
+    return result
+
+
+def get_default_off_builtin_toolsets() -> Set[str]:
+    """Return built-in configurable toolsets that should start disabled."""
+    return {
+        name
+        for name, toolset in TOOLSETS.items()
+        if toolset.get("configurable") and not toolset.get("default_enabled", True)
+    }
 
 
 

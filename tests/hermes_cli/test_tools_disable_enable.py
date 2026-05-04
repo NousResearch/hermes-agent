@@ -1,4 +1,5 @@
 """Tests for hermes tools disable/enable/list command (backend)."""
+import importlib
 from argparse import Namespace
 from unittest.mock import patch
 
@@ -58,6 +59,35 @@ class TestToolsEnableBuiltin:
             tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert saved["platform_toolsets"]["cli"].count("web") == 1
+
+    def test_enable_accepts_builtin_toolset_defined_via_toolset_metadata(self):
+        import hermes_cli.tools_config as tc
+        from toolsets import TOOLSETS
+
+        toolset_name = "unit_test_enable_metadata_toolset"
+        TOOLSETS[toolset_name] = {
+            "description": "Temporary toolset for enable-command derivation test",
+            "tools": ["todo"],
+            "includes": [],
+            "configurable": True,
+            "ui_label": "🧪 Temp Enable Toolset",
+            "ui_summary": "todo",
+            "default_enabled": True,
+        }
+
+        reloaded = importlib.reload(tc)
+        try:
+            config = {"platform_toolsets": {"cli": ["memory"]}}
+            with patch.object(reloaded, "load_config", return_value=config), \
+                 patch.object(reloaded, "save_config") as mock_save:
+                reloaded.tools_disable_enable_command(
+                    Namespace(tools_action="enable", names=[toolset_name], platform="cli")
+                )
+            saved = mock_save.call_args[0][0]
+            assert toolset_name in saved["platform_toolsets"]["cli"]
+        finally:
+            TOOLSETS.pop(toolset_name, None)
+            importlib.reload(tc)
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────

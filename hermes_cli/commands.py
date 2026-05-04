@@ -64,7 +64,7 @@ class CommandDef:
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",)),
+               aliases=("reset",), args_hint="[name]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",

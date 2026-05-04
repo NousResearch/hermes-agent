@@ -1121,7 +1121,7 @@ class SessionStore:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str) -> Optional[SessionEntry]:
+    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
         db_create_kwargs = None
@@ -1145,7 +1145,7 @@ class SessionStore:
                 created_at=now,
                 updated_at=now,
                 origin=old_entry.origin,
-                display_name=old_entry.display_name,
+                display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,

@@ -6896,6 +6896,17 @@ class GatewayRunner:
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
             header = "✨ New session started!"
 
+        # Set session title if provided with /new <title>
+        _title_arg = event.get_command_args().strip()
+        if _title_arg and self._session_db and new_entry:
+            try:
+                from hermes_state import SessionDB
+                sanitized = SessionDB.sanitize_title(_title_arg)
+                if sanitized:
+                    self._session_db.set_session_title(new_entry.session_id, sanitized)
+            except Exception:
+                pass
+
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook

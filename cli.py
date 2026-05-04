@@ -10484,19 +10484,14 @@ class HermesCLI:
                     self._should_exit = True
                     event.app.exit()
 
-        try:
-            @kb.add('c-S-c')  # Ctrl+Shift+C — no-op, let terminal handle native copy
-            def handle_ctrl_shift_c(event):
-                """No-op: let the terminal handle Ctrl+Shift+C natively.
-
-                Wrapped in try/except because prompt_toolkit raises ValueError
-                ("Invalid key: c-S-c") on platforms where this key spec is not
-                recognised.  The binding is best-effort; if registration fails,
-                startup continues normally.
-                """
-                return
-        except ValueError:
-            pass  # prompt_toolkit on this platform/version doesn't support c-S-c
+        # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
+        # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
+        # the keystroke reaches the application's stdin — prompt_toolkit never
+        # sees it, and prompt_toolkit's key spec parser doesn't even recognise
+        # 'c-S-c' anyway (the Shift modifier is meaningless on control-sequence
+        # keys). #19884 added a handler for this; #19895 patched the resulting
+        # startup crash with try/except. Both were based on a misreading of how
+        # terminal key events propagate. Deleting the dead handler outright.
 
         @kb.add('c-q')  # Ctrl+Q
         def handle_ctrl_q(event):

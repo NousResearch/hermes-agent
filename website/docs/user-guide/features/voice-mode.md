@@ -428,6 +428,7 @@ STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
 STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
+STT_OPENAI_TIMEOUT=30                         # OpenAI STT request timeout in seconds
 
 # Text-to-Speech providers (Edge TTS and NeuTTS need no key)
 ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)

@@ -1261,6 +1261,7 @@ STT_GROQ_MODEL=whisper-large-v3-turbo
 STT_OPENAI_MODEL=whisper-1
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 STT_OPENAI_BASE_URL=https://api.openai.com/v1
+STT_OPENAI_TIMEOUT=30
 ```
 
 ## Voice Mode (CLI)

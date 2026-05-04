@@ -343,6 +343,7 @@ AUTHOR_MAP = {
     "haileymarshall005@gmail.com": "haileymarshall",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
+    "77253505+bobashopcashier@users.noreply.github.com": "bobashopcashier",
     "shokatalishaikh95@gmail.com": "areu01or00",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",

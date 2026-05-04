@@ -7390,6 +7390,13 @@ class AIAgent:
         t.start()
         _last_heartbeat = time.time()
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+        # Track consecutive stale-stream kills with no chunk progress in between.
+        # If close() fails to unblock the streaming thread (e.g. httpx blocked on
+        # a TLS read that ignores socket close), the loop would otherwise spin
+        # forever, heartbeating "Still waiting on provider" with no recovery.
+        _stale_kill_count = 0
+        _post_kill_chunk_baseline = 0.0
+        _MAX_STALE_KILLS = 1  # allow one reconnect attempt; bail on the second
         while t.is_alive():
             t.join(timeout=0.3)
 
@@ -7431,12 +7438,41 @@ class AIAgent:
             _stale_elapsed = time.time() - last_chunk_time["t"]
             if _stale_elapsed > _stream_stale_timeout:
                 _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                # If a previous kill didn't produce any new chunks, the inner
+                # thread is hung on a socket that ignored close().  Count
+                # consecutive no-progress kills and bail out so the outer
+                # retry/fallback chain can take over instead of spinning.
+                if _stale_kill_count > 0 and last_chunk_time["t"] <= _post_kill_chunk_baseline:
+                    _stale_kill_count += 1
+                else:
+                    _stale_kill_count = 1
                 logger.warning(
                     "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
-                    "model=%s context=~%s tokens. Killing connection.",
+                    "model=%s context=~%s tokens. Kill attempt %d/%d.",
                     _stale_elapsed, _stream_stale_timeout,
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                    _stale_kill_count, _MAX_STALE_KILLS + 1,
                 )
+                if _stale_kill_count > _MAX_STALE_KILLS:
+                    # Inner thread hung; close() did not unblock it.  Break out
+                    # so the post-loop error path raises and the outer retry
+                    # logic can fall back to another provider.  The daemon
+                    # thread leaks but dies with the process.
+                    logger.error(
+                        "Stream hung after %d stale-kill attempts; abandoning "
+                        "connection.  Last close did not wake the streaming thread.",
+                        _stale_kill_count,
+                    )
+                    self._emit_status(
+                        f"❌ Provider stream unresponsive after "
+                        f"{_stale_kill_count} reconnect attempts — failing over."
+                    )
+                    result["error"] = TimeoutError(
+                        f"Provider stream hung: no chunks for {int(_stale_elapsed)}s "
+                        f"after {_stale_kill_count} reconnect attempts "
+                        f"(model={api_kwargs.get('model', 'unknown')})"
+                    )
+                    break
                 self._emit_status(
                     f"⚠️ No response from provider for {int(_stale_elapsed)}s "
                     f"(model: {api_kwargs.get('model', 'unknown')}, "
@@ -7456,8 +7492,12 @@ class AIAgent:
                 except Exception:
                     pass
                 # Reset the timer so we don't kill repeatedly while
-                # the inner thread processes the closure.
+                # the inner thread processes the closure.  Snapshot the
+                # post-reset value as the baseline for the next stale check:
+                # if no real chunks land, last_chunk_time["t"] will still equal
+                # this baseline on the next fire and we'll bail out.
                 last_chunk_time["t"] = time.time()
+                _post_kill_chunk_baseline = last_chunk_time["t"]
                 self._touch_activity(
                     f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
                 )

@@ -568,9 +568,26 @@ install_node() {
 
     log_info "Extracting to ~/.hermes/node/..."
     if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        if ! command -v xz &> /dev/null; then
+            log_warn "xz is required to extract $tarball_name"
+            show_manual_install_hint "xz-utils"
+            rm -rf "$tmp_dir"
+            HAS_NODE=false
+            return 0
+        fi
+        if ! tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"; then
+            log_warn "Extraction failed"
+            rm -rf "$tmp_dir"
+            HAS_NODE=false
+            return 0
+        fi
     else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        if ! tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"; then
+            log_warn "Extraction failed"
+            rm -rf "$tmp_dir"
+            HAS_NODE=false
+            return 0
+        fi
     fi
 
     local extracted_dir
@@ -606,8 +623,10 @@ install_system_packages() {
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
+    HAS_XZ=false
     local need_ripgrep=false
     local need_ffmpeg=false
+    local need_xz=false
 
     log_info "Checking ripgrep (fast file search)..."
     if command -v rg &> /dev/null; then
@@ -624,6 +643,17 @@ install_system_packages() {
         HAS_FFMPEG=true
     else
         need_ffmpeg=true
+    fi
+
+    if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+        log_info "Checking xz (Node.js archive extraction)..."
+        if command -v xz &> /dev/null; then
+            HAS_XZ=true
+        else
+            need_xz=true
+        fi
+    else
+        HAS_XZ=true
     fi
 
     # Termux always needs the Android build toolchain for the tested pip path,
@@ -651,7 +681,7 @@ install_system_packages() {
     fi
 
     # Nothing to install — done
-    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ]; then
+    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ] && [ "$need_xz" = false ]; then
         return 0
     fi
 
@@ -665,6 +695,10 @@ install_system_packages() {
     if [ "$need_ffmpeg" = true ]; then
         desc_parts+=("ffmpeg for TTS voice messages")
         pkgs+=("ffmpeg")
+    fi
+    if [ "$need_xz" = true ]; then
+        desc_parts+=("xz-utils for Node.js archive extraction")
+        pkgs+=("xz-utils")
     fi
     local description
     description=$(IFS=" and "; echo "${desc_parts[*]}")
@@ -706,6 +740,7 @@ install_system_packages() {
             if $install_cmd; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz-utils installed"
                 return 0
             fi
         # Passwordless sudo — just install
@@ -714,6 +749,7 @@ install_system_packages() {
             if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz-utils installed"
                 return 0
             fi
         # sudo needs password — ask once for everything
@@ -726,6 +762,7 @@ install_system_packages() {
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz-utils installed"
                         return 0
                     fi
                 fi
@@ -742,6 +779,7 @@ install_system_packages() {
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz-utils installed"
                         return 0
                     fi
                 fi
@@ -772,6 +810,10 @@ install_system_packages() {
         log_warn "ffmpeg not installed (TTS voice messages will be limited)"
         show_manual_install_hint "ffmpeg"
     fi
+    if [ "$HAS_XZ" = false ] && [ "$need_xz" = true ]; then
+        log_warn "xz-utils not installed (Node.js auto-install may be unavailable)"
+        show_manual_install_hint "xz-utils"
+    fi
 }
 
 show_manual_install_hint() {
@@ -781,15 +823,33 @@ show_manual_install_hint() {
         linux)
             case "$DISTRO" in
                 ubuntu|debian) log_info "  sudo apt install $pkg" ;;
-                fedora)        log_info "  sudo dnf install $pkg" ;;
-                arch)          log_info "  sudo pacman -S $pkg"   ;;
+                fedora)
+                    if [ "$pkg" = "xz-utils" ]; then
+                        log_info "  sudo dnf install xz"
+                    else
+                        log_info "  sudo dnf install $pkg"
+                    fi
+                    ;;
+                arch)
+                    if [ "$pkg" = "xz-utils" ]; then
+                        log_info "  sudo pacman -S xz"
+                    else
+                        log_info "  sudo pacman -S $pkg"
+                    fi
+                    ;;
                 *)             log_info "  Use your package manager or visit the project homepage" ;;
             esac
             ;;
         android)
             log_info "  pkg install $pkg"
             ;;
-        macos) log_info "  brew install $pkg" ;;
+        macos)
+            if [ "$pkg" = "xz-utils" ]; then
+                log_info "  brew install xz"
+            else
+                log_info "  brew install $pkg"
+            fi
+            ;;
     esac
 }
 

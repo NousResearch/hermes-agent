@@ -238,3 +238,40 @@ def test_new_session_with_title(capsys):
 
     captured = capsys.readouterr()
     assert "My Test Session" in captured.out
+
+
+def test_new_session_with_duplicate_title_surfaces_error(capsys):
+    """new_session(title=...) handles ValueError from a duplicate-title conflict.
+
+    The session is still created; the title assignment fails; the success banner
+    must not claim the rejected title as the session name.
+    """
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    cli._session_db.set_session_title.side_effect = ValueError(
+        "Title 'Dup' is already in use by session abc-123"
+    )
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    # Capture warnings printed via cli._cprint. After importlib.reload(),
+    # the method's __globals__ dict is the one from the live module — patch
+    # the exact dict the method will read.
+    warnings: list[str] = []
+    method_globals = cli.new_session.__globals__
+    original = method_globals["_cprint"]
+    method_globals["_cprint"] = lambda msg: warnings.append(msg)
+    try:
+        cli.new_session(title="Dup")
+    finally:
+        method_globals["_cprint"] = original
+
+    cli._session_db.set_session_title.assert_called_once()
+    joined = "\n".join(warnings)
+    assert "already in use" in joined
+    assert "session started untitled" in joined
+
+    # The success banner must NOT claim the rejected title as the session name.
+    captured = capsys.readouterr()
+    assert "New session started: Dup" not in captured.out
+    assert "New session started!" in captured.out

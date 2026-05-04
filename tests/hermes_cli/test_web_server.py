@@ -2213,3 +2213,42 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+    def test_argv_resolve_and_spawn_run_off_event_loop(self, monkeypatch):
+        """Regression: _resolve_chat_argv (which can shell out to
+        ``npm install`` / ``npm run build``) and PtyBridge.spawn (which
+        forks a child) must not run on the event loop thread.  Running
+        them inline starves uvicorn's websockets task and the browser
+        sees the WS upgrade hang — the symptom in the FastAPI 0.136
+        regression report."""
+        import asyncio
+
+        captured: dict = {}
+
+        def _site() -> str:
+            try:
+                asyncio.get_running_loop()
+                return "on_event_loop"
+            except RuntimeError:
+                return "off_event_loop"
+
+        def fake_resolve(resume=None, sidecar_url=None):
+            captured["resolve"] = _site()
+            return (["/bin/cat"], None, None)
+
+        real_spawn = self.ws_module.PtyBridge.spawn
+
+        def fake_spawn(cls, *args, **kwargs):
+            captured["spawn"] = _site()
+            return real_spawn(*args, **kwargs)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+        monkeypatch.setattr(
+            self.ws_module.PtyBridge, "spawn", classmethod(fake_spawn)
+        )
+
+        with self.client.websocket_connect(self._url()):
+            pass
+
+        assert captured.get("resolve") == "off_event_loop"
+        assert captured.get("spawn") == "off_event_loop"

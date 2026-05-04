@@ -2885,6 +2885,7 @@ async def get_models_analytics(days: int = 30):
 
 import re
 import asyncio
+import functools
 
 from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
 
@@ -3011,21 +3012,34 @@ async def pty_ws(ws: WebSocket) -> None:
     await ws.accept()
 
     # --- spawn PTY ------------------------------------------------------
+    # Both _resolve_chat_argv (which may shell out to `npm install`/`npm run
+    # build` on first run) and PtyBridge.spawn (which forks a child) are
+    # synchronous and can take seconds. Running them inline starves the
+    # event loop, which on uvicorn + websockets prevents the WS upgrade
+    # from being flushed and the browser sees the handshake hang.
     resume = ws.query_params.get("resume") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
+    loop = asyncio.get_running_loop()
+
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        argv, cwd, env = await loop.run_in_executor(
+            None,
+            functools.partial(
+                _resolve_chat_argv, resume=resume, sidecar_url=sidecar_url
+            ),
+        )
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
 
-
     try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        bridge = await loop.run_in_executor(
+            None, functools.partial(PtyBridge.spawn, argv, cwd=cwd, env=env)
+        )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -3034,8 +3048,6 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-
-    loop = asyncio.get_running_loop()
 
     # --- reader task: PTY master → WebSocket ----------------------------
     async def pump_pty_to_ws() -> None:

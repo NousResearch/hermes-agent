@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from hermes_state import SessionDB
@@ -219,3 +219,22 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_new_session_with_title(capsys):
+    """new_session(title=...) creates a session and sets the title."""
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    cli.new_session(title="My Test Session")
+
+    # Assert set_session_title was called with the new session ID and sanitized title
+    cli._session_db.set_session_title.assert_called_once()
+    call_args = cli._session_db.set_session_title.call_args
+    assert call_args[0][0] == cli.session_id
+    assert call_args[0][1] == "My Test Session"
+
+    captured = capsys.readouterr()
+    assert "My Test Session" in captured.out

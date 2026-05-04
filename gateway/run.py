@@ -49,6 +49,7 @@ from hermes_cli.config import cfg_get
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
@@ -1502,13 +1503,25 @@ class GatewayRunner:
 
         Must tolerate partial-init state and never raise, since callers
         use it inside error-handling blocks.
+
+        A per-adapter timeout prevents wedged websockets (e.g. Feishu /
+        Lark on flaky networks) from blocking the entire shutdown
+        sequence.  See #19937.
         """
+        timeout = _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+        platform_label = platform.value if platform is not None else "adapter"
         try:
-            await adapter.disconnect()
+            await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "⚠ %s disconnect timed out after %.0fs — abandoning",
+                platform_label,
+                timeout,
+            )
         except Exception as e:
             logger.debug(
                 "Defensive %s disconnect after failed connect raised: %s",
-                platform.value if platform is not None else "adapter",
+                platform_label,
                 e,
             )
 
@@ -4266,8 +4279,17 @@ class GatewayRunner:
                 except Exception as e:
                     logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
                 try:
-                    await adapter.disconnect()
+                    await asyncio.wait_for(
+                        adapter.disconnect(),
+                        timeout=_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT,
+                    )
                     logger.info("✓ %s disconnected", platform.value)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "⚠ %s disconnect timed out after %.0fs — abandoning",
+                        platform.value,
+                        _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT,
+                    )
                 except Exception as e:
                     logger.error("✗ %s disconnect error: %s", platform.value, e)
 

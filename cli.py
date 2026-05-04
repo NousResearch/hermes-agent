@@ -7355,19 +7355,32 @@ class HermesCLI:
     def _reasoning_levels_for_active_model(self) -> list[str]:
         """Return the reasoning levels that make sense for the active model.
 
-        DSv4-Flash and similar binary-thinking models map any non-"none"
-        effort to enable_thinking=True at the API boundary, so showing
-        all six tiers (minimal/low/medium/high/xhigh) is misleading —
-        they all behave identically. For those, return just ``["none",
-        "on"]``. For tiered-reasoning models (gpt-5, o-series, openrouter
-        passthrough) return the full ladder.
+        Different reasoning ecosystems support different tiers:
+
+        * DSv4-Flash exposes four distinct values through exo's wrapper
+          (``_v4_reasoning_effort`` in utils_mlx.py):
+
+            - ``none``  → enable_thinking=False
+            - ``medium`` (or ``minimal``/``low``) → enable_thinking=True,
+              no effort hint = default depth
+            - ``high``  → enable_thinking=True, reasoning_effort="high"
+            - ``xhigh`` → enable_thinking=True, reasoning_effort="max"
+
+          ``minimal``/``low``/``medium`` collapse to the same default
+          tier on DSv4, so we drop ``minimal`` and ``low`` from its
+          picker to avoid the misleading equivalent-but-different-named
+          choices.
+        * MiniMax has binary thinking only.
+        * Tiered-reasoning models (gpt-5, o-series, openrouter
+          passthroughs) keep the full ladder.
         """
         full_ladder = ["none", "minimal", "low", "medium", "high", "xhigh"]
-        binary = ["none", "on"]
         m = (self.model or "").lower()
-        # DSv4 / DeepSeek thinking is binary (enable_thinking flag).
-        if "deepseek" in m or "dsv4" in m or "minimax" in m:
-            return binary
+        if "deepseek" in m or "dsv4" in m:
+            # DSv4 4-tier set — collapsed where exo's wrapper collapses.
+            return ["none", "medium", "high", "xhigh"]
+        if "minimax" in m:
+            return ["none", "on"]
         # Default to full ladder when uncertain — overshooting is
         # better than locking out a real reasoning model.
         return full_ladder
@@ -7375,13 +7388,29 @@ class HermesCLI:
     def _open_reasoning_picker(self) -> None:
         """Open the /reasoning prompt_toolkit-native picker modal."""
         levels = self._reasoning_levels_for_active_model()
+        # Display labels per level. Generic ladder gets bare names;
+        # DSv4 / MiniMax get a hint about what each tier means since
+        # those models map effort levels through model-specific wrappers.
+        m = (self.model or "").lower()
+        is_dsv4 = "deepseek" in m or "dsv4" in m
+        dsv4_hints = {
+            "none": "none (no thinking)",
+            "medium": "medium (default thinking)",
+            "high": "high (more thinking)",
+            "xhigh": "xhigh (maximum thinking)",
+        }
+        binary_hints = {
+            "none": "none (no thinking)",
+            "on": "on (thinking enabled)",
+        }
         choices: list[dict] = []
         for level in levels:
-            label = level
-            if level == "none":
-                label = "none (no thinking)"
-            elif level == "on":
-                label = "on (thinking enabled)"
+            if is_dsv4:
+                label = dsv4_hints.get(level, level)
+            elif level in binary_hints:
+                label = binary_hints[level]
+            else:
+                label = level
             choices.append({"key": level, "label": label, "kind": "level"})
         choices.append({"key": "show", "label": "show — render model thinking inline", "kind": "display"})
         choices.append({"key": "hide", "label": "hide — suppress model thinking", "kind": "display"})

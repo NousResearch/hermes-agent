@@ -7706,9 +7706,13 @@ class GatewayRunner:
         # When running under a service manager (systemd/launchd), use the
         # service restart path: exit with code 75 so the service manager
         # restarts us.  The detached subprocess approach (setsid + bash)
-        # doesn't work under systemd because KillMode=mixed kills all
-        # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # doesn't work under service supervision: systemd's KillMode=mixed
+        # kills all processes in the cgroup, and launchd with
+        # KeepAlive.SuccessfulExit=false will not restart a clean exit.
+        _under_service = bool(
+            os.environ.get("INVOCATION_ID")  # systemd sets this
+            or os.environ.get("XPC_SERVICE_NAME") == "ai.hermes.gateway"  # launchd
+        )
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:

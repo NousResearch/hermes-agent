@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /root/hermes-agent
+source .venv/bin/activate
+
+hermes gateway &
+GATEWAY_PID=$!
+
+trap 'kill $GATEWAY_PID 2>/dev/null; wait $GATEWAY_PID 2>/dev/null' EXIT INT TERM
+
+# Wait for gateway to be ready
+sleep 5
+
+hermes "$@"
+
+kill $GATEWAY_PID 2>/dev/null
+wait $GATEWAY_PID 2>/dev/null

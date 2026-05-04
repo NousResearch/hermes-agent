@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /root/hermes-agent
+source .venv/bin/activate
+hermes model

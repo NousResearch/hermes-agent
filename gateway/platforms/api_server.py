@@ -12,6 +12,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/stop    — interrupt a running agent
+- GET  /v1/files/{file_id}[.ext]   — download outbound media/document exports
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -24,17 +25,22 @@ Requires:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import socket as _socket
 import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote_to_bytes, urlsplit
 
 try:
     from aiohttp import web
@@ -56,10 +62,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+MAX_REQUEST_BYTES = 32_000_000  # 32 MB limit for rich OpenAI-style multimodal payloads
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+MAX_EXPORTED_FILES = 256
+FILE_EXPORT_TTL_SECONDS = 14_400
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -280,6 +288,234 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
         _openai_error(message, code=code, param=param),
         status=400,
     )
+
+
+def _decode_data_url(data_url: str) -> tuple[str, bytes]:
+    """Decode a data URL into ``(mime_type, raw_bytes)``."""
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
+        raise ValueError("Not a data URL")
+    header, sep, payload = data_url.partition(",")
+    if not sep:
+        raise ValueError("Malformed data URL")
+    meta = header[5:]  # strip 'data:'
+    mime = "application/octet-stream"
+    if meta:
+        mime = (meta.split(";", 1)[0] or mime).strip() or mime
+    is_b64 = ";base64" in meta
+    try:
+        if is_b64:
+            raw = base64.b64decode(payload, validate=False)
+        else:
+            raw = unquote_to_bytes(payload)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"Invalid data URL payload: {exc}") from exc
+    return mime, raw
+
+
+def _ext_for_mime(mime: str, fallback: str) -> str:
+    guessed = mimetypes.guess_extension((mime or "").split(";", 1)[0].strip() or "")
+    if guessed:
+        return guessed
+    return fallback
+
+
+# Recognises a "normal" file extension: leading dot, then 1–8 alphanumerics.
+# Used to scrub both the on-disk suffix and ``mimetypes.guess_extension``
+# output before exposing it in a public URL.
+_SAFE_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+
+
+# Matches ``data:<mime/attrs>,<payload>`` URLs the model embeds in its final
+# reply — almost always inside markdown like ``![alt](data:image/png;base64,…)``.
+# The payload char class covers both base64 (``A-Za-z0-9+/=``) and URL-encoded
+# (``%`` + unreserved chars) variants; the URL ends at whitespace, quote,
+# close-paren, or angle bracket — the standard markdown/HTML delimiters.
+_INLINE_DATA_URL_RE = re.compile(
+    r'data:[^\s,)"\'<>]+,[A-Za-z0-9+/=%._~\-]+',
+    re.IGNORECASE,
+)
+
+
+def _choose_export_ext(path: Path, mime: str) -> str:
+    """Pick a URL-safe extension for an outbound file export.
+
+    Preference order:
+
+    1. The file's on-disk suffix, lowercased, if it matches ``_SAFE_EXT_RE``.
+       The bytes are the source of truth — whatever container the file
+       really is in wins over whatever MIME table thinks.
+    2. ``mimetypes.guess_extension(mime)`` as a fallback when the file
+       itself has no suffix (e.g. things cached with a bare uuid name).
+    3. Empty string — never invent ``.bin`` or similar, because a wrong
+       extension is worse for clients sniffing by URL than none at all.
+    """
+    suffix = path.suffix.lower()
+    if _SAFE_EXT_RE.match(suffix):
+        return suffix
+    guessed = mimetypes.guess_extension((mime or "").split(";", 1)[0].strip() or "")
+    if guessed and _SAFE_EXT_RE.match(guessed):
+        return guessed.lower()
+    return ""
+
+
+class _StreamDataURLFilter:
+    """Rewrite ``data:…`` URLs to ``/v1/files/…`` URLs in a streamed text.
+
+    The SSE chat-completions path forwards every agent token to the client
+    the instant it arrives from the LLM, which means a reply like
+    ``![icon](data:image/png;base64,iVBORw0KG…)`` reaches the client as a
+    base64 blob before the server ever sees the complete URL.  By the time
+    the batch-path rewriter (_materialize_inline_data_urls) runs on the
+    agent's ``final_response``, the stream has already shipped the raw
+    payload and there's no amendment mechanism in the OpenAI SSE spec.
+
+    This state machine sits between the agent's delta queue and the SSE
+    writer.  It buffers incoming text, suppresses anything that looks like
+    a ``data:`` URL from the downstream emitter, and on URL completion
+    decodes the payload, caches the bytes under
+    ``~/.hermes/{image,audio,document}_cache``, registers the cached path
+    with the file-export registry, and emits the resulting
+    ``/v1/files/{id}.ext`` URL in place of the original data URL.
+
+    Failure modes are conservative: an undecodable payload, a cache-helper
+    exception, or a failed registration leaves the original data URL
+    string in the output rather than dropping user-visible content.
+    """
+
+    # Characters that end a data URL embedded in markdown / HTML.  Closing
+    # paren for ``![alt](…)``, whitespace, quotes, angle brackets.
+    _TERMINATORS = frozenset(' \t\n\r)"\'<>')
+    # The prefix we're watching for.  Held-back tail length is bounded by
+    # ``len(_PREFIX) - 1`` (4 chars) but only activates when the buffer
+    # actually ends with a prefix of this string — see ``_prefix_holdback``.
+    _PREFIX = "data:"
+
+    def __init__(self, adapter, request):
+        self._adapter = adapter
+        self._request = request
+        self._buffer = ""
+        self._in_url = False
+        self.inline_blocks: list = []
+
+    def feed(self, chunk: str) -> str:
+        """Absorb ``chunk`` into the buffer; return text safe to emit now."""
+        if not chunk:
+            return ""
+        self._buffer += chunk
+        return self._drain(force=False)
+
+    def flush(self) -> str:
+        """End of stream — decode any in-progress data URL and return
+        everything still buffered."""
+        return self._drain(force=True)
+
+    def _prefix_holdback(self) -> int:
+        """Return how many trailing characters to keep buffered because
+        they could be the start of ``data:``.  Zero when the tail doesn't
+        match any prefix of the target string — the common case for
+        ordinary prose — so normal tokens pass through untouched."""
+        buf = self._buffer
+        max_k = min(len(self._PREFIX) - 1, len(buf))
+        for k in range(max_k, 0, -1):
+            if buf[-k:] == self._PREFIX[:k]:
+                return k
+        return 0
+
+    def _drain(self, force: bool) -> str:
+        out: List[str] = []
+        while self._buffer:
+            if self._in_url:
+                term_idx = -1
+                for i, ch in enumerate(self._buffer):
+                    if ch in self._TERMINATORS:
+                        term_idx = i
+                        break
+                if term_idx < 0:
+                    if force:
+                        data_url = self._buffer
+                        self._buffer = ""
+                        out.append(self._materialize(data_url))
+                        self._in_url = False
+                    else:
+                        break
+                else:
+                    data_url = self._buffer[:term_idx]
+                    self._buffer = self._buffer[term_idx:]
+                    out.append(self._materialize(data_url))
+                    self._in_url = False
+            else:
+                idx = self._buffer.find("data:")
+                if idx >= 0:
+                    if idx > 0:
+                        out.append(self._buffer[:idx])
+                    self._buffer = self._buffer[idx:]
+                    self._in_url = True
+                else:
+                    if force:
+                        out.append(self._buffer)
+                        self._buffer = ""
+                    else:
+                        hold = self._prefix_holdback()
+                        safe_len = len(self._buffer) - hold
+                        if safe_len > 0:
+                            out.append(self._buffer[:safe_len])
+                            self._buffer = self._buffer[safe_len:]
+                    break
+        return "".join(out)
+
+    def _materialize(self, data_url: str) -> str:
+        """Decode one data URL and return its ``/v1/files/…`` replacement.
+
+        On any failure return the original ``data_url`` verbatim — a broken
+        URL in the output is strictly better than silently dropping bytes
+        the model intended to send.
+        """
+        try:
+            mime, raw = _decode_data_url(data_url)
+        except ValueError:
+            return data_url
+        if not raw:
+            return data_url
+        mime_primary = (mime or "").split(";", 1)[0].strip().lower() or "application/octet-stream"
+        top, _, _ = mime_primary.partition("/")
+        from gateway.platforms.base import (
+            cache_image_from_bytes,
+            cache_audio_from_bytes,
+            cache_document_from_bytes,
+        )
+        try:
+            if top == "image":
+                cached = cache_image_from_bytes(
+                    raw, ext=_ext_for_mime(mime_primary, ".png"),
+                )
+            elif top == "audio":
+                cached = cache_audio_from_bytes(
+                    raw, ext=_ext_for_mime(mime_primary, ".ogg"),
+                )
+            else:
+                ext = _ext_for_mime(mime_primary, ".bin")
+                cached = cache_document_from_bytes(
+                    raw, f"inline_{uuid.uuid4().hex[:8]}{ext}",
+                )
+        except Exception:
+            return data_url
+        url = self._adapter._register_file_export(self._request, cached)
+        if not url:
+            return data_url
+        filename = Path(cached).name
+        if top == "image":
+            self.inline_blocks.append({"type": "output_image", "image_url": url,
+                                       "mime_type": mime_primary, "filename": filename})
+        elif top == "audio":
+            self.inline_blocks.append({"type": "output_audio", "audio_url": url,
+                                       "mime_type": mime_primary, "filename": filename})
+        elif top == "video":
+            self.inline_blocks.append({"type": "output_video", "video_url": url,
+                                       "mime_type": mime_primary, "filename": filename})
+        else:
+            self.inline_blocks.append({"type": "output_file", "file_url": url,
+                                       "mime_type": mime_primary, "filename": filename})
+        return url
 
 
 def check_api_server_requirements() -> bool:
@@ -606,6 +842,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._file_exports: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -774,15 +1011,13 @@ class APIServerAdapter(BasePlatformAdapter):
         return agent
 
     # ------------------------------------------------------------------
-    # HTTP Handlers
-    # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
-        """GET /health/detailed — rich status for cross-container dashboard probing.
+        """GET /health/detailed — expanded status for cross-container dashboard probing.
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
@@ -1098,6 +1333,10 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
+        cleaned_text, media_blocks, media_markdown = self._extract_outbound_media_parts(request, final_response)
+        final_response = cleaned_text or final_response
+        if media_markdown:
+            final_response = f"{final_response}\n\n{media_markdown}".strip()
 
         response_data = {
             "id": completion_id,
@@ -1110,6 +1349,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "message": {
                         "role": "assistant",
                         "content": final_response,
+                        "content_parts": [{"type": "output_text", "text": final_response}] + media_blocks,
                     },
                     "finish_reason": "stop",
                 }
@@ -1151,6 +1391,13 @@ class APIServerAdapter(BasePlatformAdapter):
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
+        # Filter intercepts data:<mime>;base64,… substrings in the streamed
+        # text before they reach the client.  Each complete data URL is
+        # decoded, cached to disk, registered with the file-export
+        # registry, and the resulting /v1/files/{id}.ext URL is emitted in
+        # place of the base64 payload.
+        stream_filter = _StreamDataURLFilter(self, request)
+
         try:
             last_activity = time.monotonic()
 
@@ -1163,13 +1410,30 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
+            async def _emit_text(text: str):
+                """Write a plain text chunk as an OpenAI ``delta.content``
+                event.  Bypasses the data-URL filter — callers that need
+                filtering go through ``_emit`` instead, and this helper
+                is used for the filter's ``flush()`` output and the
+                trailing ``media_markdown`` chunk."""
+                if not text:
+                    return time.monotonic()
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                return time.monotonic()
+
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
 
-                Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
+                Plain strings are fed through the data-URL filter and only
+                the safe-to-emit portion is shipped downstream.  Tagged
+                tuples ``("__tool_progress__", payload)`` are sent as a
+                custom ``event: hermes.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
@@ -1179,13 +1443,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
-                else:
-                    content_chunk = {
-                        "id": completion_id, "object": "chat.completion.chunk",
-                        "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
-                    }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    return time.monotonic()
+                if isinstance(item, str):
+                    safe = stream_filter.feed(item)
+                    if safe:
+                        return await _emit_text(safe)
+                    return time.monotonic()
+                # Anything else — shouldn't happen, but emit as-is to stay
+                # bug-compatible with pre-filter behaviour.
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -1215,13 +1486,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 last_activity = await _emit(delta)
 
+            # Flush any text the data-URL filter was still holding back —
+            # either trailing characters buffered against a split ``data:``
+            # prefix, or (rarely) an in-progress data URL that never got
+            # its terminator before end-of-stream.
+            tail = stream_filter.flush()
+            if tail:
+                last_activity = await _emit_text(tail)
+
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            media_markdown = ""
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                final_response = ""
+                if isinstance(result, dict):
+                    final_response = result.get("final_response", "") or result.get("error", "")
+                if final_response:
+                    _, _, media_markdown = self._extract_outbound_media_parts(request, final_response)
             except Exception:
                 pass
+
+            if media_markdown:
+                await _emit_text(f"\n\n{media_markdown}")
 
             # Finish chunk
             finish_chunk = {
@@ -1986,7 +2274,7 @@ class APIServerAdapter(BasePlatformAdapter):
             full_history.append({"role": "assistant", "content": final_response})
 
         # Build output items (includes tool calls + final message)
-        output_items = self._extract_output_items(result)
+        output_items = self._extract_output_items(result, request)
 
         response_data = {
             "id": response_id,
@@ -2050,6 +2338,29 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "deleted": True,
         })
+
+    async def _handle_get_file(self, request: "web.Request") -> "web.Response":
+        """GET /v1/files/{file_id}[.ext] — download an exported local media/document file.
+
+        The ``.ext`` suffix is cosmetic (so clients sniffing by URL see the
+        right container) but it must match the one recorded at registration
+        time if supplied, otherwise we 404.  This stops anyone who guessed
+        a file_id from probing for the real extension.
+        """
+        self._prune_file_exports()
+        file_id = request.match_info["file_id"]
+        ext_in_url = request.match_info.get("ext", "") or ""
+        meta = self._file_exports.get(file_id)
+        if not meta:
+            return web.json_response(_openai_error("File not found", code="file_not_found"), status=404)
+        expected_ext = str(meta.get("ext", "") or "")
+        if ext_in_url and ext_in_url.lower() != expected_ext.lower():
+            return web.json_response(_openai_error("File not found", code="file_not_found"), status=404)
+        path = Path(str(meta.get("path", "")))
+        if not path.is_file():
+            self._file_exports.pop(file_id, None)
+            return web.json_response(_openai_error("File no longer available", code="file_not_found"), status=404)
+        return web.FileResponse(path)
 
     # ------------------------------------------------------------------
     # Cron jobs API
@@ -2274,8 +2585,222 @@ class APIServerAdapter(BasePlatformAdapter):
     # Output extraction helper
     # ------------------------------------------------------------------
 
+    def _prune_file_exports(self) -> None:
+        now = time.time()
+        expired = [k for k, v in self._file_exports.items() if (now - float(v.get("created_at", 0))) > FILE_EXPORT_TTL_SECONDS]
+        for k in expired:
+            self._file_exports.pop(k, None)
+        if len(self._file_exports) > MAX_EXPORTED_FILES:
+            oldest = sorted(self._file_exports.items(), key=lambda kv: float(kv[1].get("created_at", 0)))
+            for key, _ in oldest[: len(self._file_exports) - MAX_EXPORTED_FILES]:
+                self._file_exports.pop(key, None)
+
+    def _register_file_export(self, request: "web.Request", local_path: str) -> Optional[str]:
+        try:
+            p = Path(local_path).expanduser().resolve()
+        except Exception:
+            return None
+        if not p.is_file():
+            return None
+        self._prune_file_exports()
+        file_id = uuid.uuid4().hex
+        mime = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+        ext = _choose_export_ext(p, mime)
+        self._file_exports[file_id] = {"path": str(p), "created_at": time.time(), "ext": ext}
+        authority = request.host
+
+        forced_host = (os.getenv("API_SERVER_FILE_RESPONSE_FORCE_HOST", "") or "").strip()
+        forced_port = (os.getenv("API_SERVER_FILE_RESPONSE_FORCE_PORT", "") or "").strip().lstrip(":")
+        if forced_host or forced_port:
+            # Parse request.host to preserve any existing host/port when only one
+            # override is supplied.
+            current_host = authority
+            current_port = ""
+            try:
+                parsed = urlsplit(f"//{authority}")
+                if parsed.hostname:
+                    current_host = parsed.hostname
+                if parsed.port:
+                    current_port = str(parsed.port)
+            except Exception:
+                pass
+
+            host = forced_host or current_host
+            port = forced_port or current_port
+
+            # Ensure IPv6 literals are bracketed when composing host:port.
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+
+            authority = f"{host}:{port}" if port else host
+
+        return f"{request.scheme}://{authority}/v1/files/{file_id}{ext}"
+
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _render_media_markdown(blocks: List[Dict[str, Any]]) -> str:
+        """Render media blocks into markdown/html that Open WebUI can display."""
+        lines: List[str] = []
+        for block in blocks:
+            btype = str(block.get("type", ""))
+            name = str(block.get("filename", "")).strip() or "media"
+            if btype == "output_image":
+                url = str(block.get("image_url", "")).strip()
+                if url:
+                    lines.append(f"![{name}]({url})")
+            elif btype == "output_audio":
+                url = str(block.get("audio_url", "")).strip()
+                if url:
+                    lines.append(f"[Audio: {name}]({url})")
+            elif btype == "output_video":
+                url = str(block.get("video_url", "")).strip()
+                if url:
+                    lines.append(f"[Video: {name}]({url})")
+            elif btype == "output_file":
+                url = str(block.get("file_url", "")).strip()
+                if url:
+                    lines.append(f"[File: {name}]({url})")
+        return "\n".join(lines)
+
+    def _materialize_inline_data_urls(
+        self, request: "web.Request", text: str,
+    ) -> tuple[str, List[Dict[str, Any]]]:
+        """Rewrite model-embedded ``data:`` URLs into ``/v1/files/`` URLs in-place.
+
+        LLMs (Claude most notably) frequently return images produced by shell
+        tools as ``![alt](data:image/png;base64,…)`` in their final reply.
+        That inlined payload bypasses the ``MEDIA:<path>`` convention, bloats
+        response JSON, and makes conversation history carry the bytes on
+        every turn.  This helper intercepts those data URLs, decodes the
+        payload, caches the bytes under ``~/.hermes/{image,audio,document}_cache``,
+        registers the cached path with the file-export registry, and splices
+        the resulting ``/v1/files/{id}.ext`` URL into the text in place of
+        the original data URL.  The enclosing markdown structure
+        (``![alt](…)``) is preserved verbatim — only the URL swaps.
+
+        Returns ``(rewritten_text, blocks)`` where ``blocks`` is the list of
+        spec-compliant ``output_*`` blocks corresponding to the materialised
+        data URLs (these go into the content-parts array alongside any
+        MEDIA-tag / bare-path blocks the caller discovers).  An empty list
+        means the text held no decodable data URLs.
+        """
+        if not text or "data:" not in text:
+            return text, []
+
+        from gateway.platforms.base import (
+            cache_image_from_bytes,
+            cache_audio_from_bytes,
+            cache_document_from_bytes,
+        )
+
+        blocks: List[Dict[str, Any]] = []
+        materialized: Dict[str, str] = {}  # original data URL → new URL
+
+        for match in _INLINE_DATA_URL_RE.finditer(text):
+            data_url = match.group(0)
+            if data_url in materialized:
+                continue
+            try:
+                mime, raw = _decode_data_url(data_url)
+            except ValueError:
+                continue
+            if not raw:
+                continue
+            mime_primary = (mime or "").split(";", 1)[0].strip().lower() or "application/octet-stream"
+            top, _, _ = mime_primary.partition("/")
+            try:
+                if top == "image":
+                    cached_path = cache_image_from_bytes(
+                        raw, ext=_ext_for_mime(mime_primary, ".png"),
+                    )
+                elif top == "audio":
+                    cached_path = cache_audio_from_bytes(
+                        raw, ext=_ext_for_mime(mime_primary, ".ogg"),
+                    )
+                else:
+                    ext = _ext_for_mime(mime_primary, ".bin")
+                    cached_path = cache_document_from_bytes(
+                        raw, f"inline_{uuid.uuid4().hex[:8]}{ext}",
+                    )
+            except Exception:
+                # Cache helpers can fail on disk errors / unsupported MIMEs;
+                # leave the original data URL in place rather than drop it.
+                continue
+            url = self._register_file_export(request, cached_path)
+            if not url:
+                continue
+            materialized[data_url] = url
+            filename = Path(cached_path).name
+            if top == "image":
+                blocks.append({"type": "output_image", "image_url": url,
+                               "mime_type": mime_primary, "filename": filename})
+            elif top == "audio":
+                blocks.append({"type": "output_audio", "audio_url": url,
+                               "mime_type": mime_primary, "filename": filename})
+            elif top == "video":
+                blocks.append({"type": "output_video", "video_url": url,
+                               "mime_type": mime_primary, "filename": filename})
+            else:
+                blocks.append({"type": "output_file", "file_url": url,
+                               "mime_type": mime_primary, "filename": filename})
+
+        if not materialized:
+            return text, []
+        # Longest-first pass so a shorter data URL can't accidentally match
+        # inside a longer one that shares a prefix.
+        rewritten = text
+        for original, new_url in sorted(materialized.items(), key=lambda kv: -len(kv[0])):
+            rewritten = rewritten.replace(original, new_url)
+        return rewritten, blocks
+
+    def _extract_outbound_media_parts(self, request: "web.Request", final_text: str) -> tuple[str, List[Dict[str, Any]], str]:
+        from gateway.platforms.base import BasePlatformAdapter
+
+        # First: turn any inline ``data:`` URLs the model wrote by hand into
+        # ``/v1/files/`` URLs directly inside the markdown.  The returned
+        # ``inline_blocks`` go straight into the content-parts array; they
+        # must NOT be re-rendered by _render_media_markdown because the
+        # markdown ``![alt](URL)`` the model wrote is already in the text —
+        # only its URL needed swapping.
+        final_text, inline_blocks = self._materialize_inline_data_urls(request, final_text or "")
+        tagged, cleaned = BasePlatformAdapter.extract_media(final_text or "")
+        bare_paths, cleaned = BasePlatformAdapter.extract_local_files(cleaned or "")
+
+        refs: List[str] = [path for path, _ in tagged] + list(bare_paths)
+        seen: set[str] = set()
+        blocks: List[Dict[str, Any]] = []
+        for ref in refs:
+            if not ref or ref in seen:
+                continue
+            seen.add(ref)
+            mime, _ = mimetypes.guess_type(ref)
+            mime = mime or "application/octet-stream"
+            resolved_path = Path(ref).expanduser().resolve()
+            ext = resolved_path.suffix.lower()
+            filename = resolved_path.name
+            is_image = mime.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+            # All outbound media — images included — is served from
+            # /v1/files/{id}.ext.  Inlining as data URLs was a micro-opt for
+            # tiny thumbnails that just bloated response JSON and broke
+            # conversation-history round-trips.
+            url = self._register_file_export(request, ref)
+            if not url:
+                continue
+            if is_image:
+                blocks.append({"type": "output_image", "image_url": url, "mime_type": mime, "filename": filename})
+            elif mime.startswith("audio/") or ext in {".ogg", ".opus", ".mp3", ".wav", ".m4a"}:
+                blocks.append({"type": "output_audio", "audio_url": url, "mime_type": mime, "filename": filename})
+            elif mime.startswith("video/") or ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+                blocks.append({"type": "output_video", "video_url": url, "mime_type": mime, "filename": filename})
+            else:
+                blocks.append({"type": "output_file", "file_url": url, "mime_type": mime, "filename": filename})
+        # Markdown is the fallback for clients that render the ``text`` field
+        # only — it must cover MEDIA-tag / bare-path blocks whose URLs aren't
+        # already in the text, but NOT the inline-data-URL blocks whose
+        # markdown ``![alt](URL)`` wrapper is still present in ``cleaned``.
+        markdown = self._render_media_markdown(blocks)
+        return cleaned, inline_blocks + blocks, markdown
+
+    def _extract_output_items(self, result: Dict[str, Any], request: Optional["web.Request"] = None) -> List[Dict[str, Any]]:
         """
         Build the full output item array from the agent's messages.
 
@@ -2310,15 +2835,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final:
             final = result.get("error", "(No response generated)")
 
+        content_blocks: List[Dict[str, Any]] = [{
+            "type": "output_text",
+            "text": final,
+        }]
+        if request is not None:
+            cleaned, media_blocks, markdown = self._extract_outbound_media_parts(request, final)
+            final = cleaned or final
+            if markdown:
+                final = f"{final}\n\n{markdown}".strip()
+            content_blocks = [{"type": "output_text", "text": final}] + media_blocks
+
         items.append({
             "type": "message",
             "role": "assistant",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": final,
-                }
-            ],
+            "content": content_blocks,
         })
         return items
 
@@ -2468,7 +2999,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        if isinstance(raw_input, str):
+            user_message = raw_input
+        elif isinstance(raw_input, list) and raw_input:
+            tail = raw_input[-1]
+            if isinstance(tail, dict):
+                user_message = _normalize_chat_content(tail.get("content", ""))
+            else:
+                user_message = _normalize_chat_content(tail)
+        else:
+            user_message = ""
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
@@ -2510,13 +3050,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
             for msg in raw_input[:-1]:
                 if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                    content = msg["content"]
-                    if isinstance(content, list):
-                        # Flatten multi-part content blocks to text
-                        content = " ".join(
-                            part.get("text", "") for part in content
-                            if isinstance(part, dict) and part.get("type") == "text"
-                        )
+                    content = _normalize_chat_content(msg["content"])
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
@@ -2786,7 +3320,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
@@ -2797,6 +3331,16 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # The trailing ``{ext}`` is optional so old extension-less URLs
+            # still resolve.  Regex-constraining both segments keeps the
+            # route free of traversal chars and unusual input.  Real ids
+            # come from ``uuid.uuid4().hex`` (pure hex), but the character
+            # class is slightly broader so callers that mint their own
+            # alphanumeric tokens keep working.
+            self._app.router.add_get(
+                r"/v1/files/{file_id:[A-Za-z0-9]+}{ext:(?:\.[A-Za-z0-9]{1,8})?}",
+                self._handle_get_file,
+            )
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

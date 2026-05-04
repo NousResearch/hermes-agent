@@ -1884,6 +1884,36 @@ class AIAgent:
                 )
                 _config_context_length = None
 
+        # Read explicit max_tokens override from model config. Needed when
+        # routing to Anthropic via an OpenAI-compatible proxy with tools
+        # enabled — Anthropic's Messages API rejects those requests with
+        # HTTP 400 unless max_tokens is present. See issue #19360.
+        if isinstance(_model_cfg, dict):
+            _config_max_tokens = _model_cfg.get("max_tokens")
+        else:
+            _config_max_tokens = None
+        if _config_max_tokens is not None:
+            try:
+                _config_max_tokens = int(_config_max_tokens)
+                if _config_max_tokens <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid model.max_tokens in config.yaml: %r — "
+                    "must be a positive integer (e.g. 4096). "
+                    "Falling back to model default.",
+                    _config_max_tokens,
+                )
+                print(
+                    f"\n⚠ Invalid model.max_tokens in config.yaml: {_config_max_tokens!r}\n"
+                    f"  Must be a positive integer (e.g. 4096).\n"
+                    f"  Falling back to model default.\n",
+                    file=sys.stderr,
+                )
+                _config_max_tokens = None
+            if _config_max_tokens is not None:
+                self.max_tokens = _config_max_tokens
+
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).
         try:

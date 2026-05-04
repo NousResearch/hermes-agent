@@ -146,6 +146,43 @@ class NativeAppChatAndToolInstrumentedTest {
         assertTrue(statusResult.content, statusResult.content.contains("available_system_actions"))
     }
 
+    @Test
+    fun chatViewModelUsesQwenGgufForVisibleRepliesAndTools() {
+        val modelFile = File(
+            app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            "models/$QWEN_GGUF_FILE_NAME",
+        )
+        assumeTrue("Qwen GGUF model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
+        seedPreferredQwenGgufModel(modelFile)
+
+        val runtime = HermesRuntimeManager.ensureStarted(app)
+        assertTrue(runtime.error.orEmpty(), runtime.started)
+        val backendStatus = OnDeviceBackendManager.currentStatus()
+        assertEquals(BackendKind.LLAMA_CPP, backendStatus.backendKind)
+
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val probeFile = File(workspace, "qwen-viewmodel-probe.txt").apply { delete() }
+        val viewModel = ChatViewModel(app)
+
+        viewModel.startNewConversation()
+        viewModel.updateInput("Reply with exactly HERMES_VIEWMODEL_QWEN_OK.")
+        viewModel.sendMessage()
+        val reply = waitForAssistantReply(viewModel)
+        assertTrue("Expected visible Qwen reply, got '$reply'", reply.contains("HERMES_VIEWMODEL_QWEN_OK"))
+
+        viewModel.startNewConversation()
+        viewModel.updateInput(
+            "Use file_write_tool to write qwen-viewmodel-probe.txt with content PHONE_QWEN_VIEWMODEL_TOOL_OK. " +
+                "After the tool returns, reply with PHONE_QWEN_VIEWMODEL_TOOL_OK.",
+        )
+        viewModel.sendMessage()
+        val toolReply = waitForAssistantReply(viewModel)
+        assertFalse("Expected a visible post-tool Qwen reply", toolReply.isBlank())
+        assertTrue("Expected ChatViewModel tool call to create ${probeFile.absolutePath}", probeFile.isFile)
+        assertEquals("PHONE_QWEN_VIEWMODEL_TOOL_OK", probeFile.readText().trim())
+    }
+
     private fun waitForAssistantReply(viewModel: ChatViewModel): String {
         val deadline = SystemClock.elapsedRealtime() + TimeUnit.MINUTES.toMillis(15)
         var latestReply = ""

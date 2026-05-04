@@ -303,6 +303,28 @@ class ChatCompletionsTransport(ProviderTransport):
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
+        # NVIDIA NIM: top-level reasoning_effort (unless thinking disabled).
+        # NIM-hosted reasoning model families (DeepSeek V4 Pro/Flash, Kimi K2
+        # Thinking, GPT-OSS 120B, Qwen3-thinking, Nemotron 3) gate their
+        # `<think>` chain on this field; without it `reasoning_content` is null.
+        # Non-reasoning models on NIM ignore the field gracefully.
+        # NIM accepts: low / medium / high / max. Hermes' "xhigh" maps to "max".
+        if is_nvidia_nim:
+            _nvidia_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _nvidia_thinking_off:
+                _nvidia_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("low", "medium", "high", "max"):
+                        _nvidia_effort = _e
+                    elif _e == "xhigh":
+                        _nvidia_effort = "max"
+                api_kwargs["reasoning_effort"] = _nvidia_effort
+
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
         if is_tokenhub:
             _tokenhub_thinking_off = bool(

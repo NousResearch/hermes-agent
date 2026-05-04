@@ -86,6 +86,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
+    CommandDef("mode", "Load a mode file from ~/.hermes/modes/<name>.md. Injected as ephemeral system prompt. Use /mode off to clear.", 
+               "Session", args_hint="[name]"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",

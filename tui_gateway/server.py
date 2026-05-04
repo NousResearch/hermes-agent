@@ -5171,9 +5171,13 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "empty command")
 
     # Skill slash commands and _pending_input commands must NOT go through the
-    # slash worker — see _PENDING_INPUT_COMMANDS definition above.
-    _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
-    _cmd_base = _cmd_parts[0] if _cmd_parts else ""
+    # slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
+    # commands must also avoid the worker, but unlike skills/pending-input they
+    # still return normal slash.exec output so the TUI keeps the pager path.
+    _cmd_text = cmd.lstrip("/") if cmd.startswith("/") else cmd
+    _cmd_parts = _cmd_text.split(maxsplit=1)
+    _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
+    _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
         return _err(
@@ -5190,6 +5194,27 @@ def _(rid, params: dict) -> dict:
             )
     except Exception:
         pass
+
+    plugin_handler = None
+    resolve_plugin_command_result = None
+    if _cmd_base:
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_handler,
+                resolve_plugin_command_result,
+            )
+
+            plugin_handler = get_plugin_command_handler(_cmd_base)
+        except Exception:
+            plugin_handler = None
+            resolve_plugin_command_result = None
+
+    if plugin_handler and resolve_plugin_command_result:
+        try:
+            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            return _ok(rid, {"output": str(result or "(no output)")})
+        except Exception as e:
+            return _ok(rid, {"output": f"Plugin command error: {e}"})
 
     worker = session.get("slash_worker")
     if not worker:

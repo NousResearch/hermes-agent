@@ -1,0 +1,97 @@
+name: upstream-watch
+
+# Weekly check whether NousResearch/hermes-agent main is ahead of our main.
+# When ahead, opens (or updates) an issue with a summary so we don't forget
+# to run scripts/sync-upstream.sh.
+#
+# Does NOT auto-merge. Always leaves the merge to a human via sync-upstream.sh
+# so we can run the smoke test in MAINTAINING.md before pushing.
+
+on:
+  schedule:
+    # Mondays 09:00 UTC (~17:00 Beijing).
+    - cron: "0 9 * * 1"
+  workflow_dispatch: {}  # allow manual trigger
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream main
+
+      - name: Compute ahead/behind
+        id: status
+        run: |
+          AHEAD=$(git rev-list --count main..upstream/main)
+          BEHIND=$(git rev-list --count upstream/main..main)
+          echo "ahead=$AHEAD" >> $GITHUB_OUTPUT
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+          echo "Upstream is $AHEAD ahead, fork is $BEHIND ahead."
+
+      - name: Build commit summary
+        if: steps.status.outputs.ahead != '0'
+        id: summary
+        run: |
+          {
+            echo 'body<<__EOF__'
+            echo "Upstream \`NousResearch/hermes-agent\` is **${{ steps.status.outputs.ahead }} commits** ahead of \`main\`."
+            echo ""
+            echo "Run \`./scripts/sync-upstream.sh\` to merge. See [MAINTAINING.md](./MAINTAINING.md) for the routine."
+            echo ""
+            echo "Recent upstream commits:"
+            echo ""
+            echo '```'
+            git log --oneline main..upstream/main | head -30
+            echo '```'
+            echo "__EOF__"
+          } >> $GITHUB_OUTPUT
+
+      - name: Open or update issue
+        if: steps.status.outputs.ahead != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ahead = '${{ steps.status.outputs.ahead }}';
+            const body = `${{ steps.summary.outputs.body }}`;
+            const title = `Upstream sync: ${ahead} commits behind NousResearch/hermes-agent`;
+
+            // Find an open upstream-watch issue and update it; otherwise open a new one.
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'upstream-watch',
+              per_page: 5,
+            });
+
+            if (existing.length > 0) {
+              const issue = existing[0];
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                title,
+                body,
+              });
+              console.log(`Updated existing issue #${issue.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['upstream-watch'],
+              });
+              console.log('Opened new issue');
+            }

@@ -1,3 +1,21 @@
+# 🇨🇳 hermes-agent-cn — community fork
+
+> Downstream fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) maintained for the Chinese community and the [Hermes v2 Web UI](https://github.com/Eynzof/hermes/tree/dev/v2/apps/web). Carries a small patch set on top of upstream `main`:
+>
+> - **CN providers env vars** — registers Chinese provider keys (ARK / QIANFAN / HUNYUAN / SILICONFLOW / MODELSCOPE / AI302 / COMPSHARE) in `OPTIONAL_ENV_VARS` so the dashboard env panel exposes them
+> - **Dashboard endpoints** — `POST /api/upload`, `GET /api/fs/list`, `GET /api/mcp-servers`, `GET/PUT /api/profiles/active`: endpoints v2 Web UI depends on, not yet (or never) in upstream
+> - **Gateway robustness** — drops the `_DASHBOARD_EMBEDDED_CHAT_ENABLED` gate on `/api/ws`; surfaces dispatch handler exceptions instead of silently closing the WebSocket
+>
+> See [`FORK_NOTES.md`](./FORK_NOTES.md) for per-patch details, [`MAINTAINING.md`](./MAINTAINING.md) for how this fork tracks upstream.
+>
+> **Install**: `pip install git+https://github.com/Eynzof/hermes-agent-cn.git`
+>
+> Don't install both this fork and upstream `hermes-agent` in the same environment — they share the `hermes` CLI entry point.
+
+---
+
+> Below is the upstream README, kept verbatim. Anything fork-specific is documented separately.
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

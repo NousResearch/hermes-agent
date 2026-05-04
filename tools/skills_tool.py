@@ -976,6 +976,27 @@ def skill_view(
                 if skill_md:
                     break
 
+        # Bug A fix (Pass 2 v2 follow-up, 2026-05-04): also match by
+        # frontmatter `name:` field. The dir-name lookup above misses
+        # skills whose frontmatter name differs from their directory
+        # name (e.g. dir `analyze/derivatives-anomaly`, frontmatter
+        # `analyze-derivatives-anomaly`). `skills list` already keys on
+        # frontmatter, so this restores parity between LIST and LOOKUP.
+        if not skill_md:
+            from agent.skill_utils import iter_skill_index_files, parse_frontmatter
+            for search_dir in all_dirs:
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    try:
+                        fm, _ = parse_frontmatter(found_skill_md.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if fm.get("name") == name:
+                        skill_dir = found_skill_md.parent
+                        skill_md = found_skill_md
+                        break
+                if skill_md:
+                    break
+
         # Legacy: flat .md files
         if not skill_md:
             for search_dir in all_dirs:

@@ -1357,7 +1357,35 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
-        _skill_outcome = (True, "complete")
+        # Bug C fix (Pass 2 v2 follow-up, 2026-05-04): the agent-side
+        # `success` flag captures "agent returned a non-FATAL response"
+        # but NOT "the actual cron work happened". For Build #87 telemetry
+        # to be honest, scan the captured output/response for known
+        # scaffolding-failure markers and downgrade the skill outcome to
+        # FALSE when any fire. This pollutes the cron's `last_status`
+        # less than raising — the agent did respond — but keeps the EMA
+        # comparison honest.
+        _failure_markers = (
+            "skill not found, skipping",
+            "Skill(s) not found and skipped",
+            "Blocked: script path resolves outside",
+            "permission denied",
+            "security check failed",
+        )
+        _scan_blob = (output or "") + "\n" + (final_response or "")
+        _hit_marker = next(
+            (m for m in _failure_markers if m.lower() in _scan_blob.lower()),
+            None,
+        )
+        if _hit_marker:
+            logger.warning(
+                "Job '%s': scaffolding failure detected in output (%r) — "
+                "downgrading skill outcome to failure for telemetry honesty.",
+                job_name, _hit_marker,
+            )
+            _skill_outcome = (False, f"scaffolding failure: {_hit_marker}"[:200])
+        else:
+            _skill_outcome = (True, "complete")
         return True, output, final_response, None
 
     except Exception as e:

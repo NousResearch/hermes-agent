@@ -133,6 +133,32 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_metadata_round_trips_through_show(worker_env):
+    """Structured completion metadata should be visible to downstream agents."""
+    from tools import kanban_tools as kt
+
+    handoff = {
+        "changed_files": ["hermes_cli/kanban.py"],
+        "verification": ["pytest tests/tools/test_kanban_tools.py -q"],
+        "dependencies": [],
+        "blocked_reason": None,
+        "retry_notes": "none",
+        "residual_risk": ["dashboard rendering not exercised"],
+    }
+
+    complete_out = kt._handle_complete({
+        "summary": "finished with structured evidence",
+        "metadata": handoff,
+    })
+    assert json.loads(complete_out)["ok"] is True
+
+    show_out = kt._handle_show({"task_id": worker_env})
+    shown = json.loads(show_out)
+    assert shown["task"]["status"] == "done"
+    assert shown["runs"][-1]["summary"] == "finished with structured evidence"
+    assert shown["runs"][-1]["metadata"] == handoff
+
+
 def test_complete_with_result_only(worker_env):
     """`result` alone (without summary) is accepted for legacy compat."""
     from tools import kanban_tools as kt

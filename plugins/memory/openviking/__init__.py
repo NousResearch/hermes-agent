@@ -35,6 +35,8 @@ import uuid
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -43,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
+_REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +334,40 @@ def _zip_directory(dir_path: Path) -> Path:
                 arcname = str(file_path.relative_to(dir_path)).replace("\\", "/")
                 zipf.write(file_path, arcname=arcname)
     return zip_path
+
+
+def _is_windows_absolute_path(value: str) -> bool:
+    return (
+        len(value) >= 3
+        and value[0].isalpha()
+        and value[1] == ":"
+        and value[2] in ("/", "\\")
+    )
+
+
+def _is_remote_resource_source(value: str) -> bool:
+    return value.startswith(_REMOTE_RESOURCE_PREFIXES)
+
+
+def _is_local_path_reference(value: str) -> bool:
+    if not value or "\n" in value or "\r" in value:
+        return False
+    if _is_remote_resource_source(value):
+        return False
+    if _is_windows_absolute_path(value):
+        return True
+    return (
+        value.startswith(("/", "./", "../", "~/", ".\\", "..\\", "~\\"))
+        or "/" in value
+        or "\\" in value
+    )
+
+
+def _path_from_file_uri(uri: str) -> Path | str:
+    parsed = urlparse(uri)
+    if parsed.netloc not in ("", "localhost"):
+        return f"Unsupported non-local file URI: {uri}"
+    return Path(url2pathname(parsed.path)).expanduser()
 
 
 # ---------------------------------------------------------------------------
@@ -837,23 +874,39 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if key in args and args[key] not in (None, ""):
                 payload[key] = args[key]
 
-        source_path = Path(url).expanduser()
-        cleanup_path: Optional[Path] = None
-        if source_path.exists():
-            if source_path.is_dir():
-                payload["source_name"] = source_path.name
-                cleanup_path = _zip_directory(source_path)
-                upload_path = cleanup_path
-            elif source_path.is_file():
-                payload["source_name"] = source_path.name
-                upload_path = source_path
-            else:
-                return tool_error(f"Unsupported local resource path: {url}")
-            payload["temp_file_id"] = self._client.upload_temp_file(upload_path)
+        parsed_url = urlparse(url)
+        if _is_remote_resource_source(url):
+            source_path = None
+        elif parsed_url.scheme == "file":
+            source_path = _path_from_file_uri(url)
+            if isinstance(source_path, str):
+                return tool_error(source_path)
+        elif parsed_url.scheme and not _is_windows_absolute_path(url):
+            source_path = None
         else:
-            payload["path"] = url
+            source_path = Path(url).expanduser()
 
+        cleanup_path: Optional[Path] = None
         try:
+            if source_path is not None:
+                if source_path.exists():
+                    if source_path.is_dir():
+                        payload["source_name"] = source_path.name
+                        cleanup_path = _zip_directory(source_path)
+                        upload_path = cleanup_path
+                    elif source_path.is_file():
+                        payload["source_name"] = source_path.name
+                        upload_path = source_path
+                    else:
+                        return tool_error(f"Unsupported local resource path: {url}")
+                    payload["temp_file_id"] = self._client.upload_temp_file(upload_path)
+                elif _is_local_path_reference(url):
+                    return tool_error(f"Local resource path does not exist: {url}")
+                else:
+                    payload["path"] = url
+            else:
+                payload["path"] = url
+
             resp = self._client.post("/api/v1/resources", payload)
             result = resp.get("result", {})
         finally:

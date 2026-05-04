@@ -380,13 +380,26 @@ class ChatCompletionsTransport(ProviderTransport):
             options["num_ctx"] = ollama_ctx
             extra_body["options"] = options
 
-        # Ollama/custom think=false
+        # Custom OpenAI-compatible providers:
+        #   • Ollama-style: extra_body["think"] = False to disable.
+        #   • OpenAI-Responses-style (exo, vLLM with reasoning, LM Studio
+        #     when not auto-detected): top-level reasoning_effort + a
+        #     boolean enable_thinking carry the tier choice. Most
+        #     servers ignore unknown fields, so sending both is safe;
+        #     the receiving server picks whichever it implements.
         if params.get("is_custom_provider", False):
             if reasoning_config and isinstance(reasoning_config, dict):
                 _effort = (reasoning_config.get("effort") or "").strip().lower()
                 _enabled = reasoning_config.get("enabled", True)
                 if _effort == "none" or _enabled is False:
                     extra_body["think"] = False
+                    api_kwargs["enable_thinking"] = False
+                elif _effort:
+                    # Forward the tier for servers that key off
+                    # reasoning_effort (DSv4 maps "high" → Think High,
+                    # "xhigh" → Think Max via exo's wrapper).
+                    api_kwargs["reasoning_effort"] = _effort
+                    api_kwargs["enable_thinking"] = True
 
         if is_qwen:
             extra_body["vl_high_resolution_images"] = True

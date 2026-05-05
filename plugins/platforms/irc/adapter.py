@@ -113,14 +113,15 @@ class IRCAdapter(BasePlatformAdapter):
 
         # Connection settings (env vars override config.yaml)
         self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
-        self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
-        self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
         self.use_tls = (
             os.getenv("IRC_USE_TLS", "").lower() in ("1", "true", "yes")
             if os.getenv("IRC_USE_TLS")
             else extra.get("use_tls", True)
         )
+        default_port = 6697 if self.use_tls else 6667
+        self.port = int(os.getenv("IRC_PORT") or extra.get("port", default_port))
+        self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
+        self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
         self.server_password = os.getenv("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
         self.nickserv_password = os.getenv("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
 

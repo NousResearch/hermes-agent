@@ -1372,19 +1372,23 @@ class AIAgent:
                 # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
                 # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
                 _is_native_anthropic = self.provider == "anthropic"
-                effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+                _is_local_claude_proxy = bool(base_url) and (
+                    base_url_host_matches(base_url, "127.0.0.1")
+                    or base_url_host_matches(base_url, "localhost")
+                )
+                if _is_native_anthropic or _is_local_claude_proxy:
+                    _provided_key = api_key if api_key not in (None, "", "no-key-required") else None
+                    effective_key = _provided_key or resolve_anthropic_token() or ""
+                else:
+                    effective_key = api_key or ""
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = base_url
-                # Only mark the session as OAuth-authenticated when the token
-                # genuinely belongs to native Anthropic.  Third-party providers
-                # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
-                # Anthropic protocol must never trip OAuth code paths — doing
-                # so injects Claude-Code identity headers and system prompts
-                # that cause 401/403 on their endpoints.  Guards #1739 and
-                # the third-party identity-injection bug.
+                # Only mark OAuth-authenticated sessions for native Anthropic
+                # or a local Claude Max proxy. Third-party Anthropic-protocol
+                # providers must not receive Claude-Code identity/tool shaping.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
-                self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
+                self._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic or _is_local_claude_proxy) else False
                 self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
@@ -2411,15 +2415,24 @@ class AIAgent:
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
             # API key — falling back would send Anthropic credentials to third-party endpoints.
             _is_native_anthropic = new_provider == "anthropic"
-            effective_key = (api_key or self.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or self.api_key or "")
+            _effective_base = base_url or getattr(self, "_anthropic_base_url", None)
+            _is_local_claude_proxy = bool(_effective_base) and (
+                base_url_host_matches(_effective_base, "127.0.0.1")
+                or base_url_host_matches(_effective_base, "localhost")
+            )
+            if _is_native_anthropic or _is_local_claude_proxy:
+                _provided_key = api_key if api_key not in (None, "", "no-key-required") else None
+                effective_key = _provided_key or resolve_anthropic_token() or ""
+            else:
+                effective_key = api_key or self.api_key or ""
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
-            self._anthropic_base_url = base_url or getattr(self, "_anthropic_base_url", None)
+            self._anthropic_base_url = _effective_base
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
-            self._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
+            self._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic or _is_local_claude_proxy) else False
             self.client = None
             self._client_kwargs = {}
         else:
@@ -7942,14 +7955,23 @@ class AIAgent:
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-                effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+                _is_fb_native_anthropic = fb_provider == "anthropic"
+                _is_fb_local_claude_proxy = bool(fb_base_url) and (
+                    base_url_host_matches(fb_base_url, "127.0.0.1")
+                    or base_url_host_matches(fb_base_url, "localhost")
+                )
+                if _is_fb_native_anthropic or _is_fb_local_claude_proxy:
+                    _provided_key = fb_client.api_key if fb_client.api_key not in (None, "", "no-key-required") else None
+                    effective_key = _provided_key or resolve_anthropic_token() or ""
+                else:
+                    effective_key = fb_client.api_key or ""
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(
                     effective_key, self._anthropic_base_url, timeout=_fb_timeout,
                 )
-                self._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+                self._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_fb_native_anthropic or _is_fb_local_claude_proxy) else False
                 self.client = None
                 self._client_kwargs = {}
             else:

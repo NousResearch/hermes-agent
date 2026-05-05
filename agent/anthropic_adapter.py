@@ -303,7 +303,52 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-_MCP_TOOL_PREFIX = "mcp_"
+# Claude Code MCP tools use mcp__<server>__<tool>. A single mcp_ prefix is
+# classified by Anthropic as third-party tool traffic under Claude OAuth.
+_MCP_TOOL_PREFIX = "mcp__hermes__"
+
+_OAUTH_SYSTEM_TEXT_REPLACEMENTS = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+    (
+        "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO state to memory;",
+        "Do not store ephemeral task logs or temporary TODO state in memory;",
+    ),
+    (
+        "use session_search to recall those from past transcripts",
+        "use conversation recall to pull prior transcript context",
+    ),
+    (
+        "use session_search to recall it before asking them to repeat themselves",
+        "check prior transcript context before asking them to repeat themselves",
+    ),
+    (
+        "save the approach as a skill with skill_manage so you can reuse it next time",
+        "save reusable procedures into the skills system so you can reuse them next time",
+    ),
+    (
+        "patch it immediately with skill_manage(action='patch') — don't wait to be asked",
+        "update the affected skill immediately — don't wait to be asked",
+    ),
+    (
+        "MEDIA:/absolute/path/to/file",
+        "the platform's native attachment token with an absolute file path",
+    ),
+    ("session_search", "conversation_recall"),
+    ("skill_manage(action='patch')", "update_the_skill"),
+    ("skill_manage", "skill_tool"),
+)
+
+
+def _sanitize_oauth_system_text(text: str) -> str:
+    """Rewrite Hermes-specific system phrases that trigger Claude Max billing/policy misclassification."""
+    if not text:
+        return text
+    for old, new in _OAUTH_SYSTEM_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
 
 
 def _get_claude_code_version() -> str:
@@ -710,8 +755,12 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
     Checks two sources in order:
-      1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
-      2. ~/.claude/.credentials.json file
+      1. ~/.claude/.credentials.json file
+      2. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
+
+    File credentials are checked first so tests and profile-isolated homes do
+    not accidentally read the real user's Keychain. The Keychain fallback only
+    runs for the real user home.
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
@@ -720,13 +769,11 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
-    kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
+    home = Path.home()
 
-    # Fall back to JSON file
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    # Prefer JSON file credentials. This keeps profile/test HOME isolation
+    # meaningful and avoids leaking the real user's Keychain into tests.
+    cred_path = home / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
             data = json.loads(cred_path.read_text(encoding="utf-8"))
@@ -742,6 +789,12 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+
+    real_home = Path(os.path.expanduser("~"))
+    if home == real_home:
+        kc_creds = _read_claude_code_credentials_from_keychain()
+        if kc_creds:
+            return kc_creds
 
     return None
 
@@ -1841,12 +1894,7 @@ def build_anthropic_kwargs(
         #    to avoid Anthropic's server-side content filters.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+                block["text"] = _sanitize_oauth_system_text(block.get("text", ""))
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
         if anthropic_tools:

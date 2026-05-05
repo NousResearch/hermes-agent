@@ -195,7 +195,6 @@ An independent project by **Technetia Inc**.
 
 Special thanks to:
 - The FreeBSD community for maintaining a world-class Unix operating system
-- The programming assistant (Claude Code) for excellent rebranding execution
 - All contributors who made v_0.0.2's PTY fix possible
 
 ---

@@ -1,7 +1,7 @@
 # FreeBSD Installation Test Report
 
 **Date:** 2026-04-08  
-**Tester:** Programming Assistant (via Claude Code)  
+**Tester:** Automated testing session  
 **System:** FreeBSD 15.0-RELEASE-p5  
 **Goal:** Document errors encountered during README installation steps  
 

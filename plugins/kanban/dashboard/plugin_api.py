@@ -124,11 +124,23 @@ BOARD_COLUMNS: list[str] = [
 ]
 
 
-def _task_dict(task: kanban_db.Task) -> dict[str, Any]:
+_CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+def _task_dict(
+    task: kanban_db.Task,
+    *,
+    latest_summary: Optional[str] = None,
+) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
     d["age"] = kanban_db.task_age(task)
+    # Surface the latest non-null run summary so dashboards don't show
+    # blank cards/drawers for tasks where the worker handed off via
+    # ``task_runs.summary`` (the kanban-worker pattern) instead of
+    # ``tasks.result``. ``None`` when no run has produced a summary yet.
+    d["latest_summary"] = latest_summary
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -381,8 +393,18 @@ def get_board(
         if include_archived:
             columns["archived"] = []
 
+        # Batch-fetch the latest non-null run summary per task in one
+        # window-function query (avoids N+1 ``latest_summary`` calls
+        # for boards with hundreds of tasks). Truncated to a card-size
+        # preview here — the full text is available via /tasks/:id.
+        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+
         for t in tasks:
-            d = _task_dict(t)
+            full = summary_map.get(t.id)
+            preview = (
+                full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
+            )
+            d = _task_dict(t, latest_summary=preview)
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -440,7 +462,11 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-        task_d = _task_dict(task)
+        # Drawer/detail view returns the FULL summary (no truncation) so
+        # operators can read the complete worker handoff without making
+        # a second round-trip. Cards on /board carry a 200-char preview.
+        full_summary = kanban_db.latest_summary(conn, task_id)
+        task_d = _task_dict(task, latest_summary=full_summary)
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])

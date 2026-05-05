@@ -102,7 +102,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, base_url_is_copilot_endpoint, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax-oauth": "MiniMax-M2.7-highspeed",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
+    "copilot": "claude-sonnet-4.6",
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -1167,7 +1168,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(base_url, "api.githubcopilot.com"):
+            elif base_url_is_copilot_endpoint(base_url):
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
@@ -1194,7 +1195,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
+        elif base_url_is_copilot_endpoint(base_url):
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
@@ -1467,7 +1468,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     # Copilot requires VS Code-style headers for IDE auth — without these,
     # the API returns 400 "missing Editor-Version header".  Add them here
     # so auxiliary tasks (compression, etc.) work when routed to Copilot.
-    if base_url_host_matches(custom_base, "api.githubcopilot.com"):
+    if base_url_is_copilot_endpoint(custom_base):
         from hermes_cli.models import copilot_default_headers
         _extra.setdefault("default_headers", {}).update(copilot_default_headers())
     if custom_mode == "codex_responses":
@@ -1978,7 +1979,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
-    elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
+    elif base_url_is_copilot_endpoint(sync_base_url):
         from hermes_cli.copilot_auth import copilot_request_headers
 
         async_kwargs["default_headers"] = copilot_request_headers(
@@ -2208,7 +2209,7 @@ def resolve_provider_client(
                 extra["default_query"] = _dq
             if base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
+            elif base_url_is_copilot_endpoint(custom_base):
                 from hermes_cli.copilot_auth import copilot_request_headers
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
@@ -2395,7 +2396,7 @@ def resolve_provider_client(
         headers = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers["User-Agent"] = "claude-code/0.1.0"
-        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
+        elif base_url_is_copilot_endpoint(base_url):
             from hermes_cli.copilot_auth import copilot_request_headers
 
             headers.update(copilot_request_headers(

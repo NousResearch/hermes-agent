@@ -174,7 +174,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, base_url_is_copilot_endpoint, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
 
 
@@ -1438,7 +1438,7 @@ class AIAgent:
                     client_kwargs["default_headers"] = build_or_headers()
                 elif base_url_host_matches(effective_base, "api.routermint.com"):
                     client_kwargs["default_headers"] = _routermint_headers()
-                elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
+                elif base_url_is_copilot_endpoint(effective_base):
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
@@ -5866,7 +5866,7 @@ class AIAgent:
         # unaffected (they don't go through here).
         request_kwargs["max_retries"] = 0
         if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "api.githubcopilot.com")
+            base_url_is_copilot_endpoint(str(request_kwargs.get("base_url", "")))
             and self._api_kwargs_have_image_parts(api_kwargs or {})
         ):
             request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
@@ -6237,7 +6237,7 @@ class AIAgent:
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
-        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
+        elif base_url_is_copilot_endpoint(base_url):
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
@@ -8413,7 +8413,7 @@ class AIAgent:
             _ct = self._get_transport()
             is_github_responses = (
                 base_url_host_matches(self.base_url, "models.github.ai")
-                or base_url_host_matches(self.base_url, "api.githubcopilot.com")
+                or base_url_is_copilot_endpoint(self.base_url)
             )
             is_codex_backend = (
                 self.provider == "openai-codex"
@@ -8446,7 +8446,7 @@ class AIAgent:
         _is_or = self._is_openrouter_url()
         _is_gh = (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
-            or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_is_copilot_endpoint(self._base_url_lower)
         )
         _is_nous = "nousresearch" in self._base_url_lower
         _is_nvidia = "integrate.api.nvidia.com" in self._base_url_lower
@@ -8559,7 +8559,7 @@ class AIAgent:
             return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
-            or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_is_copilot_endpoint(self._base_url_lower)
         ):
             try:
                 from hermes_cli.models import github_model_reasoning_efforts

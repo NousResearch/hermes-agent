@@ -295,3 +295,23 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+# Known GitHub Copilot API hosts (public + business/enterprise).
+# All require VS Code-style headers (Editor-Version, etc.) for IDE auth.
+_COPILOT_HOSTS = frozenset({
+    "api.githubcopilot.com",       # public
+    "api.business.githubcopilot.com",  # business/enterprise
+})
+
+
+def base_url_is_copilot_endpoint(base_url: str) -> bool:
+    """Return True when the base URL points to a known GitHub Copilot API host.
+
+    Both public (api.githubcopilot.com) and business/enterprise
+    (api.business.githubcopilot.com) endpoints require the same
+    VS Code-style headers (Editor-Version, Openai-Intent, etc.)
+    for IDE authentication.
+    """
+    hostname = base_url_hostname(base_url)
+    return hostname in _COPILOT_HOSTS

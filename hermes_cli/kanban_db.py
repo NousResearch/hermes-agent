@@ -2118,6 +2118,15 @@ class DispatchResult:
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
+    """Ready task ids skipped because they have no assignee at all.
+    Operator-actionable — usually a misfiled task waiting for routing."""
+    skipped_nonspawnable: list[str] = field(default_factory=list)
+    """Ready task ids skipped because their assignee names a control-plane
+    lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
+    profile. Expected steady-state on multi-lane setups; NOT an
+    operator-actionable failure. Tracked separately so health telemetry
+    can distinguish "real stuck" (nothing spawned but spawnable work
+    available) from "correctly idle" (nothing spawnable in the queue)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -2459,6 +2468,38 @@ def _clear_spawn_failures(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+    """Return True iff there is at least one ready+assigned+unclaimed task
+    whose assignee maps to a real Hermes profile.
+
+    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
+    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
+    work waiting) or a "correctly idle" condition (only control-plane
+    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
+    that pull tasks via ``claim_task`` directly).
+
+    Falls back to "any ready+assigned" if ``profile_exists`` is not
+    importable (e.g. partial install) — preserves the old behavior so
+    the warning still fires in degraded environments.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "    AND claim_lock IS NULL"
+    ).fetchall()
+    if not rows:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # Can't introspect — assume spawnable, preserve legacy behavior.
+        return True
+    for row in rows:
+        if profile_exists(row["assignee"]):
+            return True
+    return False
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -2521,7 +2562,13 @@ def dispatch_once(
         except Exception:
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
-            result.skipped_unassigned.append(row["id"])
+            # Bucket separately from skipped_unassigned: the operator
+            # cannot fix this by assigning a profile (the assignee IS the
+            # intended owner — a terminal lane). Health telemetry uses
+            # this distinction to suppress spurious "stuck" warnings on
+            # multi-lane setups where the ready queue is steadily full
+            # of human-pulled work.
+            result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

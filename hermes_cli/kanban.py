@@ -1274,6 +1274,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
+            "skipped_nonspawnable": res.skipped_nonspawnable,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1293,6 +1294,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_nonspawnable:
+        print(
+            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            f"{', '.join(res.skipped_nonspawnable)}"
+        )
     return 0
 
 
@@ -1404,16 +1410,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             )
 
     def _ready_queue_nonempty() -> bool:
-        """Cheap SELECT — just asks whether there's at least one ready
-        task with an assignee that the dispatcher could have picked up."""
+        """Cheap probe — is there at least one ready+assigned+unclaimed
+        task whose assignee maps to a real Hermes profile (i.e. one the
+        dispatcher would actually try to spawn for)?
+
+        Filters out tasks assigned to control-plane lanes
+        (e.g. ``orion-cc``, ``orion-research``) that are pulled by
+        terminals via ``claim_task`` directly — those are correctly idle
+        from the dispatcher's perspective, not stuck.
+        """
         try:
             with kb.connect() as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM tasks "
-                    "WHERE status = 'ready' AND assignee IS NOT NULL "
-                    "    AND claim_lock IS NULL LIMIT 1"
-                ).fetchone()
-                return row is not None
+                return kb.has_spawnable_ready(conn)
         except Exception:
             return False
 

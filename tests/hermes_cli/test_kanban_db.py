@@ -327,7 +327,7 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-def test_dispatch_dry_run_does_not_claim(kanban_home):
+def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
     with kb.connect() as conn:
         t1 = kb.create_task(conn, title="a", assignee="alice")
         t2 = kb.create_task(conn, title="b", assignee="bob")
@@ -344,10 +344,58 @@ def test_dispatch_skips_unassigned(kanban_home):
         t = kb.create_task(conn, title="floater")
         res = kb.dispatch_once(conn, dry_run=True)
     assert t in res.skipped_unassigned
+    assert t not in res.skipped_nonspawnable
     assert not res.spawned
 
 
-def test_dispatch_promotes_ready_and_spawns(kanban_home):
+def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):
+    """Tasks whose assignee fails profile_exists() must NOT land in
+    ``skipped_unassigned`` (which is operator-actionable) — they go in
+    the dedicated ``skipped_nonspawnable`` bucket so health telemetry
+    can suppress false-positive "stuck" warnings."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="for-terminal", assignee="orion-cc")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert t in res.skipped_nonspawnable
+    assert t not in res.skipped_unassigned
+    assert not res.spawned
+
+
+def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns False when every ready task is
+    assigned to a control-plane lane — used by gateway/CLI dispatchers
+    to silence the stuck-warn while terminals still have queued work."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="t1", assignee="orion-cc")
+        kb.create_task(conn, title="t2", assignee="orion-research")
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns True as soon as ANY ready task
+    has an assignee that maps to a real Hermes profile — preserves the
+    real "stuck" signal when a daily/agent task is queued."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "daily"
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="terminal-task", assignee="orion-cc")
+        kb.create_task(conn, title="hermes-task", assignee="daily")
+        assert kb.has_spawnable_ready(conn) is True
+
+
+def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
+    """Empty queue is the trivial false case — no ready tasks at all."""
+    with kb.connect() as conn:
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
 
     def fake_spawn(task, workspace):
@@ -368,7 +416,7 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home):
         assert kb.get_task(conn, c).status == "running"
 
 
-def test_dispatch_spawn_failure_releases_claim(kanban_home):
+def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")
 

@@ -514,15 +514,17 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 
 For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 
-## Fallback Model (config.yaml only)
+## Fallback Providers (config.yaml only)
 
-The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a `fallback_model` section with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
+The primary model fallback chain is configured exclusively through `config.yaml` — there are no environment variables for it. Add a top-level `fallback_providers` list with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
+
+The older top-level `fallback_model` single-provider shape is still read for backward compatibility, but new configuration should use `fallback_providers`.
 
 See [Fallback Providers](/docs/user-guide/features/fallback-providers) for full details.
 

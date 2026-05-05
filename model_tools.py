@@ -810,6 +810,8 @@ def handle_function_call(
         except Exception:
             pass
 
+        if not isinstance(result, str):
+            result = json.dumps(result, ensure_ascii=False)
         return result
 
     except Exception as e:

@@ -827,6 +827,8 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, " [full]"
 
     # Generic heuristic for non-terminal tools
+    if not isinstance(result, str):
+        result = str(result)
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"

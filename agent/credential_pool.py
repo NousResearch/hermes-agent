@@ -1386,10 +1386,17 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # authoritative source for Hermes credentials. Stale env vars from parent
     # processes (Codex CLI, test scripts, etc.) should not override deliberate
     # changes to the .env file.
+    _UNEXPANDED_VAR_RE = re.compile(r"\$\{.+\}|\$[A-Za-z_][A-Za-z0-9_]*")
+
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
-        val = env_file.get(key) or os.environ.get(key) or ""
-        return val.strip()
+        val = (env_file.get(key) or "").strip()
+        # load_env() reads the file raw without variable interpolation,
+        # so values like ${OTHER_VAR} are returned literally.  Fall back
+        # to os.environ where python-dotenv has already expanded them.
+        if val and _UNEXPANDED_VAR_RE.search(val):
+            val = ""
+        return val or (os.environ.get(key) or "").strip()
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

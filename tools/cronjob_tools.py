@@ -171,6 +171,14 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     return text or None
 
 
+def _deliver_value_requests_origin(deliver: Optional[str]) -> bool:
+    """True iff a normalized deliver string asks the scheduler to deliver to origin."""
+    if not deliver:
+        return False
+    parts = [p.strip().lower() for p in deliver.split(",")]
+    return "origin" in parts
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -299,13 +307,36 @@ def cronjob(
                             success=False,
                         )
 
+            normalized_deliver = _normalize_deliver_param(deliver)
+            captured_origin = _origin_from_env()
+            # Fail closed: explicit deliver=origin without a captured session
+            # origin would store origin=null and at fire time the scheduler
+            # used to fall back to the first configured *_HOME_CHANNEL env
+            # var, which on multi-platform hosts cross-posts to the wrong
+            # surface (e.g. Slack-originated work landing in Telegram). The
+            # scheduler now refuses that fallback; reject the create up front
+            # so the operator can pick an explicit destination.
+            if (
+                _deliver_value_requests_origin(normalized_deliver)
+                and not captured_origin
+            ):
+                return tool_error(
+                    "deliver='origin' requires a captured session origin "
+                    "(HERMES_SESSION_PLATFORM + HERMES_SESSION_CHAT_ID). "
+                    "This Hermes session has no origin attached, so the job "
+                    "would have no safe delivery target. Use deliver='local' "
+                    "for file-only output, or pass an explicit destination "
+                    "like deliver='telegram:<chat_id>'.",
+                    success=False,
+                )
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=_normalize_deliver_param(deliver),
-                origin=_origin_from_env(),
+                deliver=normalized_deliver,
+                origin=captured_origin,
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
@@ -385,7 +416,21 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = _normalize_deliver_param(deliver)
+                normalized_deliver = _normalize_deliver_param(deliver)
+                # Same fail-closed guard as create: refuse to flip an existing
+                # job to deliver=origin if the job has no origin attached.
+                if (
+                    _deliver_value_requests_origin(normalized_deliver)
+                    and not (job.get("origin") or _origin_from_env())
+                ):
+                    return tool_error(
+                        "deliver='origin' requires the job to have an origin. "
+                        "This job has none and the current session has no "
+                        "captured origin to attach. Use deliver='local' or an "
+                        "explicit destination like deliver='telegram:<chat_id>'.",
+                        success=False,
+                    )
+                updates["deliver"] = normalized_deliver
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills

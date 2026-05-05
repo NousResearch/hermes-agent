@@ -65,23 +65,31 @@ class TestResolveDeliveryTarget:
         }
 
     @pytest.mark.parametrize(
-        ("platform", "env_var", "chat_id"),
+        ("env_var", "chat_id"),
         [
-            ("matrix", "MATRIX_HOME_ROOM", "!bot-room:example.org"),
-            ("signal", "SIGNAL_HOME_CHANNEL", "+15551234567"),
-            ("mattermost", "MATTERMOST_HOME_CHANNEL", "team-town-square"),
-            ("sms", "SMS_HOME_CHANNEL", "+15557654321"),
-            ("email", "EMAIL_HOME_ADDRESS", "home@example.com"),
-            ("dingtalk", "DINGTALK_HOME_CHANNEL", "cidNNN"),
-            ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
-            ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
-            ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
-            ("qqbot", "QQ_HOME_CHANNEL", "group-openid-home"),
+            ("MATRIX_HOME_ROOM", "!bot-room:example.org"),
+            ("TELEGRAM_HOME_CHANNEL", "8737984752"),
+            ("DISCORD_HOME_CHANNEL", "1001234"),
+            ("SLACK_HOME_CHANNEL", "C0HOMEHOME"),
+            ("SIGNAL_HOME_CHANNEL", "+15551234567"),
+            ("MATTERMOST_HOME_CHANNEL", "team-town-square"),
+            ("SMS_HOME_CHANNEL", "+15557654321"),
+            ("EMAIL_HOME_ADDRESS", "home@example.com"),
+            ("DINGTALK_HOME_CHANNEL", "cidNNN"),
+            ("FEISHU_HOME_CHANNEL", "oc_home"),
+            ("WECOM_HOME_CHANNEL", "wecom-home"),
+            ("WEIXIN_HOME_CHANNEL", "wxid_home"),
+            ("QQ_HOME_CHANNEL", "group-openid-home"),
         ],
     )
-    def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
-        self, monkeypatch, platform, env_var, chat_id
+    def test_origin_delivery_without_origin_returns_no_target_even_with_home_channel_set(
+        self, monkeypatch, env_var, chat_id
     ):
+        """Fail-closed: a missing origin must NOT fall back to a configured
+        ``*_HOME_CHANNEL`` env var. The previous behaviour cross-posted Slack-
+        originated work into Telegram (or whichever home channel happened to
+        be set first) when the cron tool could not capture an origin from the
+        session env."""
         for fallback_env in (
             "MATRIX_HOME_ROOM",
             "MATRIX_HOME_CHANNEL",
@@ -102,9 +110,46 @@ class TestResolveDeliveryTarget:
             monkeypatch.delenv(fallback_env, raising=False)
         monkeypatch.setenv(env_var, chat_id)
 
-        assert _resolve_delivery_target({"deliver": "origin"}) == {
-            "platform": platform,
-            "chat_id": chat_id,
+        assert _resolve_delivery_target({"deliver": "origin"}) is None
+        assert _resolve_delivery_target({"deliver": "origin", "origin": None}) is None
+        assert _resolve_delivery_target({"deliver": "origin", "origin": {}}) is None
+
+    def test_origin_delivery_does_not_leak_slack_origin_to_telegram(self, monkeypatch):
+        """Regression for the 2026-05-05 incident: a Slack-originated cron job
+        whose origin was lost between dd-slack-service and hermes-dispatcher
+        must not deliver to ``TELEGRAM_HOME_CHANNEL``. Pin this even when the
+        job prompt explicitly mentions Slack channel context."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "8737984752")
+        for other in (
+            "SLACK_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "MATRIX_HOME_ROOM",
+            "MATRIX_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(other, raising=False)
+
+        leaky_job = {
+            "id": "59ee074897a6",
+            "name": "hyperscience-sow-first-draft-pdf",
+            "deliver": "origin",
+            "origin": None,
+            "prompt": "Slack channel #1prj-hs-sow-next-9f3c …",
+        }
+        assert _resolve_delivery_target(leaky_job) is None
+
+    def test_telegram_origin_with_valid_origin_still_delivers_normally(self, monkeypatch):
+        """Regression: Telegram-origin jobs with a real origin must keep
+        resolving to that origin, not the home env var."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "should-not-be-used")
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "8737984752",
+                "thread_id": None,
+            },
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "8737984752",
             "thread_id": None,
         }
 
@@ -320,6 +365,20 @@ class TestResolveDeliveryTarget:
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+
+    def test_delivery_records_specific_error_when_origin_is_missing(self, monkeypatch):
+        """``last_delivery_error`` must say origin is missing (not the generic
+        'no delivery target resolved') so operators can triage the leak class
+        from the previous fail-open fallback to a home channel."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "8737984752")
+        job = {
+            "id": "9f413f9b308b",
+            "name": "PTG intro call prep brief",
+            "deliver": "origin",
+            "origin": None,
+        }
+        err = _deliver_result(job, "anything")
+        assert err == "deliver=origin but job has no origin (fail-closed)"
 
     def test_delivery_wraps_content_with_header_and_footer(self):
         """Delivered content should include task name header and agent-invisible note."""

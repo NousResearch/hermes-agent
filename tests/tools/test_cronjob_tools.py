@@ -288,3 +288,119 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+
+class TestCronjobOriginGuard:
+    """Fail-closed guard: deliver='origin' without a captured session origin
+    must be rejected at the API boundary so the leak case (Slack-originated
+    work landing in Telegram via the home-channel fallback) cannot create
+    a job at all."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def _clear_session_env(self, monkeypatch):
+        for var in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_create_rejects_explicit_deliver_origin_when_no_session_origin(self, monkeypatch):
+        self._clear_session_env(monkeypatch)
+        # Even with a TELEGRAM_HOME_CHANNEL set we must not allow the job to
+        # be created — otherwise the scheduler used to silently re-route to it.
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "8737984752")
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Slack channel #1prj-hs-sow-next-9f3c — do work",
+                schedule="every 1h",
+                deliver="origin",
+            )
+        )
+        assert result["success"] is False
+        assert "origin" in result["error"].lower()
+        assert "session" in result["error"].lower()
+
+    def test_create_rejects_list_form_deliver_origin_without_session(self, monkeypatch):
+        self._clear_session_env(monkeypatch)
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="anything",
+                schedule="every 1h",
+                deliver=["origin"],
+            )
+        )
+        assert result["success"] is False
+
+    def test_create_accepts_explicit_deliver_origin_when_session_origin_present(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="task",
+                schedule="every 1h",
+                deliver="origin",
+            )
+        )
+        assert result["success"] is True
+
+    def test_create_accepts_local_when_no_session_origin(self, monkeypatch):
+        """deliver='local' is the safe escape hatch and must continue to work."""
+        self._clear_session_env(monkeypatch)
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="slack-context task",
+                schedule="every 1h",
+                deliver="local",
+            )
+        )
+        assert result["success"] is True
+
+    def test_create_with_no_explicit_deliver_and_no_session_defaults_to_local(self, monkeypatch):
+        """Implicit deliver — the safe default in jobs.create_job — must still
+        be allowed when there is no origin (it stores ``deliver='local'`` which
+        cannot leak)."""
+        self._clear_session_env(monkeypatch)
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="task",
+                schedule="every 1h",
+            )
+        )
+        assert result["success"] is True
+        from cron.jobs import get_job
+        stored = get_job(result["job_id"])
+        assert stored["deliver"] == "local"
+
+    def test_update_rejects_flipping_to_deliver_origin_when_job_has_no_origin(self, monkeypatch):
+        self._clear_session_env(monkeypatch)
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="task",
+                schedule="every 1h",
+                deliver="local",
+            )
+        )
+        assert created["success"] is True
+
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                deliver="origin",
+            )
+        )
+        assert result["success"] is False
+        assert "origin" in result["error"].lower()

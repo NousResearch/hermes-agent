@@ -162,21 +162,19 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in _HOME_TARGET_ENV_VARS:
-            chat_id = _get_home_target_chat_id(platform_name)
-            if chat_id:
-                logger.info(
-                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
-                    job.get("name", job.get("id", "?")),
-                    platform_name,
-                )
-                return {
-                    "platform": platform_name,
-                    "chat_id": chat_id,
-                    "thread_id": None,
-                }
+        # Fail closed. The previous behaviour fell back to the first
+        # configured *_HOME_CHANNEL env var, which on multi-platform hosts can
+        # cross-post work originating on platform A into platform B's home
+        # channel — e.g. a Slack-originated cron job whose origin metadata is
+        # null landing in the operator's Telegram DM. Refusing is safer than
+        # guessing. Callers that want a specific destination should pass an
+        # explicit deliver value like "telegram" (uses TELEGRAM_HOME_CHANNEL)
+        # or "telegram:<chat_id>".
+        logger.warning(
+            "Job '%s' has deliver=origin but no origin; refusing fallback "
+            "(set deliver explicitly or attach origin to the job)",
+            job.get("name", job.get("id", "?")),
+        )
         return None
 
     if ":" in deliver_value:
@@ -332,8 +330,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     """
     targets = _resolve_delivery_targets(job)
     if not targets:
-        if job.get("deliver", "local") != "local":
-            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
+        deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        if deliver != "local":
+            if "origin" in [p.strip() for p in deliver.split(",")] and not _resolve_origin(job):
+                msg = "deliver=origin but job has no origin (fail-closed)"
+            else:
+                msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
         return None  # local-only jobs don't deliver — not a failure

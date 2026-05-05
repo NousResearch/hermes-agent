@@ -1818,3 +1818,128 @@ class TestBuildCallKwargsToolDedup:
             provider="openai", model="gpt-4o", messages=[], tools=None,
         )
         assert "tools" not in kwargs
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    """Strip provider env vars so each test starts clean."""
+    for key in (
+        "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+class TestOpenRouterExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_openrouter()."""
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_openrouter(
+        self, monkeypatch
+    ):
+        """
+        When resolve_provider_client() is called with explicit_api_key for OpenRouter,
+        the explicit key should be passed to the OpenAI client instead of falling back
+        to OPENROUTER_API_KEY env var.
+        """
+        # Set up env var as fallback (should NOT be used when explicit_api_key is provided)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+
+        # Mock OpenAI to capture the api_key used
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openrouter-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key="explicit-pool-key",
+            )
+
+            # Verify a client was created
+            assert client is not None
+            # Verify the explicit key was used, not the env var fallback
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "explicit-pool-key", (
+                f"Expected explicit_api_key to be passed, got: {call_kwargs['api_key']}"
+            )
+            assert call_kwargs["api_key"] != "env-fallback-key", (
+                "Should NOT fall back to OPENROUTER_API_KEY when explicit_api_key is provided"
+            )
+
+    def test_resolve_provider_client_without_explicit_api_key_falls_back_to_env(
+        self, monkeypatch
+    ):
+        """
+        When resolve_provider_client() is called WITHOUT explicit_api_key for OpenRouter,
+        it should fall back to OPENROUTER_API_KEY env var.
+        """
+        # Set up env var as fallback (should be used when explicit_api_key is NOT provided)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+
+        # Mock OpenAI to capture the api_key used
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openrouter-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key=None,
+            )
+
+            # Verify a client was created
+            assert client is not None
+            # Verify the env var fallback was used
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "env-fallback-key", (
+                f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
+            )
+
+
+class TestAnthropicExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_anthropic().
+
+    Parity with the OpenRouter fix in #18768: resolve_provider_client() passes
+    explicit_api_key to _try_openrouter(), but the anthropic branch was not
+    updated — _try_anthropic() always fell back to resolve_anthropic_token()
+    even when an explicit key was supplied (e.g. from a fallback_model entry).
+    """
+
+    def test_try_anthropic_uses_explicit_api_key_over_env(self):
+        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic("explicit-pool-key")
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-pool-key", (
+            f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"
+        )
+        assert mock_build.call_args.args[0] != "env-fallback-key"
+
+    def test_try_anthropic_without_explicit_key_falls_back_to_resolve(self):
+        """Without explicit_api_key, _try_anthropic falls back to resolve_anthropic_token."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic()
+        assert client is not None
+        assert mock_build.call_args.args[0] == "env-fallback-key"
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
+        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                provider="anthropic",
+                explicit_api_key="explicit-fallback-key",
+            )
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-fallback-key", (
+            "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
+        )

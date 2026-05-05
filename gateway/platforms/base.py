@@ -2489,19 +2489,30 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            # Old adapter task (if any) is cancelled AFTER the runner has
-            # fully handled the command — keeps ordering deterministic.
-            await self.cancel_session_processing(
-                session_key,
-                release_guard=False,
-                discard_pending=False,
-            )
             _text, _eph_ttl = self._unwrap_ephemeral(response)
+            # Send the response BEFORE cancelling the old task so the send
+            # cannot be affected by task-cancellation side effects (race
+            # condition fix — issue #18912).  Previously the send happened
+            # after cancel_session_processing, which could silently drop the
+            # "/new" confirmation when an agent was actively running.
             if _text:
+                logger.info(
+                    "[%s] Sending command '/%s' response (%d chars) to %s",
+                    self.name,
+                    cmd,
+                    len(_text),
+                    event.source.chat_id,
+                )
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
-                    reply_to=event.message_id,
+                    reply_to=(
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU
+                        and event.source.thread_id
+                        and event.reply_to_message_id
+                        else event.message_id
+                    ),
                     metadata=thread_meta,
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2510,6 +2521,13 @@ class BasePlatformAdapter(ABC):
                         message_id=_r.message_id,
                         ttl_seconds=_eph_ttl,
                     )
+            # Old adapter task (if any) is cancelled AFTER the response has
+            # been sent — keeps ordering deterministic and avoids the race.
+            await self.cancel_session_processing(
+                session_key,
+                release_guard=False,
+                discard_pending=False,
+            )
         except Exception:
             # On failure, restore the original guard if one still exists so
             # we don't leave the session in a half-reset state.
@@ -2594,7 +2612,13 @@ class BasePlatformAdapter(ABC):
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
-                            reply_to=event.message_id,
+                            reply_to=(
+                                event.reply_to_message_id
+                                if event.source.platform == Platform.FEISHU
+                                and event.source.thread_id
+                                and event.reply_to_message_id
+                                else event.message_id
+                            ),
                             metadata=_thread_meta,
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2798,10 +2822,15 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    _reply_anchor = (
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
+                        else event.message_id
+                    )
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
+                        reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)

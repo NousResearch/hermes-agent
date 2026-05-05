@@ -1086,19 +1086,22 @@ class SessionStore:
         return len(removed_keys)
 
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
-        """Mark recently-active sessions as suspended.
+        """Mark recently-active sessions as resumable after an unexpected exit.
 
-        Called on gateway startup to prevent sessions that were likely
-        in-flight when the gateway last exited from being blindly resumed
-        (#7536).  Only suspends sessions updated within *max_age_seconds*
-        to avoid resetting long-idle sessions that are harmless to resume.
-        Returns the number of sessions that were suspended.
+        Called on gateway startup after a crash or fast restart to preserve
+        in-flight sessions instead of destroying their conversation history
+        (#7536).  Only marks sessions updated within *max_age_seconds* to
+        avoid touching long-idle sessions.  Sets ``resume_pending=True`` so
+        the next incoming message on the same session_key auto-resumes from
+        the existing transcript.
 
-        Entries flagged ``resume_pending=True`` are skipped — those were
-        marked intentionally by the drain-timeout path as recoverable.
-        Terminal escalation for genuinely stuck ``resume_pending`` sessions
-        is handled by the existing ``.restart_failure_counts`` stuck-loop
-        counter, which runs after this method on startup.
+        Entries already flagged ``resume_pending=True`` are skipped.  Entries
+        explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
+        are also skipped.  Terminal escalation for genuinely stuck sessions
+        is still handled by the existing ``.restart_failure_counts`` counter
+        (threshold 3), which runs after this method and sets ``suspended=True``.
+
+        Returns the number of sessions marked resumable.
         """
         from datetime import timedelta
 
@@ -1110,13 +1113,15 @@ class SessionStore:
                 if entry.resume_pending:
                     continue
                 if not entry.suspended and entry.updated_at >= cutoff:
-                    entry.suspended = True
+                    entry.resume_pending = True
+                    entry.resume_reason = "restart_interrupted"
+                    entry.last_resume_marked_at = _now()
                     count += 1
             if count:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str) -> Optional[SessionEntry]:
+    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
         db_create_kwargs = None
@@ -1140,7 +1145,7 @@ class SessionStore:
                 created_at=now,
                 updated_at=now,
                 origin=old_entry.origin,
-                display_name=old_entry.display_name,
+                display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,

@@ -72,19 +72,45 @@ def _check_ws_token(provided: Optional[str]) -> bool:
     return hmac.compare_digest(str(provided), str(expected))
 
 
-def _conn():
+def _resolve_board(board: Optional[str]) -> Optional[str]:
+    """Validate and normalise a board slug from a query param.
+
+    Raises :class:`HTTPException` 400 on malformed slugs so the browser
+    sees a clean error instead of a 500. Returns the normalised slug,
+    or ``None`` when the caller omitted the param (which then falls
+    through to the active board inside ``kb.connect()``).
+    """
+    if board is None or board == "":
+        return None
+    try:
+        normed = kanban_db._normalize_board_slug(board)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if normed and normed != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed):
+        raise HTTPException(
+            status_code=404,
+            detail=f"board {normed!r} does not exist",
+        )
+    return normed
+
+
+def _conn(board: Optional[str] = None):
     """Open a kanban_db connection, creating the schema on first use.
 
     Every handler that mutates the DB goes through this so the plugin
     self-heals on a fresh install (no user-visible "no such table"
     error if somebody hits POST /tasks before GET /board).
     ``init_db`` is idempotent.
+
+    ``board`` is the query-param slug (already normalised by
+    :func:`_resolve_board`). When ``None`` the active board is used
+    via the resolution chain (env var → ``current`` file → ``default``).
     """
     try:
-        kanban_db.init_db()
+        kanban_db.init_db(board=board)
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
-    return kanban_db.connect()
+    return kanban_db.connect(board=board)
 
 
 # ---------------------------------------------------------------------------
@@ -177,13 +203,19 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
 ):
     """Return the full board grouped by status column.
 
     ``_conn()`` auto-initializes ``kanban.db`` on first call so a fresh
     install doesn't surface a "failed to load" error on the plugin tab.
+
+    ``board`` selects which board to read from. Omitting it falls
+    through to the active board (``HERMES_KANBAN_BOARD`` env → on-disk
+    ``current`` pointer → ``default``).
     """
-    conn = _conn()
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         tasks = kanban_db.list_tasks(
             conn, tenant=tenant, include_archived=include_archived
@@ -274,8 +306,9 @@ def get_board(
 # ---------------------------------------------------------------------------
 
 @router.get("/tasks/{task_id}")
-def get_task(task_id: str):
-    conn = _conn()
+def get_task(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         task = kanban_db.get_task(conn, task_id)
         if task is None:
@@ -311,8 +344,9 @@ class CreateTaskBody(BaseModel):
 
 
 @router.post("/tasks")
-def create_task(payload: CreateTaskBody):
-    conn = _conn()
+def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         task_id = kanban_db.create_task(
             conn,
@@ -373,8 +407,9 @@ class UpdateTaskBody(BaseModel):
 
 
 @router.patch("/tasks/{task_id}")
-def update_task(task_id: str, payload: UpdateTaskBody):
-    conn = _conn()
+def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         task = kanban_db.get_task(conn, task_id)
         if task is None:
@@ -414,7 +449,12 @@ def update_task(task_id: str, payload: UpdateTaskBody):
                     ok = _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
-            elif s in ("todo", "running", "triage"):
+            elif s == "running":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
+                )
+            elif s in ("todo", "triage"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
@@ -527,10 +567,11 @@ class CommentBody(BaseModel):
 
 
 @router.post("/tasks/{task_id}/comments")
-def add_comment(task_id: str, payload: CommentBody):
+def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
-    conn = _conn()
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         if kanban_db.get_task(conn, task_id) is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
@@ -552,8 +593,9 @@ class LinkBody(BaseModel):
 
 
 @router.post("/links")
-def add_link(payload: LinkBody):
-    conn = _conn()
+def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
         return {"ok": True}
@@ -564,8 +606,13 @@ def add_link(payload: LinkBody):
 
 
 @router.delete("/links")
-def delete_link(parent_id: str = Query(...), child_id: str = Query(...)):
-    conn = _conn()
+def delete_link(
+    parent_id: str = Query(...),
+    child_id: str = Query(...),
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         ok = kanban_db.unlink_tasks(conn, parent_id, child_id)
         return {"ok": bool(ok)}
@@ -586,7 +633,7 @@ class BulkTaskBody(BaseModel):
 
 
 @router.post("/tasks/bulk")
-def bulk_update(payload: BulkTaskBody):
+def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     """Apply the same patch to every id in ``payload.ids``.
 
     This is an *independent* iteration — per-task failures don't abort
@@ -596,7 +643,8 @@ def bulk_update(payload: BulkTaskBody):
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")
     results: list[dict] = []
-    conn = _conn()
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         for tid in ids:
             entry: dict[str, Any] = {"id": tid, "ok": True}
@@ -686,18 +734,168 @@ def get_config():
 
 
 # ---------------------------------------------------------------------------
+# Home-channel subscriptions (per-task, per-platform toggles)
+# ---------------------------------------------------------------------------
+#
+# Home channels are a first-class gateway concept — each configured platform
+# can have exactly one (chat_id, thread_id, name) it considers "home". The
+# dashboard surfaces these as per-task toggles so a user can opt a specific
+# task into receiving terminal notifications (completed / blocked / gave_up)
+# at their telegram/discord/slack home, without touching the CLI.
+#
+# The wire format mirrors kanban_db.add_notify_sub — (task_id, platform,
+# chat_id, thread_id) — so toggle-on creates exactly the same row the
+# `/kanban create` slash command would, and the existing gateway notifier
+# watcher delivers events without any additional plumbing.
+
+
+def _configured_home_channels() -> list[dict]:
+    """Return every platform that has a home_channel set, fully hydrated.
+
+    Reads the live GatewayConfig so env-var overlays (``TELEGRAM_HOME_CHANNEL``
+    etc.) are honored alongside config.yaml. Returns platforms in a stable
+    order and drops platforms without a home.
+    """
+    try:
+        from gateway.config import load_gateway_config
+    except Exception:
+        return []
+    try:
+        gw_cfg = load_gateway_config()
+    except Exception:
+        return []
+    result: list[dict] = []
+    for platform, pcfg in gw_cfg.platforms.items():
+        if not pcfg or not pcfg.home_channel:
+            continue
+        hc = pcfg.home_channel
+        result.append({
+            "platform": platform.value,
+            "chat_id": hc.chat_id,
+            "thread_id": hc.thread_id or "",
+            "name": hc.name or "Home",
+        })
+    # Stable order for deterministic UI — platform name alphabetical.
+    result.sort(key=lambda r: r["platform"])
+    return result
+
+
+def _home_sub_matches(sub: dict, home: dict) -> bool:
+    """True if a notify_subs row corresponds to the given home channel."""
+    return (
+        sub.get("platform") == home["platform"]
+        and str(sub.get("chat_id", "")) == str(home["chat_id"])
+        and str(sub.get("thread_id") or "") == str(home["thread_id"] or "")
+    )
+
+
+@router.get("/home-channels")
+def get_home_channels(
+    task_id: Optional[str] = Query(None),
+    board: Optional[str] = Query(None),
+):
+    """List every platform with a home channel, plus whether *task_id*
+    (if given) is currently subscribed to that home.
+
+    When ``task_id`` is omitted, every entry's ``subscribed`` is ``false``
+    — useful for the "no task selected" state of the UI.
+    """
+    homes = _configured_home_channels()
+    subscribed_homes: set[tuple[str, str, str]] = set()
+    if task_id:
+        board = _resolve_board(board)
+        conn = _conn(board=board)
+        try:
+            subs = kanban_db.list_notify_subs(conn, task_id)
+        finally:
+            conn.close()
+        for sub in subs:
+            key = (
+                str(sub.get("platform") or ""),
+                str(sub.get("chat_id") or ""),
+                str(sub.get("thread_id") or ""),
+            )
+            subscribed_homes.add(key)
+    result = []
+    for home in homes:
+        key = (home["platform"], home["chat_id"], home["thread_id"])
+        result.append({**home, "subscribed": key in subscribed_homes})
+    return {"home_channels": result}
+
+
+@router.post("/tasks/{task_id}/home-subscribe/{platform}")
+def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Subscribe *task_id* to notifications routed to *platform*'s home channel.
+
+    Idempotent — re-subscribing is a no-op at the DB layer. 404 if the
+    platform has no home channel configured. 404 if the task doesn't exist.
+    """
+    homes = _configured_home_channels()
+    home = next((h for h in homes if h["platform"] == platform), None)
+    if not home:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No home channel configured for platform {platform!r}. "
+                   f"Set one from the messenger via /sethome, or configure "
+                   f"gateway.platforms.{platform}.home_channel in config.yaml.",
+        )
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        kanban_db.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+        )
+        return {"ok": True, "task_id": task_id, "home_channel": home}
+    finally:
+        conn.close()
+
+
+@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
+def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Remove any notify subscription on *task_id* that matches *platform*'s home."""
+    homes = _configured_home_channels()
+    home = next((h for h in homes if h["platform"] == platform), None)
+    if not home:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No home channel configured for platform {platform!r}.",
+        )
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        kanban_db.remove_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+        )
+        return {"ok": True, "task_id": task_id, "home_channel": home}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Stats (per-profile / per-status counts + oldest-ready age)
 # ---------------------------------------------------------------------------
 
 @router.get("/stats")
-def get_stats():
+def get_stats(board: Optional[str] = Query(None)):
     """Per-status + per-assignee counts + oldest-ready age.
 
     Designed for the dashboard HUD and for router profiles that need to
     answer "is this specialist overloaded?" without scanning the whole
     board themselves.
     """
-    conn = _conn()
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         return kanban_db.board_stats(conn)
     finally:
@@ -705,7 +903,7 @@ def get_stats():
 
 
 @router.get("/assignees")
-def get_assignees():
+def get_assignees(board: Optional[str] = Query(None)):
     """Known profiles + per-profile task counts.
 
     Returns the union of ``~/.hermes/profiles/*`` on disk and every
@@ -713,7 +911,8 @@ def get_assignees():
     this to populate its assignee dropdown so a freshly-created profile
     appears in the picker before it's been given any task.
     """
-    conn = _conn()
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         return {"assignees": kanban_db.known_assignees(conn)}
     finally:
@@ -725,7 +924,11 @@ def get_assignees():
 # ---------------------------------------------------------------------------
 
 @router.get("/tasks/{task_id}/log")
-def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_000)):
+def get_task_log(
+    task_id: str,
+    tail: Optional[int] = Query(None, ge=1, le=2_000_000),
+    board: Optional[str] = Query(None),
+):
     """Return the worker's stdout/stderr log.
 
     ``tail`` caps the response size (bytes) so the dashboard drawer
@@ -734,15 +937,16 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
     ``_rotate_worker_log`` — a single ``.log.1`` is kept, no further
     generations, so disk usage per task is bounded at ~4 MiB.
     """
-    conn = _conn()
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         task = kanban_db.get_task(conn, task_id)
     finally:
         conn.close()
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    content = kanban_db.read_worker_log(task_id, tail_bytes=tail)
-    log_path = kanban_db.worker_log_path(task_id)
+    content = kanban_db.read_worker_log(task_id, tail_bytes=tail, board=board)
+    log_path = kanban_db.worker_log_path(task_id, board=board)
     size = log_path.stat().st_size if log_path.exists() else 0
     return {
         "task_id": task_id,
@@ -760,11 +964,16 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 # ---------------------------------------------------------------------------
 
 @router.post("/dispatch")
-def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max")):
-    conn = _conn()
+def dispatch(
+    dry_run: bool = Query(False),
+    max_n: int = Query(8, alias="max"),
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
     try:
         result = kanban_db.dispatch_once(
-            conn, dry_run=dry_run, max_spawn=max_n,
+            conn, dry_run=dry_run, max_spawn=max_n, board=board,
         )
         # DispatchResult is a dataclass.
         try:
@@ -773,6 +982,124 @@ def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max")):
             return {"result": str(result)}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Boards CRUD (multi-project support)
+# ---------------------------------------------------------------------------
+
+class CreateBoardBody(BaseModel):
+    slug: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    switch: bool = False
+
+
+class RenameBoardBody(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+
+
+def _board_counts(slug: str) -> dict[str, int]:
+    """Return ``{status: count}`` for a board. Safe on an empty DB."""
+    try:
+        path = kanban_db.kanban_db_path(board=slug)
+        if not path.exists():
+            return {}
+        conn = kanban_db.connect(board=slug)
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+            ).fetchall()
+            return {r["status"]: int(r["n"]) for r in rows}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+@router.get("/boards")
+def list_boards(include_archived: bool = Query(False)):
+    """Return every board on disk with task counts and the active slug."""
+    boards = kanban_db.list_boards(include_archived=include_archived)
+    current = kanban_db.get_current_board()
+    for b in boards:
+        b["is_current"] = (b["slug"] == current)
+        b["counts"] = _board_counts(b["slug"])
+        b["total"] = sum(b["counts"].values())
+    return {"boards": boards, "current": current}
+
+
+@router.post("/boards")
+def create_board_endpoint(payload: CreateBoardBody):
+    """Create a new board. Idempotent — ``slug`` collision returns existing."""
+    try:
+        meta = kanban_db.create_board(
+            payload.slug,
+            name=payload.name,
+            description=payload.description,
+            icon=payload.icon,
+            color=payload.color,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if payload.switch:
+        try:
+            kanban_db.set_current_board(meta["slug"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return {"board": meta, "current": kanban_db.get_current_board()}
+
+
+@router.patch("/boards/{slug}")
+def rename_board(slug: str, payload: RenameBoardBody):
+    """Update a board's display metadata (slug is immutable — create a new one to rename the directory)."""
+    try:
+        normed = kanban_db._normalize_board_slug(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not normed or not kanban_db.board_exists(normed):
+        raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
+    meta = kanban_db.write_board_metadata(
+        normed,
+        name=payload.name,
+        description=payload.description,
+        icon=payload.icon,
+        color=payload.color,
+    )
+    return {"board": meta}
+
+
+@router.delete("/boards/{slug}")
+def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
+    """Archive (default) or hard-delete a board."""
+    try:
+        res = kanban_db.remove_board(slug, archive=not delete)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"result": res, "current": kanban_db.get_current_board()}
+
+
+@router.post("/boards/{slug}/switch")
+def switch_board(slug: str):
+    """Persist ``slug`` as the active board for subsequent CLI / slash calls.
+
+    Dashboard users pick boards via a client-side ``localStorage`` — this
+    endpoint is for ``/kanban boards switch`` parity so gateway slash
+    commands and the CLI share the same current-board pointer.
+    """
+    try:
+        normed = kanban_db._normalize_board_slug(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not normed or not kanban_db.board_exists(normed):
+        raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
+    kanban_db.set_current_board(normed)
+    return {"current": normed}
 
 
 # ---------------------------------------------------------------------------
@@ -802,8 +1129,18 @@ async def stream_events(ws: WebSocket):
         except ValueError:
             cursor = 0
 
+        # Board selection — pinned at the WS handshake; re-subscribe to
+        # switch boards. Changing boards mid-stream would require
+        # reconciling two cursors, so the UI just opens a new WS on
+        # board change.
+        ws_board_raw = ws.query_params.get("board")
+        try:
+            ws_board = kanban_db._normalize_board_slug(ws_board_raw) if ws_board_raw else None
+        except ValueError:
+            ws_board = None
+
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
-            conn = kanban_db.connect()
+            conn = kanban_db.connect(board=ws_board)
             try:
                 rows = conn.execute(
                     "SELECT id, task_id, run_id, kind, payload, created_at "

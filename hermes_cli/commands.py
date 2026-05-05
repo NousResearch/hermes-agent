@@ -10,6 +10,7 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
@@ -61,7 +64,9 @@ class CommandDef:
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",)),
+               aliases=("reset",), args_hint="[name]"),
+    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
+               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -396,6 +401,11 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return False
 
 
+def _requires_argument(args_hint: str) -> bool:
+    """Return True when selecting a command without text would be incomplete."""
+    return args_hint.strip().startswith("<")
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -452,7 +462,9 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command.
+    canonical command. Commands that require arguments are skipped because
+    selecting a Telegram BotCommand sends only ``/command`` and would execute
+    an incomplete command.
 
     Plugin-registered slash commands are included so plugins get native
     autocomplete in Telegram without touching core code.
@@ -462,10 +474,14 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+        if _requires_argument(cmd.args_hint):
+            continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
-    for name, description, _args_hint in _iter_plugin_command_entries():
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if _requires_argument(args_hint):
+            continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
             result.append((tg_name, description))
@@ -499,9 +515,9 @@ def _sanitize_telegram_name(raw: str) -> str:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, str]],
+    entries: list[tuple[str, ...]],
     reserved: set[str],
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, ...]]:
     """Enforce 32-char command name limit with collision avoidance.
 
     Both Telegram and Discord cap slash command names at 32 characters.
@@ -509,10 +525,15 @@ def _clamp_command_names(
     (against *reserved* names or earlier entries in the same batch), the name is
     shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
     If all 10 digit slots are taken the entry is silently dropped.
+
+    Accepts tuples of any length >= 2.  Extra elements beyond ``(name, desc)``
+    (e.g. ``cmd_key``) are passed through unchanged, so callers can attach
+    metadata that survives the rename.
     """
     used: set[str] = set(reserved)
-    result: list[tuple[str, str]] = []
-    for name, desc in entries:
+    result: list[tuple] = []
+    for entry in entries:
+        name, desc, *extra = entry
         if len(name) > _CMD_NAME_LIMIT:
             candidate = name[:_CMD_NAME_LIMIT]
             if candidate in used:
@@ -528,7 +549,7 @@ def _clamp_command_names(
         if name in used:
             continue
         used.add(name)
-        result.append((name, desc))
+        result.append((name, desc, *extra))
     return result
 
 
@@ -648,17 +669,15 @@ def _collect_gateway_skill_entries(
     except Exception:
         pass
 
-    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
-    # need to zip/unzip.
-    skill_pairs = [(n, d) for n, d, _ in skill_triples]
-    key_by_pair = {(n, d): k for n, d, k in skill_triples}
-    skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
+    # Clamp names; cmd_key is passed through as extra payload so it survives
+    # any clamp-induced renames.
+    skill_triples = _clamp_command_names(skill_triples, reserved_names)
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_pairs) - remaining)
-    for n, d in skill_pairs[:remaining]:
-        all_entries.append((n, d, key_by_pair.get((n, d), "")))
+    hidden_count = max(0, len(skill_triples) - remaining)
+    for n, d, k in skill_triples[:remaining]:
+        all_entries.append((n, d, k))
 
     return all_entries[:max_slots], hidden_count
 
@@ -781,7 +800,12 @@ def discord_skill_commands_by_category(
     # Collect raw skill data --------------------------------------------------
     categories: dict[str, list[tuple[str, str, str]]] = {}
     uncategorized: list[tuple[str, str, str]] = []
-    _names_used: set[str] = set(reserved_names)
+    # Map clamped-32-char-name → what it came from, so we can emit an
+    # actionable warning on collision. Reserved (gateway-builtin) command
+    # names are marked with a sentinel so the warning distinguishes
+    # "skill collided with a reserved command" from "two skills collided
+    # on the 32-char clamp" — the latter is the rename-worthy case.
+    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
     hidden = 0
 
     try:
@@ -836,12 +860,39 @@ def discord_skill_commands_by_category(
             # Clamp to 32 chars (Discord per-command name limit)
             discord_name = raw_name[:32]
             if discord_name in _names_used:
-                # Collision with a previously-registered name — drop and
-                # count. Almost always caused by a reserved built-in name,
-                # not by another skill (frontmatter names are unique).
+                # Two skills whose first 32 chars are identical. One wins
+                # (the first one seen, which is alphabetical because the
+                # caller iterates ``sorted(skill_cmds)``); the other is
+                # dropped from Discord's /skill autocomplete.
+                #
+                # Silently counting this as ``hidden`` (the old behavior)
+                # meant skill authors had no way to discover the drop —
+                # their skill just didn't appear in the picker. Emit a
+                # WARNING naming both sides so the author can rename the
+                # losing skill's frontmatter name to something with a
+                # distinct 32-char prefix.
+                prior = _names_used[discord_name]
+                if prior == "<reserved>":
+                    logger.warning(
+                        "Discord /skill: %r (from %r) collides on its 32-char "
+                        "clamp with a reserved gateway command name %r — the "
+                        "skill will not appear in the /skill autocomplete. "
+                        "Rename the skill's frontmatter ``name:`` to differ "
+                        "in its first 32 chars.",
+                        discord_name, cmd_key, discord_name,
+                    )
+                else:
+                    logger.warning(
+                        "Discord /skill: %r and %r both clamp to %r on "
+                        "Discord's 32-char command-name limit — only %r "
+                        "will appear in the /skill autocomplete. Rename "
+                        "one skill's frontmatter ``name:`` to differ in "
+                        "its first 32 chars.",
+                        prior, cmd_key, discord_name, prior,
+                    )
                 hidden += 1
                 continue
-            _names_used.add(discord_name)
+            _names_used[discord_name] = cmd_key
 
             desc = info.get("description", "")
             if len(desc) > 100:
@@ -1077,6 +1128,12 @@ class SlashCommandCompleter(Completer):
         except Exception:
             return {}
 
+    # Commands that open pickers when run without arguments.
+    # These should NOT receive a trailing space in completions because:
+    # - The TUI's submit handler applies completions on Enter if input differs
+    # - Adding space makes "/model" → "/model " which blocks picker execution
+    _PICKER_COMMANDS = frozenset({"model", "skin", "personality"})
+
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
@@ -1085,8 +1142,17 @@ class SlashCommandCompleter(Completer):
         returning ``help`` would be a no-op and prompt_toolkit suppresses the
         menu. Appending a trailing space keeps the dropdown visible and makes
         backspacing retrigger it naturally.
+
+        However, commands that open pickers (model, skin, personality) should
+        NOT get a trailing space — the TUI would apply the completion on Enter
+        and block the picker from opening.
         """
-        return f"{cmd_name} " if cmd_name == word else cmd_name
+        if cmd_name != word:
+            return cmd_name
+        # Don't add space for picker commands — allows Enter to execute them
+        if cmd_name in SlashCommandCompleter._PICKER_COMMANDS:
+            return cmd_name
+        return f"{cmd_name} "
 
     @staticmethod
     def _extract_path_word(text: str) -> str | None:

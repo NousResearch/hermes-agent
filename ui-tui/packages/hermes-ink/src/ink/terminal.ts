@@ -168,6 +168,10 @@ export function isXtermJs(): boolean {
   return xtversionName?.startsWith('xterm.js') ?? false
 }
 
+export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
+}
+
 // Terminals known to correctly implement the Kitty keyboard protocol
 // (CSI >1u) and/or xterm modifyOtherKeys (CSI >4;2m) for ctrl+shift+<letter>
 // disambiguation. We previously enabled unconditionally (#23350), assuming

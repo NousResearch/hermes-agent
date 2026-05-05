@@ -111,6 +111,7 @@ def start(
     session_id: Optional[str] = None,
     mode: str = "transcribe",
     join_style: str = "normal",
+    caption_language: str = "Korean",
     realtime_model: Optional[str] = None,
     realtime_voice: Optional[str] = None,
     realtime_instructions: Optional[str] = None,
@@ -166,6 +167,8 @@ def start(
         env["HERMES_MEET_DURATION"] = duration
     if join_style:
         env["HERMES_MEET_JOIN_STYLE"] = join_style
+    if caption_language:
+        env["HERMES_MEET_CAPTION_LANGUAGE"] = caption_language
     # v2: realtime mode + passthroughs. The bot defaults to transcribe
     # mode if HERMES_MEET_MODE isn't set, matching v1 behavior.
     if mode:
@@ -207,6 +210,7 @@ def start(
         "log_path": str(log_path),
         "mode": mode,
         "join_style": join_style,
+        "caption_language": caption_language,
     }
     _write_active(record)
     return {"ok": True, **record}

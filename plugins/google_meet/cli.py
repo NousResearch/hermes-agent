@@ -62,6 +62,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     join_p.add_argument("--duration", default=None, help="e.g. 30m, 2h, 90s")
     join_p.add_argument("--headed", action="store_true", help="show browser")
     join_p.add_argument("--join-style", choices=("normal", "companion"), default="normal", help="normal participant join or lower-presence Companion Mode")
+    join_p.add_argument("--caption-language", default="Korean", help="Meet captions meeting language to request (default: Korean; use English/auto/skip as needed)")
     join_p.add_argument(
         "--mode", choices=("transcribe", "realtime"), default="transcribe",
         help="transcribe (default, listen-only) or realtime (speak via OpenAI Realtime)"
@@ -128,6 +129,7 @@ def meet_command(args: argparse.Namespace) -> int:
             headed=args.headed,
             mode=getattr(args, "mode", "transcribe"),
             join_style=getattr(args, "join_style", "normal"),
+            caption_language=getattr(args, "caption_language", "Korean"),
             node=getattr(args, "node", None),
         )
     if sub == "status":
@@ -379,6 +381,7 @@ def _cmd_join(
     headed: bool,
     mode: str = "transcribe",
     join_style: str = "normal",
+    caption_language: str = "Korean",
     node: Optional[str] = None,
 ) -> int:
     if not _is_safe_meet_url(url):
@@ -402,6 +405,7 @@ def _cmd_join(
             res = client.start_bot(
                 url=url, guest_name=guest_name, duration=duration,
                 headed=headed, mode=mode, join_style=join_style,
+                caption_language=caption_language,
             )
         except Exception as e:
             print(f"remote start_bot failed: {e}")
@@ -418,6 +422,7 @@ def _cmd_join(
         auth_state=str(auth) if auth.is_file() else None,
         mode=mode,
         join_style=join_style,
+        caption_language=caption_language,
     )
     print(json.dumps(res, indent=2))
     return 0 if res.get("ok") else 1

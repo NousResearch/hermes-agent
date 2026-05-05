@@ -194,6 +194,8 @@ def test_start_spawns_subprocess_and_writes_active_pointer(tmp_path):
     assert captured_env["HERMES_MEET_URL"] == "https://meet.google.com/abc-defg-hij"
     assert captured_env["HERMES_MEET_GUEST_NAME"] == "Test Bot"
     assert captured_env["HERMES_MEET_DURATION"] == "15m"
+    assert captured_env["HERMES_MEET_CAPTION_LANGUAGE"] == "Korean"
+    assert res["caption_language"] == "Korean"
     # python -m plugins.google_meet.meet_bot
     assert any("plugins.google_meet.meet_bot" in a for a in captured_argv)
 
@@ -893,13 +895,36 @@ def test_detect_admission_returns_false_on_error():
     assert _detect_admission(_FakePage()) is False
 
 
-def test_detect_admission_true_when_probe_returns_true():
+def test_detect_admission_true_when_probe_returns_call_surface():
     from plugins.google_meet.meet_bot import _detect_admission
 
     class _FakePage:
-        def evaluate(self, _js): return True
+        def evaluate(self, _js):
+            return {
+                "href": "https://meet.google.com/abc-defg-hij",
+                "title": "Meet",
+                "hasLobbyText": False,
+                "hasPrejoinText": False,
+                "callControls": [
+                    {"aria": "Leave call", "text": ""},
+                    {"aria": "Turn on captions", "text": ""},
+                ],
+            }
 
     assert _detect_admission(_FakePage()) is True
+
+
+def test_caption_language_defaults_and_js_telemetry():
+    from plugins.google_meet.meet_bot import _normalize_caption_language, _set_caption_language_js
+
+    assert _normalize_caption_language("ko") == "Korean"
+    assert _normalize_caption_language("한국어") == "Korean"
+    assert _normalize_caption_language("en") == "English"
+    js = _set_caption_language_js("ko")
+    assert "const target = \"Korean\"" in js
+    assert "meeting language" in js
+    assert "clicked_language_option" in js
+    assert "already_visible" in js
 
 
 def test_enable_captions_js_clicks_caption_button_before_keyboard_fallback():
@@ -924,7 +949,16 @@ def test_click_join_noops_when_already_in_call(monkeypatch):
             self.clicked = False
 
         def evaluate(self, _js):
-            return True
+            return {
+                "href": "https://meet.google.com/abc-defg-hij",
+                "title": "Meet",
+                "hasLobbyText": False,
+                "hasPrejoinText": False,
+                "callControls": [
+                    {"aria": "Leave call", "text": ""},
+                    {"aria": "Turn on captions", "text": ""},
+                ],
+            }
 
         def get_by_role(self, *args, **kwargs):
             self.clicked = True
@@ -971,6 +1005,51 @@ def test_prejoin_listen_only_turns_off_enabled_camera_and_microphone():
     assert "Turn off camera" in page.clicked
     assert "Turn on microphone" not in page.clicked
     assert "Turn on camera" not in page.clicked
+
+
+def test_click_join_prefers_visible_join_here_too_over_join_now(monkeypatch):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    monkeypatch.setenv("HERMES_MEET_JOIN_BUTTON_TIMEOUT", "1")
+
+    class _FakeLocator:
+        def __init__(self, page, label, visible=False):
+            self.page = page
+            self.label = label
+            self.visible = visible
+            self.first = self
+
+        def count(self):
+            return 1 if self.visible else 0
+
+        def is_visible(self):
+            return self.visible
+
+        def click(self, timeout=None):
+            self.page.clicked.append(self.label)
+
+    class _FakePage:
+        def __init__(self):
+            self.clicked = []
+
+        def evaluate(self, _js):
+            return False
+
+        def get_by_role(self, role, name=None, exact=False):
+            assert role == "button"
+            label = str(name)
+            return _FakeLocator(self, label, visible=label in {"Join here too", "Join now"})
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    state = _BotState(out_dir=Path(os.environ["HERMES_HOME"]) / "prefer-visible-join-here-too",
+                      meeting_id="x-y-z", url="https://meet.google.com/x-y-z")
+    page = _FakePage()
+    _click_join(page, state)
+
+    assert page.clicked == ["Join here too"]
+    assert state.error is None
 
 
 def test_click_join_prefers_join_here_too_via_other_ways_over_switch_here(monkeypatch):
@@ -1027,6 +1106,38 @@ def test_click_join_prefers_join_here_too_via_other_ways_over_switch_here(monkey
     assert page.clicked == ["Other ways to join", "Join here too"]
     assert "Switch here" not in page.clicked
     assert state.error is None
+
+
+def test_admission_evidence_allows_same_account_stay_prompt():
+    from plugins.google_meet.meet_bot import _admission_evidence
+
+    evidence = _admission_evidence({
+        "href": "https://meet.google.com/abc-defg-hij",
+        "title": "Meet",
+        "textSample": "Leave call Chat with everyone Your call is ending soon Join now",
+        "hasLobbyText": False,
+        "hasPrejoinText": True,
+        "callControls": [
+            {"aria": "Turn off microphone", "text": "mic"},
+            {"aria": "Turn off camera", "text": "videocam"},
+            {"aria": "Leave call", "text": "call_end"},
+        ],
+    })
+
+    assert evidence is not None
+    assert evidence["method"] == "leave_plus_call_controls_with_stay_prompt"
+
+
+def test_try_stay_in_call_treats_join_now_as_affirmative():
+    from plugins.google_meet.meet_bot import _try_stay_in_call
+
+    class _FakePage:
+        def evaluate(self, js):
+            assert "call is ending soon" in js
+            assert "join now" in js
+            return True
+
+    assert _try_stay_in_call(_FakePage()) is True
 
 
 def test_detect_denied_returns_false_on_error():

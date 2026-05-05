@@ -116,6 +116,10 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                 "enum": ["normal", "companion"],
                 "description": "normal (default) or companion for Google's lower-presence Companion Mode join flow.",
             },
+            "caption_language": {
+                "type": "string",
+                "description": "Meet captions meeting language to request. Defaults to Korean; use English/auto/skip as needed.",
+            },
             "duration": {
                 "type": "string",
                 "description": (
@@ -266,6 +270,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
                 headed=bool(args.get("headed", False)),
                 mode=mode,
                 join_style=join_style,
+                caption_language=str(args.get("caption_language") or "Korean"),
             )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
@@ -285,6 +290,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         duration=str(args.get("duration")) if args.get("duration") else None,
         mode=mode,
         join_style=join_style,
+        caption_language=str(args.get("caption_language") or "Korean"),
     )
     return _json({"success": bool(res.get("ok")), **res})
 

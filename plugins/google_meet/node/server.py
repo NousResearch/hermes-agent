@@ -127,7 +127,7 @@ class NodeServer:
                 kwargs = {
                     k: payload[k]
                     for k in ("url", "guest_name", "duration", "headed", "mode", "join_style",
-                              "auth_state", "chrome_profile", "session_id", "out_dir")
+                              "caption_language", "auth_state", "chrome_profile", "session_id", "out_dir")
                     if k in payload
                 }
                 if self.chrome_profile and not kwargs.get("chrome_profile"):

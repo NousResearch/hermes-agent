@@ -93,6 +93,12 @@ def _is_meet_ui_announcement(text: str) -> bool:
         "your hand is lowered.",
         "your hand is lowered",
         "gemini is taking notes",
+        "your camera is on. your microphone is on.",
+        "your camera is on. your microphone is on",
+        "ask gemini is on. meeting language set to korean.",
+        "ask gemini is on. meeting language set to korean",
+        "your microphone is off.",
+        "your microphone is off",
     }
     if t in noisy_exact:
         return True
@@ -103,7 +109,11 @@ def _is_meet_ui_announcement(text: str) -> bool:
         "you're the only one here",
         "waiting for others to join",
     )
-    return any(fragment in t for fragment in noisy_fragments)
+    if any(fragment in t for fragment in noisy_fragments):
+        return True
+    if re.search(r"^(video for .+ was (added to|removed from) the main screen|.+ is on the main screen|the main screen now has)", t):
+        return True
+    return False
 
 
 class _BotState:
@@ -121,6 +131,9 @@ class _BotState:
         self.caption_observer_attached = False
         self.last_caption_probe_at: Optional[float] = None
         self.caption_debug_path: Optional[str] = None
+        self.caption_language_requested: Optional[str] = None
+        self.caption_language_set_result: Optional[str] = None
+        self.caption_language_evidence: dict = {}
         self.lobby_waiting = False
         self.join_attempted_at: Optional[float] = None
         self.joined_at: Optional[float] = None
@@ -136,6 +149,9 @@ class _BotState:
         self.last_audio_out_at: Optional[float] = None
         self.last_barge_in_at: Optional[float] = None
         self.leave_reason: Optional[str] = None
+        self.meet_surface: dict = {}
+        self.meet_surface_at: Optional[float] = None
+        self.admission_evidence: Optional[dict] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
@@ -179,6 +195,9 @@ class _BotState:
             "captionObserverAttached": self.caption_observer_attached,
             "lastCaptionProbeAt": self.last_caption_probe_at,
             "captionDebugPath": self.caption_debug_path,
+            "captionLanguageRequested": self.caption_language_requested,
+            "captionLanguageSetResult": self.caption_language_set_result,
+            "captionLanguageEvidence": self.caption_language_evidence,
             "lobbyWaiting": self.lobby_waiting,
             "joinAttemptedAt": self.join_attempted_at,
             "joinedAt": self.joined_at,
@@ -196,6 +215,9 @@ class _BotState:
             "lastAudioOutAt": self.last_audio_out_at,
             "lastBargeInAt": self.last_barge_in_at,
             "leaveReason": self.leave_reason,
+            "meetSurfaceAt": self.meet_surface_at,
+            "meetSurface": self.meet_surface,
+            "admissionEvidence": self.admission_evidence,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -223,6 +245,19 @@ class _BotState:
         self.last_caption_probe_at = time.time()
         if debug_path is not None:
             self.caption_debug_path = debug_path
+        self._flush()
+
+    def set_meet_surface(self, surface: dict, *, admission_evidence: Optional[dict] = None) -> None:
+        self.meet_surface = surface or {}
+        self.meet_surface_at = time.time()
+        if admission_evidence is not None:
+            self.admission_evidence = admission_evidence
+        self._flush()
+
+    def set_caption_language(self, requested: str, result: str, evidence: Optional[dict] = None) -> None:
+        self.caption_language_requested = requested
+        self.caption_language_set_result = result
+        self.caption_language_evidence = evidence or {}
         self._flush()
 
 
@@ -253,7 +288,7 @@ _CAPTION_OBSERVER_JS = r"""
     });
   }
 
-  function scan(root) {
+  function scan(root, allowFallback = true) {
     const rows = root.querySelectorAll('div[jsname="dsyhDe"], div.CNusmb, div.TBMuR');
     if (rows.length) {
       rows.forEach((row) => {
@@ -265,20 +300,28 @@ _CAPTION_OBSERVER_JS = r"""
       });
       return;
     }
+    if (!allowFallback) return;
     const text = (root.innerText || '').split('\n').filter(Boolean).pop();
     pushEntry('', text);
   }
 
   function attach() {
     const el = document.querySelector(captionSelector);
-    if (!el) return false;
-    if (!window.__hermesMeetObserver) {
-      window.__hermesMeetObserver = new MutationObserver(() => scan(el));
+    if (el && !window.__hermesMeetObserver) {
+      window.__hermesMeetObserver = new MutationObserver(() => scan(el, true));
       window.__hermesMeetObserver.observe(el, { childList: true, subtree: true, characterData: true });
     }
-    window.__hermesMeetAttached = true;
-    scan(el);
-    return true;
+    if (!window.__hermesMeetBodyObserver && document.body) {
+      // Same-account/second-tab Meet surfaces sometimes emit actual caption rows
+      // outside the first aria-live region we find. Observe body too, but only
+      // harvest known caption row structures to avoid arbitrary UI noise.
+      window.__hermesMeetBodyObserver = new MutationObserver(() => scan(document.body, false));
+      window.__hermesMeetBodyObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+    window.__hermesMeetAttached = Boolean(el || window.__hermesMeetBodyObserver);
+    if (el) scan(el, true);
+    if (document.body) scan(document.body, false);
+    return Boolean(window.__hermesMeetAttached);
   }
 
   if (!window.__hermesMeetDrain) {
@@ -309,6 +352,17 @@ def _enable_captions_js() -> str:
     """
     return r"""
     (() => {
+      const candidates = Array.from(document.querySelectorAll('button,[role="button"]'));
+      const direct = candidates.find((b) => {
+        const label = `${b.getAttribute('aria-label') || ''} ${b.innerText || ''}`;
+        if (!/turn on captions|자막.*켜|자막.*사용/i.test(label)) return false;
+        if (/turn off captions|자막.*끄|자막.*중지/i.test(label)) return false;
+        return b.offsetParent !== null || b.getClientRects().length > 0;
+      });
+      if (direct) {
+        direct.click();
+        return 'clicked_direct';
+      }
       const selectors = [
         'button[aria-label*="caption" i]',
         'button[aria-label*="자막" i]',
@@ -378,12 +432,174 @@ def _write_caption_debug_artifacts(page, out_dir: Path, *, reason: str) -> Optio
         return None
 
 
+def _normalize_caption_language(language: str) -> str:
+    """Return Meet's display label for common caption language aliases."""
+    raw = (language or "").strip()
+    if not raw:
+        return ""
+    aliases = {
+        "ko": "Korean",
+        "ko-kr": "Korean",
+        "kr": "Korean",
+        "korean": "Korean",
+        "한국어": "Korean",
+        "en": "English",
+        "en-us": "English",
+        "english": "English",
+        "영어": "English",
+    }
+    return aliases.get(raw.lower(), raw)
+
+
+def _set_caption_language_js(language: str) -> str:
+    """Best-effort JS to set Google Meet's meeting/caption language.
+
+    Meet's settings UI is a custom Material surface that changes frequently.
+    This script intentionally uses text/ARIA evidence and returns a structured
+    result instead of assuming one stable selector. It is safe to call every few
+    seconds: if the requested language already appears in the visible settings
+    surface it returns ``already_visible`` without toggling captions.
+    """
+    target = json.dumps(_normalize_caption_language(language))
+    return f"""
+    (() => {{
+      const target = {target};
+      const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const labelOf = (el) => `${{el.getAttribute('aria-label') || ''}} ${{el.innerText || el.textContent || ''}}`.replace(/\s+/g, ' ').trim();
+      const clickFirst = (patterns) => {{
+        const els = Array.from(document.querySelectorAll('button,[role=\"button\"],[role=\"menuitem\"],[role=\"tab\"]'));
+        for (const pattern of patterns) {{
+          const re = new RegExp(pattern, 'i');
+          const hit = els.find((el) => visible(el) && re.test(labelOf(el)));
+          if (hit) {{ hit.click(); return {{clicked: labelOf(hit).slice(0, 160)}}; }}
+        }}
+        return null;
+      }};
+      const bodyText = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
+      const evidence = {{bodyTextTail: bodyText.slice(-1200)}};
+      // Do NOT treat Ask Gemini's "Meeting language set to Korean" banner as
+      // proof that Live Captions are using Korean. The caption settings panel
+      // exposes the actual setting as e.g. "language English closed_caption
+      // Live captions". Only that caption-language-local evidence counts.
+      const captionLangRe = new RegExp(`language\\s+${{target}}\\s+closed_caption\\s+Live captions|Live captions.{{0,120}}language\\s+${{target}}`, 'i');
+      if (target && captionLangRe.test(bodyText)) return {{result: 'already_visible', evidence}};
+
+      const directCaptionSettings = clickFirst(['open caption settings', 'caption settings', '자막 설정']);
+      if (directCaptionSettings) evidence.directCaptionSettings = directCaptionSettings.clicked;
+      const more = clickFirst(['more options', 'more actions', '기타 옵션', '더보기']);
+      if (more) evidence.moreOptions = more.clicked;
+      const settings = clickFirst(['^settings$', 'settings', '^설정$', '설정']);
+      if (settings) evidence.settings = settings.clicked;
+      const captions = clickFirst(['^captions$', 'captions', '^자막$', '자막']);
+      if (captions) evidence.captions = captions.clicked;
+
+      const afterOpenText = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
+      evidence.afterOpenTail = afterOpenText.slice(-1600);
+      if (target && captionLangRe.test(afterOpenText)) return {{result: 'already_visible_after_open', evidence}};
+
+      const controls = Array.from(document.querySelectorAll('button,[role=\"button\"],[role=\"option\"],[role=\"menuitemradio\"],[role=\"menuitem\"],[role=\"listbox\"],[role=\"combobox\"]'));
+      const languageControl = controls.find((el) => {{
+        const label = labelOf(el);
+        return visible(el)
+          && /(meeting language|language of the meeting|spoken language|caption language|언어)/i.test(label)
+          && !/ask gemini|gemini/i.test(label);
+      }});
+      if (languageControl) {{
+        evidence.languageControl = labelOf(languageControl).slice(0, 200);
+        languageControl.click();
+      }}
+      const options = Array.from(document.querySelectorAll('button,[role=\"button\"],[role=\"option\"],[role=\"menuitemradio\"],[role=\"menuitem\"],li,div[role=\"listitem\"]'));
+      const targetOption = options.find((el) => visible(el) && new RegExp(`(^|\\b)${{target}}($|\\b)`, 'i').test(labelOf(el)));
+      if (targetOption) {{
+        evidence.targetOption = labelOf(targetOption).slice(0, 200);
+        targetOption.click();
+        return {{result: 'clicked_language_option', evidence}};
+      }}
+      return {{result: languageControl ? 'opened_language_control_but_option_not_found' : (settings || captions ? 'settings_opened_option_not_found' : 'settings_not_found'), evidence}};
+    }})();
+    """
+
+
+def _set_caption_language(page, state: "_BotState", language: str) -> bool:
+    """Try to set Meet's caption/meeting language and record telemetry."""
+    requested = _normalize_caption_language(language)
+    if not requested or requested.lower() in ("auto", "default", "none", "off", "skip"):
+        state.set_caption_language(requested, "skipped", {})
+        return False
+    try:
+        outcome = page.evaluate(_set_caption_language_js(requested)) or {}
+        if not isinstance(outcome, dict):
+            outcome = {"result": str(outcome)}
+        result = str(outcome.get("result") or "unknown")
+        evidence = outcome.get("evidence") if isinstance(outcome.get("evidence"), dict) else outcome
+        if result == "opened_language_control_but_option_not_found":
+            # Meet's language list can be virtualized: after opening the
+            # language control, the requested language may not be in the DOM
+            # until searched. Try locator and keyboard search before declaring
+            # failure, and keep telemetry even when it does not succeed.
+            keyboard_evidence = {"attempted": True}
+            try:
+                try:
+                    loc = page.get_by_text(re.compile(r"Korean|한국어", re.I)).first
+                    if loc.count():
+                        try:
+                            loc.click(timeout=2_000, force=True)
+                            keyboard_evidence["locatorClicked"] = True
+                        except Exception as fe:
+                            keyboard_evidence["locatorClickError"] = str(fe)
+                        try:
+                            loc.evaluate("""
+                                (el) => {
+                                  let node = el;
+                                  for (let i = 0; node && i < 8; i++, node = node.parentElement) {
+                                    const label = `${node.getAttribute('aria-label') || ''} ${node.innerText || node.textContent || ''}`;
+                                    if (/Korean|한국어/i.test(label)) {
+                                      node.click();
+                                      const radio = node.querySelector && node.querySelector('input[type=radio], input[type=checkbox]');
+                                      if (radio) radio.click();
+                                      return;
+                                    }
+                                  }
+                                  el.click();
+                                }
+                            """)
+                            keyboard_evidence["locatorEvaluatedClick"] = True
+                        except Exception as ee:
+                            keyboard_evidence["locatorEvaluateError"] = str(ee)
+                        page.wait_for_timeout(500)
+                except Exception as le:
+                    keyboard_evidence["locatorError"] = str(le)
+                # Typeahead fallback for virtualized language menus.
+                page.keyboard.press("KeyK")
+                page.wait_for_timeout(100)
+                page.keyboard.type("orean", delay=20)
+                page.wait_for_timeout(250)
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(500)
+                confirm = page.evaluate(_set_caption_language_js(requested)) or {}
+                keyboard_evidence["confirm"] = confirm
+                confirm_blob = json.dumps(confirm, ensure_ascii=False) if isinstance(confirm, dict) else str(confirm)
+                if isinstance(confirm, dict) and (
+                    str(confirm.get("result") or "") in ("already_visible", "already_visible_after_open", "clicked_language_option")
+                    or re.search(r"language\s+%s\s+closed_caption\s+Live captions" % re.escape(requested), confirm_blob, re.I)
+                ):
+                    result = "keyboard_search_selected"
+                evidence = {"initial": evidence, "keyboardFallback": keyboard_evidence}
+            except Exception as e:
+                evidence = {"initial": evidence, "keyboardFallback": {**keyboard_evidence, "error": str(e)}}
+        state.set_caption_language(requested, result, evidence)
+        return result in ("already_visible", "already_visible_after_open", "clicked_language_option", "keyboard_search_selected")
+    except Exception as e:
+        state.set_caption_language(requested, f"failed:{type(e).__name__}", {"error": str(e)})
+        return False
+
+
 def _enable_and_probe_captions(page, state: "_BotState", out_dir: Path) -> bool:
     """Try to turn on captions, install observer, and verify attachment."""
     result: Optional[str] = None
     try:
         result = page.evaluate(_enable_captions_js())
-        if result != "clicked":
+        if result not in ("clicked", "clicked_direct"):
             try:
                 page.keyboard.press("c")
             except Exception:
@@ -632,6 +848,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     chrome_profile = os.environ.get("HERMES_MEET_CHROME_PROFILE", "").strip()
     guest_name = os.environ.get("HERMES_MEET_GUEST_NAME", "Hermes Agent")
     join_style = os.environ.get("HERMES_MEET_JOIN_STYLE", "normal").strip().lower()
+    caption_language = _normalize_caption_language(os.environ.get("HERMES_MEET_CAPTION_LANGUAGE", "Korean"))
     duration_s = _parse_duration(os.environ.get("HERMES_MEET_DURATION", ""))
     # v2: optional realtime mode. Enabled when HERMES_MEET_MODE=realtime.
     mode = os.environ.get("HERMES_MEET_MODE", "transcribe").strip().lower()
@@ -765,7 +982,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             # Install caption observer and attempt to enable captions. We do
             # not report captioning=true until the Meet caption region exists
-            # and the MutationObserver is actually attached.
+            # and the MutationObserver is actually attached. Korean is the
+            # default because most of Joohyun's meetings are Korean; callers
+            # can override with HERMES_MEET_CAPTION_LANGUAGE / CLI option.
+            _set_caption_language(page, state, caption_language)
             _enable_and_probe_captions(page, state, out_dir)
 
             # Note: in_call=False until admission is confirmed (we detect
@@ -808,8 +1028,19 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             last_admission_check = 0.0
             last_caption_retry = 0.0
             last_alone_check = 0.0
+            last_surface_refresh = 0.0
             alone_since: Optional[float] = None
             alone_grace_s = float(os.environ.get("HERMES_MEET_ALONE_GRACE", "120"))
+            # Companion mode is often a second-screen session for the same
+            # signed-in Google account. Meet may not count the user's primary
+            # tab as "someone else" from that companion session, which makes
+            # our old auto-leave heuristic fire during valid tests. Keep
+            # normal joins protected by default, but do not auto-exit companion
+            # sessions unless explicitly requested.
+            alone_exit_enabled = os.environ.get(
+                "HERMES_MEET_ALONE_EXIT",
+                "0" if join_style == "companion" else "1",
+            ).lower() not in ("0", "false", "no", "off")
             while not stop_flag["stop"]:
                 now = time.time()
                 if deadline and now > deadline:
@@ -819,8 +1050,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 # Admission detection every ~3s until admitted.
                 if not state.in_call and (now - last_admission_check) > 3.0:
                     last_admission_check = now
-                    admitted = _detect_admission(page)
-                    if admitted:
+                    surface = _probe_meet_surface(page)
+                    evidence = _admission_evidence(surface)
+                    state.set_meet_surface(surface, admission_evidence=evidence)
+                    if evidence:
                         state.set(
                             in_call=True,
                             lobby_waiting=False,
@@ -842,11 +1075,31 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                         )
                         break
 
+                if state.in_call:
+                    _dismiss_got_it(page)
+                    _ensure_prejoin_listen_only(page)
+                    _try_stay_in_call(page)
+                    if state.caption_language_set_result not in ("already_visible", "already_visible_after_open", "clicked_language_option", "skipped"):
+                        _set_caption_language(page, state, caption_language)
+                    if (now - last_surface_refresh) > 5.0:
+                        last_surface_refresh = now
+                        surface = _probe_meet_surface(page)
+                        state.set_meet_surface(surface)
+                        surface_labels = " ".join(
+                            f"{button.get('aria', '')} {button.get('text', '')}"
+                            for button in (surface.get("buttons") or [])
+                            if isinstance(button, dict)
+                        )
+                        if re.search(r"turn on captions|자막.*켜|자막.*사용", surface_labels, re.I):
+                            _enable_and_probe_captions(page, state, out_dir)
+
                 # Once admitted, leave automatically after everyone else is
                 # gone for a short grace period. This supports the intended
-                # transcribe-only mode: the user manually starts the bot, then
-                # the bot exits when the meeting really ends.
-                if state.in_call and (now - last_alone_check) > 10.0:
+                # transcribe-only mode for normal joins. In Companion mode this
+                # is disabled by default because a same-account companion
+                # session can see the primary Joohyun tab as "self", not as an
+                # other participant.
+                if alone_exit_enabled and state.in_call and (now - last_alone_check) > 10.0:
                     last_alone_check = now
                     if _detect_no_other_participants(page):
                         if alone_since is None:
@@ -859,7 +1112,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
                 # Retry caption enable/observer attachment while in-call; Meet
                 # sometimes renders controls only after admission or focus.
-                if state.in_call and not state.caption_observer_attached and (now - last_caption_retry) > 5.0:
+                if state.in_call and (not state.caption_region_found or not state.caption_observer_attached) and (now - last_caption_retry) > 5.0:
                     last_caption_retry = now
                     _enable_and_probe_captions(page, state, out_dir)
 
@@ -945,46 +1198,96 @@ def _try_companion_mode(page) -> bool:
     """Best-effort: switch Meet prejoin into Companion Mode.
 
     Google exposes this either as a direct "Use Companion mode" action or
-    behind "Other joining options". We try both without failing normal join.
+    behind "Other ways to join". The prejoin UI is lazy-rendered, and the
+    option often appears only after dismissing the "Switch here" hint, so poll
+    briefly and try both role-based and text-based locators.
     """
-    candidates = (
+    companion_labels = (
         "Use Companion mode",
+        "Use companion mode",
         "Companion mode",
         "동반 모드 사용",
         "컴패니언 모드",
     )
-    for label in candidates:
-        try:
-            loc = page.get_by_role("button", name=re.compile(label, re.I)).first
-            if loc.count() and loc.is_visible():
-                loc.click(timeout=2_000)
+    other_ways_labels = (
+        "Other ways to join",
+        "Other joining options",
+        "다른 참여 방법",
+        "기타 참여 옵션",
+    )
+
+    def _click_visible(label: str, *, include_text: bool = True) -> bool:
+        pattern = re.compile(re.escape(label), re.I)
+        locators = []
+        for role in ("button", "link"):
+            try:
+                locators.append(page.get_by_role(role, name=pattern).first)
+            except Exception:
+                pass
+        if include_text:
+            try:
+                locators.append(page.get_by_text(pattern).first)
+            except Exception:
+                pass
+        for loc in locators:
+            try:
+                if loc.count() and loc.is_visible():
+                    loc.click(timeout=3_000)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    deadline = time.time() + float(os.environ.get("HERMES_MEET_COMPANION_TIMEOUT", "20"))
+    expanded_other_ways = False
+    while time.time() < deadline:
+        # Existing-call hint can cover the alternate join controls.
+        _dismiss_got_it(page)
+        _ensure_prejoin_listen_only(page)
+
+        for label in companion_labels:
+            if _click_visible(label):
                 return True
-        except Exception:
-            pass
-        try:
-            loc = page.get_by_text(re.compile(label, re.I)).first
-            if loc.count() and loc.is_visible():
-                loc.click(timeout=2_000)
-                return True
-        except Exception:
-            pass
-    for label in ("Other joining options", "Other ways to join", "다른 참여 방법", "기타 참여 옵션"):
-        try:
-            loc = page.get_by_role("button", name=re.compile(label, re.I)).first
-            if loc.count() and loc.is_visible():
-                loc.click(timeout=2_000)
-                time.sleep(0.5)
-                for companion in candidates:
+
+        if not expanded_other_ways:
+            for label in other_ways_labels:
+                if _click_visible(label, include_text=False):
+                    expanded_other_ways = True
                     try:
-                        comp = page.get_by_text(re.compile(companion, re.I)).first
-                        if comp.count() and comp.is_visible():
-                            comp.click(timeout=2_000)
-                            return True
+                        page.wait_for_timeout(500)
                     except Exception:
-                        pass
+                        time.sleep(0.5)
+                    break
+
+        try:
+            page.wait_for_timeout(500)
         except Exception:
-            pass
+            time.sleep(0.5)
     return False
+
+
+def _dismiss_got_it(page) -> bool:
+    """Dismiss Meet transient hints/panels if they are covering call controls."""
+    clicked = False
+    try:
+        got_it = page.get_by_role("button", name="Got it", exact=True).first
+        if got_it.count() and got_it.is_visible():
+            got_it.click(timeout=3_000)
+            clicked = True
+    except Exception:
+        pass
+    try:
+        has_ask_gemini_panel = page.evaluate(
+            "() => /New Ask Gemini|Gemini is available to answer questions/i.test(document.body ? document.body.innerText || '' : '')"
+        )
+        if has_ask_gemini_panel:
+            close = page.get_by_role("button", name="Close", exact=True).first
+            if close.count() and close.is_visible():
+                close.click(timeout=3_000)
+                clicked = True
+    except Exception:
+        pass
+    return clicked
 
 
 def _try_guest_name(page, guest_name: str) -> None:
@@ -998,39 +1301,76 @@ def _try_guest_name(page, guest_name: str) -> None:
         pass
 
 
-def _detect_admission(page) -> bool:
-    """True if we're clearly past the lobby and in the call itself.
-
-    Uses a JS-side probe because Meet's DOM structure varies by client
-    version. We check several high-signal indicators and declare admission
-    on the first hit:
-
-      1. Leave-call button is present (``aria-label`` contains "eave call").
-      2. Caption region has appeared (we installed the observer and it attached).
-      3. The participant list container is visible.
-
-    Conservative by default — returns False on any error.
-    """
+def _probe_meet_surface(page) -> dict:
+    """Return compact visible Meet UI evidence for status/debugging."""
     probe = r"""
     (() => {
-      const leave = document.querySelector('button[aria-label*="eave call" i]');
-      if (leave) return true;
-      if (window.__hermesMeetInstalled) {
-        const caps = document.querySelector(
-          '[role="region"][aria-label*="aption" i], ' +
-          'div[jsname="YSxPC"], div[jsname="tgaKEf"]'
-        );
-        if (caps) return true;
-      }
-      const parts = document.querySelector('[aria-label*="articipants" i]');
-      if (parts) return true;
-      return false;
+      const text = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
+      const buttons = Array.from(document.querySelectorAll('button[aria-label], button'))
+        .map((button) => ({
+          aria: button.getAttribute('aria-label') || '',
+          text: (button.innerText || '').replace(/\s+/g, ' ').trim(),
+          visible: !!(button.offsetWidth || button.offsetHeight || button.getClientRects().length),
+        }))
+        .filter((button) => button.visible && (button.aria || button.text))
+        .slice(0, 80);
+      const callControls = buttons.filter((button) => {
+        const label = `${button.aria} ${button.text}`;
+        return /leave call|hang up|raise hand|captions|microphone|camera|present now|more options|통화에서 나가기|마이크|카메라|자막|발표/i.test(label);
+      });
+      const peopleText = text.match(/(?:Show everyone|People|참여자|Everyone|모든 사용자).{0,120}/i);
+      return {
+        href: location.href,
+        title: document.title || '',
+        textSample: text.slice(0, 1200),
+        buttons,
+        callControls,
+        hasVideoCallPath: /\/[^/]*[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(location.pathname),
+        hasPrejoinText: /ready to join|ask to join|join now|other ways to join|use companion mode|참여 요청|지금 참여|다른 참여|컴패니언/i.test(text),
+        hasLobbyText: /asking to be let in|waiting.*admit|host.*let you in|참여.*요청|승인.*대기|대기 중/i.test(text),
+        hasCallText: /you’re the only one here|you're the only one here|you are the only one here|show everyone|present now|raise hand|captions|참여자|발표|손들기|자막/i.test(text),
+        peopleText: peopleText ? peopleText[0] : '',
+      };
     })();
     """
     try:
-        return bool(page.evaluate(probe))
-    except Exception:
-        return False
+        value = page.evaluate(probe)
+        return value if isinstance(value, dict) else {}
+    except Exception as e:
+        return {"probeError": str(e)}
+
+
+def _admission_evidence(surface: dict) -> Optional[dict]:
+    """Return evidence dict only when UI strongly indicates in-call state."""
+    controls = surface.get("callControls") or []
+    labels = " ".join(
+        f"{control.get('aria', '')} {control.get('text', '')}" for control in controls if isinstance(control, dict)
+    )
+    has_leave = bool(re.search(r"leave call|hang up|통화에서 나가기", labels, re.I))
+    has_second_control = bool(re.search(r"raise hand|present now|captions|microphone|camera|손들기|발표|자막|마이크|카메라", labels, re.I))
+    button_labels = " ".join(
+        f"{button.get('aria', '')} {button.get('text', '')}" for button in (surface.get("buttons") or []) if isinstance(button, dict)
+    )
+    text_sample = f"{surface.get('textSample') or ''} {button_labels}"
+    has_stay_prompt = bool(re.search(r"call is ending soon|stay in the call|통화.*곧.*종료|계속.*통화", text_sample, re.I))
+    # Same-account second-tab joins can show a "Your call is ending soon" modal
+    # with a "Join now" button after the browser is already in the call. That
+    # leaves Meet's text looking prejoin-ish even though the high-signal call
+    # controls are present. Treat that as admitted so the main loop can click
+    # the stay prompt and attach captions.
+    if has_leave and has_second_control and not surface.get("hasLobbyText") and (not surface.get("hasPrejoinText") or has_stay_prompt):
+        return {
+            "method": "leave_plus_call_controls" + ("_with_stay_prompt" if has_stay_prompt else ""),
+            "labels": labels[:500],
+            "href": surface.get("href"),
+            "title": surface.get("title"),
+        }
+    return None
+
+
+def _detect_admission(page) -> bool:
+    surface = _probe_meet_surface(page)
+    return _admission_evidence(surface) is not None
 
 
 def _detect_denied(page) -> bool:
@@ -1043,6 +1383,35 @@ def _detect_denied(page) -> bool:
       if (/You can't join this video call/i.test(text)) return true;
       if (/You were removed from the meeting/i.test(text)) return true;
       if (/No one responded to your request to join/i.test(text)) return true;
+      return false;
+    })();
+    """
+    try:
+        return bool(page.evaluate(probe))
+    except Exception:
+        return False
+
+
+def _try_stay_in_call(page) -> bool:
+    """Click Meet's auto-end prompt when the tab looks alone.
+
+    Same-account Companion Mode can show "Your call is ending soon" even while
+    the user's primary tab is present. If Meet offers an affirmative stay
+    action, click it so transcription tests do not die before captions arrive.
+    """
+    probe = r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      const buttons = Array.from(document.querySelectorAll('button'));
+      const buttonText = buttons.map((button) => `${button.getAttribute('aria-label') || ''} ${button.innerText || ''}`).join(' ');
+      if (!/call is ending soon|stay in the call|통화.*곧.*종료|계속.*통화/i.test(`${text} ${buttonText}`)) return false;
+      for (const button of buttons) {
+        const label = `${button.getAttribute('aria-label') || ''} ${button.innerText || ''}`;
+        if (/stay|keep|continue|join now|계속|유지|지금 참여/i.test(label)) {
+          button.click();
+          return true;
+        }
+      }
       return false;
     })();
     """
@@ -1148,7 +1517,11 @@ def _click_join(page, state: _BotState) -> None:
 
         _ensure_prejoin_listen_only(page)
 
-        for label in ("Join now", "Join here too", "Ask to join"):
+        # For a signed-in same-account second tab, "Join here too" is the
+        # safe path: it adds this browser as another participant while keeping
+        # the user's primary tab in the call. Prefer it over "Join now" when
+        # both are visible.
+        for label in ("Join here too", "Join now", "Ask to join"):
             try:
                 btn = page.get_by_role("button", name=label, exact=False).first
                 if btn.count() and btn.is_visible():

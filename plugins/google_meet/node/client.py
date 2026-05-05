@@ -78,6 +78,7 @@ class NodeClient:
         headed: bool = False,
         mode: str = "transcribe",
         join_style: str = "normal",
+        caption_language: str = "Korean",
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "url": url,
@@ -85,6 +86,7 @@ class NodeClient:
             "headed": bool(headed),
             "mode": mode,
             "join_style": join_style,
+            "caption_language": caption_language,
         }
         if duration is not None:
             payload["duration"] = duration

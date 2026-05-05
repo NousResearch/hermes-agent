@@ -8,7 +8,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -344,6 +344,218 @@ def test_bundled_router_rejects_unknown_slash_without_agent(tmp_path):
             "Unknown command `/unknown_control`. Type /commands to see what's available, "
             "or resend without the leading slash to send as a regular message."
         ]
+
+
+def test_bundled_router_rewrites_skill_slash_into_agent_prompt(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        profile_home = tmp_path / "coder"
+        profile_home.mkdir()
+        add_in_memory_route("ou_skill", profile_home)
+
+        fake_skill_commands = SimpleNamespace(
+            get_skill_commands=lambda: {"/demo-skill": {"name": "demo-skill"}},
+            resolve_skill_command_key=lambda command: "/demo-skill"
+            if command.replace("_", "-") == "demo-skill"
+            else None,
+            build_skill_invocation_message=lambda cmd_key, user_instruction, task_id=None: (
+                f"[skill:{cmd_key} task:{task_id}] {user_instruction}"
+            ),
+        )
+        fake_skill_utils = SimpleNamespace(get_disabled_skill_names=lambda platform=None: set())
+        monkeypatch.setitem(sys.modules, "agent", ModuleType("agent"))
+        monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+        monkeypatch.setitem(sys.modules, "agent.skill_utils", fake_skill_utils)
+
+        seen: dict[str, object] = {}
+
+        class Pool:
+            async def dispatch(self, profile_name, home, event):
+                seen["profile_name"] = profile_name
+                seen["home"] = home
+                seen["text"] = event.text
+                return "agent ok"
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: Pool())
+
+        sends: list[str] = []
+
+        class Adapter:
+            async def send_typing(self, _chat_id):
+                pass
+
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        event = SimpleNamespace(
+            text="/demo-skill write docs",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_skill",
+                user_name="skill-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(
+            router_mod.handle_async(
+                event=event,
+                gateway=SimpleNamespace(adapters={"feishu": Adapter()}),
+            )
+        )
+
+        assert seen == {
+            "profile_name": "coder",
+            "home": profile_home,
+            "text": "[skill:/demo-skill task:multitenancy:feishu:coder:oc_test:ou_skill] write docs",
+        }
+        assert sends == ["agent ok"]
+        clear_in_memory_routes()
+
+
+def test_bundled_router_delegates_plugin_slash_command(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        add_in_memory_route("ou_plugin", tmp_path)
+
+        called: dict[str, str] = {}
+
+        async def plugin_handler(args):
+            called["args"] = args
+            return f"plugin handled {args}"
+
+        fake_plugins = SimpleNamespace(
+            get_plugin_command_handler=lambda name: plugin_handler
+            if name == "demo-plugin"
+            else None
+        )
+        monkeypatch.setitem(sys.modules, "hermes_cli.plugins", fake_plugins)
+
+        class PoolShouldNotRun:
+            async def dispatch(self, *args, **kwargs):
+                raise AssertionError("plugin slash command leaked into AIAgent dispatch")
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: PoolShouldNotRun())
+
+        sends: list[str] = []
+
+        class Adapter:
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        event = SimpleNamespace(
+            text="/demo_plugin hi there",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_plugin",
+                user_name="plugin-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(
+            router_mod.handle_async(
+                event=event,
+                gateway=SimpleNamespace(adapters={"feishu": Adapter()}),
+            )
+        )
+
+        assert called == {"args": "hi there"}
+        assert sends == ["plugin handled hi there"]
+        clear_in_memory_routes()
+
+
+def test_bundled_router_handles_quick_command_alias(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        add_in_memory_route("ou_quick_alias", tmp_path)
+
+        class PoolShouldNotRun:
+            async def dispatch(self, *args, **kwargs):
+                raise AssertionError("quick-command alias leaked into AIAgent dispatch")
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: PoolShouldNotRun())
+
+        sends: list[str] = []
+
+        class Adapter:
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        class Gateway:
+            adapters = {"feishu": Adapter()}
+            config = {"quick_commands": {"mini": {"type": "alias", "target": "/model glm-5.1"}}}
+
+            async def _handle_model_command(self, event):
+                return f"model handler saw: {event.text}"
+
+        event = SimpleNamespace(
+            text="/mini high",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_quick_alias",
+                user_name="quick-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(router_mod.handle_async(event=event, gateway=Gateway()))
+
+        assert sends == ["model handler saw: /model glm-5.1 high"]
+        clear_in_memory_routes()
+
+
+def test_bundled_router_handles_quick_command_exec(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        add_in_memory_route("ou_quick_exec", tmp_path)
+
+        class PoolShouldNotRun:
+            async def dispatch(self, *args, **kwargs):
+                raise AssertionError("quick-command exec leaked into AIAgent dispatch")
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: PoolShouldNotRun())
+
+        sends: list[str] = []
+
+        class Adapter:
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        event = SimpleNamespace(
+            text="/ping",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_quick_exec",
+                user_name="quick-user",
+                chat_type="dm",
+            ),
+        )
+        gateway = SimpleNamespace(
+            adapters={"feishu": Adapter()},
+            config={"quick_commands": {"ping": {"type": "exec", "command": "printf quick-ok"}}},
+        )
+
+        asyncio.run(router_mod.handle_async(event=event, gateway=gateway))
+
+        assert sends == ["quick-ok"]
+        clear_in_memory_routes()
 
 
 def test_processing_outcome_fallback_without_gateway_package(monkeypatch):

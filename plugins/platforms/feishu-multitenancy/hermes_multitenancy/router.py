@@ -368,17 +368,35 @@ async def handle_async(*, event: Any, gateway: Any) -> None:
         if cmd_pair is not None:
             cmd_profile_name, cmd_profile_home = _resolve_route(sender, alt_id=sender_alt)
             cmd_profile = cmd_profile_name if cmd_profile_home is not None else None
-            await _handle_command(
+            skill_handled, skill_reply = _maybe_rewrite_skill_slash_command(
                 cmd_pair,
-                sender,
-                sender_alt,
-                cmd_profile,
-                cmd_profile_home,
-                chat_id,
-                gateway,
                 event,
+                gateway,
+                sender=sender,
+                sender_alt=sender_alt,
+                profile_name=cmd_profile,
+                profile_home=cmd_profile_home,
+                chat_id=chat_id,
             )
-            return
+            if skill_handled:
+                if skill_reply:
+                    adapter = _get_feishu_adapter(gateway)
+                    if adapter is not None:
+                        await _safe_call(adapter.send, chat_id, skill_reply)
+                    return
+                text = getattr(event, "text", "") or ""
+            else:
+                await _handle_command(
+                    cmd_pair,
+                    sender,
+                    sender_alt,
+                    cmd_profile,
+                    cmd_profile_home,
+                    chat_id,
+                    gateway,
+                    event,
+                )
+                return
 
         # Routing: SQLite table first, then in-memory spike fallback.
         profile_name, profile_home = _resolve_or_auto_provision_route(sender, alt_id=sender_alt)
@@ -488,6 +506,80 @@ def _processing_outcome(*, failed: bool) -> Any:
 
 
 # -- Command dispatch --------------------------------------------------------
+
+
+def _maybe_rewrite_skill_slash_command(
+    pair: tuple[str, str],
+    event: Any,
+    gateway: Any,
+    *,
+    sender: str,
+    sender_alt: Optional[str],
+    profile_name: Optional[str],
+    profile_home: Optional[Path],
+    chat_id: str,
+) -> tuple[bool, Optional[str]]:
+    """Rewrite Hermes skill slash commands into the native skill invocation text.
+
+    Native gateway treats ``/skill-name args`` as an agent turn after loading
+    the skill instructions. The multitenancy router sees the slash first, so it
+    must preserve that behavior instead of replying "unknown command".
+    """
+    cmd, args = pair
+    try:
+        from .commands import is_known_command
+
+        if is_known_command(cmd) or _gateway_handler_for_command(gateway, cmd) is not None:
+            return False, None
+        if _get_quick_command(gateway, cmd) is not None:
+            return False, None
+        if _get_plugin_command_handler(cmd) is not None:
+            return False, None
+
+        from agent.skill_commands import (  # type: ignore
+            build_skill_invocation_message,
+            get_skill_commands,
+            resolve_skill_command_key,
+        )
+
+        skill_cmds = get_skill_commands()
+        cmd_key = resolve_skill_command_key(cmd)
+        if cmd_key is None:
+            return False, None
+
+        skill_name = (skill_cmds.get(cmd_key) or {}).get("name", "")
+        platform = _event_platform_value(event)
+        if platform and skill_name:
+            try:
+                from agent.skill_utils import get_disabled_skill_names  # type: ignore
+
+                if skill_name in get_disabled_skill_names(platform=platform):
+                    return (
+                        True,
+                        f"The **{skill_name}** skill is disabled for {platform}.\n"
+                        "Enable it with: `hermes skills config`",
+                    )
+            except Exception as exc:
+                logger.debug("multitenancy: skill disabled check failed (%s)", exc)
+
+        msg = build_skill_invocation_message(
+            cmd_key,
+            args.strip(),
+            task_id=_multitenant_gateway_session_key(
+                event,
+                profile_name=profile_name,
+                sender=sender,
+                sender_alt=sender_alt,
+                chat_id=chat_id,
+            ),
+        )
+        if not msg:
+            return False, None
+        setattr(event, "text", msg)
+        return True, None
+    except Exception as exc:
+        logger.debug("multitenancy: skill command passthrough failed (%s)", exc)
+        return False, None
 
 
 async def _handle_command(
@@ -608,7 +700,19 @@ async def _dispatch_gateway_command(
 
     handler = _gateway_handler_for_command(gateway, cmd)
     if handler is None:
-        return None
+        quick_result = await _dispatch_quick_command(
+            cmd,
+            event,
+            gateway,
+            sender=sender,
+            sender_alt=sender_alt,
+            profile_name=profile_name,
+            profile_home=profile_home,
+            chat_id=chat_id,
+        )
+        if quick_result is not None:
+            return quick_result
+        return await _dispatch_plugin_command(cmd, event)
     with _profile_gateway_context(
         gateway,
         event,
@@ -622,6 +726,104 @@ async def _dispatch_gateway_command(
         if asyncio.iscoroutine(result):
             result = await result
     return str(result) if result is not None else None
+
+
+async def _dispatch_quick_command(
+    cmd: str,
+    event: Any,
+    gateway: Any,
+    *,
+    sender: str,
+    sender_alt: Optional[str],
+    profile_name: Optional[str],
+    profile_home: Optional[Path],
+    chat_id: str,
+) -> Optional[str]:
+    """Handle Hermes config.quick_commands without copying the command list."""
+    qcmd = _get_quick_command(gateway, cmd)
+    if not isinstance(qcmd, dict):
+        return None
+
+    kind = qcmd.get("type")
+    if kind == "exec":
+        exec_cmd = qcmd.get("command", "")
+        if not exec_cmd:
+            return f"Quick command '/{cmd}' has no command defined."
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                exec_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            output = (stdout or stderr).decode().strip()
+            return output if output else "Command returned no output."
+        except asyncio.TimeoutError:
+            return "Quick command timed out (30s)."
+        except Exception as exc:
+            return f"Quick command error: {exc}"
+
+    if kind == "alias":
+        target = str(qcmd.get("target", "") or "").strip()
+        if not target:
+            return f"Quick command '/{cmd}' has no target defined."
+        target = target if target.startswith("/") else f"/{target}"
+        target_command = target.lstrip("/")
+        new_cmd = target_command.split()[0] if target_command else ""
+        if not new_cmd or new_cmd == cmd:
+            return f"Quick command '/{cmd}' has invalid target."
+        user_args = _command_args_from_event(event).strip()
+        setattr(event, "text", f"{target} {user_args}".strip())
+        _set_command_event_methods(event, new_cmd)
+        return await _dispatch_gateway_command(
+            new_cmd,
+            event,
+            gateway,
+            sender=sender,
+            sender_alt=sender_alt,
+            profile_name=profile_name,
+            profile_home=profile_home,
+            chat_id=chat_id,
+        )
+
+    return f"Quick command '/{cmd}' has unsupported type (supported: 'exec', 'alias')."
+
+
+def _get_quick_command(gateway: Any, cmd: str) -> Any:
+    config = getattr(gateway, "config", None)
+    if isinstance(config, dict):
+        quick_commands = config.get("quick_commands", {}) or {}
+    else:
+        quick_commands = getattr(config, "quick_commands", {}) or {}
+    if not isinstance(quick_commands, dict):
+        return None
+    return quick_commands.get(cmd)
+
+
+async def _dispatch_plugin_command(cmd: str, event: Any) -> Optional[str]:
+    """Delegate plugin-registered slash commands to Hermes' plugin manager."""
+    handler = _get_plugin_command_handler(cmd)
+    if handler is None:
+        return None
+    user_args = ""
+    get_args = getattr(event, "get_command_args", None)
+    if callable(get_args):
+        user_args = (get_args() or "").strip()
+    result = handler(user_args)
+    if asyncio.iscoroutine(result):
+        result = await result
+    return str(result) if result else None
+
+
+def _get_plugin_command_handler(cmd: str) -> Any:
+    """Return Hermes' plugin command handler for ``cmd`` when available."""
+    try:
+        from hermes_cli.plugins import get_plugin_command_handler  # type: ignore
+
+        return get_plugin_command_handler(cmd.replace("_", "-"))
+    except Exception as exc:
+        logger.debug("multitenancy: plugin command lookup failed (%s)", exc)
+        return None
 
 
 def _gateway_handler_for_command(gateway: Any, cmd: str) -> Any:
@@ -639,12 +841,36 @@ def _gateway_handler_for_command(gateway: Any, cmd: str) -> Any:
 
 def _ensure_command_event_methods(event: Any, cmd: str) -> None:
     """Add minimal MessageEvent command helpers for tests/fallback objects."""
-    text = getattr(event, "text", "") or ""
-    args = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+    args = _command_args_from_event(event)
     if not callable(getattr(event, "get_command", None)):
         setattr(event, "get_command", lambda: cmd)
     if not callable(getattr(event, "get_command_args", None)):
         setattr(event, "get_command_args", lambda: args)
+
+
+def _set_command_event_methods(event: Any, cmd: str) -> None:
+    args = _command_args_from_text(getattr(event, "text", "") or "")
+    setattr(event, "get_command", lambda: cmd)
+    setattr(event, "get_command_args", lambda: args)
+
+
+def _command_args_from_event(event: Any) -> str:
+    get_args = getattr(event, "get_command_args", None)
+    if callable(get_args):
+        return str(get_args() or "")
+    return _command_args_from_text(getattr(event, "text", "") or "")
+
+
+def _command_args_from_text(text: str) -> str:
+    parts = text.split(maxsplit=1)
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _event_platform_value(event: Any) -> Optional[str]:
+    source = getattr(event, "source", None)
+    platform = getattr(source, "platform", None) if source is not None else None
+    value = getattr(platform, "value", platform)
+    return str(value) if value else None
 
 
 def _profile_gateway_context(

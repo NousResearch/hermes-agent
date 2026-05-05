@@ -964,7 +964,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                     )
                 else:
                     _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
-                save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+                if _selected_vision_model:
+                    save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
                 print_success(
                     f"Vision configured with {_base_url}"
                     + (f" ({_selected_vision_model})" if _selected_vision_model else "")
@@ -2047,6 +2048,16 @@ def _setup_slack():
         print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
 
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: open the channel in Slack, then right-click")
+    print_info("   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).")
+    print_info("   You can also set this later by typing /set-home in a Slack channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("SLACK_HOME_CHANNEL", home_channel.strip())
+
 
 def _write_slack_manifest_and_instruct():
     """Generate the Slack manifest, write it under HERMES_HOME, and print
@@ -2993,6 +3004,21 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
 
+    # Back up existing config before setup modifies it (#3522)
+    config_path = get_config_path()
+    if config_path.exists():
+        from datetime import datetime as _dt
+        _backup_path = config_path.with_suffix(
+            f".yaml.bak.{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        try:
+            import shutil
+            shutil.copy2(config_path, _backup_path)
+        except Exception:
+            _backup_path = None
+    else:
+        _backup_path = None
+
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
@@ -3162,6 +3188,10 @@ def run_setup_wizard(args):
 
     # Save and show summary
     save_config(config)
+    if _backup_path and _backup_path.exists():
+        print_info(f"Previous config backed up to: {_backup_path}")
+        print_info("If setup changed a value you customized, restore it with:")
+        print_info(f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
 
     _offer_launch_chat()

@@ -63,6 +63,53 @@
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
 
+  // localStorage key for the user's selected board. Independent of the
+  // CLI's on-disk ``<root>/kanban/current`` pointer so browser users
+  // can inspect any board without shifting the CLI's active board out
+  // from under a terminal they left open.
+  const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
+
+  function readSelectedBoard() {
+    try {
+      const v = window.localStorage.getItem(LS_BOARD_KEY);
+      return (v || "").trim() || null;
+    } catch (_e) { return null; }
+  }
+
+  function writeSelectedBoard(slug) {
+    try {
+      if (slug && slug !== "default") window.localStorage.setItem(LS_BOARD_KEY, slug);
+      else window.localStorage.removeItem(LS_BOARD_KEY);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
+  function withBoard(url, board) {
+    // Append ?board=<slug> when a non-default board is active. Omitted
+    // for default so the URL stays clean and the backend falls through
+    // to its own resolution chain (env var → ``current`` file →
+    // default) which is already correct.
+    if (!board || board === "default") return url;
+    const sep = url.indexOf("?") >= 0 ? "&" : "?";
+    return `${url}${sep}board=${encodeURIComponent(board)}`;
+  }
+
+  // The SDK's Select component fires ``onValueChange(value)`` directly
+  // (it's a shadcn-style popup, not a native <select>). Older plugin
+  // code calls ``onChange({target: {value}})`` which silently never
+  // fires. This helper wires both signatures so a setter works with
+  // either API — use it as:
+  //
+  //   h(Select, {..., ...selectChangeHandler(setState), ...})
+  function selectChangeHandler(setter) {
+    return {
+      onValueChange: function (v) { setter(v == null ? "" : v); },
+      onChange: function (e) {
+        const v = e && e.target ? e.target.value : e;
+        setter(v == null ? "" : v);
+      },
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Minimal safe markdown renderer.
   //
@@ -245,7 +292,19 @@
   // -------------------------------------------------------------------------
 
   function KanbanPage() {
-    const [board, setBoard] = useState(null);
+    const [board, setBoard] = useState(() => readSelectedBoard() || "default");
+    const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
+    const [showNewBoard, setShowNewBoard] = useState(false);
+
+    const [kanbanBoard, setKanbanBoard] = useState(null);  // the grid data
+    // Alias so the rest of the function can keep using `board` semantically
+    // for the grid data (card columns + tenants + assignees) without
+    // colliding with the selected-board slug above. History: the old
+    // component had `const [board, setBoard]` for the grid data. We
+    // renamed the grid data to `kanbanBoard` so the more useful name
+    // (`board`) belongs to the selected slug.
+    const boardData = kanbanBoard;
+    const setBoardData = setKanbanBoard;
     const [config, setConfig] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -292,9 +351,9 @@
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
-      return SDK.fetchJSON(url)
+      return SDK.fetchJSON(withBoard(url, board))
         .then(function (data) {
-          setBoard(data);
+          setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
         })
@@ -302,7 +361,26 @@
           setError(String(err && err.message ? err.message : err));
         })
         .finally(function () { setLoading(false); });
-    }, [tenantFilter, includeArchived]);
+    }, [tenantFilter, includeArchived, board]);
+
+    // --- load list of boards for the switcher ------------------------------
+    const loadBoardList = useCallback(function () {
+      return SDK.fetchJSON(`${API}/boards`)
+        .then(function (data) {
+          const boards = (data && data.boards) || [];
+          setBoardList(boards);
+          // If the stored slug isn't in the list any longer (board was
+          // deleted in the CLI while dashboard was open), fall back to
+          // default so the UI doesn't hang on a 404.
+          if (board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
+            setBoard("default");
+            writeSelectedBoard("default");
+          }
+        })
+        .catch(function () { /* non-fatal */ });
+    }, [board]);
+
+    useEffect(function () { loadBoardList(); }, [loadBoardList]);
 
     const scheduleReload = useCallback(function () {
       if (reloadTimerRef.current) return;
@@ -324,16 +402,21 @@
 
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
-      if (!board) return undefined;
+      if (!boardData) return undefined;
       wsClosedRef.current = false;
       function openWs() {
         if (wsClosedRef.current) return;
         const token = window.__HERMES_SESSION_TOKEN__ || "";
         const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const qs = new URLSearchParams({
+        const qsParams = {
           since: String(cursorRef.current || 0),
           token: token,
-        });
+        };
+        // Pin the WS stream to the currently-selected board so events
+        // from other boards don't bleed in. Only set for non-default so
+        // single-board installs keep the cleaner URL.
+        if (board && board !== "default") qsParams.board = board;
+        const qs = new URLSearchParams(qsParams);
         const url = `${proto}//${window.location.host}${API}/events?${qs}`;
         let ws;
         try { ws = new WebSocket(url); } catch (_e) { return; }
@@ -372,11 +455,11 @@
         wsClosedRef.current = true;
         try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
       };
-    }, [!!board, scheduleReload]);
+    }, [!!boardData, board, scheduleReload]);
 
     // --- filtering ----------------------------------------------------------
     const filteredBoard = useMemo(function () {
-      if (!board) return null;
+      if (!boardData) return null;
       const q = search.trim().toLowerCase();
       const filterTask = function (t) {
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
@@ -386,18 +469,18 @@
         }
         return true;
       };
-      return Object.assign({}, board, {
-        columns: board.columns.map(function (col) {
+      return Object.assign({}, boardData, {
+        columns: boardData.columns.map(function (col) {
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [board, assigneeFilter, search]);
+    }, [boardData, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      setBoard(function (b) {
+      setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
         const columns = b.columns.map(function (col) {
@@ -413,7 +496,7 @@
         }
         return Object.assign({}, b, { columns });
       });
-      SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
@@ -421,10 +504,10 @@
         setError(`Move failed: ${err.message || err}`);
         loadBoard();
       });
-    }, [loadBoard]);
+    }, [loadBoard, board]);
 
     const createTask = useCallback(function (body) {
-      return SDK.fetchJSON(`${API}/tasks`, {
+      return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -437,9 +520,10 @@
           setError("Task created, but: " + res.warning);
         }
         loadBoard();
+        loadBoardList();  // refresh counts in the switcher
         return res;
       });
-    }, [loadBoard]);
+    }, [loadBoard, loadBoardList, board]);
 
     const toggleSelected = useCallback(function (id, additive) {
       setSelectedIds(function (prev) {
@@ -455,7 +539,7 @@
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       const body = Object.assign({ ids: Array.from(selectedIds) }, patch);
-      SDK.fetchJSON(`${API}/tasks/bulk`, {
+      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -470,14 +554,50 @@
           loadBoard();
         })
         .catch(function (e) { setError(String(e.message || e)); });
-    }, [selectedIds, loadBoard, clearSelected]);
+    }, [selectedIds, loadBoard, clearSelected, board]);
+
+    // --- board switching ----------------------------------------------------
+    const switchBoard = useCallback(function (nextSlug) {
+      if (!nextSlug || nextSlug === board) return;
+      // Optimistic UI: clear the current grid + show loading, reset the
+      // event cursor so the WS reopens aligned to the new board's
+      // latest_event_id on the next loadBoard.
+      setBoardData(null);
+      cursorRef.current = 0;
+      setLoading(true);
+      setBoard(nextSlug);
+      writeSelectedBoard(nextSlug);
+    }, [board]);
+
+    const createNewBoard = useCallback(function (payload) {
+      return SDK.fetchJSON(`${API}/boards`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        loadBoardList();
+        const slug = res && res.board && res.board.slug;
+        if (slug && payload.switch) switchBoard(slug);
+        return res;
+      });
+    }, [loadBoardList, switchBoard]);
+
+    const deleteBoard = useCallback(function (slug) {
+      if (!slug || slug === "default") return Promise.resolve();
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+      }).then(function () {
+        loadBoardList();
+        if (board === slug) switchBoard("default");
+      });
+    }, [board, loadBoardList, switchBoard]);
 
     // --- render -------------------------------------------------------------
-    if (loading && !board) {
+    if (loading && !boardData) {
       return h("div", { className: "p-8 text-sm text-muted-foreground" },
         "Loading Kanban board…");
     }
-    if (error && !board) {
+    if (error && !boardData) {
       return h(Card, null,
         h(CardContent, { className: "p-6" },
           h("div", { className: "text-sm text-destructive" },
@@ -493,15 +613,28 @@
 
     return h(ErrorBoundary, null,
       h("div", { className: "hermes-kanban flex flex-col gap-4" },
-        h(BoardToolbar, {
+        h(BoardSwitcher, {
           board: board,
+          boardList: boardList,
+          onSwitch: switchBoard,
+          onNewClick: function () { setShowNewBoard(true); },
+          onDeleteBoard: deleteBoard,
+        }),
+        showNewBoard ? h(NewBoardDialog, {
+          onCancel: function () { setShowNewBoard(false); },
+          onCreate: function (payload) {
+            return createNewBoard(payload).then(function () { setShowNewBoard(false); });
+          },
+        }) : null,
+        h(BoardToolbar, {
+          board: boardData,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
           onNudgeDispatch: function () {
-            SDK.fetchJSON(`${API}/dispatch?max=8`, { method: "POST" })
+            SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
               .then(loadBoard)
               .catch(function (e) { setError(String(e.message || e)); });
           },
@@ -509,7 +642,7 @@
         }),
         selectedIds.size > 0 ? h(BulkActionBar, {
           count: selectedIds.size,
-          assignees: (board && board.assignees) || [],
+          assignees: (boardData && boardData.assignees) || [],
           onApply: applyBulk,
           onClear: clearSelected,
         }) : null,
@@ -522,16 +655,211 @@
           onMove: moveTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
-          allTasks: board.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
+          boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
-          allTasks: board.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Board switcher (multi-project)
+  // -------------------------------------------------------------------------
+
+  function BoardSwitcher(props) {
+    const list = props.boardList || [];
+    const current = list.find(function (b) { return b.slug === props.board; });
+    const currentName = current && current.name ? current.name : props.board;
+    const currentTotal = current ? current.total : 0;
+    const hasMultipleBoards = list.length > 1;
+
+    // Hide entirely when only the default board exists AND it's empty —
+    // single-project users never see boards UI unless they ask for it.
+    // We show the [+ New board] affordance as soon as any board has a
+    // task (so the user can discover multi-project before they need it)
+    // OR when any non-default board exists.
+    const totalAcrossAllBoards = list.reduce(function (n, b) { return n + (b.total || 0); }, 0);
+    const shouldShow = hasMultipleBoards || totalAcrossAllBoards > 0;
+    if (!shouldShow) {
+      return h("div", {
+        className: "hermes-kanban-boardswitcher-compact",
+        title: "Boards let you separate unrelated streams of work",
+      },
+        h(Button, {
+          onClick: props.onNewClick,
+          size: "sm",
+          className: "h-7 text-xs",
+        }, "+ New board"),
+      );
+    }
+
+    return h("div", { className: "hermes-kanban-boardswitcher" },
+      h("div", { className: "hermes-kanban-boardswitcher-inner" },
+        h("div", { className: "flex flex-col gap-0.5" },
+          h("div", { className: "text-[11px] uppercase tracking-wider text-muted-foreground" },
+            "Board"),
+          h("div", { className: "flex items-center gap-2" },
+            h(Select, Object.assign({
+              value: props.board,
+              className: "h-8 min-w-[220px]",
+              "aria-label": "Switch kanban board",
+            }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
+              list.map(function (b) {
+                const label = b.total > 0
+                  ? `${b.name || b.slug} · ${b.total}`
+                  : (b.name || b.slug);
+                return h(SelectOption, { key: b.slug, value: b.slug }, label);
+              }),
+            ),
+            h("span", { className: "text-xs text-muted-foreground" },
+              `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+          ),
+        ),
+        h("div", { className: "flex-1" }),
+        h(Button, {
+          onClick: props.onNewClick,
+          size: "sm",
+          className: "h-8",
+        }, "+ New board"),
+        props.board !== "default"
+          ? h(Button, {
+            onClick: function () {
+              const msg =
+                `Archive board '${currentName}'? ` +
+                `It will be moved to boards/_archived/ so you can recover it later. ` +
+                `Tasks on this board will no longer appear anywhere in the UI.`;
+              if (window.confirm(msg)) props.onDeleteBoard(props.board);
+            },
+            size: "sm",
+            className: "h-8",
+            title: "Archive this board",
+          }, "Archive")
+          : null,
+      ),
+    );
+  }
+
+  function NewBoardDialog(props) {
+    const [slug, setSlug] = useState("");
+    const [name, setName] = useState("");
+    const [description, setDescription] = useState("");
+    const [icon, setIcon] = useState("");
+    const [switchTo, setSwitchTo] = useState(true);
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr] = useState(null);
+
+    // Auto-derive a name from the slug if the user hasn't typed one.
+    const autoName = useMemo(function () {
+      if (!slug) return "";
+      return slug.replace(/[-_]+/g, " ")
+        .split(" ")
+        .filter(Boolean)
+        .map(function (w) { return w[0].toUpperCase() + w.slice(1); })
+        .join(" ");
+    }, [slug]);
+
+    function onSubmit(ev) {
+      if (ev) ev.preventDefault();
+      if (!slug.trim()) { setErr("slug is required"); return; }
+      setSubmitting(true);
+      setErr(null);
+      props.onCreate({
+        slug: slug.trim(),
+        name: name.trim() || autoName || undefined,
+        description: description.trim() || undefined,
+        icon: icon.trim() || undefined,
+        switch: switchTo,
+      }).catch(function (e) {
+        setErr(String(e && e.message ? e.message : e));
+        setSubmitting(false);
+      });
+    }
+
+    return h("div", {
+      className: "hermes-kanban-dialog-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
+    },
+      h("form", {
+        className: "hermes-kanban-dialog",
+        onSubmit: onSubmit,
+      },
+        h("div", { className: "hermes-kanban-dialog-title" }, "New board"),
+        h("div", { className: "text-xs text-muted-foreground mb-2" },
+          "Boards let you separate unrelated streams of work — one per project, repo, or domain. Workers on one board never see another board's tasks."),
+        h("div", { className: "flex flex-col gap-3" },
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Slug ",
+              h("span", { className: "text-muted-foreground" },
+                "— lowercase, hyphens, e.g. atm10-server")),
+            h(Input, {
+              value: slug,
+              onChange: function (e) { setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9\-_]/g, "-")); },
+              placeholder: "atm10-server",
+              autoFocus: true,
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Display name ",
+              h("span", { className: "text-muted-foreground" }, "(optional)")),
+            h(Input, {
+              value: name,
+              onChange: function (e) { setName(e.target.value); },
+              placeholder: autoName || "Display name",
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Description ",
+              h("span", { className: "text-muted-foreground" }, "(optional)")),
+            h(Input, {
+              value: description,
+              onChange: function (e) { setDescription(e.target.value); },
+              placeholder: "What goes on this board?",
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Icon ",
+              h("span", { className: "text-muted-foreground" }, "(single character or emoji)")),
+            h(Input, {
+              value: icon,
+              onChange: function (e) { setIcon(e.target.value.slice(0, 4)); },
+              placeholder: "📦",
+              className: "h-8 w-24",
+            }),
+          ),
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h("input", {
+              type: "checkbox",
+              checked: switchTo,
+              onChange: function (e) { setSwitchTo(e.target.checked); },
+            }),
+            "Switch to this board after creating it",
+          ),
+        ),
+        err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
+        h("div", { className: "hermes-kanban-dialog-actions" },
+          h(Button, {
+            type: "button",
+            onClick: props.onCancel,
+            size: "sm",
+            disabled: submitting,
+          }, "Cancel"),
+          h(Button, {
+            type: "submit",
+            size: "sm",
+            disabled: submitting || !slug.trim(),
+          }, submitting ? "Creating…" : "Create board"),
+        ),
       ),
     );
   }
@@ -555,11 +883,10 @@
       ),
       h("div", { className: "flex flex-col gap-1" },
         h(Label, { className: "text-xs text-muted-foreground" }, "Tenant"),
-        h(Select, {
+        h(Select, Object.assign({
           value: props.tenantFilter,
-          onChange: function (e) { props.setTenantFilter(e.target.value); },
           className: "h-8",
-        },
+        }, selectChangeHandler(props.setTenantFilter)),
           h(SelectOption, { value: "" }, "All tenants"),
           tenants.map(function (t) {
             return h(SelectOption, { key: t, value: t }, t);
@@ -568,11 +895,10 @@
       ),
       h("div", { className: "flex flex-col gap-1" },
         h(Label, { className: "text-xs text-muted-foreground" }, "Assignee"),
-        h(Select, {
+        h(Select, Object.assign({
           value: props.assigneeFilter,
-          onChange: function (e) { props.setAssigneeFilter(e.target.value); },
           className: "h-8",
-        },
+        }, selectChangeHandler(props.setAssigneeFilter)),
           h(SelectOption, { value: "" }, "All profiles"),
           assignees.map(function (a) {
             return h(SelectOption, { key: a, value: a }, a);
@@ -919,6 +1245,12 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
+    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
+    // takes a path (dispatcher derives one from the assignee profile otherwise);
+    // `dir` requires a path. Backend enforces the rule — we only hide/show the
+    // input here to save vertical space in the common `scratch` case.
+    const [workspaceKind, setWorkspaceKind] = useState("scratch");
+    const [workspacePath, setWorkspacePath] = useState("");
 
     const submit = function () {
       const trimmed = title.trim();
@@ -938,9 +1270,22 @@
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return s.length > 0; });
       if (skillList.length > 0) body.skills = skillList;
+      // Only send workspace_kind when it's non-default. Keeps the request
+      // shape small and interoperable with older dispatcher versions.
+      if (workspaceKind && workspaceKind !== "scratch") {
+        body.workspace_kind = workspaceKind;
+      }
+      const wpTrim = workspacePath.trim();
+      if (wpTrim) body.workspace_path = wpTrim;
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setWorkspaceKind("scratch"); setWorkspacePath("");
     };
+
+    const showPathInput = workspaceKind !== "scratch";
+    const pathPlaceholder = workspaceKind === "dir"
+      ? "workspace path (required, e.g. ~/projects/my-app)"
+      : "workspace path (optional, derived from assignee if blank)";
 
     return h("div", { className: "hermes-kanban-inline-create" },
       h(Input, {
@@ -978,6 +1323,24 @@
         title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
         className: "h-7 text-xs",
       }),
+      h("div", { className: "flex gap-2" },
+        h(Select, {
+          value: workspaceKind,
+          onChange: function (e) { setWorkspaceKind(e.target.value); },
+          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
+          className: "h-7 text-xs w-28",
+        },
+          h(SelectOption, { value: "scratch" }, "scratch"),
+          h(SelectOption, { value: "worktree" }, "worktree"),
+          h(SelectOption, { value: "dir" }, "dir"),
+        ),
+        showPathInput ? h(Input, {
+          value: workspacePath,
+          onChange: function (e) { setWorkspacePath(e.target.value); },
+          placeholder: pathPlaceholder,
+          className: "h-7 text-xs flex-1",
+        }) : null,
+      ),
       h(Select, {
         value: parent,
         onChange: function (e) { setParent(e.target.value); },
@@ -1012,18 +1375,33 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Home-channel notification toggles. homeChannels is the list of platforms
+    // the user has a /sethome on; each entry has a `subscribed` bool telling
+    // us whether this task is currently subscribed via that platform's home.
+    const [homeChannels, setHomeChannels] = useState([]);
+    const [homeBusy, setHomeBusy] = useState({});
+    const boardSlug = props.boardSlug;
 
     const load = useCallback(function () {
-      return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(props.taskId)}`)
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug))
         .then(function (d) { setData(d); setErr(null); })
         .catch(function (e) { setErr(String(e.message || e)); })
         .finally(function () { setLoading(false); });
-    }, [props.taskId]);
+    }, [props.taskId, boardSlug]);
+
+    const loadHomeChannels = useCallback(function () {
+      const qs = new URLSearchParams({ task_id: props.taskId });
+      const url = withBoard(`${API}/home-channels?${qs}`, boardSlug);
+      return SDK.fetchJSON(url)
+        .then(function (d) { setHomeChannels(d.home_channels || []); })
+        .catch(function () { /* silent — endpoint optional on older gateways */ });
+    }, [props.taskId, boardSlug]);
 
     // Reload when the WS stream reports new events for this task id
     // (completion, block, crash, etc. — anything that'd make the drawer
     // show stale data if we only loaded on mount).
     useEffect(function () { load(); }, [load, props.eventTick]);
+    useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
     useEffect(function () {
       function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
       window.addEventListener("keydown", onKey);
@@ -1033,7 +1411,7 @@
     const handleComment = function () {
       const body = newComment.trim();
       if (!body) return;
-      SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, {
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),
@@ -1048,7 +1426,7 @@
       if (opts && opts.confirm && !window.confirm(opts.confirm)) {
         return Promise.resolve();
       }
-      return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(props.taskId)}`, {
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -1056,7 +1434,7 @@
     };
 
     const addLink = function (parentId) {
-      return SDK.fetchJSON(`${API}/links`, {
+      return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ parent_id: parentId, child_id: props.taskId }),
@@ -1065,12 +1443,12 @@
     };
     const removeLink = function (parentId) {
       const qs = new URLSearchParams({ parent_id: parentId, child_id: props.taskId });
-      return SDK.fetchJSON(`${API}/links?${qs}`, { method: "DELETE" })
+      return SDK.fetchJSON(withBoard(`${API}/links?${qs}`, boardSlug), { method: "DELETE" })
         .then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setErr(String(e.message || e)); });
     };
     const addChild = function (childId) {
-      return SDK.fetchJSON(`${API}/links`, {
+      return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ parent_id: props.taskId, child_id: childId }),
@@ -1079,9 +1457,46 @@
     };
     const removeChild = function (childId) {
       const qs = new URLSearchParams({ parent_id: props.taskId, child_id: childId });
-      return SDK.fetchJSON(`${API}/links?${qs}`, { method: "DELETE" })
+      return SDK.fetchJSON(withBoard(`${API}/links?${qs}`, boardSlug), { method: "DELETE" })
         .then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setErr(String(e.message || e)); });
+    };
+
+    const toggleHomeSubscription = function (platform, currentlySubscribed) {
+      // Optimistic flip + busy flag to keep double-clicks idempotent.
+      setHomeBusy(function (b) { return Object.assign({}, b, { [platform]: true }); });
+      setHomeChannels(function (list) {
+        return list.map(function (h) {
+          return h.platform === platform
+            ? Object.assign({}, h, { subscribed: !currentlySubscribed })
+            : h;
+        });
+      });
+      const method = currentlySubscribed ? "DELETE" : "POST";
+      const url = withBoard(
+        `${API}/tasks/${encodeURIComponent(props.taskId)}/home-subscribe/${encodeURIComponent(platform)}`,
+        boardSlug,
+      );
+      return SDK.fetchJSON(url, { method: method })
+        .then(function () { return loadHomeChannels(); })
+        .catch(function (e) {
+          // Revert optimistic flip on failure.
+          setHomeChannels(function (list) {
+            return list.map(function (h) {
+              return h.platform === platform
+                ? Object.assign({}, h, { subscribed: currentlySubscribed })
+                : h;
+            });
+          });
+          setErr(String(e.message || e));
+        })
+        .finally(function () {
+          setHomeBusy(function (b) {
+            const next = Object.assign({}, b);
+            delete next[platform];
+            return next;
+          });
+        });
     };
 
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
@@ -1104,11 +1519,15 @@
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
+          boardSlug: boardSlug,
           onPatch: doPatch,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
           onRemoveChild: removeChild,
+          homeChannels: homeChannels,
+          homeBusy: homeBusy,
+          onToggleHomeSub: toggleHomeSubscription,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -1170,6 +1589,11 @@
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
       h(StatusActions, { task: t, onPatch: props.onPatch }),
+      h(HomeSubsSection, {
+        homeChannels: props.homeChannels || [],
+        homeBusy: props.homeBusy || {},
+        onToggle: props.onToggleHomeSub,
+      }),
       h(BodyEditor, {
         task: t,
         renderMarkdown: props.renderMarkdown,
@@ -1216,7 +1640,7 @@
           );
         }),
       ),
-      h(WorkerLogSection, { taskId: t.id }),
+      h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
     );
   }
@@ -1287,10 +1711,10 @@
     const [state, setState] = useState({ loading: false, data: null, err: null });
     const load = useCallback(function () {
       setState({ loading: true, data: null, err: null });
-      SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=100000`)
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=100000`, props.boardSlug))
         .then(function (d) { setState({ loading: false, data: d, err: null }); })
         .catch(function (e) { setState({ loading: false, data: null, err: String(e.message || e) }); });
-    }, [props.taskId]);
+    }, [props.taskId, props.boardSlug]);
 
     // Auto-load when the section mounts; the user opened the drawer so the
     // cost is one small HTTP round-trip.
@@ -1572,7 +1996,10 @@
     return h("div", { className: "hermes-kanban-actions" },
       b("→ triage",  { status: "triage" },   t.status !== "triage"),
       b("→ ready",   { status: "ready" },    t.status !== "ready"),
-      b("→ running", { status: "running" },  t.status !== "running"),
+      // No direct → running button: /tasks/:id PATCH rejects status=running
+      // with 400 (issue #19535). Tasks enter running only through the
+      // dispatcher's claim_task path, which atomically creates the run row,
+      // claim lock, and worker process metadata.
       b("Block",     { status: "blocked" },
         t.status === "running" || t.status === "ready",
         DESTRUCTIVE_TRANSITIONS.blocked),
@@ -1582,6 +2009,43 @@
         DESTRUCTIVE_TRANSITIONS.done),
       b("Archive",   { status: "archived" }, t.status !== "archived",
         DESTRUCTIVE_TRANSITIONS.archived),
+    );
+  }
+
+
+  // One toggle per gateway platform the user has a home channel set on
+  // (telegram, discord, slack, etc.). Toggling on creates a kanban_notify_subs
+  // row routed to that platform's home; toggling off removes it. Nothing
+  // renders when no platforms have a home configured — this section stays
+  // invisible for users who haven't set one up.
+  function HomeSubsSection(props) {
+    const channels = props.homeChannels || [];
+    if (channels.length === 0) return null;
+    const busy = props.homeBusy || {};
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        "Notify home channels"),
+      h("div", { className: "hermes-kanban-home-subs" },
+        channels.map(function (hc) {
+          const isBusy = !!busy[hc.platform];
+          const label = hc.subscribed ? "✓ " + hc.platform : hc.platform;
+          const title = hc.subscribed
+            ? `Sending updates to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}). Click to stop.`
+            : `Send completed / blocked / gave_up notifications to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}).`;
+          return h(Button, {
+            key: hc.platform,
+            size: "sm",
+            title: title,
+            disabled: isBusy || !props.onToggle,
+            onClick: function () {
+              if (props.onToggle) props.onToggle(hc.platform, hc.subscribed);
+            },
+            className: hc.subscribed
+              ? "hermes-kanban-home-sub hermes-kanban-home-sub--on"
+              : "hermes-kanban-home-sub",
+          }, label);
+        })
+      )
     );
   }
 

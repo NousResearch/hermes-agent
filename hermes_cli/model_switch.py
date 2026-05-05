@@ -904,6 +904,26 @@ def switch_model(
                         if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
                             override = True
                             break
+        # Also check custom_providers list — models declared there should be accepted
+        # even if the remote /v1/models endpoint doesn't list them.
+        if not override and custom_providers and isinstance(custom_providers, list):
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                # Match by provider slug (custom:<name>) or by base_url
+                entry_name = entry.get("name", "")
+                entry_slug = f"custom:{entry_name}" if entry_name else ""
+                entry_url = entry.get("base_url", "")
+                if entry_slug == target_provider or entry_url == base_url:
+                    # Check if the requested model matches the entry's model
+                    entry_model = entry.get("model", "")
+                    entry_models = entry.get("models", {})
+                    if new_model == entry_model:
+                        override = True
+                        break
+                    if isinstance(entry_models, dict) and new_model in entry_models:
+                        override = True
+                        break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:
@@ -1244,11 +1264,7 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
                 providers_store = store.get("providers", {})
-                pool_store = store.get("credential_pool", {})
-                if store and (
-                    pid in providers_store or hermes_slug in providers_store
-                    or pid in pool_store or hermes_slug in pool_store
-                ):
+                if store and (pid in providers_store or hermes_slug in providers_store):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
@@ -1344,11 +1360,7 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 _cp_store = _load_auth_store()
                 _cp_providers_store = _cp_store.get("providers", {})
-                _cp_pool_store = _cp_store.get("credential_pool", {})
-                if _cp_store and (
-                    _cp.slug in _cp_providers_store
-                    or _cp.slug in _cp_pool_store
-                ):
+                if _cp_store and _cp.slug in _cp_providers_store:
                     _cp_has_creds = True
             except Exception:
                 pass

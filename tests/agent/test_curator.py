@@ -154,6 +154,7 @@ def test_unused_skill_transitions_to_stale(curator_env):
     long_ago = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
     data = u.load_usage()
     data["old-skill"] = u._empty_record()
+    data["old-skill"]["created_by"] = "agent"
     data["old-skill"]["last_used_at"] = long_ago
     data["old-skill"]["created_at"] = long_ago
     u.save_usage(data)
@@ -172,6 +173,7 @@ def test_very_old_skill_gets_archived(curator_env):
     super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
     data = u.load_usage()
     data["ancient"] = u._empty_record()
+    data["ancient"]["created_by"] = "agent"
     data["ancient"]["last_used_at"] = super_old
     data["ancient"]["created_at"] = super_old
     u.save_usage(data)
@@ -192,6 +194,7 @@ def test_pinned_skill_is_never_touched(curator_env):
     super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
     data = u.load_usage()
     data["precious"] = u._empty_record()
+    data["precious"]["created_by"] = "agent"
     data["precious"]["last_used_at"] = super_old
     data["precious"]["created_at"] = super_old
     data["precious"]["pinned"] = True
@@ -214,6 +217,7 @@ def test_stale_skill_reactivates_on_recent_use(curator_env):
     recent = datetime.now(timezone.utc).isoformat()
     data = u.load_usage()
     data["revived"] = u._empty_record()
+    data["revived"]["created_by"] = "agent"
     data["revived"]["state"] = "stale"
     data["revived"]["last_used_at"] = recent
     data["revived"]["created_at"] = recent
@@ -238,6 +242,27 @@ def test_new_skill_without_last_used_not_immediately_archived(curator_env):
     assert counts["archived"] == 0
     assert counts["marked_stale"] == 0
     assert (skills_dir / "fresh").exists()
+
+
+def test_manual_skill_is_not_auto_archived(curator_env):
+    """Manual skills can have usage records, but without the agent-created
+    marker they must stay out of curator transitions."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "manual")
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["manual"] = u._empty_record()
+    data["manual"]["last_used_at"] = super_old
+    data["manual"]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 0
+    assert counts["archived"] == 0
+    assert skill_dir.exists()
 
 
 def test_bundled_skill_not_touched_by_transitions(curator_env):
@@ -267,8 +292,10 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
 
 def test_run_review_records_state(curator_env):
     c = curator_env["curator"]
+    u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
 
     result = c.run_curator_review(synchronous=True)
     assert "started_at" in result
@@ -284,8 +311,10 @@ def test_dry_run_does_not_advance_state(curator_env, monkeypatch):
     `hermes curator status`. Fixes #18373.
     """
     c = curator_env["curator"]
+    u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
 
     # Stub the LLM so the test doesn't need a provider.
     monkeypatch.setattr(
@@ -311,8 +340,10 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
     skips automatic transitions — but the LLM prompt is the only guard
     against the model calling skill_manage directly."""
     c = curator_env["curator"]
+    u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
 
     captured = {}
     def _stub(prompt):
@@ -331,8 +362,10 @@ def test_dry_run_skips_automatic_transitions(curator_env, monkeypatch):
     archives skills deterministically, and a preview must not touch the
     filesystem."""
     c = curator_env["curator"]
+    u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
 
     called = {"n": 0}
     def _explode(*_a, **_kw):
@@ -351,8 +384,10 @@ def test_dry_run_skips_automatic_transitions(curator_env, monkeypatch):
 
 def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     c = curator_env["curator"]
+    u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
 
     calls = []
     def _stub(prompt):
@@ -409,8 +444,10 @@ def test_maybe_run_curator_enforces_idle_gate(curator_env, monkeypatch):
 
 def test_maybe_run_curator_runs_when_eligible(curator_env, monkeypatch):
     c = curator_env["curator"]
+    u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
     # Seed last_run_at far in the past so the interval gate opens — the
     # "no state" path intentionally defers the first run now (#18373).
     long_ago = datetime.now(timezone.utc) - timedelta(hours=c.get_interval_hours() * 2)

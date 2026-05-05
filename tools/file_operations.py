@@ -215,6 +215,31 @@ class ExecuteResult:
     exit_code: int = 0
 
 
+def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
+    """Parse grep/rg context output in ``path-line-content`` format.
+
+    Context lines are ambiguous because filenames may legitimately contain
+    ``-<digits>-`` segments. Prefer the rightmost numeric separator so a path
+    like ``dir/file-12-name.py-8-context`` resolves to
+    ``dir/file-12-name.py`` line ``8`` instead of truncating at ``file``.
+    """
+    if not line or line == "--":
+        return None
+
+    match = None
+    for candidate in re.finditer(r'-(\d+)-', line):
+        match = candidate
+
+    if match is None:
+        return None
+
+    path = line[:match.start()]
+    if not path:
+        return None
+
+    return path, int(match.group(1)), line[match.end():]
+
+
 # =============================================================================
 # Abstract Interface
 # =============================================================================
@@ -987,6 +1012,12 @@ class ShellFileOperations(FileOperations):
         else:
             search_pattern = pattern.split('/')[-1]
 
+        search_root = Path(path)
+        has_hidden_path_ancestor = any(
+            part not in (".", "..") and part.startswith(".")
+            for part in search_root.parts
+        )
+
         # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
         # default, and has parallel directory traversal (~200x faster than
         # find on wide trees).  Mirrors _search_content which already uses rg.
@@ -1002,17 +1033,25 @@ class ShellFileOperations(FileOperations):
             )
 
         # Exclude hidden directories (matching ripgrep's default behavior).
-        hidden_exclude = "-not -path '*/.*'"
+        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
 
-        cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
+        # Use shell pagination for standard roots. For hidden roots, gather full
+        # output so we can re-apply hidden-descendant filtering while allowing
+        # explicit hidden-root searches.
+        pagination_expr = ""
+        if not has_hidden_path_ancestor:
+            pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
+
+        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
 
         if not result.stdout.strip():
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
+            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+                        f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
 
         files = []
@@ -1024,6 +1063,23 @@ class ShellFileOperations(FileOperations):
                 files.append(parts[1])
             else:
                 files.append(line)
+
+        # For explicit hidden roots, find's path-based filtering excludes every
+        # file under the hidden path. Apply descendant filtering after command
+        # execution so only the explicit root ancestry is bypassed.
+        if has_hidden_path_ancestor:
+            normalized_root = search_root.resolve()
+            filtered_files = []
+            for file_path in files:
+                try:
+                    rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
+                except ValueError:
+                    rel_parts = Path(file_path).parts
+                if any(part not in (".", "..") and part.startswith(".") for part in rel_parts):
+                    continue
+                filtered_files.append(file_path)
+            files = filtered_files[offset:offset + limit]
+        # pagination for standard roots is already applied in shell
 
         return SearchResult(
             files=files,
@@ -1154,7 +1210,6 @@ class ShellFileOperations(FileOperations):
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -1173,12 +1228,12 @@ class ShellFileOperations(FileOperations):
                 # Try context line (dash-separated: file-line-content)
                 # Only attempt if context was requested to avoid false positives
                 if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
+                    parsed = _parse_search_context_line(line)
+                    if parsed:
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500]
+                            path=parsed[0],
+                            line_number=parsed[1],
+                            content=parsed[2][:500]
                         ))
             
             total = len(matches)
@@ -1253,7 +1308,6 @@ class ShellFileOperations(FileOperations):
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -1269,12 +1323,12 @@ class ShellFileOperations(FileOperations):
                     continue
                 
                 if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
+                    parsed = _parse_search_context_line(line)
+                    if parsed:
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500]
+                            path=parsed[0],
+                            line_number=parsed[1],
+                            content=parsed[2][:500]
                         ))
 
             

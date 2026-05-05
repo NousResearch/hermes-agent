@@ -49,6 +49,7 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 
@@ -304,6 +305,98 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+
+    @pytest.mark.asyncio
+    async def test_approval_request_event_and_response_unblock_run(self, adapter):
+        """Dangerous-command approvals should surface on the run SSE stream."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                guard_result = {}
+
+                mock_agent = MagicMock()
+
+                def _run_with_approval(user_message=None, conversation_history=None, task_id=None):
+                    from tools.approval import check_all_command_guards
+
+                    result = check_all_command_guards("git reset --hard HEAD", "local")
+                    guard_result.update(result)
+                    return {"final_response": "approved" if result.get("approved") else "blocked"}
+
+                mock_agent.run_conversation.side_effect = _run_with_approval
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "needs approval"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+
+                approval_event = None
+                for _ in range(20):
+                    line = await asyncio.wait_for(events_resp.content.readline(), timeout=3.0)
+                    text = line.decode()
+                    if not text.startswith("data: "):
+                        continue
+                    event = json.loads(text[len("data: "):])
+                    if event.get("event") == "approval.request":
+                        approval_event = event
+                        break
+
+                assert approval_event is not None
+                assert approval_event["run_id"] == run_id
+                assert approval_event["command"] == "git reset --hard HEAD"
+                assert approval_event["pattern_key"]
+                assert "pattern_keys" in approval_event
+                assert approval_event["choices"] == ["once", "session", "always", "deny"]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once"},
+                )
+                assert approval_resp.status == 200
+                approval_data = await approval_resp.json()
+                assert approval_data["resolved"] == 1
+                assert approval_data["choice"] == "once"
+
+                body = await events_resp.text()
+                assert "approval.responded" in body
+                assert "run.completed" in body
+
+                assert guard_result.get("approved") is True
+
+    @pytest.mark.asyncio
+    async def test_approval_response_without_pending_returns_409(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once"},
+                )
+                assert approval_resp.status == 409
+                approval_data = await approval_resp.json()
+                assert approval_data["error"]["code"] in {
+                    "approval_not_active",
+                    "approval_not_pending",
+                }
 
     @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):

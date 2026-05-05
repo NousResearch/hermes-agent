@@ -31,6 +31,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_image_size,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -69,10 +70,28 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "gpt-image-2-medium"
 
 _SIZES = {
+    # Legacy compatibility presets.
     "landscape": "1536x1024",
     "square": "1024x1024",
     "portrait": "1024x1536",
+    # Explicit aspect-ratio presets.
+    "16:9": "1824x1024",
+    "5:4": "1280x1024",
+    "4:3": "1360x1024",
+    "3:2": "1536x1024",
+    "1:1": "1024x1024",
+    "2:3": "1024x1536",
+    "3:4": "1024x1360",
+    "4:5": "1024x1280",
+    "9:16": "1024x1824",
 }
+
+
+def _resolve_openai_size(aspect_ratio: str, requested_size: Any) -> Optional[str]:
+    explicit = normalize_image_size(requested_size)
+    if requested_size is not None:
+        return explicit
+    return _SIZES.get(aspect_ratio, _SIZES[DEFAULT_ASPECT_RATIO])
 
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
@@ -81,7 +100,7 @@ _CODEX_CHAT_MODEL = "gpt-5.4"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024
 _ALLOWED_REFERENCE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
-_DATA_URL_RE = re.compile(r"^data:([^;,]+)(?:;[^,]*)?,", re.IGNORECASE)
+_DATA_URL_RE = re.compile(r"^data:([^;,]+)((?:;[^,]*)*),(.*)$", re.IGNORECASE | re.DOTALL)
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
@@ -111,9 +130,21 @@ def _load_image_gen_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which tier to use and return ``(model_id, meta)``."""
+def _resolve_model(model: Optional[str] = None, quality_tier: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Decide which tier to use and return ``(model_id, meta)``.
+
+    Explicit call-level overrides win over environment/config defaults.
+    """
     import os
+
+    if isinstance(model, str) and model in _MODELS:
+        return model, _MODELS[model]
+
+    if isinstance(quality_tier, str):
+        tier = quality_tier.strip().lower()
+        if tier in {"low", "medium", "high"}:
+            model_id = f"gpt-image-2-{tier}"
+            return model_id, _MODELS[model_id]
 
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
@@ -135,6 +166,22 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         return candidate, _MODELS[candidate]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _resolve_requested_model(kwargs: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    explicit_model = kwargs.get("model")
+    if isinstance(explicit_model, str) and explicit_model in _MODELS:
+        return explicit_model, _MODELS[explicit_model]
+
+    quality_tier = kwargs.get("quality_tier")
+    if isinstance(quality_tier, str):
+        normalized_tier = quality_tier.strip().lower()
+        if normalized_tier and normalized_tier != "auto":
+            candidate = f"gpt-image-2-{normalized_tier}"
+            if candidate in _MODELS:
+                return candidate, _MODELS[candidate]
+
+    return _resolve_model()
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -260,12 +307,7 @@ def _image_to_input_image_part(image: str) -> Dict[str, str]:
     if parsed.scheme in {"http", "https"}:
         return {"type": "input_image", "image_url": value}
     if parsed.scheme == "data":
-        match = _DATA_URL_RE.match(value)
-        mime = match.group(1).lower() if match else ""
-        if mime not in _ALLOWED_REFERENCE_MIME_TYPES:
-            raise ValueError(f"Unsupported reference image MIME type: {mime or 'unknown'}")
-        if len(value.encode("utf-8")) > int(_MAX_REFERENCE_IMAGE_BYTES * 1.4):
-            raise ValueError("Reference image data URL is too large")
+        _validate_image_data_url(value)
         return {"type": "input_image", "image_url": value}
 
     path = Path(value).expanduser()
@@ -284,6 +326,30 @@ def _image_to_input_image_part(image: str) -> Dict[str, str]:
     mime = guessed or detected
     encoded = base64.b64encode(raw).decode("ascii")
     return {"type": "input_image", "image_url": f"data:{mime};base64,{encoded}"}
+
+
+def _validate_image_data_url(value: str) -> None:
+    match = _DATA_URL_RE.match(value)
+    mime = match.group(1).lower() if match else ""
+    params = match.group(2).lower() if match else ""
+    payload = match.group(3) if match else ""
+    if mime not in _ALLOWED_REFERENCE_MIME_TYPES:
+        raise ValueError(f"Unsupported reference image MIME type: {mime or 'unknown'}")
+    if ";base64" not in params:
+        raise ValueError("Reference image data URL must be base64-encoded")
+    if len(value.encode("utf-8")) > int(_MAX_REFERENCE_IMAGE_BYTES * 1.4):
+        raise ValueError("Reference image data URL is too large")
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except Exception as exc:
+        raise ValueError("Reference image data URL contains invalid base64") from exc
+    if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
+        raise ValueError("Reference image data URL is too large")
+    detected = _detect_image_mime(raw)
+    if detected not in _ALLOWED_REFERENCE_MIME_TYPES:
+        raise ValueError("Reference image data URL must contain PNG, JPEG, WEBP, or GIF bytes")
+    if detected != mime:
+        raise ValueError("Reference image data URL MIME type does not match image bytes")
 
 
 def _detect_image_mime(raw: bytes) -> Optional[str]:
@@ -414,8 +480,22 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        tier_id, meta = _resolve_requested_model(kwargs)
+        requested_size = kwargs.get("size")
+        size = _resolve_openai_size(aspect, requested_size)
+        if requested_size is not None and size is None:
+            return error_response(
+                error=(
+                    "Invalid size. Use <width>x<height> with dimensions that are "
+                    "multiples of 16, max side < 3840, aspect ratio <= 3:1, and "
+                    "total pixels between 655,360 and 8,294,400."
+                ),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         client = _build_codex_client()
         if client is None:
@@ -525,8 +605,22 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        tier_id, meta = _resolve_requested_model(kwargs)
+        requested_size = kwargs.get("size")
+        size = _resolve_openai_size(aspect, requested_size)
+        if requested_size is not None and size is None:
+            return error_response(
+                error=(
+                    "Invalid size. Use <width>x<height> with dimensions that are "
+                    "multiples of 16, max side < 3840, aspect ratio <= 3:1, and "
+                    "total pixels between 655,360 and 8,294,400."
+                ),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         client = _build_codex_client()
         if client is None:

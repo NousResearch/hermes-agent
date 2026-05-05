@@ -31,6 +31,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_image_size,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -73,10 +74,28 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "gpt-image-2-medium"
 
 _SIZES = {
+    # Legacy compatibility presets.
     "landscape": "1536x1024",
     "square": "1024x1024",
     "portrait": "1024x1536",
+    # Explicit aspect-ratio presets.
+    "16:9": "1824x1024",
+    "5:4": "1280x1024",
+    "4:3": "1360x1024",
+    "3:2": "1536x1024",
+    "1:1": "1024x1024",
+    "2:3": "1024x1536",
+    "3:4": "1024x1360",
+    "4:5": "1024x1280",
+    "9:16": "1024x1824",
 }
+
+
+def _resolve_openai_size(aspect_ratio: str, requested_size: Any) -> Optional[str]:
+    explicit = normalize_image_size(requested_size)
+    if requested_size is not None:
+        return explicit
+    return _SIZES.get(aspect_ratio, _SIZES[DEFAULT_ASPECT_RATIO])
 
 
 def _load_openai_config() -> Dict[str, Any]:
@@ -210,7 +229,21 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        requested_size = kwargs.get("size")
+        size = _resolve_openai_size(aspect, requested_size)
+        if requested_size is not None and size is None:
+            return error_response(
+                error=(
+                    "Invalid size. Use <width>x<height> with dimensions that are "
+                    "multiples of 16, max side < 3840, aspect ratio <= 3:1, and "
+                    "total pixels between 655,360 and 8,294,400."
+                ),
+                error_type="invalid_argument",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.

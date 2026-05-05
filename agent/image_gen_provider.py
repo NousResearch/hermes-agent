@@ -32,6 +32,7 @@ import abc
 import base64
 import datetime
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,8 +40,22 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
+VALID_ASPECT_RATIOS: Tuple[str, ...] = (
+    "landscape",
+    "square",
+    "portrait",
+    "16:9",
+    "5:4",
+    "4:3",
+    "3:2",
+    "1:1",
+    "2:3",
+    "3:4",
+    "4:5",
+    "9:16",
+)
 DEFAULT_ASPECT_RATIO = "landscape"
+_SIZE_RE = re.compile(r"^\s*(\d+)x(\d+)\s*$")
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +201,40 @@ def resolve_aspect_ratio(value: Optional[str]) -> str:
     if v in VALID_ASPECT_RATIOS:
         return v
     return DEFAULT_ASPECT_RATIO
+
+
+def normalize_image_size(value: Optional[str]) -> Optional[str]:
+    """Validate an explicit OpenAI gpt-image-2 ``<width>x<height>`` size.
+
+    Returns the normalized size string when valid, else ``None``. Constraints
+    mirror the documented gpt-image-2 limits.
+    """
+    if not isinstance(value, str):
+        return None
+
+    match = _SIZE_RE.match(value)
+    if not match:
+        return None
+
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    if width % 16 != 0 or height % 16 != 0:
+        return None
+
+    longest = max(width, height)
+    shortest = min(width, height)
+    if longest >= 3840:
+        return None
+    if longest > shortest * 3:
+        return None
+
+    pixels = width * height
+    if pixels < 655_360 or pixels > 8_294_400:
+        return None
+
+    return f"{width}x{height}"
 
 
 def _images_cache_dir() -> Path:

@@ -137,7 +137,6 @@ class TestGenerate:
         assert result["error_type"] == "auth_required"
 
     def test_b64_saves_to_cache(self, provider, tmp_path):
-        import base64
         png_bytes = bytes.fromhex(_PNG_HEX)
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
@@ -187,6 +186,10 @@ class TestGenerate:
         ("landscape", "1536x1024"),
         ("square", "1024x1024"),
         ("portrait", "1024x1536"),
+        ("16:9", "1824x1024"),
+        ("9:16", "1024x1824"),
+        ("4:3", "1360x1024"),
+        ("3:4", "1024x1360"),
     ])
     def test_aspect_ratio_mapping(self, provider, aspect, expected_size):
         fake_client = MagicMock()
@@ -196,6 +199,27 @@ class TestGenerate:
             provider.generate("a cat", aspect_ratio=aspect)
 
         assert fake_client.images.generate.call_args.kwargs["size"] == expected_size
+
+    def test_explicit_size_overrides_aspect_ratio(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", aspect_ratio="square", size="1024x1824")
+
+        assert result["success"] is True
+        assert result["size"] == "1024x1824"
+        assert fake_client.images.generate.call_args.kwargs["size"] == "1024x1824"
+
+    def test_invalid_explicit_size_returns_error(self, provider):
+        fake_client = MagicMock()
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", size="1000x1000")
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert fake_client.images.generate.call_count == 0
 
     def test_revised_prompt_passed_through(self, provider):
         fake_client = MagicMock()

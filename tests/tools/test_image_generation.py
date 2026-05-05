@@ -33,6 +33,13 @@ def image_tool():
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 
+    def test_image_generate_schema_exposes_size_and_extended_aspect_ratios(self, image_tool):
+        props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "size" in props
+        assert props["size"]["pattern"] == "^[0-9]+x[0-9]+$"
+        assert "9:16" in props["aspect_ratio"]["enum"]
+        assert "16:9" in props["aspect_ratio"]["enum"]
+
     def test_default_model_is_klein(self, image_tool):
         assert image_tool.DEFAULT_MODEL == "fal-ai/flux-2/klein/9b"
 
@@ -363,15 +370,21 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
-        """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg."""
+    def test_schema_exposes_prompt_aspect_ratio_and_size_to_agent(self, image_tool):
+        """The agent-facing schema stays tight: prompt + framing controls only,
+        not provider/model selection."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "size"}
 
-    def test_aspect_ratio_enum_is_three_values(self, image_tool):
+    def test_image_generate_description_routes_reference_images_to_image_edit_image_arg(self, image_tool):
+        description = image_tool.IMAGE_GENERATE_SCHEMA["description"]
+        assert "image_edit" in description
+        assert "`image` argument" in description
+        assert "reference_image" not in description
+
+    def test_aspect_ratio_enum_includes_legacy_and_explicit_ratios(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
-        assert set(enum) == {"landscape", "square", "portrait"}
+        assert {"landscape", "square", "portrait", "16:9", "9:16", "4:3", "3:4"} <= set(enum)
 
 
 # ---------------------------------------------------------------------------

@@ -22,10 +22,13 @@ IMAGE_EDIT_SCHEMA = {
     "name": "image_edit",
     "description": (
         "Edit an existing image using a text instruction and a reference image. "
-        "The active image backend is user-configured. Currently this is intended "
-        "for backends that support image-to-image editing, such as OpenAI Codex "
-        "auth with GPT Image 2. Returns either a URL or an absolute file path in "
-        "the `image` field; display it with markdown ![description](url-or-path)."
+        "Mandatory: when the user provides, uploads, links, or names any "
+        "reference/source/product/person image, use this image-to-image tool "
+        "rather than image_generate/text-to-image. The active image backend is "
+        "user-configured. Currently this is intended for backends that support "
+        "image-to-image editing, such as OpenAI Codex auth with GPT Image 2. "
+        "Returns either a URL or an absolute file path in the `image` field; "
+        "display it with markdown ![description](url-or-path)."
     ),
     "parameters": {
         "type": "object",
@@ -41,8 +44,36 @@ IMAGE_EDIT_SCHEMA = {
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "Desired output aspect ratio. 'landscape' is wide, 'portrait' is tall, 'square' is 1:1.",
+                "description": (
+                    "Desired output aspect ratio. Use '9:16' for exact vertical "
+                    "TikTok/Reels-style images; legacy 'portrait' is 2:3 tall."
+                ),
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "size": {
+                "type": "string",
+                "pattern": "^[0-9]+x[0-9]+$",
+                "description": (
+                    "Optional exact output size for OpenAI/OpenAI-Codex GPT Image 2, "
+                    "formatted WIDTHxHEIGHT (e.g. 1024x1824 for 9:16). Overrides "
+                    "aspect_ratio when supported. Dimensions must be multiples of 16, "
+                    "max side < 3840, aspect ratio <= 3:1, and total pixels between "
+                    "655,360 and 8,294,400."
+                ),
+            },
+            "quality_tier": {
+                "type": "string",
+                "enum": ["auto", "low", "medium", "high"],
+                "description": (
+                    "Optional quality tier override for providers that support GPT Image 2 "
+                    "tiering. 'auto' preserves provider defaults/router heuristics."
+                ),
+                "default": "auto",
+            },
+            "model": {
+                "type": "string",
+                "enum": ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"],
+                "description": "Optional explicit model override. Takes precedence over quality_tier when both are provided.",
             },
         },
         "required": ["prompt", "image"],
@@ -82,7 +113,15 @@ def _get_active_edit_provider():
         return None, configured
 
 
-def _dispatch_to_plugin_provider(prompt: str, image: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    image: str,
+    aspect_ratio: str,
+    *,
+    size: Any = None,
+    quality_tier: Any = None,
+    model: Any = None,
+):
     provider, configured = _get_active_edit_provider()
     if configured is None or configured == "fal":
         return json.dumps({
@@ -115,7 +154,21 @@ def _dispatch_to_plugin_provider(prompt: str, image: str, aspect_ratio: str):
         })
 
     try:
-        result = provider.edit(prompt=prompt, image=image, aspect_ratio=aspect_ratio)
+        provider_kwargs = {
+            key: value
+            for key, value in {
+                "size": size,
+                "quality_tier": quality_tier,
+                "model": model,
+            }.items()
+            if value is not None
+        }
+        result = provider.edit(
+            prompt=prompt,
+            image=image,
+            aspect_ratio=aspect_ratio,
+            **provider_kwargs,
+        )
     except Exception as exc:
         logger.warning("Image edit provider '%s' raised: %s", getattr(provider, "name", "?"), exc)
         return json.dumps({
@@ -155,7 +208,14 @@ def _handle_image_edit(args: Dict[str, Any], **kw):
         return tool_error("image is required for image editing and must be a path or URL")
 
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
-    return _dispatch_to_plugin_provider(prompt, image, aspect_ratio)
+    return _dispatch_to_plugin_provider(
+        prompt,
+        image,
+        aspect_ratio,
+        size=args.get("size"),
+        quality_tier=args.get("quality_tier"),
+        model=args.get("model"),
+    )
 
 
 registry.register(

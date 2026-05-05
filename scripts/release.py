@@ -90,6 +90,7 @@ AUTHOR_MAP = {
     "jetha@google.com": "jethac",
     "jani@0xhoneyjar.xyz": "deep-name",
     "xiangyong@zspace.cn": "CES4751",
+    "harish.kukreja@gmail.com": "counterposition",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

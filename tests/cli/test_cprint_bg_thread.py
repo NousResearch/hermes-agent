@@ -16,7 +16,16 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 import cli
+
+
+@pytest.fixture(autouse=True)
+def reset_output_history():
+    cli._configure_output_history(False, 200)
+    yield
+    cli._configure_output_history(True, 200)
 
 
 def test_cprint_no_app_direct_print(monkeypatch):
@@ -204,3 +213,69 @@ def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
         sys.meta_path.remove(blocker)
 
     assert direct_prints == ["fallback2"]
+
+
+def test_output_history_strips_ansi_and_keeps_recent_lines():
+    cli._configure_output_history(True, 10)
+
+    for idx in range(12):
+        cli._record_output_history(f"\x1b[31mline-{idx}\x1b[0m")
+
+    assert list(cli._OUTPUT_HISTORY) == [f"line-{idx}" for idx in range(2, 12)]
+
+
+def test_replay_output_history_does_not_record_replayed_lines(monkeypatch):
+    cli._configure_output_history(True, 10)
+    cli._record_output_history("visible output")
+    printed = []
+
+    def _fake_print(value):
+        printed.append(value)
+        cli._record_output_history("duplicated replay")
+
+    monkeypatch.setattr(cli, "_pt_print", _fake_print)
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli._replay_output_history()
+
+    assert printed == ["visible output"]
+    assert list(cli._OUTPUT_HISTORY) == ["visible output"]
+
+
+def test_replay_output_history_rerenders_callable_entries(monkeypatch):
+    cli._configure_output_history(True, 10)
+    widths_seen = []
+    printed = []
+
+    def _render_current_width():
+        widths_seen.append("called")
+        return ["top border", "body"]
+
+    cli._record_output_history_entry(_render_current_width)
+    monkeypatch.setattr(cli, "_pt_print", lambda value: printed.append(value))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli._replay_output_history()
+
+    assert widths_seen == ["called"]
+    assert printed == ["top border", "body"]
+    assert list(cli._OUTPUT_HISTORY) == [_render_current_width]
+
+
+def test_suspend_output_history_blocks_recording():
+    cli._configure_output_history(True, 10)
+
+    with cli._suspend_output_history():
+        cli._record_output_history("hidden")
+        cli._record_output_history_entry("also hidden")
+
+    assert list(cli._OUTPUT_HISTORY) == []
+
+
+def test_clear_output_history_removes_replayable_lines():
+    cli._configure_output_history(True, 10)
+    cli._record_output_history("before clear")
+
+    cli._clear_output_history()
+
+    assert list(cli._OUTPUT_HISTORY) == []

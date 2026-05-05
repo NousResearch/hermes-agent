@@ -269,7 +269,8 @@ def test_bundled_command_parser_uses_hermes_registry():
         assert parse_command("/some/path") is None
 
 
-def test_bundled_router_delegates_known_gateway_command(tmp_path):
+def test_bundled_router_delegates_known_gateway_command(tmp_path, caplog):
+    caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
@@ -307,10 +308,12 @@ def test_bundled_router_delegates_known_gateway_command(tmp_path):
         asyncio.run(router_mod.handle_async(event=event, gateway=Gateway()))
 
         assert sends == ["multitenancy:feishu:coder:oc_test:ou_model"]
+        assert "Hermes gateway command handled: model" in caplog.text
         clear_in_memory_routes()
 
 
-def test_bundled_router_rejects_unknown_slash_without_agent(tmp_path):
+def test_bundled_router_rejects_unknown_slash_without_agent(tmp_path, caplog):
+    caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import clear_in_memory_routes
@@ -344,9 +347,11 @@ def test_bundled_router_rejects_unknown_slash_without_agent(tmp_path):
             "Unknown command `/unknown_control`. Type /commands to see what's available, "
             "or resend without the leading slash to send as a regular message."
         ]
+        assert "Unknown command `/unknown_control`" in caplog.text
 
 
-def test_bundled_router_rewrites_skill_slash_into_agent_prompt(tmp_path, monkeypatch):
+def test_bundled_router_rewrites_skill_slash_into_agent_prompt(tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
@@ -414,10 +419,12 @@ def test_bundled_router_rewrites_skill_slash_into_agent_prompt(tmp_path, monkeyp
             "text": "[skill:/demo-skill task:multitenancy:feishu:coder:oc_test:ou_skill] write docs",
         }
         assert sends == ["agent ok"]
+        assert "Hermes skill slash invocation" in caplog.text
         clear_in_memory_routes()
 
 
-def test_bundled_router_delegates_plugin_slash_command(tmp_path, monkeypatch):
+def test_bundled_router_delegates_plugin_slash_command(tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
@@ -470,10 +477,12 @@ def test_bundled_router_delegates_plugin_slash_command(tmp_path, monkeypatch):
 
         assert called == {"args": "hi there"}
         assert sends == ["plugin handled hi there"]
+        assert "Hermes plugin slash handler: demo-plugin" in caplog.text
         clear_in_memory_routes()
 
 
-def test_bundled_router_handles_quick_command_alias(tmp_path, monkeypatch):
+def test_bundled_router_handles_quick_command_alias(tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
@@ -514,10 +523,12 @@ def test_bundled_router_handles_quick_command_alias(tmp_path, monkeypatch):
         asyncio.run(router_mod.handle_async(event=event, gateway=Gateway()))
 
         assert sends == ["model handler saw: /model glm-5.1 high"]
+        assert "Hermes quick command alias" in caplog.text
         clear_in_memory_routes()
 
 
-def test_bundled_router_handles_quick_command_exec(tmp_path, monkeypatch):
+def test_bundled_router_handles_quick_command_exec(tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
@@ -555,6 +566,7 @@ def test_bundled_router_handles_quick_command_exec(tmp_path, monkeypatch):
         asyncio.run(router_mod.handle_async(event=event, gateway=gateway))
 
         assert sends == ["quick-ok"]
+        assert "Hermes quick command exec" in caplog.text
         clear_in_memory_routes()
 
 

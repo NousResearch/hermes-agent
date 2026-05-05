@@ -575,6 +575,7 @@ def _maybe_rewrite_skill_slash_command(
         )
         if not msg:
             return False, None
+        logger.info("Hermes skill slash invocation: %s profile=%s", cmd_key, profile_name or "")
         setattr(event, "text", msg)
         return True, None
     except Exception as exc:
@@ -643,12 +644,14 @@ async def _handle_command(
         else:
             from .commands import is_known_command, unknown_command_message
 
-            reply = (
-                f"Command `/{cmd}` is recognized by Hermes, but this gateway does not "
-                "expose a reusable command dispatcher yet."
-                if is_known_command(cmd)
-                else unknown_command_message(cmd)
-            )
+            if is_known_command(cmd):
+                reply = (
+                    f"Command `/{cmd}` is recognized by Hermes, but this gateway does not "
+                    "expose a reusable command dispatcher yet."
+                )
+            else:
+                reply = unknown_command_message(cmd)
+                logger.info("%s", reply)
 
     if adapter is not None:
         await _safe_call(adapter.send, chat_id, reply)
@@ -696,6 +699,7 @@ async def _dispatch_gateway_command(
                 result = dispatcher(event)
             if asyncio.iscoroutine(result):
                 result = await result
+            logger.info("Hermes gateway command handled: %s", cmd)
             return str(result) if result is not None else None
 
     handler = _gateway_handler_for_command(gateway, cmd)
@@ -725,6 +729,7 @@ async def _dispatch_gateway_command(
         result = handler(event)
         if asyncio.iscoroutine(result):
             result = await result
+    logger.info("Hermes gateway command handled: %s", cmd)
     return str(result) if result is not None else None
 
 
@@ -749,6 +754,7 @@ async def _dispatch_quick_command(
         exec_cmd = qcmd.get("command", "")
         if not exec_cmd:
             return f"Quick command '/{cmd}' has no command defined."
+        logger.info("Hermes quick command exec: %s", cmd)
         try:
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd,
@@ -775,6 +781,7 @@ async def _dispatch_quick_command(
         user_args = _command_args_from_event(event).strip()
         setattr(event, "text", f"{target} {user_args}".strip())
         _set_command_event_methods(event, new_cmd)
+        logger.info("Hermes quick command alias: %s -> %s", cmd, target)
         return await _dispatch_gateway_command(
             new_cmd,
             event,
@@ -805,6 +812,7 @@ async def _dispatch_plugin_command(cmd: str, event: Any) -> Optional[str]:
     handler = _get_plugin_command_handler(cmd)
     if handler is None:
         return None
+    logger.info("Hermes plugin slash handler: %s", cmd.replace("_", "-"))
     user_args = ""
     get_args = getattr(event, "get_command_args", None)
     if callable(get_args):

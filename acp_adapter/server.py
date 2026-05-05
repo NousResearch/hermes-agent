@@ -7,6 +7,8 @@ import contextvars
 import json
 import logging
 import os
+import re
+import urllib.parse
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Optional
@@ -42,6 +44,8 @@ from acp.schema import (
     SessionCapabilities,
     SessionForkCapabilities,
     SessionListCapabilities,
+    TextResourceContents,
+    BlobResourceContents,
     SessionModelState,
     SessionResumeCapabilities,
     SessionInfo,
@@ -85,6 +89,88 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 _LIST_SESSIONS_PAGE_SIZE = 50
 
 
+_MAX_INLINE_FILE_CHARS = 100_000
+
+
+def _parse_file_uri(uri: str) -> tuple[str | None, int | None, int | None]:
+    """Parse a ``file://`` URI into ``(path, start_line, end_line)``.
+
+    Supports line-range suffixes like ``#L9`` or ``#L9:15``.
+    Returns ``(None, None, None)`` for non-file URIs or malformed input.
+    """
+    if not uri.startswith("file://"):
+        return None, None, None
+    # Strip file:// prefix. Handles both file:///abs/path and file://host/path
+    path_part = uri[len("file://"):]
+    # Split off fragment (#L9:15)
+    frag = ""
+    if "#" in path_part:
+        path_part, frag = path_part.split("#", 1)
+    # URL-decode path
+    path = urllib.parse.unquote(path_part)
+    # Parse line range from fragment
+    start_line = None
+    end_line = None
+    if frag.startswith("L"):
+        try:
+            parts = frag[1:].split(":", 1)
+            start_line = int(parts[0])
+            if len(parts) > 1 and parts[1].strip():
+                end_line = int(parts[1])
+        except (ValueError, IndexError):
+            pass
+    return path, start_line, end_line
+
+
+def _read_resource_file(uri: str) -> str | None:
+    """Read a local file referenced by a ``file://`` URI and return its content.
+
+    Handles ``#L9`` / ``#L9:15`` line ranges. Returns ``None`` if the URI
+    is not a local file or the file cannot be read. Caps at
+    ``_MAX_INLINE_FILE_CHARS``.
+    """
+    path, start_line, end_line = _parse_file_uri(uri)
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            if start_line is not None:
+                lines = f.readlines()
+                # Convert to 0-indexed
+                start_idx = max(0, start_line - 1)
+                if end_line is not None:
+                    end_idx = min(len(lines), end_line)
+                else:
+                    end_idx = min(len(lines), start_line)
+                text = "".join(lines[start_idx:end_idx])
+            else:
+                text = f.read()
+        if len(text) > _MAX_INLINE_FILE_CHARS:
+            text = text[:_MAX_INLINE_FILE_CHARS] + "\n... [truncated]"
+        return text
+    except Exception:
+        return None
+
+
+def _format_inlined_file(uri: str, content: str | None, *, error_hint: str = "") -> str:
+    """Format an inlined file for injection into the AI prompt.
+
+    If ``content`` is ``None``, emits a reference-only marker so the AI
+    can still use ``read_file`` if it wants.  If non-``None``, inlines the
+    content with a header line.
+    """
+    path, start_line, end_line = _parse_file_uri(uri)
+    display_path = path or uri
+    label = display_path
+    if start_line is not None:
+        label = f"{display_path}#L{start_line}"
+        if end_line is not None:
+            label = f"{display_path}#L{start_line}:{end_line}"
+    if content is None:
+        return f"[Referenced file: file://{label}]"
+    return f"--- File: {label} ---\n{content}\n--- End of {display_path} ---"
+
+
 def _extract_text(
     prompt: list[
         TextContentBlock
@@ -99,6 +185,27 @@ def _extract_text(
     for block in prompt:
         if isinstance(block, TextContentBlock):
             parts.append(block.text)
+        elif isinstance(block, EmbeddedResourceContentBlock):
+            resource = getattr(block, "resource", None)
+            if isinstance(resource, TextResourceContents) and resource.text:
+                parts.append(resource.text)
+            elif isinstance(resource, BlobResourceContents) and resource.blob:
+                mime = (resource.mime_type or "").lower()
+                uri = resource.uri or ""
+                if mime.startswith("text/"):
+                    try:
+                        import base64
+                        decoded = base64.b64decode(resource.blob).decode("utf-8", errors="replace")
+                        parts.append(decoded)
+                    except Exception:
+                        parts.append(f"[Binary resource: {uri}]")
+                else:
+                    parts.append(f"[Binary resource: {uri}]")
+        elif isinstance(block, ResourceContentBlock):
+            uri = getattr(block, "uri", "") or ""
+            if uri:
+                content = _read_resource_file(uri)
+                parts.append(_format_inlined_file(uri, content))
         elif hasattr(block, "text"):
             parts.append(str(block.text))
     return "\n".join(parts)
@@ -143,6 +250,42 @@ def _content_blocks_to_openai_user_content(
             image_part = _image_block_to_openai_part(block)
             if image_part is not None:
                 parts.append(image_part)
+            continue
+        if isinstance(block, EmbeddedResourceContentBlock):
+            resource = getattr(block, "resource", None)
+            if isinstance(resource, TextResourceContents) and resource.text:
+                uri = resource.uri or ""
+                label = f"--- File: {uri} ---\n" if uri else ""
+                text = f"{label}{resource.text}"
+                parts.append({"type": "text", "text": text})
+                text_parts.append(text)
+            elif isinstance(resource, BlobResourceContents) and resource.blob:
+                mime = (resource.mime_type or "").lower()
+                uri = resource.uri or ""
+                prefix = f"[File: {uri}] " if uri else ""
+                if mime.startswith("text/"):
+                    try:
+                        import base64
+                        decoded = base64.b64decode(resource.blob).decode("utf-8", errors="replace")
+                        text = f"{prefix}\n{decoded}"
+                        parts.append({"type": "text", "text": text})
+                        text_parts.append(text)
+                    except Exception:
+                        note = f"{prefix}[Binary content, could not decode]"
+                        parts.append({"type": "text", "text": note})
+                        text_parts.append(note)
+                else:
+                    note = f"{prefix}[Binary content, type: {resource.mime_type or 'unknown'}]"
+                    parts.append({"type": "text", "text": note})
+                    text_parts.append(note)
+            continue
+        if isinstance(block, ResourceContentBlock):
+            uri = getattr(block, "uri", "") or ""
+            if uri:
+                content = _read_resource_file(uri)
+                text = _format_inlined_file(uri, content)
+                parts.append({"type": "text", "text": text})
+                text_parts.append(text)
             continue
 
     if not parts:
@@ -808,6 +951,34 @@ class HermesACPAgent(acp.Agent):
         )
         if not has_content:
             return PromptResponse(stop_reason="end_turn")
+
+        # Expand @ context references (bare @/path, @file:, @folder:, @url:, etc.)
+        # Only for text-only prompts; multimodal prompts (with images) are left as-is.
+        if isinstance(user_content, str):
+            try:
+                from agent.context_references import preprocess_context_references_async
+                from agent.model_metadata import get_model_context_length
+
+                compressor = getattr(state.agent, "context_compressor", None)
+                _ctx_len = int(getattr(compressor, "context_length", 0) or 32000)
+                _ctx_result = await preprocess_context_references_async(
+                    user_text,
+                    cwd=state.cwd,
+                    context_length=_ctx_len,
+                )
+                if _ctx_result.blocked:
+                    warnings_text = "\n".join(_ctx_result.warnings) or "Context injection refused."
+                    if hasattr(self, "_conn") and self._conn:
+                        update = acp.update_agent_message_text(warnings_text)
+                        await self._conn.session_update(session_id, update)
+                    return PromptResponse(stop_reason="end_turn")
+                if _ctx_result.expanded:
+                    for w in _ctx_result.warnings:
+                        logger.info("ACP @ reference: %s", w)
+                    user_text = _ctx_result.message
+                    user_content = user_text
+            except Exception as exc:
+                logger.debug("ACP @ reference expansion failed: %s", exc)
 
         # /steer on an idle session has no in-flight tool call to inject into.
         # Rewrite it so the payload runs as a normal user prompt, matching the

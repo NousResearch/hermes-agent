@@ -201,6 +201,78 @@ class TestFetchModelsDev:
         mock_get.assert_not_called()
         assert result == SAMPLE_REGISTRY
 
+    @patch("agent.models_dev.requests.get")
+    @patch("agent.models_dev._load_disk_cache")
+    def test_disk_cache_used_before_network_on_cold_start(self, mock_load_disk, mock_get):
+        """Cold normal calls should serve disk cache without blocking on network."""
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_load_disk.return_value = SAMPLE_REGISTRY
+
+        result = fetch_models_dev()
+
+        mock_load_disk.assert_called_once()
+        mock_get.assert_not_called()
+        assert result == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
+    @patch("agent.models_dev._load_disk_cache")
+    def test_network_called_when_disk_cache_absent(self, mock_load_disk, mock_get):
+        """Network is only a cold-start fallback when there is no disk cache."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = SAMPLE_REGISTRY
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_load_disk.return_value = {}
+
+        with patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev()
+
+        mock_load_disk.assert_called_once()
+        mock_get.assert_called_once()
+        assert result == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
+    @patch("agent.models_dev._load_disk_cache")
+    def test_force_refresh_falls_back_to_disk_cache_on_network_failure(self, mock_load_disk, mock_get):
+        """Explicit refresh failures should degrade to disk cache, not empty data."""
+        mock_get.side_effect = Exception("network error")
+
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_load_disk.return_value = SAMPLE_REGISTRY
+
+        result = fetch_models_dev(force_refresh=True)
+
+        mock_get.assert_called_once()
+        assert result == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
+    @patch("agent.models_dev._load_disk_cache")
+    def test_complete_failure_returns_empty_dict(self, mock_load_disk, mock_get):
+        """Cold memory + empty disk + network failure returns {}, not an exception."""
+        mock_get.side_effect = Exception("network error")
+
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_load_disk.return_value = {}
+
+        result = fetch_models_dev()
+
+        assert result == {}
+
 
 # ---------------------------------------------------------------------------
 # get_model_capabilities — vision via modalities.input

@@ -18,6 +18,14 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('handles /redraw locally without slash worker fallback', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/redraw')).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
+  })
+
   it('treats /provider as a local /model alias', () => {
     const ctx = buildCtx()
 
@@ -165,12 +173,25 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('shows usage for an unknown /skills subcommand', () => {
+  it('delegates non-native /skills subcommands to slash.exec', () => {
     const ctx = buildCtx()
 
-    createSlashHandler(ctx)('/skills zzz')
+    createSlashHandler(ctx)('/skills check')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('usage: /skills'))
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: 'skills check',
+      session_id: null
+    })
+  })
+
+  it('passes /new <title> through to the session lifecycle', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/new sprint planning')
+    getOverlayState().confirm?.onConfirm()
+
+    expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
   // Regressions from Copilot review on #19835: /voice output + frontend

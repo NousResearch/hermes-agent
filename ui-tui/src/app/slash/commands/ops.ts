@@ -438,7 +438,7 @@ export const opsCommands: SlashCommand[] = [
   {
     help: 'browse, inspect, install skills',
     name: 'skills',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       const text = arg.trim()
 
       if (!text) {
@@ -449,6 +449,22 @@ export const opsCommands: SlashCommand[] = [
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
       const { panel, sys } = ctx.transcript
+      const runViaSlashWorker = () => {
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => {
+            if (ctx.stale()) {
+              return
+            }
+
+            const body = r?.output || '/skills: no output'
+            const formatted = r?.warning ? `warning: ${r.warning}\n${body}` : body
+            const long = formatted.length > 180 || formatted.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(formatted, 'Skills') : ctx.transcript.sys(formatted)
+          })
+          .catch(ctx.guardedErr)
+      }
 
       if (sub === 'list') {
         rpc<SkillsListResponse>('skills.manage', { action: 'list' })
@@ -593,7 +609,7 @@ export const opsCommands: SlashCommand[] = [
         return
       }
 
-      sys('usage: /skills [list | inspect <n> | install <n> | search <q> | browse [page]]')
+      runViaSlashWorker()
     }
   },
 

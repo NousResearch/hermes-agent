@@ -3987,7 +3987,6 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
         "set-home",
         "update",
         "commands",
-        "status",
         "approve",
         "deny",
     }
@@ -4031,13 +4030,13 @@ def _(rid, params: dict) -> dict:
         cat_order: list[str] = []
 
         for cmd in COMMAND_REGISTRY:
+            if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
+                continue
+
             c = f"/{cmd.name}"
             canon[c.lower()] = c
             for a in cmd.aliases:
                 canon[f"/{a}".lower()] = c
-
-            if cmd.name in _TUI_HIDDEN:
-                continue
 
             desc = _build_description(cmd)
             all_pairs.append([c, desc])

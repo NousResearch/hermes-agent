@@ -2036,6 +2036,28 @@ def test_commands_catalog_includes_tui_mouse_command():
     assert "/mouse" in tui_pairs
 
 
+def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    canon = resp["result"]["canon"]
+
+    assert "/status" in pairs
+    assert canon["/status"] == "/status"
+
+    assert "/topic" not in pairs
+    assert "/approve" not in pairs
+    assert "/deny" not in pairs
+    assert "/sethome" not in pairs
+
+    assert "/topic" not in canon
+    assert "/approve" not in canon
+    assert "/deny" not in canon
+    assert "/set-home" not in canon
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

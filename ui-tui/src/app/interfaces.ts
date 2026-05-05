@@ -190,7 +190,7 @@ export interface InputHandlerActions {
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
-  newSession: (msg?: string) => void
+  newSession: (msg?: string, title?: string) => void
   sys: (text: string) => void
 }
 
@@ -232,7 +232,7 @@ export interface GatewayEventHandlerContext {
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
-    newSession: (msg?: string) => void
+    newSession: (msg?: string, title?: string) => void
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -277,7 +277,7 @@ export interface SlashHandlerContext {
     closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
     guardBusySessionSwitch: (what?: string) => boolean
-    newSession: (msg?: string) => void
+    newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>

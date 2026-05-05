@@ -1,3 +1,5 @@
+import { forceRedraw } from '@hermes/ink'
+
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
@@ -112,16 +114,17 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['new'],
     help: 'start a new session',
     name: 'clear',
-    run: (_arg, ctx, cmd) => {
+    run: (arg, ctx, cmd) => {
       if (ctx.session.guardBusySessionSwitch('switch sessions')) {
         return
       }
 
       const isNew = cmd.startsWith('/new')
+      const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
         patchUiState({ status: 'forging session…' })
-        ctx.session.newSession(isNew ? 'new session started' : undefined)
+        ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
       if (NO_CONFIRM_DESTRUCTIVE) {
@@ -138,6 +141,15 @@ export const coreCommands: SlashCommand[] = [
           title: isNew ? 'Start a new session?' : 'Clear the current session?'
         }
       })
+    }
+  },
+
+  {
+    help: 'force a full UI repaint',
+    name: 'redraw',
+    run: (_arg, ctx) => {
+      forceRedraw(process.stdout)
+      ctx.transcript.sys('ui redrawn')
     }
   },
 

@@ -58,6 +58,7 @@ AUTHOR_MAP = {
     "29756950+revaraver@users.noreply.github.com": "revaraver",
     "nexus@eptic.me": "TheEpTic",
     "emelyanenko.kirill@gmail.com": "EmelyanenkoK",
+    "lazycat.manatee@gmail.com": "manateelazycat",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

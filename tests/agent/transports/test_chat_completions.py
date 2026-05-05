@@ -148,6 +148,54 @@ class TestChatCompletionsBuildKwargs:
             "thinkingLevel": "high",
         }
 
+    def test_custom_provider_sets_default_temperature(self, transport):
+        """Custom OpenAI-compatible providers should get a sensible temperature default."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="custom-model",
+            messages=msgs,
+            tools=tools,
+            is_custom_provider=True,
+        )
+        assert "temperature" in kw
+        assert kw["temperature"] == 0.2
+
+    def test_custom_provider_with_explicit_temperature_not_overridden(self, transport):
+        """Custom providers with explicit fixed_temperature should not be overridden."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="custom-model",
+            messages=msgs,
+            is_custom_provider=True,
+            fixed_temperature=0.7,
+        )
+        assert kw["temperature"] == 0.7
+
+    def test_custom_provider_sets_parallel_tool_calls_default(self, transport):
+        """Custom OpenAI-compatible providers should enable parallel_tool_calls by default."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="custom-model",
+            messages=msgs,
+            tools=tools,
+            is_custom_provider=True,
+        )
+        assert "parallel_tool_calls" in kw
+        assert kw["parallel_tool_calls"] is True
+
+    def test_non_custom_provider_no_temperature_default(self, transport):
+        """Non-custom providers without fixed_temperature should not add temperature."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            is_custom_provider=False,
+        )
+        # Only add temperature if fixed_temperature is set
+        assert "temperature" not in kw
+
     def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

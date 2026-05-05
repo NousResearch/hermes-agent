@@ -245,10 +245,15 @@ class ChatCompletionsTransport(ProviderTransport):
         # Temperature
         fixed_temp = params.get("fixed_temperature")
         omit_temp = params.get("omit_temperature", False)
+        is_custom = params.get("is_custom_provider", False)
         if omit_temp:
             api_kwargs.pop("temperature", None)
         elif fixed_temp is not None:
             api_kwargs["temperature"] = fixed_temp
+        elif is_custom:
+            # Custom OpenAI-compatible providers: set sensible default temperature
+            # (llama.cpp defaults to 1.0 which causes factual drift)
+            api_kwargs["temperature"] = params.get("temperature", 0.2)
 
         # Qwen metadata (caller precomputes {sessionId, promptId})
         qwen_meta = params.get("qwen_session_metadata")
@@ -263,6 +268,10 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # Custom OpenAI-compatible providers: enable parallel_tool_calls by default
+            # (many local backends like llama.cpp require it explicitly)
+            if params.get("is_custom_provider", False):
+                api_kwargs.setdefault("parallel_tool_calls", True)
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")

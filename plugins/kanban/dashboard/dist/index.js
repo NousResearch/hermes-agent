@@ -60,6 +60,22 @@
     blocked: "Mark this task as blocked? The worker's claim is released.",
   };
 
+  function withCompletionSummary(patch, count) {
+    if (!patch || patch.status !== "done") return patch;
+    const label = count && count > 1 ? `${count} selected task(s)` : "this task";
+    const value = window.prompt(
+      `Completion summary for ${label}. This is stored as the task result.`,
+      "",
+    );
+    if (value === null) return null;
+    const summary = value.trim();
+    if (!summary) {
+      window.alert("Completion summary is required before marking a task done.");
+      return null;
+    }
+    return Object.assign({}, patch, { result: summary, summary });
+  }
+
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
 
@@ -480,6 +496,8 @@
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
+      const patch = withCompletionSummary({ status: newStatus }, 1);
+      if (!patch) return;
       setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
@@ -499,7 +517,7 @@
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(patch),
       }).catch(function (err) {
         setError(`Move failed: ${err.message || err}`);
         loadBoard();
@@ -538,7 +556,9 @@
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const body = Object.assign({ ids: Array.from(selectedIds) }, patch);
+      const finalPatch = withCompletionSummary(patch, selectedIds.size);
+      if (!finalPatch) return;
+      const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
       SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1426,10 +1446,12 @@
       if (opts && opts.confirm && !window.confirm(opts.confirm)) {
         return Promise.resolve();
       }
+      const finalPatch = withCompletionSummary(patch, 1);
+      if (!finalPatch) return Promise.resolve();
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify(finalPatch),
       }).then(function () { load(); props.onRefresh(); });
     };
 

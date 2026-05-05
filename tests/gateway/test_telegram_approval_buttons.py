@@ -149,6 +149,61 @@ class TestTelegramExecApproval:
         )
         assert result.success is False
 
+
+# ===========================================================================
+# send_model_picker — inline keyboard model picker
+# ===========================================================================
+
+class TestTelegramModelPickerSend:
+    """Test the /model picker inline keyboard send path."""
+
+    @pytest.mark.asyncio
+    async def test_general_topic_thread_id_is_omitted(self):
+        """Telegram's General topic is represented internally as thread_id=1.
+
+        Bot API rejects message_thread_id=1 with "Message thread not found";
+        normal text sends already omit it, and the model picker must match.
+        """
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_model_picker(
+            chat_id="12345",
+            providers=[{"slug": "openrouter", "name": "OpenRouter", "models": ["m1"], "total_models": 1}],
+            current_model="m1",
+            current_provider="openrouter",
+            session_key="agent:main:telegram:group:12345:1",
+            on_model_selected=AsyncMock(),
+            metadata={"thread_id": "1"},
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs.get("message_thread_id") is None
+
+    @pytest.mark.asyncio
+    async def test_non_general_topic_thread_id_is_preserved(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_model_picker(
+            chat_id="12345",
+            providers=[{"slug": "openrouter", "name": "OpenRouter", "models": ["m1"], "total_models": 1}],
+            current_model="m1",
+            current_provider="openrouter",
+            session_key="agent:main:telegram:group:12345:8",
+            on_model_selected=AsyncMock(),
+            metadata={"thread_id": "8"},
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs.get("message_thread_id") == 8
+
     @pytest.mark.asyncio
     async def test_disable_link_previews_sets_preview_kwargs(self):
         adapter = _make_adapter(extra={"disable_link_previews": True})

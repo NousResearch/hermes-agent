@@ -512,6 +512,7 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
+    keep: Optional[int] = None,
 ) -> Optional[str]:
     """Create a quick state snapshot of critical files.
 
@@ -585,8 +586,10 @@ def create_quick_snapshot(
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    # Auto-prune
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP)
+    # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
+    # with known high-churn safety snapshots (for example pre-update) can pass a
+    # smaller keep value so large state.db copies do not accumulate indefinitely.
+    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id

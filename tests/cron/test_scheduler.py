@@ -2055,8 +2055,8 @@ class TestParallelTick:
         """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
         lock_dir = tmp_path / "cron"
         lock_dir.mkdir()
-        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
-             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+        lock_file = lock_dir / ".tick.lock"
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_file)):
             yield
 
     def test_parallel_jobs_run_concurrently(self):

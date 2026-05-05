@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback } from 'react'
+import { useCallback, type RefObject } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -175,15 +175,24 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         rpc<SessionTitleResponse>('session.title', {
           session_id: r.session_id,
           title: requestedTitle
-        }).then(result => {
-          if (!result || getUiState().sid !== r.session_id) {
-            return
-          }
-
-          const nextTitle = (result.title ?? requestedTitle).trim()
-          const suffix = result.pending ? ' (queued while session initializes)' : ''
-          sys(`session title set: ${nextTitle}${suffix}`)
         })
+          .then(result => {
+            if (!result || getUiState().sid !== r.session_id) {
+              return
+            }
+
+            const nextTitle = (result.title ?? requestedTitle).trim()
+            const suffix = result.pending ? ' (queued while session initializes)' : ''
+            sys(`session title set: ${nextTitle}${suffix}`)
+          })
+          .catch((err: unknown) => {
+            if (getUiState().sid !== r.session_id) {
+              return
+            }
+
+            const message = err instanceof Error ? err.message : String(err)
+            sys(`warning: failed to set session title: ${message}`)
+          })
       }
     },
     [closeSession, colsRef, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]

@@ -759,7 +759,19 @@ class BaseEnvironment(ABC):
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
+        try:
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+        except (KeyboardInterrupt, SystemExit):
+            # Close the tiny but real window between Popen returning and
+            # _wait_for_process entering its own interrupt-safe poll loop.
+            # Thread-targeted interrupts (and real process signals on the
+            # main thread) can land in that gap; without this outer guard, the
+            # local backend's setsid-spawned command group survives as an
+            # orphan because _wait_for_process never gets a chance to clean it.
+            try:
+                self._kill_process(proc)
+            finally:
+                raise
         self._update_cwd(result)
 
         return result

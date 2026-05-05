@@ -538,17 +538,28 @@ class TestGetTextAuxiliaryClient:
         assert model is None
 
     def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self):
-        with patch("agent.auxiliary_client._resolve_custom_runtime",
-                   return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
-             patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        real_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "custom",
+                "gpt-5.3-codex",
+                "https://api.openai.com/v1",
+                "sk-test",
+                "codex_responses",
+            ),
+        ), patch("agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
             client, model = get_text_auxiliary_client()
 
-        from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
+        assert client._real_client is real_client
         assert model == "gpt-5.3-codex"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
+        mock_openai.assert_called_once_with(
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+        )
 
 
 class TestVisionClientFallback:

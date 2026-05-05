@@ -77,6 +77,7 @@ class TestCwdHandling:
         """Docker should keep host paths out of the sandbox unless explicitly enabled."""
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/root", (
             f"Expected /root, got {config['cwd']}. "

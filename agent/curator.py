@@ -104,6 +104,11 @@ def save_state(data: Dict[str, Any]) -> None:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, path)
+            for stale in path.parent.glob(".curator_state_*.tmp"):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
         except BaseException:
             try:
                 os.unlink(tmp)

@@ -292,6 +292,12 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
 
+    # 4c. Disable Tirith auto-install/network work by default. Dedicated
+    #     tirith tests patch _load_security_config directly when they need
+    #     to exercise install/scan paths. The broad suite must not spawn
+    #     background downloader threads, which can crash xdist workers.
+    monkeypatch.setenv("TIRITH_ENABLED", "false")
+
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
     #    singleton might still be cached from a previous test).
@@ -362,6 +368,16 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- tools.tirith_security — avoid background auto-install leakage ---
+    try:
+        from tools import tirith_security as _tirith_mod
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+        if _tirith_mod._install_thread is not None and not _tirith_mod._install_thread.is_alive():
+            _tirith_mod._install_thread = None
+    except Exception:
+        pass
+
     # --- tools.interrupt — per-thread interrupt flag set ---
     try:
         from tools import interrupt as _interrupt_mod
@@ -424,6 +440,16 @@ def _reset_module_state():
     try:
         from tools import credential_files as _credf_mod
         _credf_mod._registered_files_var.set({})
+    except Exception:
+        pass
+
+    # --- tools.skill_provenance — ContextVar<str> ---
+    # Agent runs set this to assistant_tool/background_review around tool
+    # calls.  If a test aborts before resetting its token, the next test in
+    # the same xdist worker inherits the wrong write origin.
+    try:
+        from tools import skill_provenance as _skill_provenance_mod
+        _skill_provenance_mod.set_current_write_origin("foreground")
     except Exception:
         pass
 

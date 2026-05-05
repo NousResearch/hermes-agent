@@ -98,7 +98,17 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         result_holder = {}
         proc_holder = {}
         started = threading.Event()
-        raise_at = [None]  # set by the main thread to tell worker when
+
+        original_run_bash = env._run_bash
+
+        def capture_run_bash(cmd_string, *args, **kwargs):
+            proc = original_run_bash(cmd_string, *args, **kwargs)
+            if "sleep 30" in cmd_string and not kwargs.get("login", False):
+                proc_holder["proc"] = proc
+                started.set()
+            return proc
+
+        env._run_bash = capture_run_bash
 
         # Drive execute() on a separate thread so we can SIGNAL-interrupt it
         # via a thread-targeted exception without killing our test process.
@@ -113,42 +123,15 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        # Wait until the subprocess actually exists.  LocalEnvironment.execute
-        # does init_session() (one spawn) before the real command, so we need
-        # to wait until a sleep 30 is visible.  Use pgrep-style lookup via
-        # /proc to find the bash process running our sleep.
-        deadline = time.monotonic() + 5.0
-        target_pid = None
-        while time.monotonic() < deadline:
-            # Walk our children and grand-children to find one running 'sleep 30'
-            try:
-                import psutil  # optional — fall back if absent
-                for p in psutil.Process(os.getpid()).children(recursive=True):
-                    try:
-                        if "sleep 30" in " ".join(p.cmdline()):
-                            target_pid = p.pid
-                            break
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except ImportError:
-                # Fall back to ps
-                ps = subprocess.run(
-                    ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
-                )
-                for line in ps.stdout.splitlines():
-                    if "sleep 30" in line and "grep" not in line:
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            target_pid = int(parts[0])
-                            break
-            if target_pid:
-                break
-            time.sleep(0.1)
-
-        assert target_pid is not None, (
-            "test setup: couldn't find 'sleep 30' subprocess after 5 s"
+        # Wait until the subprocess spawned by THIS env.execute call exists.
+        # A previous test can leak a generic "sleep 30" child under xdist;
+        # scanning the process table then targets the wrong process group and
+        # turns this regression guard into a suite-order flake.
+        assert started.wait(timeout=5.0), (
+            "test setup: couldn't capture the 'sleep 30' subprocess after 5 s"
         )
-        pgid = os.getpgid(target_pid)
+        proc = proc_holder["proc"]
+        pgid = getattr(proc, "_hermes_pgid", os.getpgid(proc.pid))
         assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
 
         # Now inject a KeyboardInterrupt into the worker thread the same

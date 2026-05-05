@@ -3255,9 +3255,10 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            accepted = bool(suggestions)
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": accepted,
+                "persist": accepted,
                 "recognized": False,
                 "message": (
                     f"Note: `{requested}` was not found in the OpenAI Codex model listing. "

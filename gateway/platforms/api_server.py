@@ -70,6 +70,14 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return default
 
 
+def _coerce_int(value: Any, default: int) -> int:
+    """Parse integer config/env values without letting malformed input crash requests."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -821,7 +829,7 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
-        max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+        max_iterations = _coerce_int(os.getenv("HERMES_MAX_ITERATIONS", "90"), 90)
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).

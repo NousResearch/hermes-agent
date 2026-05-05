@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 import json
 import logging
 import mimetypes
@@ -108,12 +109,17 @@ from gateway.platforms.qqbot.constants import (
     DEDUP_MAX_SIZE,
     MSG_TYPE_TEXT,
     MSG_TYPE_MARKDOWN,
+    MSG_TYPE_KEYBOARD,
     MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY,
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_VIDEO,
     MEDIA_TYPE_VOICE,
     MEDIA_TYPE_FILE,
+    KEYBOARD_ACTION_TYPE,
+    KEYBOARD_BUTTON_PRIMARY,
+    KEYBOARD_BUTTON_DEFAULT,
+    KEYBOARD_BUTTON_DANGER,
 )
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
@@ -207,6 +213,11 @@ class QQAdapter(BasePlatformAdapter):
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
+
+        # Approval / slash-confirm state (InlineKeyboard button callbacks)
+        self._approval_counter = itertools.count(1)
+        self._approval_state: Dict[int, Dict[str, str]] = {}
+        self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
 
     # ------------------------------------------------------------------
     # Properties
@@ -759,6 +770,8 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_AT_MESSAGE_CREATE",
             ):
                 asyncio.create_task(self._on_message(t, d))
+            elif t == "INTERACTION_CREATE":
+                asyncio.create_task(self._on_interaction(d))
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return
@@ -2411,3 +2424,394 @@ class QQAdapter(BasePlatformAdapter):
             return True
         self._seen_messages[msg_id] = now
         return False
+
+    # ------------------------------------------------------------------
+    # InlineKeyboard interaction handling
+    # ------------------------------------------------------------------
+
+    async def _on_interaction(self, d: Any) -> None:
+        """Handle an INTERACTION_CREATE event (InlineKeyboard button click).
+
+        QQ Bot sends this when a user clicks an InlineKeyboard button
+        with ``action_type`` 2 (callback).  The ``data`` field carries
+        the callback string we embedded when building the keyboard.
+        """
+        if not isinstance(d, dict):
+            return
+
+        interaction_id = str(d.get("id", ""))
+        callback_data = ""
+        # QQ Bot v2: button callback data is in d.data.resolved.button_data
+        # or d.data.button_data depending on the API version.
+        data_obj = d.get("data", {})
+        if isinstance(data_obj, dict):
+            resolved = data_obj.get("resolved", {})
+            if isinstance(resolved, dict):
+                callback_data = str(resolved.get("button_data", ""))
+            if not callback_data:
+                callback_data = str(data_obj.get("button_data", ""))
+
+        if not callback_data:
+            logger.debug(
+                "[%s] INTERACTION_CREATE without button_data, ignoring",
+                self._log_tag,
+            )
+            return
+
+        # Acknowledge the interaction (QQ Bot requires ack within 3s)
+        asyncio.create_task(self._ack_interaction(interaction_id, d))
+
+        # Parse callback_data: format is "hermes:{type}:{action}:{id}"
+        #   type = "approval" | "slash_confirm"
+        #   action = "approve_once" | "approve_session" | "approve_always" | "deny"
+        #            | "once" | "always" | "cancel"
+        #   id = approval_id or confirm_id
+        parts = callback_data.split(":")
+        if len(parts) < 4 or parts[0] != "hermes":
+            logger.debug(
+                "[%s] Unknown callback_data format: %s",
+                self._log_tag, callback_data,
+            )
+            return
+
+        kind = parts[1]
+        action = parts[2]
+        target_id = parts[3]
+
+        if kind == "approval":
+            await self._resolve_approval_interaction(action, target_id)
+        elif kind == "slash_confirm":
+            await self._resolve_slash_confirm_interaction(action, target_id)
+        else:
+            logger.debug(
+                "[%s] Unknown interaction kind: %s", self._log_tag, kind,
+            )
+
+    async def _ack_interaction(self, interaction_id: str, d: Any) -> None:
+        """Acknowledge a QQ Bot interaction to prevent timeout errors."""
+        try:
+            # QQ Bot requires a PATCH to /interactions/{id} within 3 seconds
+            body: Dict[str, Any] = {"code": 0}
+            await self._api_request(
+                "PUT",
+                f"/interactions/{interaction_id}",
+                body,
+                timeout=3.0,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] Interaction ack failed (non-fatal): %s",
+                self._log_tag, exc,
+            )
+
+    async def _resolve_approval_interaction(
+        self, action: str, approval_id_str: str,
+    ) -> None:
+        """Resolve an exec-approval button click."""
+        from tools.approval import resolve_gateway_approval
+
+        try:
+            approval_id = int(approval_id_str)
+        except (ValueError, TypeError):
+            logger.warning(
+                "[%s] Invalid approval_id in callback: %s",
+                self._log_tag, approval_id_str,
+            )
+            return
+
+        state = self._approval_state.pop(approval_id, None)
+        if not state:
+            logger.debug(
+                "[%s] No pending approval for id %s", self._log_tag, approval_id,
+            )
+            return
+
+        session_key = state.get("session_key", "")
+        if not session_key:
+            return
+
+        # Map button actions to approval choices
+        action_map = {
+            "approve_once": "once",
+            "approve_session": "session",
+            "approve_always": "always",
+            "deny": "deny",
+        }
+        choice = action_map.get(action, "")
+        if not choice:
+            logger.warning(
+                "[%s] Unknown approval action: %s", self._log_tag, action,
+            )
+            return
+
+        result = await resolve_gateway_approval(session_key, choice)
+        if result:
+            # Send the resolution message back to the user
+            chat_id = state.get("chat_id", "")
+            if chat_id:
+                try:
+                    await self.send(chat_id, result, metadata=None)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Failed to send approval result: %s",
+                        self._log_tag, exc,
+                    )
+
+    async def _resolve_slash_confirm_interaction(
+        self, action: str, confirm_id: str,
+    ) -> None:
+        """Resolve a slash-confirm button click."""
+        from tools import slash_confirm as _sc
+
+        session_key = self._slash_confirm_state.pop(confirm_id, None)
+        if not session_key:
+            logger.debug(
+                "[%s] No pending slash_confirm for id %s",
+                self._log_tag, confirm_id,
+            )
+            return
+
+        # Map button actions to slash-confirm choices
+        choice_map = {
+            "once": "once",
+            "always": "always",
+            "cancel": "cancel",
+        }
+        choice = choice_map.get(action, "")
+        if not choice:
+            logger.warning(
+                "[%s] Unknown slash_confirm action: %s",
+                self._log_tag, action,
+            )
+            return
+
+        result = await _sc.resolve(session_key, confirm_id, choice)
+        if result:
+            # The result should be sent as a follow-up; the gateway
+            # typically handles this, but we send it directly for
+            # button-initiated resolutions.
+            logger.info(
+                "[%s] Slash confirm resolved: choice=%s", self._log_tag, choice,
+            )
+
+    # ------------------------------------------------------------------
+    # InlineKeyboard message helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_keyboard_button(
+        label: str, callback_data: str, style: int = KEYBOARD_BUTTON_DEFAULT,
+    ) -> Dict[str, Any]:
+        """Build a single InlineKeyboard button for QQ Bot API v2."""
+        return {
+            "id": str(uuid.uuid4().hex[:8]),
+            "render_data": {"label": label, "visited_label": label, "style": style},
+            "action": {
+                "type": KEYBOARD_ACTION_TYPE,
+                "permission": {"type": 2},  # All group members / specified users
+                "data": callback_data,
+            },
+        }
+
+    def _build_keyboard_rows(
+        self, rows: List[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Build the keyboard object for QQ Bot API v2."""
+        return {
+            "id": str(uuid.uuid4().hex[:8]),
+            "rows": [
+                {"id": str(uuid.uuid4().hex[:8]), "buttons": buttons}
+                for buttons in rows
+            ],
+        }
+
+    async def _send_keyboard_message(
+        self,
+        chat_id: str,
+        content: str,
+        keyboard_rows: List[List[Dict[str, Any]]],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a markdown message with InlineKeyboard buttons.
+
+        Uses QQ Bot API v2 keyboard messages (msg_type=2 with ``keyboard``
+        field).  Button clicks generate ``INTERACTION_CREATE`` events that
+        are routed back through ``_on_interaction``.
+        """
+        del metadata  # QQBot doesn't use thread metadata for keyboards yet
+
+        if not self._markdown_support:
+            # Keyboard requires markdown mode; fall back to plain text
+            logger.debug(
+                "[%s] Keyboard requires markdown support, falling back to text",
+                self._log_tag,
+            )
+            return SendResult(success=False, error="Keyboard requires markdown_support=true")
+
+        keyboard = self._build_keyboard_rows(keyboard_rows)
+        body: Dict[str, Any] = {
+            "markdown": {"content": content[: MAX_MESSAGE_LENGTH]},
+            "keyboard": keyboard,
+            "msg_type": MSG_TYPE_KEYBOARD,
+            "msg_seq": self._next_msg_seq(reply_to or chat_id),
+        }
+
+        if reply_to:
+            body["msg_id"] = reply_to
+
+        chat_type = self._guess_chat_type(chat_id)
+
+        try:
+            if chat_type == "c2c":
+                data = await self._api_request(
+                    "POST", f"/v2/users/{chat_id}/messages", body,
+                )
+            elif chat_type == "group":
+                data = await self._api_request(
+                    "POST", f"/v2/groups/{chat_id}/messages", body,
+                )
+            elif chat_type in ("guild", "dm"):
+                channel_id = chat_id
+                data = await self._api_request(
+                    "POST", f"/channels/{channel_id}/messages",
+                    {"content": content[: MAX_MESSAGE_LENGTH], "keyboard": keyboard},
+                )
+            else:
+                data = await self._api_request(
+                    "POST", f"/v2/users/{chat_id}/messages", body,
+                )
+
+            msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
+            return SendResult(success=True, message_id=msg_id, raw_response=data)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Keyboard message send failed: %s", self._log_tag, exc,
+            )
+            return SendResult(success=False, error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Approval & slash-confirm adapter overrides
+    # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive approval prompt with InlineKeyboard buttons.
+
+        Implements the same ``send_exec_approval`` interface used by
+        Telegram, Discord, Slack, and Feishu adapters.  Button clicks
+        are routed through ``_on_interaction`` → ``_resolve_approval_interaction``.
+        """
+        if not self._http_client:
+            return SendResult(success=False, error="Not connected")
+
+        approval_id = next(self._approval_counter)
+        cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+
+        # Build callback data: hermes:approval:{action}:{approval_id}
+        row1 = [
+            self._build_keyboard_button(
+                "✅ Allow Once",
+                f"hermes:approval:approve_once:{approval_id}",
+                KEYBOARD_BUTTON_PRIMARY,
+            ),
+            self._build_keyboard_button(
+                "🔒 Session",
+                f"hermes:approval:approve_session:{approval_id}",
+                KEYBOARD_BUTTON_DEFAULT,
+            ),
+        ]
+        row2 = [
+            self._build_keyboard_button(
+                "✅ Always",
+                f"hermes:approval:approve_always:{approval_id}",
+                KEYBOARD_BUTTON_DEFAULT,
+            ),
+            self._build_keyboard_button(
+                "❌ Deny",
+                f"hermes:approval:deny:{approval_id}",
+                KEYBOARD_BUTTON_DANGER,
+            ),
+        ]
+
+        content = (
+            f"⚠️ **Command Approval Required**\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"**Reason:** {description}"
+        )
+
+        # Use last inbound message as reply_to for context
+        reply_to = self._last_msg_id.get(chat_id)
+
+        result = await self._send_keyboard_message(
+            chat_id, content, [row1, row2], reply_to=reply_to,
+        )
+
+        if result.success:
+            self._approval_state[approval_id] = {
+                "session_key": session_key,
+                "message_id": result.message_id or "",
+                "chat_id": chat_id,
+            }
+
+        return result
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a three-button slash-command confirmation prompt.
+
+        Implements the ``send_slash_confirm`` interface from
+        ``BasePlatformAdapter``.  Button clicks are routed through
+        ``_on_interaction`` → ``_resolve_slash_confirm_interaction``.
+        """
+        if not self._http_client:
+            return SendResult(success=False, error="Not connected")
+
+        preview = message if len(message) <= 3800 else message[:3800] + "..."
+
+        # Build callback data: hermes:slash_confirm:{action}:{confirm_id}
+        row1 = [
+            self._build_keyboard_button(
+                "✅ Approve Once",
+                f"hermes:slash_confirm:once:{confirm_id}",
+                KEYBOARD_BUTTON_PRIMARY,
+            ),
+            self._build_keyboard_button(
+                "🔒 Always Approve",
+                f"hermes:slash_confirm:always:{confirm_id}",
+                KEYBOARD_BUTTON_DEFAULT,
+            ),
+        ]
+        row2 = [
+            self._build_keyboard_button(
+                "❌ Cancel",
+                f"hermes:slash_confirm:cancel:{confirm_id}",
+                KEYBOARD_BUTTON_DANGER,
+            ),
+        ]
+
+        content = f"**{title or 'Confirm'}**\n{preview}"
+
+        reply_to = self._last_msg_id.get(chat_id)
+
+        result = await self._send_keyboard_message(
+            chat_id, content, [row1, row2], reply_to=reply_to,
+        )
+
+        if result.success:
+            self._slash_confirm_state[confirm_id] = session_key
+
+        return result

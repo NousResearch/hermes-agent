@@ -113,6 +113,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   msg={row.msg}
                   sections={ui.sections}
                   t={ui.theme}
+                  userPromptAnchor={ui.userPromptAnchor}
                 />
               )}
 

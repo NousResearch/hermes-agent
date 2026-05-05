@@ -5,6 +5,7 @@ import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import type { UserPromptAnchorStyle } from '../domain/userPromptAnchor.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedHistoryRenderText,
@@ -32,7 +33,8 @@ export const MessageLine = memo(function MessageLine({
   msg,
   sections,
   t,
-  tools = []
+  tools = [],
+  userPromptAnchor
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
@@ -96,6 +98,7 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
+  const userBody = msg.role === 'user' && userPromptAnchor ? userPromptAnchor.textColor : body
   const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
 
   const showDetails =
@@ -125,7 +128,7 @@ export const MessageLine = memo(function MessageLine({
       const [head, ...rest] = userDisplay(msg.text).split('[long message]')
 
       return (
-        <Text color={body}>
+        <Text color={userBody}>
           {head}
           <Text color={t.color.muted} dimColor>
             [long message]
@@ -135,8 +138,26 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
-    return <Text {...(body ? { color: body } : {})}>{msg.text}</Text>
+    return <Text {...(userBody ? { color: userBody } : {})}>{msg.text}</Text>
   })()
+
+  if (msg.role === 'user' && userPromptAnchor) {
+    return (
+      <Box flexDirection="column" marginBottom={userPromptAnchor.marginBottom} marginTop={userPromptAnchor.marginTop}>
+        <Box
+          borderColor={userPromptAnchor.borderColor}
+          borderStyle={userPromptAnchor.borderStyle}
+          flexDirection="column"
+          paddingX={1}
+        >
+          <Text bold color={userPromptAnchor.titleColor}>
+            {userPromptAnchor.title}
+          </Text>
+          <Box>{content}</Box>
+        </Box>
+      </Box>
+    )
+  }
 
   // Diff segments (emitted by pushInlineDiffSegment between narration
   // segments) need a blank line on both sides so the patch doesn't butt up
@@ -188,4 +209,5 @@ interface MessageLineProps {
   sections?: SectionVisibility
   t: Theme
   tools?: ActiveTool[]
+  userPromptAnchor?: null | UserPromptAnchorStyle
 }

@@ -653,7 +653,13 @@ class TestDiscordChannelPromptsConfig:
 
 
 class TestUserMessagePreviewConfig:
-    def test_default_config_preview_line_counts(self):
+    def test_default_config_preview_anchor_style(self):
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+        assert preview["boxed"] is True
+        assert preview["box_style"] == "round"
+        assert preview["accent_color"] == "#B084FF"
+        assert preview["text_color"] == "#F2EAFE"
+        assert preview["margin_top"] == 2
+        assert preview["margin_bottom"] == 2

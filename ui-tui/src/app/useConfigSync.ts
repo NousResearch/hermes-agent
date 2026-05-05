@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
+import { userPromptAnchorStyle } from '../domain/userPromptAnchor.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   ConfigFullResponse,
@@ -147,7 +148,8 @@ export const applyDisplay = (
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
-    streaming: d.streaming !== false
+    streaming: d.streaming !== false,
+    userPromptAnchor: userPromptAnchorStyle(undefined, d.user_message_preview ?? {})
   })
 }
 

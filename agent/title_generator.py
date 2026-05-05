@@ -57,7 +57,7 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=messages,
-            max_tokens=500,
+            max_tokens=2000,
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
@@ -70,6 +70,8 @@ def generate_title(
         # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."
+        if not title:
+            logger.warning("Title generation returned empty content (reasoning model may have exhausted token budget)")
         return title if title else None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.

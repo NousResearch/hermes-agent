@@ -259,10 +259,12 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding-cn",
 })
 
-# OpenRouter app attribution headers (base — always sent)
+# OpenRouter app attribution headers (base — always sent).
+# `X-Title` is the canonical attribution header OpenRouter's dashboard
+# reads; the previous `X-OpenRouter-Title` label was not recognized there.
 _OR_HEADERS_BASE = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-    "X-OpenRouter-Title": "Hermes Agent",
+    "X-Title": "Hermes Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
@@ -567,7 +569,12 @@ class _CodexCompletionsAdapter:
                     # API allows it.
                     pass
                 else:
-                    effort = reasoning_cfg.get("effort", "medium")
+                    # Truthy-only check mirrors agent/transports/codex.py
+                    # build_kwargs(): falsy values (None, "", 0) fall back
+                    # to the default rather than being forwarded to the
+                    # Codex backend, which rejects e.g. {"effort": null}
+                    # with a 400.
+                    effort = reasoning_cfg.get("effort") or "medium"
                     # Codex backend rejects "minimal"; clamp to "low" to
                     # match the main-agent Codex transport behavior.
                     if effort == "minimal":
@@ -1639,6 +1646,39 @@ def _is_payment_error(exc: Exception) -> bool:
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
                                            "payment required")):
+            return True
+    return False
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect rate-limit errors that warrant provider fallback.
+
+    Returns True for HTTP 429 errors whose message indicates rate limiting
+    (as opposed to billing/quota exhaustion, which _is_payment_error handles).
+    Also catches OpenAI SDK RateLimitError instances that may not set
+    .status_code on the exception object.
+    """
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+
+    # OpenAI SDK's RateLimitError sometimes omits .status_code —
+    # detect by class name so we don't miss these.  (PR #8023 pattern)
+    if type(exc).__name__ == "RateLimitError":
+        return True
+
+    if status == 429:
+        # Distinguish rate-limit from billing: billing keywords are handled
+        # by _is_payment_error, everything else on 429 is a rate limit.
+        if any(kw in err_lower for kw in (
+            "rate limit", "rate_limit", "too many requests",
+            "try again", "retry after", "resets in",
+        )):
+            return True
+        # Generic 429 without billing keywords = likely a rate limit
+        if not any(kw in err_lower for kw in (
+            "credits", "insufficient funds", "billing",
+            "payment required", "can only afford",
+        )):
             return True
     return False
 
@@ -3127,8 +3167,14 @@ def _resolve_task_provider_model(
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
-        if cfg_base_url:
+        if cfg_base_url and cfg_api_key:
+            # Both base_url and api_key explicitly set → custom endpoint.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+        if cfg_base_url and cfg_provider and cfg_provider != "auto":
+            # base_url set without api_key but with a known provider — use
+            # the provider so it can resolve credentials from env vars
+            # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
+            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
 
@@ -3529,7 +3575,7 @@ def call_llm(
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
 
@@ -3612,13 +3658,27 @@ def call_llm(
         # Codex/OAuth tokens that authenticate but whose endpoint is down,
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        #
+        # ── Rate-limit fallback (#13579) ─────────────────────────────
+        # When the provider returns a 429 rate-limit (not billing), fall
+        # back to an alternative provider instead of exhausting retries
+        # against the same rate-limited endpoint.
+        should_fallback = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_rate_limit_error(first_err)
+        )
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            if _is_payment_error(first_err):
+                reason = "payment error"
+            elif _is_rate_limit_error(first_err):
+                reason = "rate limit"
+            else:
+                reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -3821,7 +3881,7 @@ async def async_call_llm(
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
 
@@ -3890,11 +3950,20 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await retry_client.chat.completions.create(**retry_kwargs), task)
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        should_fallback = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_rate_limit_error(first_err)
+        )
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            if _is_payment_error(first_err):
+                reason = "payment error"
+            elif _is_rate_limit_error(first_err):
+                reason = "rate limit"
+            else:
+                reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(

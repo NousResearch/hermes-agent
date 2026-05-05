@@ -1,0 +1,24 @@
+# Hermes 静的メッセージカタログ -- 日本語
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  危険なコマンド: {description}"
+  choose_long:     "      [o]今回のみ  |  [s]セッション中  |  [a]常に許可  |  [d]拒否"
+  choose_short:    "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
+  prompt_long:     "      選択 [o/s/a/D]: "
+  prompt_short:    "      選択 [o/s/D]: "
+  timeout:         "      ⏱ タイムアウト — コマンドを拒否しました"
+  allowed_once:    "      ✓ 今回のみ許可"
+  allowed_session: "      ✓ このセッション中は許可"
+  allowed_always:  "      ✓ 永続的な許可リストに追加"
+  denied:          "      ✗ 拒否しました"
+  cancelled:       "      ✗ キャンセルしました"
+  blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
+
+gateway:
+  approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
+  draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
+  goal_cleared:     "✓ 目標をクリアしました。"
+  no_active_goal:   "アクティブな目標はありません。"
+  config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
+  config_save_failed: "⚠️ 設定を保存できませんでした: {error}"

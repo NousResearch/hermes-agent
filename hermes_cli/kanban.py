@@ -308,6 +308,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
 
+    # --- reclaim / reassign (recovery) ---
+    p_reclaim = sub.add_parser(
+        "reclaim",
+        help="Release an active worker claim on a running task",
+    )
+    p_reclaim.add_argument("task_id")
+    p_reclaim.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
+    p_reassign = sub.add_parser(
+        "reassign",
+        help="Reassign a task to a different profile, optionally reclaiming first",
+    )
+    p_reassign.add_argument("task_id")
+    p_reassign.add_argument(
+        "profile",
+        help="New profile name (or 'none' to unassign)",
+    )
+    p_reassign.add_argument(
+        "--reclaim", action="store_true",
+        help="Release any active claim before reassigning (required if task is running)",
+    )
+    p_reassign.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -342,6 +371,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+
+    p_edit = sub.add_parser(
+        "edit",
+        help="Edit recovery fields on an already-completed task",
+    )
+    p_edit.add_argument("task_id")
+    p_edit.add_argument(
+        "--result",
+        required=True,
+        help="Backfilled task result text for a done task",
+    )
+    p_edit.add_argument(
+        "--summary",
+        default=None,
+        help="Structured handoff summary. Falls back to --result if omitted.",
+    )
+    p_edit.add_argument(
+        "--metadata",
+        default=None,
+        help="JSON dict of structured facts to store on the latest completed run.",
+    )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
@@ -576,11 +626,14 @@ def kanban_command(args: argparse.Namespace) -> int:
         "ls":       _cmd_list,
         "show":     _cmd_show,
         "assign":   _cmd_assign,
+        "reclaim":  _cmd_reclaim,
+        "reassign": _cmd_reassign,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
         "comment":  _cmd_comment,
         "complete": _cmd_complete,
+        "edit":     _cmd_edit,
         "block":    _cmd_block,
         "unblock":  _cmd_unblock,
         "archive":  _cmd_archive,
@@ -1095,6 +1148,45 @@ def _cmd_assign(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reclaim(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.reclaim_task(
+            conn, args.task_id,
+            reason=getattr(args, "reason", None),
+        )
+    if not ok:
+        print(
+            f"cannot reclaim {args.task_id} (not running or unknown id)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Reclaimed {args.task_id}")
+    return 0
+
+
+def _cmd_reassign(args: argparse.Namespace) -> int:
+    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    with kb.connect() as conn:
+        ok = kb.reassign_task(
+            conn, args.task_id, profile,
+            reclaim_first=bool(getattr(args, "reclaim", False)),
+            reason=getattr(args, "reason", None),
+        )
+    if not ok:
+        print(
+            f"cannot reassign {args.task_id} "
+            f"(unknown id, or still running — pass --reclaim to release first)",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"Reassigned {args.task_id} to "
+        f"{profile or '(unassigned)'}"
+        + (" (claim reclaimed)" if getattr(args, "reclaim", False) else "")
+    )
+    return 0
+
+
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
         kb.link_tasks(conn, args.parent_id, args.child_id)
@@ -1187,6 +1279,34 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_edit(args: argparse.Namespace) -> int:
+    raw_meta = getattr(args, "metadata", None)
+    metadata = None
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    with kb.connect() as conn:
+        if not kb.edit_completed_task_result(
+            conn,
+            args.task_id,
+            result=args.result,
+            summary=getattr(args, "summary", None),
+            metadata=metadata,
+        ):
+            print(
+                f"cannot edit {args.task_id} (unknown id or task is not done)",
+                file=sys.stderr,
+            )
+            return 1
+    print(f"Edited {args.task_id}")
+    return 0
+
+
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
@@ -1274,6 +1394,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
+            "skipped_nonspawnable": res.skipped_nonspawnable,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1293,6 +1414,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_nonspawnable:
+        print(
+            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            f"{', '.join(res.skipped_nonspawnable)}"
+        )
     return 0
 
 
@@ -1404,16 +1530,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             )
 
     def _ready_queue_nonempty() -> bool:
-        """Cheap SELECT — just asks whether there's at least one ready
-        task with an assignee that the dispatcher could have picked up."""
+        """Cheap probe — is there at least one ready+assigned+unclaimed
+        task whose assignee maps to a real Hermes profile (i.e. one the
+        dispatcher would actually try to spawn for)?
+
+        Filters out tasks assigned to control-plane lanes
+        (e.g. ``orion-cc``, ``orion-research``) that are pulled by
+        terminals via ``claim_task`` directly — those are correctly idle
+        from the dispatcher's perspective, not stuck.
+        """
         try:
             with kb.connect() as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM tasks "
-                    "WHERE status = 'ready' AND assignee IS NOT NULL "
-                    "    AND claim_lock IS NULL LIMIT 1"
-                ).fetchone()
-                return row is not None
+                return kb.has_spawnable_ready(conn)
         except Exception:
             return False
 

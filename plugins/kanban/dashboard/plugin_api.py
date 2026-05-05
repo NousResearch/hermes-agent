@@ -176,6 +176,74 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
     }
 
 
+# Hallucination-warning event kinds — see complete_task() in kanban_db.py.
+# completion_blocked_hallucination: kernel rejected created_cards with
+#   phantom ids; task stays in prior state.
+# suspected_hallucinated_references: prose scan found t_<hex> in summary
+#   that doesn't resolve; completion succeeded, advisory only.
+_WARNING_EVENT_KINDS = (
+    "completion_blocked_hallucination",
+    "suspected_hallucinated_references",
+)
+
+
+def _compute_warnings_for_tasks(
+    conn: sqlite3.Connection,
+    task_ids: Optional[list[str]] = None,
+) -> dict[str, dict]:
+    """Return {task_id: {count, kinds, latest_at}} for tasks with
+    hallucination warnings that occurred AFTER the most recent clean
+    completion event (completed / edited). An empty dict means no tasks
+    on the board have active warnings.
+
+    ``task_ids`` narrows the query; pass ``None`` to scan the whole DB
+    (matches board-level rollup). Used by both the /board aggregate and
+    per-task /tasks/:id endpoints.
+    """
+    params: tuple = ()
+    if task_ids is not None:
+        if not task_ids:
+            return {}
+        placeholders = ",".join(["?"] * len(task_ids))
+        sql = (
+            "SELECT task_id, kind, created_at FROM task_events "
+            f"WHERE task_id IN ({placeholders}) AND kind IN "
+            "('completion_blocked_hallucination', "
+            " 'suspected_hallucinated_references', "
+            " 'completed', 'edited') "
+            "ORDER BY task_id, id"
+        )
+        params = tuple(task_ids)
+    else:
+        sql = (
+            "SELECT task_id, kind, created_at FROM task_events "
+            "WHERE kind IN "
+            "('completion_blocked_hallucination', "
+            " 'suspected_hallucinated_references', "
+            " 'completed', 'edited') "
+            "ORDER BY task_id, id"
+        )
+
+    out: dict[str, dict] = {}
+    for row in conn.execute(sql, params).fetchall():
+        tid = row["task_id"]
+        kind = row["kind"]
+        created_at = row["created_at"]
+        if kind in ("completed", "edited"):
+            # Clean event wipes prior warning counters; only events after
+            # this timestamp count.
+            out.pop(tid, None)
+            continue
+        bucket = out.setdefault(
+            tid, {"count": 0, "kinds": {}, "latest_at": 0}
+        )
+        bucket["count"] += 1
+        bucket["kinds"][kind] = bucket["kinds"].get(kind, 0) + 1
+        if created_at > bucket["latest_at"]:
+            bucket["latest_at"] = created_at
+    return out
+
+
 def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     """Return {'parents': [...], 'children': [...]} for a task."""
     parents = [
@@ -253,6 +321,11 @@ def get_board(
             if row["cstatus"] == "done":
                 p["done"] += 1
 
+        # Hallucination-warning rollup for this board (all tasks).
+        # Delegated to _compute_warnings_for_tasks so the per-task
+        # /tasks/:id endpoint can reuse the same rule.
+        warnings_per_task = _compute_warnings_for_tasks(conn, task_ids=None)
+
         latest_event_id = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
         ).fetchone()["m"]
@@ -266,6 +339,9 @@ def get_board(
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            w = warnings_per_task.get(t.id)
+            if w:
+                d["warnings"] = w
             col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
@@ -313,8 +389,14 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        task_d = _task_dict(task)
+        # Attach warnings metadata so the drawer's Recovery section can
+        # auto-open when a hallucination is unresolved.
+        warnings = _compute_warnings_for_tasks(conn, task_ids=[task_id])
+        if warnings.get(task_id):
+            task_d["warnings"] = warnings[task_id]
         return {
-            "task": _task_dict(task),
+            "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "links": _links_for(conn, task_id),
@@ -630,6 +712,9 @@ class BulkTaskBody(BaseModel):
     assignee: Optional[str] = None  # "" or None = unassign
     priority: Optional[int] = None
     archive: bool = False
+    result: Optional[str] = None
+    summary: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 @router.post("/tasks/bulk")
@@ -660,7 +745,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
-                        ok = kanban_db.complete_task(conn, tid)
+                        ok = kanban_db.complete_task(
+                            conn, tid,
+                            result=payload.result,
+                            summary=payload.summary,
+                            metadata=payload.metadata,
+                        )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)
                     elif s == "ready":
@@ -706,6 +796,85 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
 
 
 # ---------------------------------------------------------------------------
+# Recovery actions — reclaim a running claim, reassign to a new profile
+# ---------------------------------------------------------------------------
+
+class ReclaimBody(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/reclaim")
+def reclaim_task_endpoint(
+    task_id: str,
+    payload: ReclaimBody,
+    board: Optional[str] = Query(None),
+):
+    """Release an active worker claim on a running task.
+
+    Used by the dashboard recovery popover when an operator wants to
+    abort a stuck worker (e.g. one that keeps hallucinating card ids)
+    without waiting for the claim TTL. Maps 1:1 to
+    ``hermes kanban reclaim <task_id> --reason ...``.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        ok = kanban_db.reclaim_task(conn, task_id, reason=payload.reason)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"cannot reclaim {task_id}: not in a claimable state "
+                    "(not running, or unknown id)"
+                ),
+            )
+        return {"ok": True, "task_id": task_id}
+    finally:
+        conn.close()
+
+
+class ReassignBody(BaseModel):
+    profile: Optional[str] = None  # "" or None = unassign
+    reclaim_first: bool = False
+    reason: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/reassign")
+def reassign_task_endpoint(
+    task_id: str,
+    payload: ReassignBody,
+    board: Optional[str] = Query(None),
+):
+    """Reassign a task to a different profile, optionally reclaiming first.
+
+    Used by the dashboard recovery popover when an operator wants to
+    retry a task with a different worker profile (e.g. switch to a
+    smarter model after the assigned profile keeps hallucinating).
+    Maps 1:1 to ``hermes kanban reassign <task_id> <profile> [--reclaim]``.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        ok = kanban_db.reassign_task(
+            conn, task_id,
+            payload.profile or None,
+            reclaim_first=bool(payload.reclaim_first),
+            reason=payload.reason,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"cannot reassign {task_id}: unknown id, or still "
+                    "running (pass reclaim_first=true to release the claim first)"
+                ),
+            )
+        return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Plugin config (read dashboard.kanban.* defaults from config.yaml)
 # ---------------------------------------------------------------------------
 
@@ -731,6 +900,155 @@ def get_config():
         "include_archived_by_default": bool(k_cfg.get("include_archived_by_default", False)),
         "render_markdown": bool(k_cfg.get("render_markdown", True)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Home-channel subscriptions (per-task, per-platform toggles)
+# ---------------------------------------------------------------------------
+#
+# Home channels are a first-class gateway concept — each configured platform
+# can have exactly one (chat_id, thread_id, name) it considers "home". The
+# dashboard surfaces these as per-task toggles so a user can opt a specific
+# task into receiving terminal notifications (completed / blocked / gave_up)
+# at their telegram/discord/slack home, without touching the CLI.
+#
+# The wire format mirrors kanban_db.add_notify_sub — (task_id, platform,
+# chat_id, thread_id) — so toggle-on creates exactly the same row the
+# `/kanban create` slash command would, and the existing gateway notifier
+# watcher delivers events without any additional plumbing.
+
+
+def _configured_home_channels() -> list[dict]:
+    """Return every platform that has a home_channel set, fully hydrated.
+
+    Reads the live GatewayConfig so env-var overlays (``TELEGRAM_HOME_CHANNEL``
+    etc.) are honored alongside config.yaml. Returns platforms in a stable
+    order and drops platforms without a home.
+    """
+    try:
+        from gateway.config import load_gateway_config
+    except Exception:
+        return []
+    try:
+        gw_cfg = load_gateway_config()
+    except Exception:
+        return []
+    result: list[dict] = []
+    for platform, pcfg in gw_cfg.platforms.items():
+        if not pcfg or not pcfg.home_channel:
+            continue
+        hc = pcfg.home_channel
+        result.append({
+            "platform": platform.value,
+            "chat_id": hc.chat_id,
+            "thread_id": hc.thread_id or "",
+            "name": hc.name or "Home",
+        })
+    # Stable order for deterministic UI — platform name alphabetical.
+    result.sort(key=lambda r: r["platform"])
+    return result
+
+
+def _home_sub_matches(sub: dict, home: dict) -> bool:
+    """True if a notify_subs row corresponds to the given home channel."""
+    return (
+        sub.get("platform") == home["platform"]
+        and str(sub.get("chat_id", "")) == str(home["chat_id"])
+        and str(sub.get("thread_id") or "") == str(home["thread_id"] or "")
+    )
+
+
+@router.get("/home-channels")
+def get_home_channels(
+    task_id: Optional[str] = Query(None),
+    board: Optional[str] = Query(None),
+):
+    """List every platform with a home channel, plus whether *task_id*
+    (if given) is currently subscribed to that home.
+
+    When ``task_id`` is omitted, every entry's ``subscribed`` is ``false``
+    — useful for the "no task selected" state of the UI.
+    """
+    homes = _configured_home_channels()
+    subscribed_homes: set[tuple[str, str, str]] = set()
+    if task_id:
+        board = _resolve_board(board)
+        conn = _conn(board=board)
+        try:
+            subs = kanban_db.list_notify_subs(conn, task_id)
+        finally:
+            conn.close()
+        for sub in subs:
+            key = (
+                str(sub.get("platform") or ""),
+                str(sub.get("chat_id") or ""),
+                str(sub.get("thread_id") or ""),
+            )
+            subscribed_homes.add(key)
+    result = []
+    for home in homes:
+        key = (home["platform"], home["chat_id"], home["thread_id"])
+        result.append({**home, "subscribed": key in subscribed_homes})
+    return {"home_channels": result}
+
+
+@router.post("/tasks/{task_id}/home-subscribe/{platform}")
+def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Subscribe *task_id* to notifications routed to *platform*'s home channel.
+
+    Idempotent — re-subscribing is a no-op at the DB layer. 404 if the
+    platform has no home channel configured. 404 if the task doesn't exist.
+    """
+    homes = _configured_home_channels()
+    home = next((h for h in homes if h["platform"] == platform), None)
+    if not home:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No home channel configured for platform {platform!r}. "
+                   f"Set one from the messenger via /sethome, or configure "
+                   f"gateway.platforms.{platform}.home_channel in config.yaml.",
+        )
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        kanban_db.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+        )
+        return {"ok": True, "task_id": task_id, "home_channel": home}
+    finally:
+        conn.close()
+
+
+@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
+def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Remove any notify subscription on *task_id* that matches *platform*'s home."""
+    homes = _configured_home_channels()
+    home = next((h for h in homes if h["platform"] == platform), None)
+    if not home:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No home channel configured for platform {platform!r}.",
+        )
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        kanban_db.remove_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=home["chat_id"],
+            thread_id=home["thread_id"] or None,
+        )
+        return {"ok": True, "task_id": task_id, "home_channel": home}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

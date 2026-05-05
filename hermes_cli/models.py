@@ -2906,6 +2906,19 @@ def fetch_api_models(
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
+def _strip_ollama_cloud_suffix(model_id: str) -> str:
+    """Strip :cloud / -cloud suffixes that models.dev appends to Ollama Cloud IDs.
+
+    The live API uses clean IDs (e.g. 'kimi-k2.6') while models.dev sometimes
+    returns them as 'kimi-k2.6:cloud'. Normalising before the dedup merge
+    prevents duplicate entries in the merged model list.
+    """
+    for suffix in (":cloud", "-cloud"):
+        if model_id.endswith(suffix):
+            return model_id[: -len(suffix)]
+    return model_id
+
+
 def _ollama_cloud_cache_path() -> Path:
     """Return the path for the Ollama Cloud model cache."""
     from hermes_constants import get_hermes_home
@@ -3001,9 +3014,10 @@ def fetch_ollama_cloud_models(
                 seen.add(m)
                 merged.append(m)
         for m in mdev_models:
-            if m and m not in seen:
-                seen.add(m)
-                merged.append(m)
+            normalized = _strip_ollama_cloud_suffix(m)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                merged.append(normalized)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged

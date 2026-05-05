@@ -12,6 +12,7 @@ import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -19,15 +20,8 @@ HERMES_HOME = get_hermes_home()
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
 # Load environment variables from ~/.hermes/.env so API key checks work
-from dotenv import load_dotenv
 _env_path = get_env_path()
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
@@ -1264,9 +1258,23 @@ def run_doctor(args):
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
     from hermes_cli.config import get_env_value
+
+    def _gh_authenticated() -> bool:
+        """Check if gh CLI is authenticated via token file or device flow."""
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status", "--json", "authenticated"],
+                capture_output=True, timeout=10,
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")
+    elif _gh_authenticated():
+        check_ok("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)")
     else:
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 

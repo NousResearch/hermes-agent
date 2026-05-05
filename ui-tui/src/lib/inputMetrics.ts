@@ -1,5 +1,7 @@
 import { stringWidth } from '@hermes/ink'
 
+import type { Role } from '../types.js'
+
 export const COMPOSER_PROMPT_GAP_WIDTH = 1
 
 let _seg: Intl.Segmenter | null = null
@@ -160,6 +162,14 @@ export function inputVisualHeight(value: string, columns: number) {
 
 export function composerPromptWidth(promptText: string) {
   return Math.max(1, stringWidth(promptText)) + COMPOSER_PROMPT_GAP_WIDTH
+}
+
+export function transcriptGutterWidth(role: Role, userPrompt: string) {
+  return role === 'user' ? composerPromptWidth(userPrompt) : 3
+}
+
+export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string) {
+  return Math.max(20, totalCols - transcriptGutterWidth(role, userPrompt) - 2)
 }
 
 export function stableComposerColumns(totalCols: number, promptWidth: number) {

@@ -17,6 +17,9 @@ Cron jobs can:
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
+- run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
+
+All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
@@ -285,6 +288,48 @@ cron:
 ```
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
+
+## No-agent mode (script-only jobs)
+
+For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:
+
+```bash
+hermes cron create "every 5m" \
+  --no-agent \
+  --script memory-watchdog.sh \
+  --deliver telegram \
+  --name "memory-watchdog"
+```
+
+Semantics:
+
+- Script stdout (trimmed) → delivered verbatim as the message.
+- **Empty stdout → silent tick**, no delivery. This is the watchdog pattern: "only say something when something is wrong".
+- Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
+- `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
+- No tokens, no model, no provider fallback — the job never touches the inference layer.
+
+`.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
+
+### The agent sets these up for you
+
+The `cronjob` tool's schema exposes `no_agent` to Hermes directly, so you can describe a watchdog in chat and let the agent wire it up:
+
+```text
+Ping me on Telegram if RAM is over 85%, every 5 minutes.
+```
+
+Hermes will write the check script to `~/.hermes/scripts/` via `write_file`, then call:
+
+```python
+cronjob(action="create", schedule="every 5m",
+        script="memory-watchdog.sh", no_agent=True,
+        deliver="telegram", name="memory-watchdog")
+```
+
+It picks `no_agent=True` automatically when the message content is fully determined by the script (watchdogs, threshold alerts, heartbeats). The same tool also lets the agent pause, resume, edit, and remove jobs — so the whole lifecycle is chat-driven without anyone touching the CLI.
+
+See the [Script-Only Cron Jobs guide](/docs/guides/cron-script-only) for worked examples.
 
 ## Provider recovery
 

@@ -4990,6 +4990,28 @@ class TestDeadRetryCode:
         )
 
 
+class TestSupportsReasoningExtraBody:
+    def _make_agent(self):
+        agent = object.__new__(AIAgent)
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = ""
+        return agent
+
+    def test_xiaomi_models_are_treated_as_reasoning_capable(self):
+        agent = self._make_agent()
+        for model in (
+            "xiaomi/mimo-v2.5-pro",
+            "xiaomi/mimo-v2.5",
+            "xiaomi/mimo-v2-omni",
+            "xiaomi/mimo-v2-pro",
+            "xiaomi/mimo-v2-flash",
+        ):
+            agent.model = model
+            assert agent._supports_reasoning_extra_body() is True, model
+
+
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""
 

@@ -5,6 +5,7 @@ import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedHistoryRenderText,
   boundedLiveRenderText,
@@ -95,6 +96,7 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
+  const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
 
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
@@ -163,13 +165,13 @@ export const MessageLine = memo(function MessageLine({
       )}
 
       <Box>
-        <NoSelect flexShrink={0} fromLeftEdge width={3}>
+        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}
           </Text>
         </NoSelect>
 
-        <Box width={Math.max(20, cols - 5)}>{content}</Box>
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt)}>{content}</Box>
       </Box>
     </Box>
   )

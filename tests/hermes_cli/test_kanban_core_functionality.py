@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -80,7 +82,7 @@ def test_no_idempotency_key_never_collides(kanban_home):
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 
-def test_spawn_failure_auto_blocks_after_limit(kanban_home):
+def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawnable):
     """N consecutive spawn failures on the same task → auto_blocked."""
     def _bad_spawn(task, ws):
         raise RuntimeError("no PATH")
@@ -109,7 +111,7 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home):
         conn.close()
 
 
-def test_successful_spawn_resets_failure_counter(kanban_home):
+def test_successful_spawn_resets_failure_counter(kanban_home, all_assignees_spawnable):
     """A successful spawn clears the counter so past failures don't count
     against future retries of the same task."""
     calls = [0]
@@ -138,7 +140,7 @@ def test_successful_spawn_resets_failure_counter(kanban_home):
         conn.close()
 
 
-def test_workspace_resolution_failure_also_counts(kanban_home):
+def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spawnable):
     """`dir:` workspace with no path should fail workspace resolution AND
     count against the failure budget — not just crash the tick."""
     conn = kb.connect()
@@ -181,6 +183,20 @@ def test_pid_alive_helper():
     assert not kb._pid_alive(None)
     # A clearly-dead pid (very large, extremely unlikely to exist).
     assert not kb._pid_alive(2 ** 30)
+
+
+def test_pid_alive_detects_darwin_zombie(monkeypatch):
+    monkeypatch.setattr(kb.sys, "platform", "darwin")
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: None)
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-o", "stat=", "-p", "123"]
+        assert kwargs["stdout"] is subprocess.PIPE
+        return SimpleNamespace(returncode=0, stdout="Z+\n")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._pid_alive(123) is False
 
 
 def test_detect_crashed_workers_reclaims(kanban_home):
@@ -824,7 +840,7 @@ def test_recompute_ready_emits_promoted_not_ready(kanban_home):
         conn.close()
 
 
-def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home):
+def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home, all_assignees_spawnable):
     def _bad(task, ws):
         raise RuntimeError("nope")
     conn = kb.connect()
@@ -840,7 +856,7 @@ def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home):
         conn.close()
 
 
-def test_spawned_event_emitted_with_pid(kanban_home):
+def test_spawned_event_emitted_with_pid(kanban_home, all_assignees_spawnable):
     """Successful spawn must append a ``spawned`` event with the pid in
     the payload so humans tailing events see pid tracking."""
     def _spawn_returns_pid(task, ws):
@@ -899,8 +915,8 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_list_profiles_on_disk(tmp_path, monkeypatch):
-    """list_profiles_on_disk returns directories under ~/.hermes/profiles/
-    that contain a config.yaml."""
+    """list_profiles_on_disk returns the implicit default profile plus
+    named profiles under ~/.hermes/profiles/ that contain a config.yaml."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_HOME", raising=False)
     profiles = tmp_path / ".hermes" / "profiles"
@@ -914,7 +930,7 @@ def test_list_profiles_on_disk(tmp_path, monkeypatch):
     (profiles / "stray.txt").write_text("noise")
 
     names = kb.list_profiles_on_disk()
-    assert names == ["researcher", "writer"]
+    assert names == ["default", "researcher", "writer"]
 
 
 def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
@@ -928,7 +944,7 @@ def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
         (d / "config.yaml").write_text("model: {}\n")
 
     names = kb.list_profiles_on_disk()
-    assert names == ["researcher", "writer"]
+    assert names == ["default", "researcher", "writer"]
 
 
 def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
@@ -955,6 +971,8 @@ def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
         conn.close()
 
     by_name = {d["name"]: d for d in data}
+    assert by_name["default"]["on_disk"] is True
+    assert by_name["default"]["counts"] == {}
     assert by_name["researcher"]["on_disk"] is True
     assert by_name["researcher"]["counts"] == {}
     assert by_name["writer"]["on_disk"] is True
@@ -1154,7 +1172,7 @@ def test_run_on_block_with_reason(kanban_home):
         conn.close()
 
 
-def test_run_on_spawn_failure_records_failed_runs(kanban_home):
+def test_run_on_spawn_failure_records_failed_runs(kanban_home, all_assignees_spawnable):
     """Each spawn_failed event closes a run with outcome='spawn_failed',
     and the Nth failure closes a run with outcome='gave_up'."""
     def _bad(task, ws):
@@ -1369,6 +1387,48 @@ def test_cli_complete_with_summary_and_metadata(kanban_home):
         conn.close()
     assert r.summary == "done it"
     assert r.metadata == {"files": 3}
+
+
+def test_cli_edit_backfills_result_on_done_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.complete_task(conn, tid)
+    finally:
+        conn.close()
+
+    meta = '{"source": "dashboard-recovery"}'
+    out = run_slash(
+        "edit " + tid
+        + " --result \"DECIDED: done\""
+        + " --summary \"DECIDED: done\""
+        + " --metadata '" + meta + "'"
+    )
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.result == "DECIDED: done"
+    assert run.summary == "DECIDED: done"
+    assert run.metadata == {"source": "dashboard-recovery"}
+    assert events[-1].kind == "edited"
+
+
+def test_cli_edit_rejects_non_done_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --result nope")
+
+    assert "not done" in out
 
 
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
@@ -2726,3 +2786,269 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
             timeout=3.0,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Hallucination gate (created_cards verify + prose scan)
+# ---------------------------------------------------------------------------
+
+def test_complete_with_created_cards_all_verified_records_manifest(kanban_home):
+    """A completion with created_cards that all exist + belong to this
+    worker records them on the ``completed`` event payload."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        c1 = kb.create_task(conn, title="c1", assignee="x", created_by="alice")
+        c2 = kb.create_task(conn, title="c2", assignee="y", created_by="alice")
+        ok = kb.complete_task(
+            conn, parent,
+            summary="done, created c1+c2",
+            created_cards=[c1, c2],
+        )
+        assert ok is True
+        evs = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        completed = [e for e in evs if e["kind"] == "completed"]
+        assert len(completed) == 1
+        import json as _json
+        payload = _json.loads(completed[0]["payload"])
+        assert payload.get("verified_cards") == [c1, c2]
+    finally:
+        conn.close()
+
+
+def test_complete_with_phantom_created_cards_raises_and_audits(kanban_home):
+    """A completion claiming a card id that doesn't exist raises
+    HallucinatedCardsError, leaves the task in its prior state, and
+    records a ``completion_blocked_hallucination`` event for auditing."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        phantom_id = "t_deadbeefcafe"
+
+        with pytest.raises(kb.HallucinatedCardsError) as excinfo:
+            kb.complete_task(
+                conn, parent,
+                summary="claimed phantom",
+                created_cards=[real, phantom_id],
+            )
+        assert excinfo.value.phantom == [phantom_id]
+
+        # Task still in prior state (ready, not done).
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (parent,),
+        ).fetchone()
+        assert row["status"] == "ready"
+
+        # Audit event landed.
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "completion_blocked_hallucination" in kinds
+        assert "completed" not in kinds
+    finally:
+        conn.close()
+
+
+def test_complete_with_cross_worker_card_is_rejected(kanban_home):
+    """A card that exists but was created by a different worker profile
+    is treated as phantom (hallucinated attribution)."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        other = kb.create_task(conn, title="other", assignee="x", created_by="bob")
+
+        with pytest.raises(kb.HallucinatedCardsError) as excinfo:
+            kb.complete_task(
+                conn, parent,
+                summary="claiming someone else's card",
+                created_cards=[other],
+            )
+        assert excinfo.value.phantom == [other]
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_flags_nonexistent_ids(kanban_home):
+    """Successful completion whose summary references a ``t_<hex>`` id
+    that doesn't resolve emits a ``suspected_hallucinated_references``
+    event. Does not block the completion."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        ok = kb.complete_task(
+            conn, parent,
+            summary="also saw t_abcd1234ffff failing in CI",
+        )
+        assert ok is True
+        kinds_and_payloads = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        kinds = [r["kind"] for r in kinds_and_payloads]
+        assert "suspected_hallucinated_references" in kinds
+        import json as _json
+        susp = [
+            _json.loads(r["payload"])
+            for r in kinds_and_payloads
+            if r["kind"] == "suspected_hallucinated_references"
+        ][0]
+        assert "t_abcd1234ffff" in susp["phantom_refs"]
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_ignores_existing_ids(kanban_home):
+    """Summaries referencing real task ids don't emit a warning."""
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="other", assignee="x")
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        ok = kb.complete_task(
+            conn, parent,
+            summary=f"depended on {other}, now done",
+        )
+        assert ok is True
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recovery helpers (reclaim + reassign)
+# ---------------------------------------------------------------------------
+
+def test_reclaim_task_resets_running_to_ready(kanban_home):
+    """Manual reclaim releases the claim, resets status, and emits a
+    ``reclaimed`` event even when claim_expires has not passed."""
+    import time
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="stuck", assignee="broken")
+        # Simulate a live claim (not expired).
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 12345, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 12345, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+
+        # release_stale_claims should NOT reclaim (not expired).
+        assert kb.release_stale_claims(conn) == 0
+
+        # reclaim_task should work immediately.
+        assert kb.reclaim_task(conn, t, reason="test reason") is True
+
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+        assert row["worker_pid"] is None
+
+        import json as _json
+        reclaim_evs = [
+            _json.loads(r["payload"])
+            for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='reclaimed'",
+                (t,),
+            )
+        ]
+        assert len(reclaim_evs) == 1
+        assert reclaim_evs[0].get("manual") is True
+        assert reclaim_evs[0].get("reason") == "test reason"
+    finally:
+        conn.close()
+
+
+def test_reclaim_task_returns_false_for_already_ready(kanban_home):
+    """Reclaiming a task that's not running returns False (no-op)."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="ready task", assignee="x")
+        assert kb.reclaim_task(conn, t) is False
+    finally:
+        conn.close()
+
+
+def test_reassign_task_refuses_running_without_reclaim_first(kanban_home):
+    """Without ``reclaim_first=True``, reassigning a running task is a
+    no-op returning False (matches assign_task's RuntimeError via
+    internal catch)."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=? WHERE id=?",
+            ("live", t),
+        )
+        conn.commit()
+        assert kb.reassign_task(conn, t, "new") is False
+        # Assignee unchanged.
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "orig"
+    finally:
+        conn.close()
+
+
+def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
+    """With ``reclaim_first=True``, a running task is reclaimed and
+    reassigned in one operation."""
+    import time
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="switch me", assignee="orig")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+
+        assert kb.reassign_task(
+            conn, t, "new-profile",
+            reclaim_first=True, reason="switch model",
+        ) is True
+
+        row = conn.execute(
+            "SELECT assignee, status FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "new-profile"
+        assert row["status"] == "ready"
+    finally:
+        conn.close()

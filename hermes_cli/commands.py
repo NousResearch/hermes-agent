@@ -65,6 +65,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
+    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
+               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",

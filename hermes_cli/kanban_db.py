@@ -76,6 +76,7 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -190,12 +191,12 @@ def get_current_board() -> str:
     1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
        spawn, or manually for ad-hoc overrides).
     2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
-       switch``).
+       switch``), but only when that board still exists.
     3. ``DEFAULT_BOARD`` (``"default"``).
 
-    A malformed slug at any step falls through to the next layer with a
-    best-effort warning — the dispatcher must never crash because a user
-    hand-edited a file.
+    A malformed or stale slug at any step falls through to the next layer
+    with a best-effort warning — the dispatcher must never crash because a
+    user hand-edited a file or removed a board directory.
     """
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
@@ -212,7 +213,7 @@ def get_current_board() -> str:
             if val:
                 try:
                     normed = _normalize_board_slug(val)
-                    if normed:
+                    if normed and board_exists(normed):
                         return normed
                 except ValueError:
                     pass
@@ -1841,6 +1842,212 @@ def release_stale_claims(conn: sqlite3.Connection) -> int:
     return reclaimed
 
 
+def reclaim_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+) -> bool:
+    """Operator-driven reclaim: release the claim and reset to ``ready``.
+
+    Unlike :func:`release_stale_claims` which only acts on tasks whose
+    ``claim_expires`` has passed, this function reclaims immediately
+    regardless of TTL. Intended for the dashboard/CLI recovery flow
+    when an operator wants to abort a running worker without waiting
+    for the TTL to expire (e.g. after seeing a hallucination warning).
+
+    Returns True if a reclaim happened, False if the task isn't in a
+    reclaimable state (not running, or doesn't exist).
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] != "running" and row["claim_lock"] is None:
+            # Nothing to reclaim — already ready / blocked / done.
+            return False
+        prev_lock = row["claim_lock"]
+        prev_pid = row["worker_pid"]
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked')",
+            (task_id,),
+        )
+        run_id = _end_run(
+            conn, task_id,
+            outcome="reclaimed", status="reclaimed",
+            error=(
+                f"manual_reclaim: {reason}" if reason
+                else f"manual_reclaim lock={prev_lock}"
+            ),
+        )
+        _append_event(
+            conn, task_id, "reclaimed",
+            {
+                "manual": True,
+                "reason": reason,
+                "prev_lock": prev_lock,
+                "prev_pid": prev_pid,
+            },
+            run_id=run_id,
+        )
+    return True
+
+
+def reassign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    reclaim_first: bool = False,
+    reason: Optional[str] = None,
+) -> bool:
+    """Reassign a task, optionally reclaiming a stuck running worker first.
+
+    This is the recovery path for "this profile's model is broken, try
+    a different one". If ``reclaim_first`` is True, any active claim is
+    released (via :func:`reclaim_task`) before the reassign happens;
+    otherwise the function refuses to reassign a currently-running task
+    and returns False (caller can retry with ``reclaim_first=True``).
+
+    Returns True if the reassign landed. ``profile`` may be ``None`` to
+    unassign entirely.
+    """
+    if reclaim_first:
+        # Safe to call even if nothing to reclaim.
+        reclaim_task(conn, task_id, reason=reason or "reassign")
+    # assign_task handles its own txn + the still-running guard.
+    try:
+        return assign_task(conn, task_id, profile)
+    except RuntimeError:
+        # Task is still running and reclaim_first was False; caller
+        # needs to decide whether to retry with reclaim.
+        return False
+
+
+def _verify_created_cards(
+    conn: sqlite3.Connection,
+    completing_task_id: str,
+    claimed_ids: Iterable[str],
+) -> tuple[list[str], list[str]]:
+    """Partition ``claimed_ids`` into (verified, phantom).
+
+    A card is "verified" iff a row exists in ``tasks`` with the given id
+    AND ``created_by`` matches the completing task's ``assignee`` (or
+    the completing task itself — workers that create children of their
+    own task also qualify).
+
+    ``phantom`` returns ids that either don't exist at all or exist but
+    were not created by the completing worker. The caller decides what
+    to do with each bucket; this helper never mutates.
+    """
+    claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
+    if not claimed:
+        return [], []
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for cid in claimed:
+        if cid not in seen:
+            seen.add(cid)
+            ordered.append(cid)
+
+    row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (completing_task_id,),
+    ).fetchone()
+    if row is None:
+        # Completing task not found — nothing resolves.
+        return [], ordered
+    completing_assignee = row["assignee"]
+
+    # Batch-fetch existence + created_by in one query.
+    placeholders = ",".join(["?"] * len(ordered))
+    rows = conn.execute(
+        f"SELECT id, created_by FROM tasks WHERE id IN ({placeholders})",
+        tuple(ordered),
+    ).fetchall()
+    found = {r["id"]: r["created_by"] for r in rows}
+
+    verified: list[str] = []
+    phantom: list[str] = []
+    for cid in ordered:
+        created_by = found.get(cid)
+        if created_by is None:
+            phantom.append(cid)
+            continue
+        # Accept if created_by matches the completing task's assignee
+        # profile, OR the task itself (workers whose created_by happens
+        # to match their task id are unusual but harmless to accept).
+        if completing_assignee and created_by == completing_assignee:
+            verified.append(cid)
+        elif created_by == completing_task_id:
+            verified.append(cid)
+        else:
+            phantom.append(cid)
+    return verified, phantom
+
+
+# Task-id pattern used both by ``kanban_create`` (``t_<12 hex>``) and
+# ``_new_task_id`` below. Kept permissive on length for forward compat:
+# accept 8+ hex chars after the ``t_`` prefix.
+_TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
+
+
+def _scan_prose_for_phantom_ids(
+    conn: sqlite3.Connection,
+    text: str,
+) -> list[str]:
+    """Regex-scan free-form text for ``t_<hex>`` references; return the
+    ones that don't exist in ``tasks``.
+
+    Used as a non-blocking advisory check on completion summaries. An
+    empty return means "no suspicious references found" — either the
+    text had no IDs at all, or every ID it mentioned resolves to a real
+    task. Duplicates are deduped.
+    """
+    if not text:
+        return []
+    matches = _TASK_ID_PROSE_RE.findall(text)
+    if not matches:
+        return []
+    # Dedupe preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+    placeholders = ",".join(["?"] * len(unique))
+    rows = conn.execute(
+        f"SELECT id FROM tasks WHERE id IN ({placeholders})",
+        tuple(unique),
+    ).fetchall()
+    existing = {r["id"] for r in rows}
+    return [m for m in unique if m not in existing]
+
+
+class HallucinatedCardsError(ValueError):
+    """Raised by ``complete_task`` when ``created_cards`` contains ids
+    that don't exist or weren't created by the completing worker.
+
+    The phantom list is attached as ``.phantom`` for callers that want
+    structured access. Kept as ``ValueError`` subclass so existing
+    tool-error handlers treat it as a recoverable user error.
+    """
+
+    def __init__(self, phantom: list[str], completing_task_id: str):
+        self.phantom = list(phantom)
+        self.completing_task_id = completing_task_id
+        super().__init__(
+            f"completion blocked: claimed created_cards that do not exist "
+            f"or were not created by this worker: {', '.join(phantom)}"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1848,21 +2055,65 @@ def complete_task(
     result: Optional[str] = None,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
-    Accepts a task that's merely ``ready`` too, so a manual CLI
+    Accepts a task that is merely ``ready`` too, so a manual CLI
     completion (``hermes kanban complete <id>``) works without requiring
     a claim/start/complete sequence.
 
     ``summary`` and ``metadata`` are stored on the closing run (if any)
     and surfaced to downstream children via :func:`build_worker_context`.
     When ``summary`` is omitted we fall back to ``result`` so single-run
-    callers don't have to pass both. ``metadata`` is a free-form dict
+    callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    ``created_cards`` is an optional list of task ids the completing
+    worker claims to have created. Each id is verified against
+    ``tasks.created_by``. If any id is phantom (does not exist or was
+    not created by this worker's assignee profile), completion is blocked
+    with a ``HallucinatedCardsError`` and a
+    ``completion_blocked_hallucination`` event is emitted so the rejected
+    attempt is auditable. When all ids verify, they are recorded on the
+    ``completed`` event payload.
+
+    After a successful completion, ``summary`` and ``result`` are scanned
+    for prose references like ``t_deadbeefcafe`` that do not resolve.
+    Any suspected phantom references are recorded as a
+    ``suspected_hallucinated_references`` event. This pass is advisory
+    and never blocks.
     """
     now = int(time.time())
+
+    # Gate: verify created_cards BEFORE the main write txn. A rejected
+    # completion still needs an auditable event, so we emit it in a
+    # tiny dedicated txn, then raise. The caller is responsible for
+    # surfacing HallucinatedCardsError to the worker; this function
+    # never mutates task state on a phantom-card rejection.
+    if created_cards:
+        verified_cards, phantom_cards = _verify_created_cards(
+            conn, task_id, created_cards
+        )
+        if phantom_cards:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_hallucination",
+                    {
+                        "phantom_cards": phantom_cards,
+                        "verified_cards": verified_cards,
+                        "summary_preview": (
+                            (summary or result or "").strip().splitlines()[0][:200]
+                            if (summary or result)
+                            else None
+                        ),
+                    },
+                )
+            raise HallucinatedCardsError(phantom_cards, task_id)
+    else:
+        verified_cards = []
+
     with write_txn(conn):
         cur = conn.execute(
             """
@@ -1903,16 +2154,107 @@ def complete_task(
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        completed_payload: dict = {
+            "result_len": len(result) if result else 0,
+            "summary": ev_summary or None,
+        }
+        if verified_cards:
+            completed_payload["verified_cards"] = verified_cards
         _append_event(
             conn, task_id, "completed",
+            completed_payload,
+            run_id=run_id,
+        )
+    # Prose-scan the summary + result for t_<hex> references that do
+    # not resolve. Advisory — does not block the completion. Runs in
+    # its own txn so the completion itself is already durable by the
+    # time we emit the warning.
+    scan_text = " ".join(filter(None, [summary, result]))
+    if scan_text:
+        phantom_refs = _scan_prose_for_phantom_ids(conn, scan_text)
+        # Drop any phantom refs that were already flagged as verified
+        # above (shouldn't happen — verified means they exist — but
+        # belt-and-suspenders).
+        phantom_refs = [p for p in phantom_refs if p not in set(verified_cards)]
+        if phantom_refs:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "suspected_hallucinated_references",
+                    {
+                        "phantom_refs": phantom_refs,
+                        "source": "completion_summary",
+                    },
+                    run_id=run_id,
+                )
+    # Recompute ready status for dependents (separate txn so children see done).
+    recompute_ready(conn)
+    return True
+
+
+def edit_completed_task_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: str,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Backfill the user-visible result for an already completed task."""
+    handoff_summary = summary if summary is not None else result
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "done":
+            return False
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
+        run = conn.execute(
+            """
+            SELECT id FROM task_runs
+             WHERE task_id = ?
+               AND outcome = 'completed'
+             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        run_id = int(run["id"]) if run else None
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=handoff_summary,
+                metadata=metadata,
+            )
+        else:
+            conn.execute(
+                "UPDATE task_runs SET summary = ? WHERE id = ?",
+                (handoff_summary, run_id),
+            )
+            if metadata is not None:
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), run_id),
+                )
+        ev_summary = (
+            handoff_summary.strip().splitlines()[0][:400]
+            if handoff_summary else ""
+        )
+        _append_event(
+            conn, task_id, "edited",
             {
+                "fields": (
+                    ["result", "summary"]
+                    + (["metadata"] if metadata is not None else [])
+                ),
                 "result_len": len(result) if result else 0,
                 "summary": ev_summary or None,
             },
             run_id=run_id,
         )
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
     return True
 
 
@@ -2118,6 +2460,15 @@ class DispatchResult:
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
+    """Ready task ids skipped because they have no assignee at all.
+    Operator-actionable — usually a misfiled task waiting for routing."""
+    skipped_nonspawnable: list[str] = field(default_factory=list)
+    """Ready task ids skipped because their assignee names a control-plane
+    lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
+    profile. Expected steady-state on multi-lane setups; NOT an
+    operator-actionable failure. Tracked separately so health telemetry
+    can distinguish "real stuck" (nothing spawned but spawnable work
+    available) from "correctly idle" (nothing spawnable in the queue)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -2132,16 +2483,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
     Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
     on Windows. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling (Linux):** ``os.kill(pid, 0)`` succeeds against
+    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
     zombie processes (post-exit, pre-reap) because the process table
     entry still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
     the window between exit and reap, we'd otherwise see stale "alive"
-    signals. On Linux we additionally peek at ``/proc/<pid>/status``
-    and treat ``State: Z`` as dead. On other POSIX or on Windows the
-    zombie check is a no-op.
+    signals. On Linux we peek at ``/proc/<pid>/status`` and treat
+    ``State: Z`` as dead. On macOS we ask ``ps`` for the BSD ``stat``
+    field and treat values containing ``Z`` as dead.
     """
     if not pid or pid <= 0:
         return False
@@ -2155,7 +2506,8 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return True
     except OSError:
         return False
-    # Still here → kill(0) succeeded. Check for zombie on Linux.
+    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
             with open(f"/proc/{int(pid)}/status", "r") as f:
@@ -2169,6 +2521,23 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # proc entry gone → already reaped; treat as dead.
             # PermissionError shouldn't happen for our own children but
             # be defensive.
+            pass
+    elif sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(int(pid))],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False
+            if "Z" in (proc.stdout or "").strip():
+                return False
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
 
@@ -2459,6 +2828,38 @@ def _clear_spawn_failures(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+    """Return True iff there is at least one ready+assigned+unclaimed task
+    whose assignee maps to a real Hermes profile.
+
+    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
+    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
+    work waiting) or a "correctly idle" condition (only control-plane
+    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
+    that pull tasks via ``claim_task`` directly).
+
+    Falls back to "any ready+assigned" if ``profile_exists`` is not
+    importable (e.g. partial install) — preserves the old behavior so
+    the warning still fires in degraded environments.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "    AND claim_lock IS NULL"
+    ).fetchall()
+    if not rows:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # Can't introspect — assume spawnable, preserve legacy behavior.
+        return True
+    for row in rows:
+        if profile_exists(row["assignee"]):
+            return True
+    return False
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -2505,6 +2906,29 @@ def dispatch_once(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        # Skip ready tasks whose assignee is not a real Hermes profile.
+        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
+        # with "Profile 'X' does not exist" when the assignee names a
+        # control-plane lane (e.g. an interactive Claude Code terminal
+        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
+        # profile. Those task lanes are pulled by terminals via
+        # ``claim_task`` directly and should NEVER auto-spawn — the
+        # subprocess would crash on startup, get reaped as a zombie,
+        # the task would loop back to ``ready`` on next tick, and we'd
+        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        try:
+            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        except Exception:
+            profile_exists = None  # type: ignore[assignment]
+        if profile_exists is not None and not profile_exists(row["assignee"]):
+            # Bucket separately from skipped_unassigned: the operator
+            # cannot fix this by assigning a profile (the assignee IS the
+            # intended owner — a terminal lane). Health telemetry uses
+            # this distinction to suppress spurious "stuck" warnings on
+            # multi-lane setups where the ready queue is steadily full
+            # of human-pulled work.
+            result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
@@ -3213,30 +3637,38 @@ def read_worker_log(
 # ---------------------------------------------------------------------------
 
 def list_profiles_on_disk() -> list[str]:
-    """Return the set of named profiles discovered on disk.
+    """Return the set of assignee/profile names discovered on disk.
 
-    Reads ``~/.hermes/profiles/`` directly so this module has no import
-    dependency on ``hermes_cli.profiles`` (which pulls in a large chunk
-    of the CLI startup path). Only returns directories that contain a
-    ``config.yaml`` — a bare dir without config isn't a real profile.
+    Includes:
+    - named profiles under ``<default-root>/profiles/<name>/config.yaml``
+    - the implicit ``default`` profile when the default Hermes root exists
+
+    Reads profile paths directly so this module has no import dependency on
+    ``hermes_cli.profiles`` (which pulls in a large chunk of the CLI startup
+    path).
     """
     try:
         from hermes_constants import get_default_hermes_root
-        home = get_default_hermes_root() / "profiles"
+        default_root = get_default_hermes_root()
+        profiles_dir = default_root / "profiles"
     except Exception:
         return []
-    if not home.is_dir():
-        return []
-    names: list[str] = []
-    try:
-        for entry in sorted(home.iterdir()):
-            if not entry.is_dir():
-                continue
-            if (entry / "config.yaml").is_file():
-                names.append(entry.name)
-    except OSError:
-        return names
-    return names
+
+    names: set[str] = set()
+    if default_root.exists():
+        names.add("default")
+
+    if profiles_dir.is_dir():
+        try:
+            for entry in sorted(profiles_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if (entry / "config.yaml").is_file():
+                    names.add(entry.name)
+        except OSError:
+            pass
+
+    return sorted(names)
 
 
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:

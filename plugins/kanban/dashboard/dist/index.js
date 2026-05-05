@@ -60,6 +60,51 @@
     blocked: "Mark this task as blocked? The worker's claim is released.",
   };
 
+  // Event kinds that indicate a hallucinated/phantom task-id reference
+  // in a completion. ``completion_blocked_hallucination`` is emitted when
+  // the kernel's ``created_cards`` gate rejects a completion; the task is
+  // left in its prior state and the worker can retry. ``suspected_
+  // hallucinated_references`` is the advisory prose-scan result — the
+  // completion succeeded but the summary text references task ids that
+  // do not resolve.
+  const HALLUCINATION_EVENT_KINDS = [
+    "completion_blocked_hallucination",
+    "suspected_hallucinated_references",
+  ];
+  const HALLUCINATION_EVENT_LABELS = {
+    completion_blocked_hallucination: "Completion blocked — phantom card ids",
+    suspected_hallucinated_references: "Prose referenced phantom card ids",
+  };
+
+  function isHallucinationEvent(kind) {
+    return HALLUCINATION_EVENT_KINDS.indexOf(kind) !== -1;
+  }
+
+  function phantomIdsFromEvent(ev) {
+    // Payload shapes:
+    //   completion_blocked_hallucination: {phantom_cards, verified_cards, summary_preview}
+    //   suspected_hallucinated_references: {phantom_refs, source}
+    if (!ev || !ev.payload) return [];
+    const p = ev.payload;
+    return p.phantom_cards || p.phantom_refs || [];
+  }
+
+  function withCompletionSummary(patch, count) {
+    if (!patch || patch.status !== "done") return patch;
+    const label = count && count > 1 ? `${count} selected task(s)` : "this task";
+    const value = window.prompt(
+      `Completion summary for ${label}. This is stored as the task result.`,
+      "",
+    );
+    if (value === null) return null;
+    const summary = value.trim();
+    if (!summary) {
+      window.alert("Completion summary is required before marking a task done.");
+      return null;
+    }
+    return Object.assign({}, patch, { result: summary, summary });
+  }
+
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
 
@@ -480,6 +525,8 @@
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
+      const patch = withCompletionSummary({ status: newStatus }, 1);
+      if (!patch) return;
       setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
@@ -499,7 +546,7 @@
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(patch),
       }).catch(function (err) {
         setError(`Move failed: ${err.message || err}`);
         loadBoard();
@@ -538,7 +585,9 @@
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const body = Object.assign({ ids: Array.from(selectedIds) }, patch);
+      const finalPatch = withCompletionSummary(patch, selectedIds.size);
+      if (!finalPatch) return;
+      const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
       SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -626,6 +675,10 @@
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
           },
         }) : null,
+        h(AttentionStrip, {
+          boardData,
+          onOpen: setSelectedTaskId,
+        }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -664,9 +717,300 @@
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Attention strip — surfaces tasks with active hallucination warnings.
+  // Renders a collapsed bar just below the board switcher; clicking expands
+  // a list of affected tasks with an "Open" button each. Dismissible per
+  // session via state flag; tasks re-appear on page reload if they still
+  // have warnings.
+  // -------------------------------------------------------------------------
+
+  function collectWarningTasks(boardData) {
+    if (!boardData || !boardData.columns) return [];
+    const out = [];
+    for (const col of boardData.columns) {
+      for (const t of col.tasks || []) {
+        if (t.warnings && t.warnings.count > 0) out.push(t);
+      }
+    }
+    // Sort: most recent warning first.
+    out.sort(function (a, b) {
+      return (b.warnings.latest_at || 0) - (a.warnings.latest_at || 0);
+    });
+    return out;
+  }
+
+  function AttentionStrip(props) {
+    const [expanded, setExpanded] = useState(false);
+    const [dismissed, setDismissed] = useState(false);
+    const warnTasks = useMemo(
+      function () { return collectWarningTasks(props.boardData); },
+      [props.boardData]
+    );
+    if (dismissed || warnTasks.length === 0) return null;
+    return h("div", { className: "hermes-kanban-attention" },
+      h("div", { className: "hermes-kanban-attention-bar" },
+        h("span", { className: "hermes-kanban-attention-icon" }, "⚠"),
+        h("span", { className: "hermes-kanban-attention-text" },
+          warnTasks.length === 1
+            ? "1 task with hallucination warnings"
+            : `${warnTasks.length} tasks with hallucination warnings`,
+        ),
+        h("button", {
+          className: "hermes-kanban-attention-toggle",
+          onClick: function () { setExpanded(function (x) { return !x; }); },
+          type: "button",
+        }, expanded ? "Hide" : "Show"),
+        h("button", {
+          className: "hermes-kanban-attention-dismiss",
+          onClick: function () { setDismissed(true); },
+          title: "Hide until next page reload",
+          type: "button",
+        }, "✕"),
+      ),
+      expanded
+        ? h("div", { className: "hermes-kanban-attention-list" },
+            warnTasks.map(function (t) {
+              return h("div", { key: t.id, className: "hermes-kanban-attention-row" },
+                h("span", { className: "hermes-kanban-attention-row-id" }, t.id),
+                h("span", { className: "hermes-kanban-attention-row-title" },
+                  t.title || "(untitled)"),
+                h("span", { className: "hermes-kanban-attention-row-meta" },
+                  t.assignee ? "@" + t.assignee : "unassigned",
+                  " · ",
+                  `${t.warnings.count} event${t.warnings.count === 1 ? "" : "s"}`,
+                ),
+                h("button", {
+                  className: "hermes-kanban-attention-row-btn",
+                  onClick: function () { props.onOpen(t.id); },
+                  type: "button",
+                }, "Open"),
+              );
+            }),
+          )
+        : null,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Recovery popover — operator actions for a task flagged with
+  // hallucination warnings. Three primary actions:
+  //   1. Reclaim  — release a running worker's claim; task back to ready.
+  //   2. Reassign — switch the task to a different profile (with optional
+  //                 reclaim-first toggle for currently-running tasks).
+  //   3. Edit profile — copy the CLI hint for `hermes -p <name> model`
+  //                     (the dashboard can't edit profile config from the
+  //                     browser; it lives on the filesystem).
+  // Rendered from inside TaskDetail via a toggle button.
+  // -------------------------------------------------------------------------
+
+  function RecoveryPopover(props) {
+    const t = props.task;
+    const board = props.boardSlug;
+    const assignees = props.assignees || [];
+    const [reason, setReason] = useState("");
+    const [newProfile, setNewProfile] = useState(t.assignee || "");
+    const [reclaimFirst, setReclaimFirst] = useState(t.status === "running");
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [copied, setCopied] = useState(false);
+
+    const act = function (kind) {
+      if (busy) return;
+      setBusy(true);
+      setMsg(null);
+      const urlBase = `${API}/tasks/${encodeURIComponent(t.id)}`;
+      const url = kind === "reclaim"
+        ? withBoard(`${urlBase}/reclaim`, board)
+        : withBoard(`${urlBase}/reassign`, board);
+      const body = kind === "reclaim"
+        ? { reason: reason || null }
+        : {
+            profile: newProfile || null,
+            reclaim_first: !!reclaimFirst,
+            reason: reason || null,
+          };
+      SDK.fetchJSON(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function () {
+        setMsg({ ok: true, text:
+          kind === "reclaim"
+            ? `Reclaimed ${t.id}. Task back to ready.`
+            : `Reassigned ${t.id} to ${newProfile || "(unassigned)"}.`
+        });
+        if (props.onActionComplete) props.onActionComplete(kind);
+      }).catch(function (err) {
+        setMsg({ ok: false, text: `Failed: ${err.message || err}` });
+      }).then(function () {
+        setBusy(false);
+      });
+    };
+
+    const profileCmd = `hermes -p ${t.assignee || "<profile>"} model`;
+    const copyCmd = function () {
+      try {
+        navigator.clipboard.writeText(profileCmd).then(function () {
+          setCopied(true);
+          setTimeout(function () { setCopied(false); }, 2000);
+        });
+      } catch (_) {
+        window.prompt("Copy this command:", profileCmd);
+      }
+    };
+
+    return h("div", { className: "hermes-kanban-recovery" },
+      h("div", { className: "hermes-kanban-recovery-title" },
+        "Recovery actions"),
+      h("div", { className: "hermes-kanban-recovery-hint" },
+        "Use these when a worker is stuck (crash loop, repeated hallucination, ",
+        "broken model). Events in this task's history are preserved as audit trail."),
+
+      // Reason input (shared across actions)
+      h("div", { className: "hermes-kanban-recovery-section" },
+        h("label", { className: "hermes-kanban-recovery-label" },
+          "Reason (optional, logged on event)"),
+        h("input", {
+          type: "text",
+          className: "hermes-kanban-recovery-input",
+          value: reason,
+          onChange: function (e) { setReason(e.target.value); },
+          placeholder: "e.g. model hallucinating, switching to larger",
+        }),
+      ),
+
+      // Action 1: Reclaim
+      h("div", { className: "hermes-kanban-recovery-section" },
+        h("div", { className: "hermes-kanban-recovery-action-row" },
+          h("div", { className: "hermes-kanban-recovery-action-label" },
+            "1. Reclaim"),
+          h("div", { className: "hermes-kanban-recovery-action-desc" },
+            t.status === "running"
+              ? "Abort the running worker and reset to ready."
+              : "Task is not running — nothing to reclaim."),
+          h("button", {
+            className: "hermes-kanban-recovery-btn",
+            disabled: busy || t.status !== "running",
+            onClick: function () { act("reclaim"); },
+            type: "button",
+          }, "Reclaim"),
+        ),
+      ),
+
+      // Action 2: Reassign
+      h("div", { className: "hermes-kanban-recovery-section" },
+        h("div", { className: "hermes-kanban-recovery-action-row" },
+          h("div", { className: "hermes-kanban-recovery-action-label" },
+            "2. Reassign"),
+          h("div", { className: "hermes-kanban-recovery-action-desc" },
+            "Switch to a different worker profile and retry."),
+        ),
+        h("div", { className: "hermes-kanban-recovery-reassign-row" },
+          h("select", {
+            className: "hermes-kanban-recovery-select",
+            value: newProfile,
+            onChange: function (e) { setNewProfile(e.target.value); },
+          },
+            h("option", { value: "" }, "(unassigned)"),
+            assignees.map(function (a) {
+              return h("option", { key: a, value: a }, a);
+            }),
+          ),
+          h("label", { className: "hermes-kanban-recovery-checkbox" },
+            h("input", {
+              type: "checkbox",
+              checked: reclaimFirst,
+              onChange: function (e) { setReclaimFirst(e.target.checked); },
+            }),
+            " Reclaim first",
+          ),
+          h("button", {
+            className: "hermes-kanban-recovery-btn",
+            disabled: busy,
+            onClick: function () { act("reassign"); },
+            type: "button",
+          }, "Reassign"),
+        ),
+      ),
+
+      // Action 3: Edit profile model (CLI hint)
+      h("div", { className: "hermes-kanban-recovery-section" },
+        h("div", { className: "hermes-kanban-recovery-action-row" },
+          h("div", { className: "hermes-kanban-recovery-action-label" },
+            "3. Change profile model"),
+          h("div", { className: "hermes-kanban-recovery-action-desc" },
+            "Profile config lives on disk — change it from a terminal, ",
+            "then use Reclaim above to retry with the new model."),
+        ),
+        h("div", { className: "hermes-kanban-recovery-cmd-row" },
+          h("code", { className: "hermes-kanban-recovery-cmd" }, profileCmd),
+          h("button", {
+            className: "hermes-kanban-recovery-btn",
+            onClick: copyCmd,
+            type: "button",
+          }, copied ? "Copied" : "Copy"),
+        ),
+      ),
+
+      msg
+        ? h("div", {
+            className: cn(
+              "hermes-kanban-recovery-msg",
+              msg.ok ? "hermes-kanban-recovery-msg--ok" : "hermes-kanban-recovery-msg--err",
+            ),
+          }, msg.text)
+        : null,
+    );
+  }
+
+  // Thin wrapper that toggles the RecoveryPopover visibility inside a
+  // task drawer. Auto-opens when the task has active hallucination
+  // warnings; operators can still collapse it. Always available via a
+  // header button for tasks without warnings, so reclaim/reassign is
+  // accessible for other stuck-worker scenarios too.
+  function RecoverySection(props) {
+    const [open, setOpen] = useState(!!props.hasWarnings);
+    // Re-open automatically if warnings appear while the drawer is open.
+    useEffect(function () {
+      if (props.hasWarnings) setOpen(true);
+    }, [props.hasWarnings]);
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" },
+          props.hasWarnings
+            ? h("span", { className: "hermes-kanban-section-head-warning" },
+                "⚠ Recovery")
+            : "Recovery",
+        ),
+        h("button", {
+          className: "hermes-kanban-section-toggle",
+          onClick: function () { setOpen(function (x) { return !x; }); },
+          type: "button",
+        }, open ? "Hide" : "Show"),
+      ),
+      open
+        ? h(RecoveryPopover, {
+            // Keyed by task id so React tears the popover down and
+            // remounts it when the drawer swaps to a different task —
+            // otherwise reason / newProfile / success toast from the
+            // previous task leak into the new one.
+            key: props.task.id,
+            task: props.task,
+            boardSlug: props.boardSlug,
+            assignees: props.assignees,
+            onActionComplete: function () {
+              if (props.onRefresh) props.onRefresh();
+            },
+          })
+        : null,
     );
   }
 
@@ -1199,6 +1543,14 @@
               title: "Select for bulk actions",
             }),
             h("span", { className: "hermes-kanban-card-id" }, t.id),
+            t.warnings && t.warnings.count > 0
+              ? h("span", {
+                  className: "hermes-kanban-warning-badge",
+                  title: `⚠ ${t.warnings.count} hallucination ` +
+                         `event(s) since last clean completion. ` +
+                         `Click to open for details.`,
+                }, "⚠")
+              : null,
             t.priority > 0
               ? h(Badge, { className: "hermes-kanban-priority" }, `P${t.priority}`)
               : null,
@@ -1375,6 +1727,11 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Home-channel notification toggles. homeChannels is the list of platforms
+    // the user has a /sethome on; each entry has a `subscribed` bool telling
+    // us whether this task is currently subscribed via that platform's home.
+    const [homeChannels, setHomeChannels] = useState([]);
+    const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
 
     const load = useCallback(function () {
@@ -1384,10 +1741,19 @@
         .finally(function () { setLoading(false); });
     }, [props.taskId, boardSlug]);
 
+    const loadHomeChannels = useCallback(function () {
+      const qs = new URLSearchParams({ task_id: props.taskId });
+      const url = withBoard(`${API}/home-channels?${qs}`, boardSlug);
+      return SDK.fetchJSON(url)
+        .then(function (d) { setHomeChannels(d.home_channels || []); })
+        .catch(function () { /* silent — endpoint optional on older gateways */ });
+    }, [props.taskId, boardSlug]);
+
     // Reload when the WS stream reports new events for this task id
     // (completion, block, crash, etc. — anything that'd make the drawer
     // show stale data if we only loaded on mount).
     useEffect(function () { load(); }, [load, props.eventTick]);
+    useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
     useEffect(function () {
       function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
       window.addEventListener("keydown", onKey);
@@ -1412,10 +1778,12 @@
       if (opts && opts.confirm && !window.confirm(opts.confirm)) {
         return Promise.resolve();
       }
+      const finalPatch = withCompletionSummary(patch, 1);
+      if (!finalPatch) return Promise.resolve();
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify(finalPatch),
       }).then(function () { load(); props.onRefresh(); });
     };
 
@@ -1448,6 +1816,43 @@
         .catch(function (e) { setErr(String(e.message || e)); });
     };
 
+    const toggleHomeSubscription = function (platform, currentlySubscribed) {
+      // Optimistic flip + busy flag to keep double-clicks idempotent.
+      setHomeBusy(function (b) { return Object.assign({}, b, { [platform]: true }); });
+      setHomeChannels(function (list) {
+        return list.map(function (h) {
+          return h.platform === platform
+            ? Object.assign({}, h, { subscribed: !currentlySubscribed })
+            : h;
+        });
+      });
+      const method = currentlySubscribed ? "DELETE" : "POST";
+      const url = withBoard(
+        `${API}/tasks/${encodeURIComponent(props.taskId)}/home-subscribe/${encodeURIComponent(platform)}`,
+        boardSlug,
+      );
+      return SDK.fetchJSON(url, { method: method })
+        .then(function () { return loadHomeChannels(); })
+        .catch(function (e) {
+          // Revert optimistic flip on failure.
+          setHomeChannels(function (list) {
+            return list.map(function (h) {
+              return h.platform === platform
+                ? Object.assign({}, h, { subscribed: currentlySubscribed })
+                : h;
+            });
+          });
+          setErr(String(e.message || e));
+        })
+        .finally(function () {
+          setHomeBusy(function (b) {
+            const next = Object.assign({}, b);
+            delete next[platform];
+            return next;
+          });
+        });
+    };
+
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
       h("div", {
         className: "hermes-kanban-drawer",
@@ -1468,12 +1873,17 @@
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
+          assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
           onRemoveChild: removeChild,
+          homeChannels: homeChannels,
+          homeBusy: homeBusy,
+          onToggleHomeSub: toggleHomeSubscription,
+          onRefresh: props.onRefresh,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -1535,6 +1945,18 @@
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
       h(StatusActions, { task: t, onPatch: props.onPatch }),
+      h(RecoverySection, {
+        task: t,
+        boardSlug: props.boardSlug,
+        assignees: props.assignees,
+        hasWarnings: t.warnings && t.warnings.count > 0,
+        onRefresh: props.onRefresh,
+      }),
+      h(HomeSubsSection, {
+        homeChannels: props.homeChannels || [],
+        homeBusy: props.homeBusy || {},
+        onToggle: props.onToggleHomeSub,
+      }),
       h(BodyEditor, {
         task: t,
         renderMarkdown: props.renderMarkdown,
@@ -1570,11 +1992,41 @@
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" }, `Events (${events.length})`),
         events.slice().reverse().slice(0, 20).map(function (e) {
-          return h("div", { key: e.id, className: "hermes-kanban-event" },
-            h("span", { className: "hermes-kanban-event-kind" }, e.kind),
-            h("span", { className: "hermes-kanban-event-ago" },
-              timeAgo ? timeAgo(e.created_at) : ""),
-            e.payload
+          const isHall = isHallucinationEvent(e.kind);
+          const phantoms = isHall ? phantomIdsFromEvent(e) : [];
+          return h("div", {
+            key: e.id,
+            className: cn(
+              "hermes-kanban-event",
+              isHall ? "hermes-kanban-event--hallucination" : "",
+            ),
+          },
+            isHall
+              ? h("div", { className: "hermes-kanban-event-header" },
+                  h("span", { className: "hermes-kanban-event-warning-icon" }, "⚠"),
+                  h("span", { className: "hermes-kanban-event-warning-label" },
+                    HALLUCINATION_EVENT_LABELS[e.kind] || e.kind),
+                  h("span", { className: "hermes-kanban-event-ago" },
+                    timeAgo ? timeAgo(e.created_at) : ""),
+                )
+              : h("div", { className: "hermes-kanban-event-header-plain" },
+                  h("span", { className: "hermes-kanban-event-kind" }, e.kind),
+                  h("span", { className: "hermes-kanban-event-ago" },
+                    timeAgo ? timeAgo(e.created_at) : ""),
+                ),
+            isHall && phantoms.length > 0
+              ? h("div", { className: "hermes-kanban-event-phantom-row" },
+                  h("span", { className: "hermes-kanban-event-phantom-label" },
+                    "Phantom ids:"),
+                  phantoms.map(function (pid) {
+                    return h("code", {
+                      key: pid,
+                      className: "hermes-kanban-event-phantom-chip",
+                    }, pid);
+                  }),
+                )
+              : null,
+            e.payload && !isHall
               ? h("code", { className: "hermes-kanban-event-payload" },
                   JSON.stringify(e.payload))
               : null,
@@ -1937,7 +2389,10 @@
     return h("div", { className: "hermes-kanban-actions" },
       b("→ triage",  { status: "triage" },   t.status !== "triage"),
       b("→ ready",   { status: "ready" },    t.status !== "ready"),
-      b("→ running", { status: "running" },  t.status !== "running"),
+      // No direct → running button: /tasks/:id PATCH rejects status=running
+      // with 400 (issue #19535). Tasks enter running only through the
+      // dispatcher's claim_task path, which atomically creates the run row,
+      // claim lock, and worker process metadata.
       b("Block",     { status: "blocked" },
         t.status === "running" || t.status === "ready",
         DESTRUCTIVE_TRANSITIONS.blocked),
@@ -1947,6 +2402,43 @@
         DESTRUCTIVE_TRANSITIONS.done),
       b("Archive",   { status: "archived" }, t.status !== "archived",
         DESTRUCTIVE_TRANSITIONS.archived),
+    );
+  }
+
+
+  // One toggle per gateway platform the user has a home channel set on
+  // (telegram, discord, slack, etc.). Toggling on creates a kanban_notify_subs
+  // row routed to that platform's home; toggling off removes it. Nothing
+  // renders when no platforms have a home configured — this section stays
+  // invisible for users who haven't set one up.
+  function HomeSubsSection(props) {
+    const channels = props.homeChannels || [];
+    if (channels.length === 0) return null;
+    const busy = props.homeBusy || {};
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        "Notify home channels"),
+      h("div", { className: "hermes-kanban-home-subs" },
+        channels.map(function (hc) {
+          const isBusy = !!busy[hc.platform];
+          const label = hc.subscribed ? "✓ " + hc.platform : hc.platform;
+          const title = hc.subscribed
+            ? `Sending updates to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}). Click to stop.`
+            : `Send completed / blocked / gave_up notifications to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}).`;
+          return h(Button, {
+            key: hc.platform,
+            size: "sm",
+            title: title,
+            disabled: isBusy || !props.onToggle,
+            onClick: function () {
+              if (props.onToggle) props.onToggle(hc.platform, hc.subscribed);
+            },
+            className: hc.subscribed
+              ? "hermes-kanban-home-sub hermes-kanban-home-sub--on"
+              : "hermes-kanban-home-sub",
+          }, label);
+        })
+      )
     );
   }
 

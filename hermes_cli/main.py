@@ -1216,6 +1216,26 @@ def _launch_tui(
     sys.exit(code)
 
 
+def _pin_kanban_board_env() -> None:
+    """Pin the active kanban board into ``HERMES_KANBAN_BOARD`` for the chat session.
+
+    Without this, in-process tools (``kanban_*``) and shelled-out CLI calls
+    (``hermes kanban …``) resolve the board on different paths: the env-pin if
+    set, otherwise the global ``<root>/kanban/current`` file. A concurrent
+    ``hermes kanban boards switch`` from another session can flip the file
+    mid-turn, so the same chat sees its tool calls hit board A while its shell
+    calls hit board B (#20074). Pinning at chat boot mirrors what the
+    dispatcher already does for spawned workers.
+    """
+    if os.environ.get("HERMES_KANBAN_BOARD"):
+        return
+    try:
+        from hermes_cli.kanban_db import get_current_board
+        os.environ["HERMES_KANBAN_BOARD"] = get_current_board()
+    except Exception:
+        pass
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
@@ -1323,6 +1343,8 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+
+    _pin_kanban_board_env()
 
     if use_tui:
         _launch_tui(
@@ -3974,6 +3996,85 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
+def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
+    """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
+
+    Handles both first-time entry and the already-configured case.  When a key
+    is already present, offers [K]eep / [R]eplace / [C]lear so the user can
+    recover from a malformed paste without editing ``~/.hermes/.env`` by hand.
+
+    Returns ``(resolved_key, abort)``.  ``abort=True`` means the caller should
+    ``return`` immediately — the user cancelled entry, declined to replace, or
+    cleared the key and is now unconfigured.
+    """
+    import getpass
+
+    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from hermes_cli.config import save_env_value
+
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+
+    def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
+        if provider_id == "lmstudio" and allow_lmstudio_default:
+            prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
+        else:
+            prompt = f"{key_env} (or Enter to cancel): "
+        try:
+            entered = getpass.getpass(prompt).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return ""
+        if not entered and provider_id == "lmstudio" and allow_lmstudio_default:
+            return LMSTUDIO_NOAUTH_PLACEHOLDER
+        return entered
+
+    # First-time entry ────────────────────────────────────────────────────
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if not key_env:
+            return "", True
+        new_key = _prompt_new_key(allow_lmstudio_default=True)
+        if not new_key:
+            print("Cancelled.")
+            return "", True
+        save_env_value(key_env, new_key)
+        print("API key saved.")
+        print()
+        return new_key, False
+
+    # Already configured — offer K / R / C ────────────────────────────────
+    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+    if not key_env:
+        # Nothing we can rewrite; just acknowledge and move on.
+        print()
+        return existing_key, False
+    try:
+        choice = input("  [K]eep / [R]eplace / [C]lear (default K): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        choice = "k"
+
+    if choice.startswith("r"):
+        new_key = _prompt_new_key(allow_lmstudio_default=False)
+        if not new_key:
+            print("  No change.")
+            print()
+            return existing_key, False
+        save_env_value(key_env, new_key)
+        print("  API key updated.")
+        print()
+        return new_key, False
+
+    if choice.startswith("c"):
+        save_env_value(key_env, "")
+        print(f"  API key cleared.  Re-run `hermes setup` to configure {pconfig.name} again.")
+        return "", True
+
+    # Keep (default, or any other input)
+    print()
+    return existing_key, False
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 
@@ -4008,26 +4109,9 @@ def _model_flow_kimi(config, current_model=""):
         if existing_key:
             break
 
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if key_env:
-            try:
-                import getpass
-
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-            if not new_key:
-                print("Cancelled.")
-                return
-            save_env_value(key_env, new_key)
-            existing_key = new_key
-            print("API key saved.")
-            print()
-    else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
-        print()
+    existing_key, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
 
     # Step 2: Auto-detect endpoint from key prefix
     is_coding_plan = existing_key.startswith("sk-kimi-")
@@ -4128,25 +4212,9 @@ def _model_flow_stepfun(config, current_model=""):
         if existing_key:
             break
 
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if key_env:
-            try:
-                import getpass
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-            if not new_key:
-                print("Cancelled.")
-                return
-            save_env_value(key_env, new_key)
-            existing_key = new_key
-            print("API key saved.")
-            print()
-    else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
-        print()
+    existing_key, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
 
     current_base = ""
     if base_url_env:
@@ -4522,33 +4590,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if existing_key:
             break
 
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if key_env:
-            try:
-                import getpass
-
-                if provider_id == "lmstudio":
-                    prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
-                else:
-                    prompt = f"{key_env} (or Enter to cancel): "
-                new_key = getpass.getpass(prompt).strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-            if not new_key:
-                if provider_id == "lmstudio":
-                    new_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-                else:
-                    print("Cancelled.")
-                    return
-            save_env_value(key_env, new_key)
-            existing_key = new_key
-            print("API key saved.")
-            print()
-    else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
-        print()
+    existing_key, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the
@@ -7069,20 +7113,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)
 
-        # Sync bundled skills to all other profiles
+        # Sync bundled skills to all profiles (including the active one).
+        # seed_profile_skills() uses subprocess with an explicit HERMES_HOME so
+        # it is not affected by sync_skills()'s module-level HERMES_HOME cache,
+        # which means the active profile is reliably synced regardless of whether
+        # the caller's HERMES_HOME env var points at the default or a named profile.
         try:
             from hermes_cli.profiles import (
                 list_profiles,
-                get_active_profile_name,
                 seed_profile_skills,
             )
 
-            active = get_active_profile_name()
-            other_profiles = [p for p in list_profiles() if p.name != active]
-            if other_profiles:
+            all_profiles = list_profiles()
+            if all_profiles:
                 print()
-                print("→ Syncing bundled skills to other profiles...")
-                for p in other_profiles:
+                print("→ Syncing bundled skills to all profiles...")
+                for p in all_profiles:
                     try:
                         r = seed_profile_skills(p.path, quiet=True)
                         if r:
@@ -8678,7 +8724,24 @@ def main():
     )
     cron_create.add_argument(
         "--script",
-        help="Path to a Python script whose stdout is injected into the prompt each run",
+        help=(
+            "Path to a script under ~/.hermes/scripts/. Default mode: "
+            "script stdout is injected into the agent's prompt each run. "
+            "With --no-agent: the script IS the job and its stdout is "
+            "delivered verbatim. .sh/.bash files run via bash, everything "
+            "else via Python."
+        ),
+    )
+    cron_create.add_argument(
+        "--no-agent",
+        dest="no_agent",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the LLM entirely — run --script on schedule and deliver "
+            "its stdout directly. Empty stdout = silent. Classic watchdog "
+            "pattern (memory alerts, disk alerts, CI pings)."
+        ),
     )
     cron_create.add_argument(
         "--workdir",
@@ -8720,7 +8783,29 @@ def main():
     )
     cron_edit.add_argument(
         "--script",
-        help="Path to a Python script whose stdout is injected into the prompt each run. Pass empty string to clear.",
+        help=(
+            "Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
+            "With --no-agent the script IS the job; otherwise its stdout is "
+            "injected into the agent's prompt each run."
+        ),
+    )
+    cron_edit.add_argument(
+        "--no-agent",
+        dest="no_agent",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Enable no-agent mode on this job (requires --script or an "
+            "existing script on the job)."
+        ),
+    )
+    cron_edit.add_argument(
+        "--agent",
+        dest="no_agent",
+        action="store_const",
+        const=False,
+        help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
     )
     cron_edit.add_argument(
         "--workdir",

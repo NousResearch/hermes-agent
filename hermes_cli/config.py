@@ -777,6 +777,11 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # UI language for static user-facing messages (approval prompts, a
+        # handful of gateway slash-command replies).  Does NOT affect agent
+        # responses, log lines, tool outputs, or slash-command descriptions.
+        # Supported: en, zh, ja, de, es.  Unknown values fall back to en.
+        "language": "en",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
@@ -805,6 +810,7 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
     # Web dashboard settings

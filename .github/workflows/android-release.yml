@@ -62,6 +62,7 @@ jobs:
         env:
           HERMES_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
+          rm -rf ../build
           export PYTHON_FOR_BUILD="$(command -v python3.13 || command -v python3 || command -v python)"
           ./gradlew :app:assembleRelease :app:bundleRelease
 

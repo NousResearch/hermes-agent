@@ -277,6 +277,29 @@ tasks.matching { it.name.endsWith("PythonRequirements") }.configureEach {
     }
 }
 
+tasks.matching { it.name.endsWith("PythonBuildAssets") }.configureEach {
+    doLast {
+        val variant = name.removePrefix("generate").removeSuffix("PythonBuildAssets")
+        if (variant.isBlank()) {
+            return@doLast
+        }
+        val buildJson = layout.buildDirectory.file(
+            "python/assets/build/${variant.lowercase()}/chaquopy/build.json"
+        ).get().asFile
+        if (!buildJson.isFile) {
+            return@doLast
+        }
+        exec {
+            commandLine(
+                resolvedBuildPython(),
+                "-c",
+                "import json, pathlib, sys; p=pathlib.Path(sys.argv[1]); data=json.loads(p.read_text()); p.write_text(json.dumps(data, indent=4, sort_keys=True) + '\\n')",
+                buildJson.absolutePath,
+            )
+        }
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
 

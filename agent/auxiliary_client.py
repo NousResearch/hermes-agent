@@ -526,7 +526,9 @@ class CodexAuxiliaryClient:
     """OpenAI-client-compatible wrapper that routes through Codex Responses API.
 
     Consumers can call client.chat.completions.create(**kwargs) as normal.
-    Also exposes .api_key and .base_url for introspection by async wrappers.
+    Also exposes .api_key and .base_url for introspection by async wrappers,
+    and .responses for code paths that use the Responses API directly
+    (e.g. _run_codex_stream in the iteration-limit summary).
     """
 
     def __init__(self, real_client: OpenAI, model: str):
@@ -535,6 +537,9 @@ class CodexAuxiliaryClient:
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
+        # Delegate .responses so that callers using the Responses API
+        # directly (e.g. _run_codex_stream) work transparently.
+        self.responses = real_client.responses
 
     def close(self):
         self._real_client.close()

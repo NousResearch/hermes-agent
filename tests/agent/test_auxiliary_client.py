@@ -1215,3 +1215,43 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+
+class TestCodexAuxiliaryClientResponsesAttribute:
+    """Regression test for #20111: CodexAuxiliaryClient must expose .responses.
+
+    When a named custom provider with api_mode=codex_responses is used, the
+    primary client is wrapped in CodexAuxiliaryClient. The iteration-limit
+    summary path calls _run_codex_stream without an explicit client, causing
+    it to fall back to the primary client.  Without .responses, the summary
+    crashes with:
+        'CodexAuxiliaryClient' object has no attribute 'responses'
+    """
+
+    def test_exposes_responses_from_real_client(self):
+        """CodexAuxiliaryClient.responses delegates to the underlying OpenAI client."""
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        mock_client = MagicMock()
+        mock_client.api_key = "test-key"
+        mock_client.base_url = "https://api.openai.com/v1"
+        mock_responses = MagicMock()
+        mock_client.responses = mock_responses
+
+        wrapper = CodexAuxiliaryClient(mock_client, "gpt-5.5")
+
+        assert wrapper.responses is mock_responses
+
+    def test_responses_stream_usable(self):
+        """CodexAuxiliaryClient.responses.stream() should be callable (as _run_codex_stream expects)."""
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        mock_client = MagicMock()
+        mock_client.api_key = "test-key"
+        mock_client.base_url = "https://api.openai.com/v1"
+
+        wrapper = CodexAuxiliaryClient(mock_client, "gpt-5.5")
+
+        # Should not raise AttributeError
+        wrapper.responses.stream(model="gpt-5.5", input=[])

@@ -1,4 +1,7 @@
 graft skills
 graft optional-skills
+graft ui-tui
+prune ui-tui/node_modules
+include scripts/lib/node-bootstrap.sh
 global-exclude __pycache__
 global-exclude *.py[cod]

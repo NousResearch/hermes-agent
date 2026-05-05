@@ -1078,6 +1078,7 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._max_concurrent_tasks = self._load_max_concurrent_tasks()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -1107,7 +1108,7 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
-        self._concurrent_tasks: Dict[str, list] = {}  # session_key -> [asyncio.Task, ...]
+        self._concurrent_tasks: Dict[str, List[asyncio.Task]] = {}  # session_key -> [asyncio.Task, ...]
         self._concurrent_counter: int = 0  # monotonic counter for task IDs
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Overflow buffer for explicit /queue commands.  The adapter-level
@@ -2141,6 +2142,30 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
+    def _load_max_concurrent_tasks() -> int:
+        """Load max concurrent tasks limit from config/env."""
+        raw = os.getenv("HERMES_MAX_CONCURRENT_TASKS", "").strip()
+        if raw:
+            try:
+                val = int(raw)
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                val = cfg.get("display", {}).get("max_concurrent_tasks")
+                if val and int(val) > 0:
+                    return int(val)
+        except Exception:
+            pass
+        return 3  # default
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -2297,8 +2322,28 @@ class GatewayRunner:
         # Concurrent mode: spawn an independent agent for this message
         # instead of interrupting or queueing.
         if self._busy_input_mode == "concurrent":
+            # Enforce concurrency limit
+            active_count = sum(
+                len(tasks) for tasks in self._concurrent_tasks.values()
+            )
+            if active_count >= self._max_concurrent_tasks:
+                thread_meta = (
+                    {"thread_id": event.source.thread_id}
+                    if event.source.thread_id else None
+                )
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=(
+                        f"⚠️ 并发任务已满（{active_count}/{self._max_concurrent_tasks}），"
+                        f"请等待当前任务完成后再试"
+                    ),
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+                return True
+
             self._concurrent_counter += 1
-            task_id = f"concurrent-{self._concurrent_counter}"
+            task_id = f"concurrent-{self._concurrent_counter}" 
             logger.info(
                 "[%s] Concurrent mode: spawning %s for session %s",
                 adapter.name, task_id, session_key,
@@ -2321,7 +2366,10 @@ class GatewayRunner:
                     {"thread_id": event.source.thread_id}
                     if event.source.thread_id else None
                 )
-                ack = f"🔀 任务已启动 [{task_id}]，完成后通知你"
+                total_active = sum(
+                    len(tasks) for tasks in self._concurrent_tasks.values()
+                )
+                ack = f"🔀 任务已启动 [{task_id}]（并发 {total_active}/{self._max_concurrent_tasks}），完成后通知你"
                 await adapter._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=ack,
@@ -2562,6 +2610,16 @@ class GatewayRunner:
                     metadata=thread_meta,
                 )
 
+        except asyncio.CancelledError:
+            logger.info("[%s] %s cancelled", adapter.name, task_id)
+            try:
+                await adapter._send_with_retry(
+                    chat_id=chat_id,
+                    content=f"🚫 [{task_id}] 已取消",
+                    metadata=thread_meta,
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.error("[%s] %s failed: %s", adapter.name, task_id, e, exc_info=True)
             try:
@@ -2585,6 +2643,76 @@ class GatewayRunner:
         exc = task.exception()
         if exc:
             logger.warning("Concurrent task for %s raised: %s", session_key, exc)
+
+    def cancel_concurrent_tasks(self, session_key: str) -> int:
+        """Cancel all concurrent tasks for a given session. Returns count cancelled."""
+        tasks = self._concurrent_tasks.get(session_key, [])
+        cancelled = 0
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                cancelled += 1
+        if cancelled:
+            logger.info(
+                "Cancelled %d concurrent task(s) for session %s",
+                cancelled, session_key,
+            )
+        return cancelled
+
+    def cancel_all_concurrent_tasks(self) -> int:
+        """Cancel all concurrent tasks across all sessions. Returns count."""
+        total = 0
+        for session_key in list(self._concurrent_tasks):
+            total += self.cancel_concurrent_tasks(session_key)
+        return total
+
+    async def _drain_concurrent_tasks(self, timeout: float) -> bool:
+        """Wait for all concurrent tasks to finish or timeout.
+
+        Returns True if all tasks finished, False on timeout.
+        """
+        all_tasks = [
+            task
+            for tasks in self._concurrent_tasks.values()
+            for task in tasks
+            if not task.done()
+        ]
+        if not all_tasks:
+            return True
+
+        logger.info("Draining %d concurrent task(s) (timeout=%.1fs)...", len(all_tasks), timeout)
+        try:
+            await asyncio.wait(all_tasks, timeout=timeout)
+        except Exception:
+            pass
+
+        remaining = [t for t in all_tasks if not t.done()]
+        if remaining:
+            logger.warning(
+                "Timed out waiting for %d concurrent task(s); cancelling.",
+                len(remaining),
+            )
+            for task in remaining:
+                task.cancel()
+            # Give cancelled tasks a moment to clean up
+            try:
+                await asyncio.wait(remaining, timeout=2.0)
+            except Exception:
+                pass
+            return False
+        return True
+
+    def get_concurrent_task_info(self) -> Dict[str, Any]:
+        """Return info about active concurrent tasks for status display."""
+        info: Dict[str, Any] = {}
+        for session_key, tasks in self._concurrent_tasks.items():
+            active = [t for t in tasks if not t.done()]
+            if active:
+                info[session_key] = {
+                    "count": len(active),
+                    "names": [t.get_name() for t in active],
+                }
+        return info
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -4342,6 +4470,9 @@ class GatewayRunner:
             await self._notify_active_sessions_of_shutdown()
 
             timeout = self._restart_drain_timeout
+            # Drain concurrent tasks first (shorter timeout since they're independent)
+            concurrent_timeout = min(timeout, 10.0)
+            await self._drain_concurrent_tasks(concurrent_timeout)
             active_agents, timed_out = await self._drain_active_agents(timeout)
             if timed_out:
                 logger.warning(
@@ -7786,6 +7917,9 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
 
+        # Cancel concurrent tasks first
+        concurrent_cancelled = self.cancel_concurrent_tasks(session_key)
+
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
             # Force-clean the sentinel so the session is unlocked.
@@ -7796,7 +7930,10 @@ class GatewayRunner:
                 invalidation_reason="stop_command_pending",
             )
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
-            return EphemeralReply("⚡ Stopped. The agent hadn't started yet — you can continue this session.")
+            msg = "⚡ Stopped. The agent hadn't started yet — you can continue this session."
+            if concurrent_cancelled:
+                msg += f"\n已取消 {concurrent_cancelled} 个并发任务。"
+            return EphemeralReply(msg)
         if agent:
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
@@ -7806,8 +7943,13 @@ class GatewayRunner:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
-            return EphemeralReply("⚡ Stopped. You can continue this session.")
+            msg = "⚡ Stopped. You can continue this session."
+            if concurrent_cancelled:
+                msg += f"\n已取消 {concurrent_cancelled} 个并发任务。"
+            return EphemeralReply(msg)
         else:
+            if concurrent_cancelled:
+                return f"⚡ 已取消 {concurrent_cancelled} 个并发任务。"
             return "No active task to stop."
 
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:

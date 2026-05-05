@@ -62,6 +62,7 @@ AUTHOR_MAP = {
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",
     "harryykyle1@gmail.com": "hharry11",
     "wysie@users.noreply.github.com": "wysie",
+    "jkausel@gmail.com": "jkausel-ai",
     "beardthelion@users.noreply.github.com": "beardthelion",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",

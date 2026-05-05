@@ -6831,7 +6831,13 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
-                    enabled_toolsets=self.enabled_toolsets,
+                    # /background is an independent operator lane, not a
+                    # restricted child of the current foreground session. Give
+                    # it the full available tool surface so it can orchestrate,
+                    # delegate, use shell/file/web/MCP tools, and write its own
+                    # artifacts unless the prompt itself narrows scope.
+                    enabled_toolsets=None,
+                    disabled_toolsets=[],
                     quiet_mode=True,
                     verbose_logging=False,
                     session_id=task_id,

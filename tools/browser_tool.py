@@ -56,6 +56,7 @@ import logging
 import os
 import re
 import signal
+import shlex
 import subprocess
 import shutil
 import sys
@@ -1802,29 +1803,44 @@ def _run_browser_command(
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
         #   even for non-root users running under systemd or containers.
-        if "AGENT_BROWSER_CHROME_FLAGS" not in browser_env:
-            _needs_sandbox_bypass = False
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                _needs_sandbox_bypass = True
-                logger.debug("browser: running as root — injecting --no-sandbox")
-            else:
-                # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
-                _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-                try:
-                    with open(_userns_restrict) as _f:
-                        if _f.read().strip() == "1":
-                            _needs_sandbox_bypass = True
-                            logger.debug(
-                                "browser: AppArmor userns restrictions detected — "
-                                "injecting --no-sandbox"
-                            )
-                except OSError:
-                    pass
-            if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
+        #
+        # agent-browser >=0.26 reads AGENT_BROWSER_ARGS (documented) for launch
+        # flags.  Older Hermes code used AGENT_BROWSER_CHROME_FLAGS, which is
+        # ignored by current agent-browser and caused a silent Chrome early-exit.
+        if "AGENT_BROWSER_ARGS" not in browser_env:
+            legacy_chrome_flags = browser_env.get("AGENT_BROWSER_CHROME_FLAGS")
+            if legacy_chrome_flags:
+                # Preserve user-supplied launch flags from older Hermes versions.
+                browser_env["AGENT_BROWSER_ARGS"] = ",".join(
+                    shlex.split(legacy_chrome_flags)
                 )
-
+            else:
+                _needs_sandbox_bypass = False
+                if hasattr(os, "geteuid") and os.geteuid() == 0:
+                    _needs_sandbox_bypass = True
+                    logger.debug("browser: running as root — injecting --no-sandbox")
+                else:
+                    # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
+                    _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+                    try:
+                        with open(_userns_restrict) as _f:
+                            if _f.read().strip() == "1":
+                                _needs_sandbox_bypass = True
+                                logger.debug(
+                                    "browser: AppArmor userns restrictions detected — "
+                                    "injecting --no-sandbox"
+                                )
+                    except OSError:
+                        pass
+                if _needs_sandbox_bypass:
+                    browser_env["AGENT_BROWSER_ARGS"] = (
+                        "--no-sandbox,--disable-dev-shm-usage"
+                    )
+                    # Backward compatibility for older agent-browser builds.
+                    browser_env.setdefault(
+                        "AGENT_BROWSER_CHROME_FLAGS",
+                        "--no-sandbox --disable-dev-shm-usage",
+                    )
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
         # descriptors.  With capture_output=True (pipes), the daemon keeps

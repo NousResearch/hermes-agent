@@ -93,153 +93,6 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
-# --- Stale-code self-check ------------------------------------------------
-# Long-running gateway processes that survive an ``hermes update`` keep the
-# old ``hermes_cli.config`` (and friends) cached in ``sys.modules``.  When
-# the updated tool files on disk then try to ``from hermes_cli.config
-# import cfg_get`` (added in PR #17304), the import resolves against the
-# already-loaded stale module object and raises ``ImportError`` — see
-# Issue #17648.  Rather than papering over the import failure site-by-site
-# in every tool file, detect the stale state centrally and auto-restart
-# so the gateway reloads with fresh code.
-#
-# The signal we use is ``git rev-parse HEAD`` — the only thing ``hermes
-# update`` moves that is NOT moved by agent-driven file edits.  Earlier
-# revisions of this check compared file mtimes across a sentinel set
-# (run_agent.py, gateway/run.py, ...), but that produced false positives
-# whenever the agent edited its own source files during a session:
-# mtime jumps, stale-check fires, gateway restarts, user must retype.
-# See the conversation at PR #<this> for the motivating incident.
-#
-# The legacy mtime sentinels are kept ONLY as a last-resort fallback for
-# non-git installs (pip install from wheel, sparse clones with no .git
-# dir).  In those environments ``hermes update`` is not a supported path,
-# so the check effectively no-ops — which is the safe behavior: better
-# to ship one broken import than to restart on every agent-edit.
-_STALE_CODE_SENTINELS: tuple[str, ...] = (
-    "hermes_cli/config.py",
-    "hermes_cli/__init__.py",
-    "run_agent.py",
-    "gateway/run.py",
-    "pyproject.toml",
-)
-
-# Cache git HEAD reads across consecutive messages so a chat burst doesn't
-# spawn one subprocess per message.  5s is long enough to collapse a burst
-# and short enough that the real post-update detection still fires within
-# the user's perceived "next message" window.
-_GIT_SHA_CACHE_TTL_SECS = 5.0
-
-
-def _read_git_head_sha(repo_root: Path) -> Optional[str]:
-    """Return the git HEAD SHA for ``repo_root``, or None if unavailable.
-
-    Reads ``.git/HEAD`` directly (and follows one level of ref) instead
-    of shelling out to ``git`` — cheaper, no subprocess tax, works on
-    gateway hosts that don't have a ``git`` binary on PATH.  Returns
-    None for non-git installs (no ``.git`` dir) or any I/O error; callers
-    treat None as "can't tell" and skip the check.
-
-    Supports the three layouts we care about:
-      1. Main checkout: ``<repo>/.git/`` is a directory.
-      2. Git worktree: ``<repo>/.git`` is a file ``gitdir: <path>`` that
-         points at ``<main>/.git/worktrees/<name>/``.  The worktree's
-         gitdir has HEAD + index but NOT refs/heads/ — those live in
-         the main checkout, and ``<worktree-gitdir>/commondir`` points
-         at the main ``.git``.  We search both locations for refs.
-      3. Packed refs: ``refs/heads/<branch>`` is absent on disk but
-         listed in ``<main-git-dir>/packed-refs``.
-    """
-    try:
-        git_dir = repo_root / ".git"
-        # Worktrees store ``.git`` as a file pointing at gitdir: <path>
-        if git_dir.is_file():
-            try:
-                content = git_dir.read_text().strip()
-                if content.startswith("gitdir:"):
-                    git_dir = Path(content.split(":", 1)[1].strip())
-                    if not git_dir.is_absolute():
-                        git_dir = (repo_root / git_dir).resolve()
-            except OSError:
-                return None
-        if not git_dir.is_dir():
-            return None
-
-        # Figure out the "common" git dir — the one that owns shared refs.
-        # For a worktree, commondir points at it (relative path, resolve
-        # against git_dir).  For a main checkout, common_dir == git_dir.
-        common_dir = git_dir
-        commondir_file = git_dir / "commondir"
-        if commondir_file.is_file():
-            try:
-                rel = commondir_file.read_text().strip()
-                candidate = (git_dir / rel).resolve() if rel else git_dir
-                if candidate.is_dir():
-                    common_dir = candidate
-            except OSError:
-                pass
-
-        head_path = git_dir / "HEAD"
-        if not head_path.is_file():
-            return None
-        head_content = head_path.read_text().strip()
-
-        if head_content.startswith("ref:"):
-            # Symbolic ref — follow one level (e.g. ref: refs/heads/main).
-            # Worktree-local refs (bisect, rebase-merge state) live under
-            # git_dir; shared refs (refs/heads/*, refs/tags/*) live under
-            # common_dir.  Try git_dir first, then common_dir.
-            ref_rel = head_content.split(":", 1)[1].strip()
-            for base in (git_dir, common_dir) if git_dir != common_dir else (git_dir,):
-                ref_path = base / ref_rel
-                if ref_path.is_file():
-                    try:
-                        sha = ref_path.read_text().strip()
-                    except OSError:
-                        continue
-                    if sha:
-                        return sha
-            # Packed refs fallback — always stored in the common dir.
-            packed = common_dir / "packed-refs"
-            if packed.is_file():
-                try:
-                    for line in packed.read_text().splitlines():
-                        line = line.strip()
-                        if not line or line.startswith("#") or line.startswith("^"):
-                            continue
-                        parts = line.split(None, 1)
-                        if len(parts) == 2 and parts[1] == ref_rel:
-                            return parts[0] or None
-                except OSError:
-                    return None
-            return None
-
-        # Detached HEAD — content is the SHA directly.
-        return head_content or None
-    except Exception:
-        return None
-
-
-def _compute_repo_mtime(repo_root: Path) -> float:
-    """Return the newest mtime across the stale-code sentinel files.
-
-    Legacy fallback used only for non-git installs (``.git`` missing).
-    Missing files are ignored (they may not exist on older checkouts).
-    Returns 0.0 if no sentinel file is readable — treat that as "can't
-    tell", which downstream callers interpret as "not stale" to avoid
-    false-positive restart loops.
-    """
-    newest = 0.0
-    for rel in _STALE_CODE_SENTINELS:
-        try:
-            st = (repo_root / rel).stat()
-        except (OSError, FileNotFoundError):
-            continue
-        if st.st_mtime > newest:
-            newest = st.st_mtime
-    return newest
-
-
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
 
@@ -1107,13 +960,6 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
-    # Stale-code self-check defaults (see _detect_stale_code()).  Class-level
-    # so tests that construct GatewayRunner via ``object.__new__`` without
-    # running __init__ don't crash when _handle_message reads these.
-    _boot_wall_time: float = 0.0
-    _boot_repo_mtime: float = 0.0
-    _boot_git_sha: Optional[str] = None
-    _stale_code_restart_triggered: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1121,30 +967,6 @@ class GatewayRunner:
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
-
-        # Boot-time snapshot used by the stale-code self-check.  Captured
-        # before any work happens so post-update file writes are guaranteed
-        # to have newer mtimes.  See _detect_stale_code() / Issue #17648.
-        try:
-            self._boot_wall_time: float = time.time()
-            self._repo_root_for_staleness: Path = Path(__file__).resolve().parent.parent
-            self._boot_git_sha: Optional[str] = _read_git_head_sha(
-                self._repo_root_for_staleness,
-            )
-            self._boot_repo_mtime: float = _compute_repo_mtime(
-                self._repo_root_for_staleness,
-            )
-        except Exception:
-            self._boot_wall_time = 0.0
-            self._repo_root_for_staleness = Path(".")
-            self._boot_git_sha = None
-            self._boot_repo_mtime = 0.0
-        self._stale_code_notified: set[str] = set()
-        self._stale_code_restart_triggered: bool = False
-        # Cached current-SHA read, refreshed at most every
-        # _GIT_SHA_CACHE_TTL_SECS so bursty chats don't hammer the filesystem.
-        self._cached_current_sha: Optional[str] = self._boot_git_sha
-        self._cached_current_sha_at: float = self._boot_wall_time
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -2852,101 +2674,6 @@ class GatewayRunner:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return True
-
-    def _current_git_sha_cached(self) -> Optional[str]:
-        """Return the current HEAD SHA, cached for _GIT_SHA_CACHE_TTL_SECS.
-
-        A bursty chat (user mashes "hello?" three times) would otherwise
-        re-read ``.git/HEAD`` on every message.  Caching collapses that
-        into a single read and still re-checks within the user's
-        perceived "next message" window.
-        """
-        now = time.time()
-        if (
-            self._cached_current_sha is not None
-            and (now - self._cached_current_sha_at) < _GIT_SHA_CACHE_TTL_SECS
-        ):
-            return self._cached_current_sha
-        try:
-            sha = _read_git_head_sha(self._repo_root_for_staleness)
-        except Exception:
-            sha = None
-        self._cached_current_sha = sha
-        self._cached_current_sha_at = now
-        return sha
-
-    def _detect_stale_code(self) -> bool:
-        """Return True if the git HEAD moved since this process booted.
-
-        A gateway that survives ``hermes update`` (manual SIGTERM never
-        escalated, systemd restart race, detached-process respawn failed,
-        etc.) keeps pre-update modules cached in ``sys.modules``.  Later
-        imports of names added post-update — e.g. ``cfg_get`` from PR
-        #17304 — raise ImportError against the stale module object (see
-        Issue #17648).
-
-        We compare the git HEAD SHA at boot to the current SHA on disk.
-        ``hermes update`` always moves HEAD forward via ``git pull``;
-        agent file edits (the agent patching ``run_agent.py`` or
-        ``gateway/run.py`` during a self-dev session) never move HEAD.
-        That makes SHA comparison free of the false-positive class that
-        the old mtime check suffered from — the agent can edit any file
-        without triggering a phantom restart.
-
-        Returns False when:
-          - the boot SHA is unavailable (non-git install, first call
-            during partial init, etc.); we can't tell and refuse to loop
-          - the current SHA matches the boot SHA
-          - reading the current SHA fails for any reason
-        """
-        if not self._boot_wall_time:
-            return False
-        if not self._boot_git_sha:
-            # Non-git install.  ``hermes update`` is git-based, so a
-            # non-git install can't experience the stale-modules class
-            # this check exists to catch.  Return False — no check, no
-            # false positives.  (If we ever ship a pip-install update
-            # path, we'd add a persistent update marker here and compare
-            # its timestamp to self._boot_wall_time.)
-            return False
-        try:
-            current = self._current_git_sha_cached()
-        except Exception:
-            return False
-        if not current:
-            return False
-        return current != self._boot_git_sha
-
-    def _trigger_stale_code_restart(self) -> None:
-        """Idempotently kick off a graceful restart after stale-code detection.
-
-        Runs at most once per process.  The restart request goes through
-        the normal drain path so in-flight agent turns finish before the
-        process exits; the service manager (systemd / launchd / detached
-        profile watcher) then respawns with fresh code.  On manual
-        ``hermes gateway run`` installs without a supervisor, the
-        process exits and the user must restart by hand — but they get a
-        user-visible message telling them so.
-        """
-        if self._stale_code_restart_triggered:
-            return
-        self._stale_code_restart_triggered = True
-        current_sha = None
-        try:
-            current_sha = self._current_git_sha_cached()
-        except Exception:
-            pass
-        logger.warning(
-            "Stale-code self-check: git HEAD moved since gateway boot "
-            "(boot=%s, current=%s) — requesting graceful restart. "
-            "See Issue #17648.",
-            (self._boot_git_sha or "?")[:12],
-            (current_sha or "?")[:12],
-        )
-        try:
-            self.request_restart(detached=False, via_service=True)
-        except Exception as exc:
-            logger.error("Stale-code restart request failed: %s", exc)
 
     async def start(self) -> bool:
         """
@@ -4877,27 +4604,6 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
-
-        # Stale-code self-check (Issue #17648).  A gateway that survives
-        # ``hermes update`` keeps old modules cached in sys.modules; the
-        # first inbound message is our earliest safe chance to detect
-        # this and restart gracefully before we dispatch to the agent
-        # and hit ImportError on freshly-added names (e.g. cfg_get).
-        # Idempotent — runs the real check at most once per message, and
-        # request_restart() no-ops after the first call.
-        try:
-            if self._detect_stale_code():
-                self._trigger_stale_code_restart()
-                # Acknowledge to the user so they don't see a silent
-                # drop; the gateway will be back up in a moment via the
-                # service manager / profile-watcher respawn.
-                return (
-                    "⟳ Gateway code was updated in the background — "
-                    "restarting this gateway so your next message runs "
-                    "on the new code. Please retry in a moment."
-                )
-        except Exception as _stale_exc:
-            logger.debug("Stale-code self-check failed: %s", _stale_exc)
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.

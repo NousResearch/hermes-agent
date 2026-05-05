@@ -180,7 +180,12 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Resolve the default path at construction time, not import time.
+        # Test suites and profile-aware subprocesses routinely change
+        # HERMES_HOME after hermes_state has already been imported; using the
+        # module-level DEFAULT_DB_PATH in that case leaks writes into whichever
+        # profile happened to be active at first import.
+        self.db_path = db_path or (get_hermes_home() / "state.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()

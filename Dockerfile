@@ -36,6 +36,7 @@ WORKDIR /opt/hermes
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json web/
 COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY ui-tui/packages/hermes-ink/package.json ui-tui/packages/hermes-ink/package-lock.json ui-tui/packages/hermes-ink/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
@@ -52,7 +53,14 @@ ENV npm_config_install_links=false
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
-    (cd ui-tui && npm install --prefer-offline --no-audit) && \
+    (cd ui-tui && npm install --prefer-offline --no-audit && \
+        rm -rf node_modules/@hermes/ink && \
+        mkdir -p node_modules/@hermes && \
+        cp -R packages/hermes-ink node_modules/@hermes/ink && \
+        rm -rf packages/hermes-ink/node_modules && \
+        npm install --omit=dev --prefix node_modules/@hermes/ink && \
+        rm -rf node_modules/@hermes/ink/node_modules/react && \
+        node --input-type=module -e "await import('@hermes/ink')") && \
     npm cache clean --force
 
 # ---------- Source code ----------

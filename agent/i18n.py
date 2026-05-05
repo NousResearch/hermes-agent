@@ -162,7 +162,9 @@ def reset_language_cache() -> None:
     Call after :func:`hermes_cli.config.save_config` if a running process
     needs to pick up a changed ``display.language`` without restart.
     """
-    _config_language_cached.cache_clear()
+    cache_clear = getattr(_config_language_cached, "cache_clear", None)
+    if callable(cache_clear):
+        cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
 

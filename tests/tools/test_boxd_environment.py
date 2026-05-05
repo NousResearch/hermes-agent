@@ -583,3 +583,220 @@ class TestMbToSizeStr:
         assert _mb_to_size_str(8192) == "8G"
         # Rounding: 1500 MB -> 2 GB
         assert _mb_to_size_str(1500) == "2G"
+
+
+# ---------------------------------------------------------------------------
+# Login-shell branch
+# ---------------------------------------------------------------------------
+
+
+class TestLoginShell:
+    def test_login_true_uses_bash_l_c(self, make_env):
+        """login=True must invoke bash -l -c so user's login profile loads."""
+        box = _make_box()
+        box.exec.side_effect = [
+            _ExecResult(stdout="/root"),         # $HOME
+            _ExecResult(stdout="", exit_code=0),  # init_session uses login=True too
+            _ExecResult(stdout="ok", exit_code=0),
+        ]
+        env = make_env(box=box)
+        # init_session ran with login=True. Its call args:
+        init_call = box.exec.call_args_list[1]
+        assert init_call.args[:3] == ("bash", "-l", "-c")
+
+    def test_login_false_uses_bash_c(self, make_env):
+        """Non-login execute() (snapshot ready) uses bash -c, not bash -l -c."""
+        box = _make_box()
+        box.exec.side_effect = [
+            _ExecResult(stdout="/root"),
+            _ExecResult(stdout="", exit_code=0),  # init_session OK -> snapshot_ready
+            _ExecResult(stdout="hi", exit_code=0),
+        ]
+        env = make_env(box=box)
+        # snapshot_ready was set; the next execute() should use bash -c
+        assert env._snapshot_ready is True
+        env.execute("echo hi")
+        # Last call (the actual execute) should be bash -c, not bash -l -c
+        last_call = box.exec.call_args_list[-1]
+        assert last_call.args[0] == "bash"
+        assert last_call.args[1] == "-c"
+
+
+# ---------------------------------------------------------------------------
+# init_session: SDK exec error during bootstrap is captured, never raised
+# ---------------------------------------------------------------------------
+
+
+class TestInitSessionFailure:
+    def test_sdk_exec_error_during_bootstrap_does_not_crash_init(self, make_env):
+        """SDK errors inside init_session's bootstrap exec must be captured by
+        _ThreadedProcessHandle, not propagated. Otherwise __init__ explodes
+        and the user never gets a usable environment."""
+        box = _make_box()
+        # $HOME succeeds; init_session bootstrap raises inside the SDK call
+        box.exec.side_effect = [
+            _ExecResult(stdout="/root"),
+            RuntimeError("bootstrap blew up inside SDK"),
+        ]
+        # Constructor must not raise even if bootstrap exec errors
+        env = make_env(box=box)
+        assert env._box is not None
+        assert env._sync_manager is not None
+
+
+# ---------------------------------------------------------------------------
+# Wake-box on additional statuses
+# ---------------------------------------------------------------------------
+
+
+class TestWakeBoxStatuses:
+    def test_paused_status_triggers_resume(self, make_env):
+        env = make_env()
+        env._box.status = "paused"
+        env._box.resume.reset_mock()
+        env._wake_box(env._box)
+        env._box.resume.assert_called_once()
+
+    def test_starting_status_triggers_resume(self, make_env):
+        env = make_env()
+        env._box.status = "starting"
+        env._box.resume.reset_mock()
+        env._wake_box(env._box)
+        env._box.resume.assert_called_once()
+
+    def test_empty_status_skips_resume(self, make_env):
+        """Box from get() may not populate status; skip the resume RPC and let
+        the next exec surface real state."""
+        env = make_env()
+        env._box.status = ""
+        env._box.resume.reset_mock()
+        env._wake_box(env._box)
+        env._box.resume.assert_not_called()
+
+    def test_resume_failure_swallowed(self, make_env):
+        """resume() returning an error on already-running VM must not raise —
+        the next exec is the real liveness check."""
+        env = make_env()
+        env._box.status = "suspended"
+        env._box.resume.side_effect = RuntimeError("already running")
+        # Should not raise
+        env._wake_box(env._box)
+
+
+# ---------------------------------------------------------------------------
+# auto_suspend_timeout edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSuspendTimeoutEdges:
+    def _box_config(self, boxd_sdk):
+        return boxd_sdk.Compute.return_value.box.create.call_args.kwargs["config"]
+
+    def test_zero_disables_auto_suspend(self, make_env, boxd_sdk):
+        env = make_env(auto_suspend_timeout=0, persistent=False)
+        cfg = self._box_config(boxd_sdk)
+        # 0 must round-trip exactly (boxd treats 0 as disabled, NOT default)
+        assert cfg.lifecycle.auto_suspend_timeout == 0
+
+    def test_very_long_timeout_passes_through(self, make_env, boxd_sdk):
+        env = make_env(auto_suspend_timeout=86400, persistent=False)
+        cfg = self._box_config(boxd_sdk)
+        assert cfg.lifecycle.auto_suspend_timeout == 86400
+
+
+# ---------------------------------------------------------------------------
+# Compute() constructor errors
+# ---------------------------------------------------------------------------
+
+
+class TestComputeInitErrors:
+    def test_compute_constructor_error_propagates(self, boxd_sdk, monkeypatch):
+        """If the SDK can't authenticate at construction time, the error must
+        bubble up cleanly so the user can fix their credentials."""
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+
+        class _AuthErr(Exception):
+            pass
+
+        boxd_sdk.Compute = MagicMock(side_effect=_AuthErr("no API key"))
+        from tools.environments.boxd import BoxdEnvironment
+        with pytest.raises(_AuthErr, match="no API key"):
+            BoxdEnvironment(persistent_filesystem=False)
+
+
+# ---------------------------------------------------------------------------
+# Image kwarg behavior
+# ---------------------------------------------------------------------------
+
+
+class TestImageKwarg:
+    def test_empty_image_omitted_from_create(self, make_env):
+        env = make_env(image="", persistent=False)
+        kwargs = env._mock_compute.box.create.call_args.kwargs
+        # Must NOT pass image="" — let the server default kick in.
+        assert "image" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Factory dispatch via terminal_tool._create_environment
+# ---------------------------------------------------------------------------
+
+
+class TestFactoryDispatch:
+    def test_create_environment_dispatches_to_boxd(self, boxd_sdk, monkeypatch):
+        """terminal_tool._create_environment("boxd", ...) must construct
+        BoxdEnvironment with the right kwargs."""
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+
+        # Wire a mock box+compute so __init__ doesn't blow up
+        box = _make_box()
+        box.exec.return_value = _ExecResult(stdout="/root")
+        mock_compute = MagicMock()
+        mock_compute.box.create.return_value = box
+        mock_compute.box.get.side_effect = boxd_sdk.NotFoundError("not found")
+        boxd_sdk.Compute = MagicMock(return_value=mock_compute)
+
+        from tools.terminal_tool import _create_environment
+        env = _create_environment(
+            env_type="boxd",
+            image="ubuntu:22.04",
+            cwd="/root",
+            timeout=60,
+            container_config={
+                "container_cpu": 2,
+                "container_memory": 8192,
+                "container_disk": 102400,
+                "container_persistent": False,
+            },
+            task_id="factorytest",
+        )
+
+        from tools.environments.boxd import BoxdEnvironment
+        assert isinstance(env, BoxdEnvironment)
+        # VM was created with the right name + image
+        kwargs = mock_compute.box.create.call_args.kwargs
+        assert kwargs["name"] == "hermes-factorytest"
+        assert kwargs["image"] == "ubuntu:22.04"
+        assert kwargs["config"].vcpu == 2
+
+
+# ---------------------------------------------------------------------------
+# _get_env_config picks up boxd_image from env vars
+# ---------------------------------------------------------------------------
+
+
+class TestEnvConfig:
+    def test_default_boxd_image_is_empty(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_BOXD_IMAGE", raising=False)
+        monkeypatch.setenv("TERMINAL_ENV", "boxd")
+        from tools.terminal_tool import _get_env_config
+        cfg = _get_env_config()
+        assert cfg["env_type"] == "boxd"
+        assert cfg["boxd_image"] == ""
+
+    def test_boxd_image_env_var_override(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "boxd")
+        monkeypatch.setenv("TERMINAL_BOXD_IMAGE", "my/custom-image:tag")
+        from tools.terminal_tool import _get_env_config
+        cfg = _get_env_config()
+        assert cfg["boxd_image"] == "my/custom-image:tag"

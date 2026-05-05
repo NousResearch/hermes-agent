@@ -314,3 +314,87 @@ def test_vercel_backend_rejects_malformed_disk_without_raising(monkeypatch, capl
         "Invalid value for TERMINAL_CONTAINER_DISK" in record.getMessage()
         for record in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# boxd backend
+# ---------------------------------------------------------------------------
+
+
+def _clear_boxd_env(monkeypatch):
+    """Strip boxd-specific env vars from the test environment."""
+    for key in ("BOXD_API_KEY", "BOXD_TOKEN", "TERMINAL_BOXD_IMAGE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_boxd_backend_without_sdk_logs_install_hint(monkeypatch, caplog):
+    """boxd backend selected but the SDK isn't installed → False + install hint."""
+    _clear_terminal_env(monkeypatch)
+    _clear_boxd_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "boxd")
+    monkeypatch.setenv("BOXD_API_KEY", "bxd_dummy")
+    # Pretend the SDK is missing
+    monkeypatch.setattr(
+        terminal_tool_module.importlib.util,
+        "find_spec",
+        lambda _name: None,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "boxd is required for the boxd terminal backend" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_boxd_backend_without_credentials_logs_clear_error(monkeypatch, caplog):
+    """SDK present but neither BOXD_API_KEY nor BOXD_TOKEN set → False with clear error."""
+    _clear_terminal_env(monkeypatch)
+    _clear_boxd_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "boxd")
+    # SDK present
+    monkeypatch.setattr(
+        terminal_tool_module.importlib.util,
+        "find_spec",
+        lambda _name: object(),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "neither BOXD_API_KEY nor BOXD_TOKEN" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_boxd_backend_with_api_key_passes(monkeypatch):
+    """SDK present + BOXD_API_KEY set → True."""
+    _clear_terminal_env(monkeypatch)
+    _clear_boxd_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "boxd")
+    monkeypatch.setenv("BOXD_API_KEY", "bxd_test")
+    monkeypatch.setattr(
+        terminal_tool_module.importlib.util,
+        "find_spec",
+        lambda _name: object(),
+    )
+    assert terminal_tool_module.check_terminal_requirements() is True
+
+
+def test_boxd_backend_with_boxd_token_passes(monkeypatch):
+    """BOXD_TOKEN alone is sufficient (no BOXD_API_KEY needed)."""
+    _clear_terminal_env(monkeypatch)
+    _clear_boxd_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "boxd")
+    monkeypatch.setenv("BOXD_TOKEN", "eyJ-test-jwt")
+    monkeypatch.setattr(
+        terminal_tool_module.importlib.util,
+        "find_spec",
+        lambda _name: object(),
+    )
+    assert terminal_tool_module.check_terminal_requirements() is True

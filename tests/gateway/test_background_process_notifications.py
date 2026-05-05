@@ -379,31 +379,36 @@ def test_build_process_event_source_returns_none_for_short_session_key(monkeypat
 
 def test_parse_session_key_valid():
     result = _parse_session_key("agent:main:telegram:group:-100")
-    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "-100"}
+    assert result == {"agent_id": "main", "platform": "telegram", "chat_type": "group", "chat_id": "-100"}
+
+
+def test_parse_session_key_valid_custom_agent_id():
+    result = _parse_session_key("agent:research:discord:group:chan123:user99")
+    assert result == {"agent_id": "research", "platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
 def test_parse_session_key_with_extra_parts():
     """6th part in a group key may be a user_id, not a thread_id — omit it."""
     result = _parse_session_key("agent:main:discord:group:chan123:thread456")
-    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
+    assert result == {"agent_id": "main", "platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
 def test_parse_session_key_with_user_id_part():
     """Group keys with per-user isolation have user_id as 6th part — don't return as thread_id."""
     result = _parse_session_key("agent:main:telegram:group:chat1:user99")
-    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "chat1"}
+    assert result == {"agent_id": "main", "platform": "telegram", "chat_type": "group", "chat_id": "chat1"}
 
 
 def test_parse_session_key_dm_with_thread():
     """DM keys use parts[5] as thread_id unambiguously."""
     result = _parse_session_key("agent:main:telegram:dm:chat1:topic42")
-    assert result == {"platform": "telegram", "chat_type": "dm", "chat_id": "chat1", "thread_id": "topic42"}
+    assert result == {"agent_id": "main", "platform": "telegram", "chat_type": "dm", "chat_id": "chat1", "thread_id": "topic42"}
 
 
 def test_parse_session_key_thread_chat_type():
     """Thread-typed keys use parts[5] as thread_id unambiguously."""
     result = _parse_session_key("agent:main:discord:thread:chan1:thread99")
-    assert result == {"platform": "discord", "chat_type": "thread", "chat_id": "chan1", "thread_id": "thread99"}
+    assert result == {"agent_id": "main", "platform": "discord", "chat_type": "thread", "chat_id": "chan1", "thread_id": "thread99"}
 
 
 def test_parse_session_key_too_short():
@@ -413,4 +418,3 @@ def test_parse_session_key_too_short():
 
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
-    assert _parse_session_key("agent:cron:telegram:dm:123") is None

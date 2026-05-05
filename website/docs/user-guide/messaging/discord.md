@@ -308,6 +308,7 @@ discord:
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  channel_routes: []              # Per-channel logical agent/workspace routes
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -420,6 +421,34 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.channel_routes`
+
+**Type:** list — **Default:** `[]`
+
+Per-channel logical agent and workspace routes. A route lets one Discord gateway behave like multiple dedicated agents by giving matching channels their own session namespace and project working directory.
+
+```yaml
+discord:
+  channel_routes:
+    - id: "1234567890"          # Channel, thread, or forum-post ID
+      agent_id: research         # Logical route name used in session keys
+      cwd: /home/me/research     # Project directory for context files and tools
+    - id: "9876543210"
+      agentId: support           # camelCase alias is accepted
+      workspace: /home/me/helpdesk  # alias for cwd
+```
+
+Route validation:
+- `agent_id` may only contain letters, numbers, underscores, and hyphens.
+- `cwd` / `workspace`, when provided, must be an absolute path to an existing directory. Invalid paths are ignored for that route so Hermes falls back to normal gateway cwd behavior.
+
+Behavior:
+- Hermes matches `id` against the incoming Discord channel ID and, when present, the thread/forum-post ID.
+- Matching routes prefix session keys with `agent:<agent_id>`, so two channels can keep separate history even if their Discord/user IDs would otherwise collide.
+- `cwd` / `workspace` is passed to the agent for context-file discovery (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`) and to terminal-backed tools as their default working directory for that turn.
+- If no route matches, Hermes uses the default `agent:main` session namespace and normal gateway working-directory behavior.
+- Routes are intentionally orthogonal to `channel_prompts` and `channel_skill_bindings`; combine them when you want a channel to have a workspace, prompt, and auto-loaded skills.
 
 #### `group_sessions_per_user`
 

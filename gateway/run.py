@@ -517,6 +517,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    resolve_channel_route,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
@@ -883,8 +884,8 @@ def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
     Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
-    Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
+    ``agent:{agent_id}:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
+    Returns a dict with ``agent_id``, ``platform``, ``chat_type``, ``chat_id``, and
     optionally ``thread_id`` keys, or None if the key doesn't match.
 
     The 6th element is only returned as ``thread_id`` for chat types where
@@ -893,8 +894,9 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1]:
         result = {
+            "agent_id": parts[1],
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
@@ -1388,10 +1390,13 @@ class GatewayRunner:
             except Exception:
                 pass
         config = getattr(self, "config", None)
+        route = resolve_channel_route(source, config) if config is not None else None
+        agent_id = (route or {}).get("agent_id") or "main"
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            agent_id=agent_id,
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -3127,7 +3132,7 @@ class GatewayRunner:
 
                 if _expired_entries:
                     # Extract platform names from session keys for a compact summary.
-                    # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
+                    # Keys look like "agent:<agent_id>:telegram:dm:12345" — platform is field [2].
                     _platforms: dict[str, int] = {}
                     for _k, _e in _expired_entries:
                         _parts = _k.split(":")
@@ -8911,6 +8916,8 @@ class GatewayRunner:
                 return
 
             platform_key = _platform_config_key(source.platform)
+            route_cfg = resolve_channel_route(source, self.config)
+            routed_cwd = (route_cfg or {}).get("cwd")
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -8954,10 +8961,20 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
                 try:
-                    return agent.run_conversation(
-                        user_message=prompt,
-                        task_id=task_id,
+                    from tools.terminal_tool import (
+                        clear_task_env_overrides,
+                        register_task_env_overrides,
                     )
+                    if routed_cwd:
+                        register_task_env_overrides(task_id, {"cwd": routed_cwd})
+                    try:
+                        return agent.run_conversation(
+                            user_message=prompt,
+                            task_id=task_id,
+                        )
+                    finally:
+                        if routed_cwd:
+                            clear_task_env_overrides(task_id)
                 finally:
                     self._cleanup_agent_resources(agent)
 
@@ -12704,6 +12721,8 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        route_cfg = resolve_channel_route(source, self.config)
+        routed_cwd = (route_cfg or {}).get("cwd")
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -13675,6 +13694,13 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            from tools.terminal_tool import (
+                clear_task_env_overrides,
+                register_task_env_overrides,
+            )
+
+            if routed_cwd:
+                register_task_env_overrides(session_id, {"cwd": routed_cwd})
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -13709,6 +13735,8 @@ class GatewayRunner:
 
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
+                if routed_cwd:
+                    clear_task_env_overrides(session_id)
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result

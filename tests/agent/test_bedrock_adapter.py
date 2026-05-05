@@ -994,6 +994,7 @@ class TestStreamConverseWithCallbacks:
             events, on_reasoning_delta=lambda t: reasoning.append(t),
         )
         assert reasoning == ["Let me think..."]
+        assert result.choices[0].message.reasoning_content == "Let me think..."
 
 
 # ---------------------------------------------------------------------------

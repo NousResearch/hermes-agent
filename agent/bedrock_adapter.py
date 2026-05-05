@@ -631,11 +631,18 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
     stop_reason = response.get("stopReason", "end_turn")
 
     text_parts = []
+    reasoning_parts = []
     tool_calls = []
 
     for block in content_blocks:
         if "text" in block:
             text_parts.append(block["text"])
+        elif "reasoningContent" in block:
+            reasoning = block["reasoningContent"]
+            if isinstance(reasoning, dict):
+                thinking_text = reasoning.get("text", "")
+                if thinking_text:
+                    reasoning_parts.append(str(thinking_text))
         elif "toolUse" in block:
             tu = block["toolUse"]
             tool_calls.append(SimpleNamespace(
@@ -652,6 +659,7 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
     # Build usage stats
@@ -732,6 +740,7 @@ def stream_converse_with_callbacks(
         ``normalize_converse_response()``.
     """
     text_parts: List[str] = []
+    reasoning_parts: List[str] = []
     tool_calls: List[SimpleNamespace] = []
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
@@ -777,8 +786,10 @@ def stream_converse_with_callbacks(
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict):
                     thinking_text = reasoning.get("text", "")
-                    if thinking_text and on_reasoning_delta:
-                        on_reasoning_delta(thinking_text)
+                    if thinking_text:
+                        reasoning_parts.append(str(thinking_text))
+                        if on_reasoning_delta:
+                            on_reasoning_delta(thinking_text)
 
         elif "contentBlockStop" in event:
             if current_tool is not None:
@@ -817,6 +828,7 @@ def stream_converse_with_callbacks(
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
     usage = SimpleNamespace(

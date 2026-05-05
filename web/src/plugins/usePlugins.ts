@@ -23,8 +23,19 @@ export function usePlugins() {
   const [loading, setLoading] = useState(true);
   const loadedScripts = useRef<Set<string>>(new Set());
 
-  // Fetch manifests on mount.
+  // Fetch manifests on mount + re-fetch when PluginsPage signals a plugin change
+  // (e.g. visibility toggle, enable/disable) so the sidebar reflects updates immediately.
   useEffect(() => {
+    function onPluginChange() {
+      api
+        .getPlugins()
+        .then((list) => {
+          setManifests(list);
+          if (list.length === 0) setLoading(false);
+        })
+        .catch(() => setLoading(false));
+    }
+    window.addEventListener("hermes:plugins:change", onPluginChange);
     api
       .getPlugins()
       .then((list) => {
@@ -32,6 +43,7 @@ export function usePlugins() {
         if (list.length === 0) setLoading(false);
       })
       .catch(() => setLoading(false));
+    return () => window.removeEventListener("hermes:plugins:change", onPluginChange);
   }, []);
 
   // Load plugin assets when manifests arrive.

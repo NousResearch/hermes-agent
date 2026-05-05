@@ -312,21 +312,57 @@ def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
-def _rule_repeated_spawn_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
-    """Task's ``spawn_failures`` counter is climbing — worker can't
-    even start. Usually a profile misconfiguration (missing config.yaml,
-    bad PATH/venv, wrong credentials).
+def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task's unified ``consecutive_failures`` counter is climbing —
+    something about this task+profile combo is broken and each retry
+    fails the same way. Triggers regardless of the specific failure
+    mode (spawn error, timeout, crash) because operationally they
+    all look the same: the kernel keeps retrying and the operator
+    needs to intervene.
 
-    Threshold: cfg["spawn_failure_threshold"] (default 3).
+    Threshold: cfg["failure_threshold"] (default 3). A threshold of 3
+    is one below the circuit-breaker's default (5), so the diagnostic
+    surfaces BEFORE the breaker trips — giving operators a window to
+    fix the problem while the dispatcher's still retrying.
+
+    Accepts the legacy ``spawn_failure_threshold`` config key for
+    back-compat.
     """
-    threshold = int(cfg.get("spawn_failure_threshold", 3))
-    failures = _task_field(task, "spawn_failures", 0)
+    threshold = int(cfg.get(
+        "failure_threshold",
+        cfg.get("spawn_failure_threshold", 3),
+    ))
+    # Read the new unified counter name, with a fallback to the legacy
+    # column name so this rule keeps working against old DB rows the
+    # caller somehow materialised without running the migration.
+    failures = (
+        _task_field(task, "consecutive_failures", None)
+        if _task_field(task, "consecutive_failures", None) is not None
+        else _task_field(task, "spawn_failures", 0)
+    )
     if failures is None or failures < threshold:
         return []
-    last_err = _task_field(task, "last_spawn_error")
+    last_err = (
+        _task_field(task, "last_failure_error", None)
+        if _task_field(task, "last_failure_error", None) is not None
+        else _task_field(task, "last_spawn_error", None)
+    )
     assignee = _task_field(task, "assignee")
+
+    # Classify the most recent failure by peeking at run outcomes so
+    # the title + suggested action can be specific without a separate
+    # per-outcome rule.
+    ordered_runs = sorted(runs, key=lambda r: _task_field(r, "id", 0))
+    most_recent_outcome = None
+    for r in reversed(ordered_runs):
+        oc = _task_field(r, "outcome")
+        if oc in ("spawn_failed", "timed_out", "crashed"):
+            most_recent_outcome = oc
+            break
+
     actions: list[DiagnosticAction] = []
-    if assignee and assignee != "default":
+    if most_recent_outcome == "spawn_failed" and assignee and assignee != "default":
+        # Spawn is failing specifically — profile setup issue.
         actions.append(DiagnosticAction(
             kind="cli_hint",
             label=f"Verify profile: hermes -p {assignee} doctor",
@@ -338,28 +374,49 @@ def _rule_repeated_spawn_failures(task, events, runs, now, cfg) -> list[Diagnost
             label=f"Fix profile auth: hermes -p {assignee} auth",
             payload={"command": f"hermes -p {assignee} auth"},
         ))
-    actions.extend(_generic_recovery_actions(task, running=False))
+    elif most_recent_outcome in ("timed_out", "crashed"):
+        # Worker got off the ground but died. Logs are the right place
+        # to diagnose; reclaim/reassign are the recovery levers.
+        task_id = _task_field(task, "id")
+        if task_id:
+            actions.append(DiagnosticAction(
+                kind="cli_hint",
+                label=f"Check logs: hermes kanban log {task_id}",
+                payload={"command": f"hermes kanban log {task_id}"},
+                suggested=True,
+            ))
+    actions.extend(_generic_recovery_actions(
+        task, running=_task_field(task, "status") == "running",
+    ))
+
     severity = "critical" if failures >= threshold * 2 else "error"
     err_text = (last_err or "").strip() if last_err else ""
     err_snippet = err_text[:500] + ("…" if len(err_text) > 500 else "") if err_text else ""
+    outcome_label = {
+        "spawn_failed": "spawn",
+        "timed_out": "timeout",
+        "crashed": "crash",
+    }.get(most_recent_outcome or "", "failure")
     if err_snippet:
-        title = f"Agent spawn failed {failures}x: {err_snippet.splitlines()[0][:160]}"
+        title = f"Agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"
         detail = (
-            f"The dispatcher tried to launch a worker {failures} times "
-            f"and failed every time. Full last error:\n\n{err_snippet}\n\n"
-            f"Common causes: missing config.yaml, bad venv/PATH, or "
-            f"missing credentials for the profile's configured provider."
+            f"This task has failed {failures} times in a row "
+            f"(most recent: {outcome_label}). Full last error:\n\n"
+            f"{err_snippet}\n\n"
+            f"The dispatcher will keep retrying until the consecutive-"
+            f"failures counter trips the circuit breaker (default 5), "
+            f"at which point the task auto-blocks. Fix the root cause "
+            f"and reclaim to retry."
         )
     else:
-        title = f"Agent spawn failed {failures}x (no error recorded)"
+        title = f"Agent {outcome_label} x{failures} (no error recorded)"
         detail = (
-            f"The dispatcher tried to launch a worker {failures} times "
-            f"and failed every time, but no error text was captured. "
-            f"Usually a profile configuration issue — check profile "
-            f"health with the suggested command."
+            f"This task has failed {failures} times in a row "
+            f"(most recent: {outcome_label}) but no error text was "
+            f"captured. Check the suggested command or the worker log."
         )
     return [Diagnostic(
-        kind="repeated_spawn_failures",
+        kind="repeated_failures",
         severity=severity,
         title=title,
         detail=detail,
@@ -367,7 +424,11 @@ def _rule_repeated_spawn_failures(task, events, runs, now, cfg) -> list[Diagnost
         first_seen_at=now,
         last_seen_at=now,
         count=failures,
-        data={"spawn_failures": failures, "last_spawn_error": last_err},
+        data={
+            "consecutive_failures": failures,
+            "most_recent_outcome": most_recent_outcome,
+            "last_error": last_err,
+        },
     )]
 
 
@@ -378,7 +439,23 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     broken (OOM, missing dependency, tool it needs is down).
 
     Threshold: cfg["crash_threshold"] (default 2).
+
+    Narrower than ``repeated_failures`` — fires earlier (2 crashes vs 3
+    total failures) so the operator gets a crash-specific heads-up
+    before the unified rule kicks in. Suppresses itself when the
+    unified rule is also about to fire, to avoid double-flagging.
     """
+    failure_threshold = int(cfg.get(
+        "failure_threshold",
+        cfg.get("spawn_failure_threshold", 3),
+    ))
+    unified_counter = (
+        _task_field(task, "consecutive_failures", 0) or 0
+    )
+    # Unified rule will catch this — let it handle to avoid double fire.
+    if unified_counter >= failure_threshold:
+        return []
+
     threshold = int(cfg.get("crash_threshold", 2))
     ordered = sorted(runs, key=lambda r: _task_field(r, "id", 0))
     # Count trailing consecutive 'crashed' outcomes.
@@ -498,7 +575,7 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
     _rule_prose_phantom_refs,
-    _rule_repeated_spawn_failures,
+    _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
 ]
@@ -509,13 +586,15 @@ _RULES: list[RuleFn] = [
 DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
     "prose_phantom_refs",
-    "repeated_spawn_failures",
+    "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
 )
 
 
 DEFAULT_CONFIG = {
+    "failure_threshold": 3,
+    # Legacy alias accepted at read time by _rule_repeated_failures.
     "spawn_failure_threshold": 3,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,

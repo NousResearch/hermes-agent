@@ -573,9 +573,18 @@ class Task:
     tenant: Optional[str]
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
-    spawn_failures: int = 0
+    # Unified non-success counter. Incremented on any of:
+    #   * spawn failure (dispatcher couldn't launch the worker)
+    #   * timed_out outcome (worker exceeded max_runtime_seconds)
+    #   * crashed outcome (worker PID vanished)
+    # Reset to 0 only on a successful completion. See
+    # ``_record_task_failure`` for the circuit-breaker trip rule.
+    # (Pre-rename column: ``spawn_failures``.)
+    consecutive_failures: int = 0
     worker_pid: Optional[int] = None
-    last_spawn_error: Optional[str] = None
+    # Short excerpt of the last failure's error text (any outcome, not
+    # just spawn). Pre-rename column: ``last_spawn_error``.
+    last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
     current_run_id: Optional[int] = None
@@ -617,9 +626,15 @@ class Task:
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
-            spawn_failures=row["spawn_failures"] if "spawn_failures" in keys else 0,
+            consecutive_failures=(
+                row["consecutive_failures"] if "consecutive_failures" in keys
+                else (row["spawn_failures"] if "spawn_failures" in keys else 0)
+            ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
-            last_spawn_error=row["last_spawn_error"] if "last_spawn_error" in keys else None,
+            last_failure_error=(
+                row["last_failure_error"] if "last_failure_error" in keys
+                else (row["last_spawn_error"] if "last_spawn_error" in keys else None)
+            ),
             max_runtime_seconds=(
                 row["max_runtime_seconds"] if "max_runtime_seconds" in keys else None
             ),
@@ -735,9 +750,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
-    spawn_failures       INTEGER NOT NULL DEFAULT 0,
+    -- Unified consecutive-failure counter. Incremented on spawn
+    -- failure, timeout, or crash; reset only on successful completion.
+    -- The circuit breaker in _record_task_failure trips when this
+    -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
-    last_spawn_error     TEXT,
+    -- Short excerpt of the most recent failure's error text.
+    last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
@@ -933,14 +953,31 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key)"
         )
-    if "spawn_failures" not in cols:
-        conn.execute(
-            "ALTER TABLE tasks ADD COLUMN spawn_failures INTEGER NOT NULL DEFAULT 0"
-        )
+    # Legacy column rename: ``spawn_failures`` → ``consecutive_failures``
+    # and ``last_spawn_error`` → ``last_failure_error``. The counter was
+    # originally spawn-only; it's now unified across spawn/timeout/
+    # crash outcomes. Rename when only the legacy columns exist to
+    # preserve historical counter values across upgrades. Add fresh
+    # otherwise.
+    if "consecutive_failures" not in cols:
+        if "spawn_failures" in cols:
+            conn.execute(
+                "ALTER TABLE tasks RENAME COLUMN spawn_failures TO consecutive_failures"
+            )
+        else:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN consecutive_failures "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
     if "worker_pid" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
-    if "last_spawn_error" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_spawn_error TEXT")
+    if "last_failure_error" not in cols:
+        if "last_spawn_error" in cols:
+            conn.execute(
+                "ALTER TABLE tasks RENAME COLUMN last_spawn_error TO last_failure_error"
+            )
+        else:
+            conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
     if "max_runtime_seconds" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
     if "last_heartbeat_at" not in cols:
@@ -1895,6 +1932,11 @@ def reclaim_task(
             },
             run_id=run_id,
         )
+    # Operator intervention — they've looked at the task, so the
+    # consecutive-failures counter is now stale. Give the next retry
+    # a fresh budget. (_clear_failure_counter opens its own write_txn,
+    # so it runs after the enclosing one commits.)
+    _clear_failure_counter(conn, task_id)
     return True
 
 
@@ -2186,6 +2228,11 @@ def complete_task(
                     },
                     run_id=run_id,
                 )
+    # Successful completion — wipe the consecutive-failures counter.
+    # Failure history stays on the event log for audit; the counter
+    # just tracks "is there a current pathology the breaker should
+    # care about", and a success resets that question.
+    _clear_failure_counter(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     return True
@@ -2444,7 +2491,9 @@ def set_workspace_path(
 # stops retrying and parks the task in ``blocked`` with a reason so a human
 # can investigate. Prevents the dispatcher from thrashing forever on a task
 # whose profile doesn't exist, whose workspace is unmountable, etc.
-DEFAULT_SPAWN_FAILURE_LIMIT = 5
+DEFAULT_FAILURE_LIMIT = 5
+# Legacy alias — callers / tests still reference the old name.
+DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
@@ -2668,6 +2717,20 @@ def enforce_max_runtime(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
                 timed_out.append(tid)
+        # Increment the unified failure counter. Outside the write_txn
+        # above because ``_record_task_failure`` opens its own. If the
+        # breaker trips, this flips the task ``ready → blocked`` and
+        # emits a ``gave_up`` event on top of the ``timed_out`` we
+        # already emitted.
+        if cur.rowcount == 1:
+            _record_task_failure(
+                conn, tid,
+                error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                outcome="timed_out",
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={"pid": pid, "sigkill": killed},
+            )
     return timed_out
 
 
@@ -2699,6 +2762,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     dispatcher (the whole design is single-host).
     """
     crashed: list[str] = []
+    # Per-crash details collected inside the main txn, used after it
+    # closes to run ``_record_task_failure`` (which needs its own
+    # write_txn so can't nest).
+    crash_details: list[tuple[str, int, str]] = []  # (task_id, pid, claimer)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock FROM tasks "
@@ -2734,67 +2801,169 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     run_id=run_id,
                 )
                 crashed.append(row["id"])
+                crash_details.append(
+                    (row["id"], int(row["worker_pid"]), row["claim_lock"])
+                )
+    # Outside the main txn: increment the unified failure counter for
+    # each crashed task. If the breaker trips, the task transitions
+    # ready → blocked with a ``gave_up`` event on top of the ``crashed``
+    # event we already emitted.
+    for tid, pid, claimer in crash_details:
+        _record_task_failure(
+            conn, tid,
+            error=f"pid {pid} not alive",
+            outcome="crashed",
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={"pid": pid, "claimer": claimer},
+        )
     return crashed
 
 
+def _record_task_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error: str,
+    *,
+    outcome: str,
+    failure_limit: int = None,
+    release_claim: bool = False,
+    end_run: bool = False,
+    event_payload_extra: Optional[dict] = None,
+) -> bool:
+    """Record a non-success outcome (spawn_failed / crashed / timed_out)
+    and maybe trip the circuit breaker.
+
+    Unified replacement for the old spawn-only ``_record_spawn_failure``.
+    Every path that ends a task with a non-success outcome funnels
+    through here so the ``consecutive_failures`` counter and the
+    auto-block threshold stay consistent.
+
+    Returns True when the task was auto-blocked (counter reached
+    ``failure_limit``), False when it was just updated in place.
+
+    Modes:
+
+    * ``release_claim=True, end_run=True`` — spawn-failure path.
+      Caller has a running task with an open run; this transitions
+      it back to ``ready`` (or ``blocked`` when the breaker trips),
+      releases the claim, and closes the run with ``outcome=<outcome>``.
+
+    * ``release_claim=False, end_run=False`` — timeout/crash path.
+      Caller has ALREADY flipped the task to ``ready`` and closed the
+      run with the appropriate outcome. This just increments the
+      counter; if the breaker trips, the task is re-transitioned
+      ``ready → blocked`` and a ``gave_up`` event is emitted.
+
+    ``event_payload_extra`` merges into the ``gave_up`` event payload
+    when the breaker trips, so callers can include outcome-specific
+    context (e.g. pid on crash, elapsed on timeout).
+    """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+    blocked = False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT consecutive_failures, status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        failures = int(row["consecutive_failures"]) + 1
+        cur_status = row["status"]
+
+        if failures >= failure_limit:
+            # Trip the breaker.
+            if release_claim:
+                # Spawn path: still running, also clear claim state.
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "consecutive_failures = ?, last_failure_error = ? "
+                    "WHERE id = ? AND status IN ('running', 'ready')",
+                    (failures, error[:500], task_id),
+                )
+            else:
+                # Timeout/crash path: task is already at ``ready``
+                # with claim cleared; just flip to blocked + update
+                # counter fields.
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', "
+                    "consecutive_failures = ?, last_failure_error = ? "
+                    "WHERE id = ? AND status IN ('ready', 'running')",
+                    (failures, error[:500], task_id),
+                )
+            run_id = None
+            if end_run:
+                # Only the spawn path has an open run to close.
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="gave_up", status="gave_up",
+                    error=error[:500],
+                    metadata={"failures": failures, "trigger_outcome": outcome},
+                )
+            payload = {
+                "failures": failures,
+                "error": error[:500],
+                "trigger_outcome": outcome,
+            }
+            if event_payload_extra:
+                payload.update(event_payload_extra)
+            _append_event(
+                conn, task_id, "gave_up", payload, run_id=run_id,
+            )
+            blocked = True
+        else:
+            # Below threshold.
+            if release_claim:
+                # Spawn path: transition running → ready + clear claim.
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "consecutive_failures = ?, last_failure_error = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (failures, error[:500], task_id),
+                )
+            else:
+                # Timeout/crash path: task is already at ``ready`` via
+                # its own UPDATE. Just bookkeep the counter + last error.
+                conn.execute(
+                    "UPDATE tasks SET consecutive_failures = ?, "
+                    "last_failure_error = ? WHERE id = ?",
+                    (failures, error[:500], task_id),
+                )
+            if end_run:
+                # Spawn path: close the open run with outcome.
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome=outcome, status=outcome,
+                    error=error[:500],
+                    metadata={"failures": failures},
+                )
+                _append_event(
+                    conn, task_id, outcome,
+                    {"error": error[:500], "failures": failures},
+                    run_id=run_id,
+                )
+            # Timeout/crash path's caller already emitted its own event.
+    return blocked
+
+
+# Backward-compat alias. Old name is referenced from tests and possibly
+# third-party callers. New code should call ``_record_task_failure``.
 def _record_spawn_failure(
     conn: sqlite3.Connection,
     task_id: str,
     error: str,
     *,
-    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    failure_limit: int = None,
 ) -> bool:
-    """Release the claim, increment the failure counter, maybe auto-block.
-
-    Returns True when the task was auto-blocked (N failures exceeded),
-    False when it was just released back to ``ready`` for another try.
-    """
-    blocked = False
-    with write_txn(conn):
-        row = conn.execute(
-            "SELECT spawn_failures FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        failures = int(row["spawn_failures"]) + 1 if row else 1
-        if failures >= failure_limit:
-            conn.execute(
-                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "spawn_failures = ?, last_spawn_error = ? "
-                "WHERE id = ? AND status IN ('running', 'ready')",
-                (failures, error[:500], task_id),
-            )
-            run_id = _end_run(
-                conn, task_id,
-                outcome="gave_up", status="gave_up",
-                error=error[:500],
-                metadata={"failures": failures},
-            )
-            _append_event(
-                conn, task_id, "gave_up",
-                {"failures": failures, "error": error[:500]},
-                run_id=run_id,
-            )
-            blocked = True
-        else:
-            conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "spawn_failures = ?, last_spawn_error = ? "
-                "WHERE id = ? AND status = 'running'",
-                (failures, error[:500], task_id),
-            )
-            run_id = _end_run(
-                conn, task_id,
-                outcome="spawn_failed", status="spawn_failed",
-                error=error[:500],
-                metadata={"failures": failures},
-            )
-            _append_event(
-                conn, task_id, "spawn_failed",
-                {"error": error[:500], "failures": failures},
-                run_id=run_id,
-            )
-    return blocked
+    return _record_task_failure(
+        conn, task_id, error,
+        outcome="spawn_failed",
+        failure_limit=failure_limit,
+        release_claim=True,
+        end_run=True,
+    )
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -2818,14 +2987,26 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
 
-def _clear_spawn_failures(conn: sqlite3.Connection, task_id: str) -> None:
-    """Reset the failure counter after a successful spawn."""
+def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
+    """Reset the unified consecutive-failures counter.
+
+    Called from ``complete_task`` on successful completion — a fresh
+    success means the task + profile combination is working and any
+    past failures are history. NOT called on spawn success anymore:
+    a successful spawn proves the worker could start but says nothing
+    about whether the run will succeed, so we need to let timeouts and
+    crashes accumulate across spawn boundaries.
+    """
     with write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET spawn_failures = 0, last_spawn_error = NULL "
-            "WHERE id = ?",
+            "UPDATE tasks SET consecutive_failures = 0, "
+            "last_failure_error = NULL WHERE id = ?",
             (task_id,),
         )
+
+
+# Legacy alias for test-code and anything else that still imports it.
+_clear_spawn_failures = _clear_failure_counter
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -2964,7 +3145,13 @@ def dispatch_once(
                 pid = _spawn(claimed, str(workspace))
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
-            _clear_spawn_failures(conn, claimed.id)
+            # NOTE: we intentionally do NOT reset consecutive_failures
+            # here. A successful spawn proves the worker can start but
+            # doesn't prove the run will succeed. Under unified
+            # failure counting, resetting on spawn would let a task
+            # that keeps timing out after spawn loop forever. The
+            # counter is cleared only on successful completion (see
+            # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:

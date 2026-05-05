@@ -698,8 +698,10 @@ Create a markdown summary that captures all key information in a well-organized,
                 "temperature": 0.1,
                 "max_tokens": max_tokens,
                 # No explicit timeout — async_call_llm reads auxiliary.web_extract.timeout
-                # from config (default 360s / 6min).  Users with slow local models can
-                # increase it in config.yaml.
+                # from config.yaml. Fresh configs ship with 360s; if the key is absent
+                # the runtime default is 30s (_DEFAULT_AUX_TIMEOUT in
+                # agent/auxiliary_client.py). Users with slow local models should set
+                # or increase auxiliary.web_extract.timeout in config.yaml.
             }
             if extra_body:
                 call_kwargs["extra_body"] = extra_body

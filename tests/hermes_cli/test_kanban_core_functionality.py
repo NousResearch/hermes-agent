@@ -3237,10 +3237,21 @@ def test_enforce_max_runtime_increments_consecutive_failures(kanban_home, monkey
         )
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, os.getpid())
+        # Since PR #19473 (salvaged) changed enforce_max_runtime to read
+        # from task_runs.started_at (per-attempt) rather than
+        # tasks.started_at (lifetime), we need to backdate BOTH to
+        # guarantee the timeout fires regardless of which column the
+        # query pulls from.
         with kb.write_txn(conn):
+            long_ago = int(time.time()) - 30
             conn.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
-                (int(time.time()) - 30, tid),
+                (long_ago, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (long_ago, tid),
             )
         before = kb.get_task(conn, tid)
         assert before.consecutive_failures == 0

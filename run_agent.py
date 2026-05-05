@@ -2667,7 +2667,10 @@ class AIAgent:
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
-                provider=getattr(self, "provider", ""),
+                # Each model must be resolved with its own provider so that
+                # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
+                # are invoked for the correct client, not inherited from the main model.
+                provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
             )
 
             # Hard floor: the auxiliary compression model must have at least

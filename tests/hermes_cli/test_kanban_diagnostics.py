@@ -39,8 +39,8 @@ def _task(**overrides):
         "title": "demo task",
         "assignee": "demo",
         "status": "ready",
-        "spawn_failures": 0,
-        "last_spawn_error": None,
+        "consecutive_failures": 0,
+        "last_failure_error": None,
     }
     base.update(overrides)
     return base
@@ -126,27 +126,55 @@ def test_prose_phantom_refs_clears_on_later_clean_edit():
     assert diags == []
 
 
-def test_repeated_spawn_failures_fires_at_threshold():
-    task = _task(status="blocked", spawn_failures=3,
-                 last_spawn_error="Profile 'debugger' does not exist")
-    diags = kd.compute_task_diagnostics(task, [], [])
+def test_repeated_failures_fires_at_threshold_on_spawn():
+    """A task with multiple spawn_failed runs gets a spawn-flavoured
+    diagnostic (title mentions 'spawn', suggested action is ``doctor``).
+    """
+    task = _task(status="ready", consecutive_failures=3,
+                 last_failure_error="Profile 'debugger' does not exist")
+    runs = [
+        _run(outcome="spawn_failed", run_id=1),
+        _run(outcome="spawn_failed", run_id=2),
+        _run(outcome="spawn_failed", run_id=3),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
     assert len(diags) == 1
     d = diags[0]
-    assert d.kind == "repeated_spawn_failures"
+    assert d.kind == "repeated_failures"
     assert d.severity == "error"
     # CLI hints are what operators actually need here.
     suggested = [a.label for a in d.actions if a.suggested]
     assert any("doctor" in s for s in suggested)
 
 
-def test_repeated_spawn_failures_escalates_to_critical():
-    task = _task(spawn_failures=6, last_spawn_error="boom")
+def test_repeated_failures_fires_on_timeout_loop():
+    """The rule surfaces for timeout loops too — that's the point of
+    unifying the counter. Suggested action is 'check logs', not
+    'fix profile'."""
+    task = _task(status="ready", consecutive_failures=3,
+                 last_failure_error="elapsed 600s > limit 300s")
+    runs = [
+        _run(outcome="timed_out", run_id=1),
+        _run(outcome="timed_out", run_id=2),
+        _run(outcome="timed_out", run_id=3),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "repeated_failures"
+    assert d.data["most_recent_outcome"] == "timed_out"
+    suggested = [a.label for a in d.actions if a.suggested]
+    assert any("log" in s.lower() for s in suggested)
+
+
+def test_repeated_failures_escalates_to_critical():
+    task = _task(consecutive_failures=6, last_failure_error="boom")
     diags = kd.compute_task_diagnostics(task, [], [])
     assert diags[0].severity == "critical"
 
 
-def test_repeated_spawn_failures_below_threshold_silent():
-    task = _task(spawn_failures=2)
+def test_repeated_failures_below_threshold_silent():
+    task = _task(consecutive_failures=2)
     assert kd.compute_task_diagnostics(task, [], []) == []
 
 
@@ -243,9 +271,9 @@ def test_repeated_crashes_no_error_fallback_title():
     assert "no error recorded" in diags[0].title
 
 
-def test_repeated_spawn_failures_surfaces_actual_error_in_title():
-    task = _task(spawn_failures=5,
-                 last_spawn_error="insufficient_quota: billing limit reached")
+def test_repeated_failures_surfaces_actual_error_in_title():
+    task = _task(consecutive_failures=5,
+                 last_failure_error="insufficient_quota: billing limit reached")
     diags = kd.compute_task_diagnostics(task, [], [])
     assert len(diags) == 1
     d = diags[0]
@@ -280,8 +308,8 @@ def test_repeated_crashes_truncates_huge_tracebacks():
 def test_diagnostics_sorted_critical_first():
     """A task with both a critical (many spawn failures) and a warning
     (prose phantoms) diagnostic should list the critical one first."""
-    task = _task(status="done", spawn_failures=10,
-                 last_spawn_error="nope")
+    task = _task(status="done", consecutive_failures=10,
+                 last_failure_error="nope")
     events = [
         _event("completed", ts=100, summary="referenced t_missing"),
         _event("suspected_hallucinated_references", ts=101,
@@ -289,7 +317,7 @@ def test_diagnostics_sorted_critical_first():
     ]
     diags = kd.compute_task_diagnostics(task, events, [])
     kinds = [d.kind for d in diags]
-    assert kinds[0] == "repeated_spawn_failures"  # critical
+    assert kinds[0] == "repeated_failures"  # critical
     assert "prose_phantom_refs" in kinds
 
 
@@ -346,8 +374,8 @@ def test_broken_rule_is_isolated(monkeypatch):
     # rules should still run and produce their diagnostics.
     monkeypatch.setattr(kd, "_RULES", [_bad_rule] + kd._RULES)
 
-    task = _task(spawn_failures=5, last_spawn_error="e")
+    task = _task(consecutive_failures=5, last_failure_error="e")
     diags = kd.compute_task_diagnostics(task, [], [])
     # The broken rule silently drops, the real one still fires.
     kinds = [d.kind for d in diags]
-    assert "repeated_spawn_failures" in kinds
+    assert "repeated_failures" in kinds

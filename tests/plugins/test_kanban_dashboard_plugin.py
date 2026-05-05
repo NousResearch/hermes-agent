@@ -1126,7 +1126,11 @@ def test_home_channels_empty_when_no_homes_configured(client, monkeypatch):
 def test_board_surfaces_warnings_field_for_hallucinated_completions(client):
     """Tasks with a pending completion_blocked_hallucination event surface
     a ``warnings`` object on the /board payload so the UI can badge
-    them without fetching per-task events."""
+    them without fetching per-task events. The warnings summary is
+    keyed by diagnostic kind (``hallucinated_cards``) rather than the
+    raw event kind — see hermes_cli.kanban_diagnostics for the rule
+    that produces it.
+    """
     conn = kb.connect()
     try:
         parent = kb.create_task(conn, title="parent", assignee="alice")
@@ -1150,7 +1154,12 @@ def test_board_surfaces_warnings_field_for_hallucinated_completions(client):
     assert parent_dict.get("warnings") is not None
     w = parent_dict["warnings"]
     assert w["count"] >= 1
-    assert "completion_blocked_hallucination" in w["kinds"]
+    assert "hallucinated_cards" in w["kinds"]
+    assert w["highest_severity"] == "error"
+    # Full diagnostic list also on the payload for drawer rendering.
+    assert parent_dict.get("diagnostics") is not None
+    assert parent_dict["diagnostics"][0]["kind"] == "hallucinated_cards"
+    assert "t_deadbeefcafe" in parent_dict["diagnostics"][0]["data"]["phantom_ids"]
 
 
 def test_board_warnings_cleared_after_clean_completion(client):
@@ -1335,3 +1344,99 @@ def test_reassign_endpoint_with_reclaim_first_succeeds_on_running(client):
         assert row["assignee"] == "new"
     finally:
         conn2.close()
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics endpoint (/api/plugins/kanban/diagnostics)
+# ---------------------------------------------------------------------------
+
+def test_diagnostics_endpoint_empty_for_clean_board(client):
+    r = client.get("/api/plugins/kanban/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 0
+    assert data["diagnostics"] == []
+
+
+def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent, summary="phantom",
+                created_cards=[real, "t_ffff00001234"],
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    row = data["diagnostics"][0]
+    assert row["task_id"] == parent
+    assert row["diagnostics"][0]["kind"] == "hallucinated_cards"
+    assert row["diagnostics"][0]["severity"] == "error"
+    assert "t_ffff00001234" in row["diagnostics"][0]["data"]["phantom_ids"]
+
+
+def test_diagnostics_endpoint_severity_filter(client):
+    """Warning-severity filter excludes error-severity entries."""
+    conn = kb.connect()
+    try:
+        # A warning-severity diagnostic (prose phantom) on one task.
+        # Phantom id must be valid hex — the prose scanner regex
+        # requires ``t_[a-f0-9]{8,}``.
+        p1 = kb.create_task(conn, title="prose", assignee="a")
+        kb.complete_task(conn, p1, summary="mentioned t_deadbeef1234")
+        # An error-severity diagnostic (spawn failures) on another
+        p2 = kb.create_task(conn, title="spawn", assignee="b")
+        conn.execute(
+            "UPDATE tasks SET spawn_failures=5, last_spawn_error='x' WHERE id=?",
+            (p2,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/diagnostics?severity=warning")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    assert data["diagnostics"][0]["task_id"] == p1
+
+    r = client.get("/api/plugins/kanban/diagnostics?severity=error")
+    data = r.json()
+    assert data["count"] == 1
+    assert data["diagnostics"][0]["task_id"] == p2
+
+
+def test_board_exposes_diagnostics_list_and_summary(client):
+    """/board should attach both the full diagnostics list AND the
+    compact warnings summary (with highest_severity) on each task
+    that has any diagnostic.
+    """
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="crashy", assignee="worker")
+        # Simulate 2 consecutive crashes -> repeated_crashes error diag
+        for i in range(2):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, status, outcome, started_at, "
+                "ended_at, error) VALUES (?, 'crashed', 'crashed', ?, ?, ?)",
+                (t, int(time.time()) - 100, int(time.time()) - 50, "OOM"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    data = r.json()
+    tasks = [x for col in data["columns"] for x in col["tasks"]]
+    task_dict = next(x for x in tasks if x["title"] == "crashy")
+    assert task_dict["warnings"] is not None
+    assert task_dict["warnings"]["highest_severity"] == "error"
+    assert task_dict["diagnostics"][0]["kind"] == "repeated_crashes"

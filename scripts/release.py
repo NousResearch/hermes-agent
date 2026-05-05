@@ -61,6 +61,7 @@ AUTHOR_MAP = {
     "santoshhumagain1887@gmail.com": "npmisantosh",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
+    "rxdxxxx@users.noreply.github.com": "rxdxxxx",
     "29756950+revaraver@users.noreply.github.com": "revaraver",
     "nexus@eptic.me": "TheEpTic",
     "74554762+wmagev@users.noreply.github.com": "wmagev",

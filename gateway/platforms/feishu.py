@@ -4090,10 +4090,11 @@ class FeishuAdapter(BasePlatformAdapter):
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        # Detect whether chat_id is an open_id (private message) or a group chat_id.
-        # Feishu API requires receive_id_type="open_id" for user DMs (oc_/ou_ prefix)
-        # and receive_id_type="chat_id" for group chats (ch_ prefix).
-        if chat_id.startswith(("oc_", "ou_")):
+        # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
+        # Feishu API expects receive_id_type="open_id" for user DMs (ou_ prefix)
+        # and receive_id_type="chat_id" for group chats (oc_ prefix, which IS
+        # the chat_id format — see https://open.feishu.cn/document/).
+        if chat_id.startswith("ou_"):
             receive_id_type = "open_id"
         else:
             receive_id_type = "chat_id"

@@ -61,6 +61,8 @@ def fresh_home(tmp_path, monkeypatch):
         pass
     # Kanban module-level init cache must not leak between tests.
     kb._INITIALIZED_PATHS.clear()
+    # Stale-pointer warning dedupe is also process-global.
+    kb._STALE_CURRENT_BOARD_WARNED.clear()
     return home
 
 
@@ -184,6 +186,66 @@ class TestCurrentBoard:
         kb.set_current_board("my-proj")
         expected = fresh_home / "kanban" / "boards" / "my-proj" / "kanban.db"
         assert kb.kanban_db_path() == expected
+
+
+class TestStaleCurrentBoardPointer:
+    """A ``<root>/kanban/current`` pointing at a missing board must not
+    cause kanban to silently synthesize/create that board on read.
+
+    Otherwise a stale pointer (board removed outside ``boards rm``, slug
+    typo, etc.) hides the user's real boards behind a synthetic empty one.
+    """
+
+    def _seed_stale(self, home, slug="missing-board"):
+        ptr = home / "kanban" / "current"
+        ptr.parent.mkdir(parents=True, exist_ok=True)
+        ptr.write_text(slug + "\n", encoding="utf-8")
+
+    def test_get_current_board_falls_back_to_default(self, fresh_home, capsys):
+        self._seed_stale(fresh_home)
+        assert kb.get_current_board() == "default"
+        err = capsys.readouterr().err
+        assert "missing-board" in err
+        assert "falling back to 'default'" in err
+
+    def test_warning_is_deduped_within_process(self, fresh_home, capsys):
+        self._seed_stale(fresh_home)
+        kb.get_current_board()
+        kb.get_current_board()
+        kb.get_current_board()
+        assert capsys.readouterr().err.count("warning:") == 1
+
+    def test_no_implicit_board_creation(self, fresh_home, capsys):
+        self._seed_stale(fresh_home)
+        # Touching the DB through the regular CLI code path must not
+        # create the missing board's directory or DB file.
+        with kb.connect() as conn:
+            kb.recompute_ready(conn)
+            kb.list_tasks(conn)
+        capsys.readouterr()  # discard warning
+        assert not (fresh_home / "kanban" / "boards" / "missing-board").exists()
+
+    def test_pointer_preserved_for_recovery(self, fresh_home, capsys):
+        """The stale pointer is left on disk so the user can `boards
+        create <slug>` and recover the original selection without having
+        to re-switch."""
+        self._seed_stale(fresh_home, slug="recoverable")
+        assert kb.get_current_board() == "default"
+        capsys.readouterr()
+        ptr = fresh_home / "kanban" / "current"
+        assert ptr.exists()
+        assert ptr.read_text(encoding="utf-8").strip() == "recoverable"
+        # Once the user creates the board, the pointer becomes valid again.
+        kb.create_board("recoverable")
+        assert kb.get_current_board() == "recoverable"
+
+    def test_boards_list_does_not_include_stale_slug(self, fresh_home, capsys):
+        self._seed_stale(fresh_home)
+        with kb.connect() as conn:
+            kb.recompute_ready(conn)
+        capsys.readouterr()
+        slugs = [b["slug"] for b in kb.list_boards()]
+        assert slugs == ["default"]
 
 
 # ---------------------------------------------------------------------------

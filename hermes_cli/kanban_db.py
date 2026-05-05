@@ -115,6 +115,12 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 
 DEFAULT_BOARD = "default"
 
+# Slugs we've already warned about for a stale current-board pointer in
+# this process. Read-only commands (boards list, list, stats) call
+# get_current_board() once or twice each — the dedupe just avoids
+# double-printing within a single CLI invocation.
+_STALE_CURRENT_BOARD_WARNED: set[str] = set()
+
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
 # enough that kebab-case names like ``atm10-server`` or ``hermes-agent``
@@ -213,7 +219,29 @@ def get_current_board() -> str:
                 try:
                     normed = _normalize_board_slug(val)
                     if normed:
-                        return normed
+                        # Validate the pointer references a real board.
+                        # Without this, a stale pointer (board removed
+                        # outside ``boards rm``, slug typo, etc.) would
+                        # cause read-only commands like ``stats`` / ``list``
+                        # to silently materialize an empty board on disk
+                        # via kb.connect()'s mkdir+sqlite3.connect, hiding
+                        # the user's real board behind a synthetic one.
+                        if board_exists(normed):
+                            return normed
+                        if normed not in _STALE_CURRENT_BOARD_WARNED:
+                            _STALE_CURRENT_BOARD_WARNED.add(normed)
+                            try:
+                                print(
+                                    f"warning: kanban current-board pointer "
+                                    f"references missing board {normed!r}; "
+                                    f"falling back to {DEFAULT_BOARD!r}. "
+                                    f"Recreate it with `hermes kanban boards "
+                                    f"create {normed}` or switch with "
+                                    f"`hermes kanban boards switch <slug>`.",
+                                    file=sys.stderr,
+                                )
+                            except OSError:
+                                pass
                 except ValueError:
                     pass
     except OSError:

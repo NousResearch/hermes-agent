@@ -724,6 +724,14 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    # max_tokens precedence (#20004): custom_providers[].max_tokens (carried on
+    # the runtime dict) wins; otherwise fall back to top-level model.max_tokens
+    # so a user-set global cap is still honoured. None means "let the provider
+    # transport pick its native ceiling".
+    max_tokens = runtime.get("max_tokens")
+    if not (isinstance(max_tokens, int) and max_tokens > 0):
+        max_tokens = _resolve_model_max_tokens()
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -732,7 +740,22 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": max_tokens,
     }
+
+
+def _resolve_model_max_tokens() -> Optional[int]:
+    """Read ``model.max_tokens`` from the loaded gateway config."""
+    try:
+        cfg = _load_gateway_config() or {}
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            value = model_cfg.get("max_tokens")
+            if isinstance(value, int) and value > 0:
+                return value
+    except Exception:
+        pass
+    return None
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -760,6 +783,9 @@ def _try_resolve_fallback_provider() -> dict | None:
                     explicit_api_key=entry.get("api_key"),
                 )
                 logger.info("Fallback provider resolved: %s", runtime.get("provider"))
+                fb_max_tokens = runtime.get("max_tokens")
+                if not (isinstance(fb_max_tokens, int) and fb_max_tokens > 0):
+                    fb_max_tokens = _resolve_model_max_tokens()
                 return {
                     "api_key": runtime.get("api_key"),
                     "base_url": runtime.get("base_url"),
@@ -768,6 +794,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "max_tokens": fb_max_tokens,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -1776,6 +1803,12 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
+        # Forward the resolved per-provider output cap (#20004) so it reaches
+        # AIAgent via ``**turn_route["runtime"]``. Drop the key entirely when
+        # unset so AIAgent uses its native default rather than ``None``.
+        rt_max_tokens = runtime_kwargs.get("max_tokens")
+        if isinstance(rt_max_tokens, int) and rt_max_tokens > 0:
+            runtime["max_tokens"] = rt_max_tokens
         route = {
             "model": model,
             "runtime": runtime,

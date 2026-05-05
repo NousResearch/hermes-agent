@@ -410,6 +410,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    max_tokens = entry.get("max_tokens")
+                    if isinstance(max_tokens, int) and max_tokens > 0:
+                        result["max_tokens"] = max_tokens
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -428,6 +431,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        max_tokens = entry.get("max_tokens")
+                        if isinstance(max_tokens, int) and max_tokens > 0:
+                            result["max_tokens"] = max_tokens
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -474,6 +480,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        max_tokens = entry.get("max_tokens")
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            result["max_tokens"] = max_tokens
         return result
 
     return None
@@ -528,6 +537,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        max_tokens = custom_provider.get("max_tokens")
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            pool_result["max_tokens"] = max_tokens
         return pool_result
 
     api_key_candidates = [
@@ -552,6 +564,12 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    # Propagate the per-provider output cap so the gateway/CLI can honour
+    # ``custom_providers[].max_tokens`` instead of falling back to the
+    # provider transport default. See #20004.
+    max_tokens = custom_provider.get("max_tokens")
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        result["max_tokens"] = max_tokens
     return result
 
 

@@ -330,3 +330,141 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent mention filtering — _message_targets_other_bot
+# ---------------------------------------------------------------------------
+
+def test_mention_of_other_bot_rejected_with_require_mention_false():
+    """With require_mention: false, @otherbot messages should be rejected."""
+    adapter = _make_adapter(require_mention=False)
+    text = "@otherbot help"
+    msg = _group_message(text, entities=[_mention_entity(text, "@otherbot")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_of_other_bot_rejected_with_require_mention_true():
+    """With require_mention: true, @otherbot messages should also be rejected."""
+    adapter = _make_adapter(require_mention=True)
+    text = "@otherbot help"
+    msg = _group_message(text, entities=[_mention_entity(text, "@otherbot")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_of_self_not_rejected():
+    """@hermes_bot (self) mention should NOT be rejected."""
+    adapter = _make_adapter(require_mention=False)
+    text = "@hermes_bot help"
+    msg = _group_message(text, entities=[_mention_entity(text, "@hermes_bot")])
+    assert adapter._should_process_message(msg) is True
+
+
+def test_mention_of_self_and_other_not_rejected():
+    """When both self and other bot are mentioned, should NOT be rejected."""
+    adapter = _make_adapter(require_mention=False)
+    text = "@hermes_bot @otherbot help"
+    msg = _group_message(
+        text,
+        entities=[
+            _mention_entity(text, "@hermes_bot"),
+            _mention_entity(text, "@otherbot"),
+        ],
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_general_message_no_mentions_accepted_when_no_require_mention():
+    """General messages with no mentions accepted when require_mention: false."""
+    adapter = _make_adapter(require_mention=False)
+    msg = _group_message("hello everyone")
+    assert adapter._should_process_message(msg) is True
+
+
+def test_general_message_no_mentions_rejected_when_require_mention():
+    """General messages with no mentions rejected when require_mention: true."""
+    adapter = _make_adapter(require_mention=True)
+    msg = _group_message("hello everyone")
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_of_human_user_rejected():
+    """@mention of a human user should be rejected (targets other entity)."""
+    adapter = _make_adapter(require_mention=False)
+    text = "@john_doe hello"
+    msg = _group_message(text, entities=[_mention_entity(text, "@john_doe")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_bot_command_targeting_other_bot_rejected():
+    """With require_mention: false, /command@otherbot should be rejected."""
+    adapter = _make_adapter(require_mention=False)
+    text = "/status@other_bot"
+    msg = _group_message(
+        text,
+        entities=[_bot_command_entity(text, "/status@other_bot")],
+    )
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_of_other_bot_in_caption():
+    """Mention entities in captions should also trigger filtering."""
+    adapter = _make_adapter(require_mention=False)
+    caption = "@otherbot check this image"
+    msg = SimpleNamespace(
+        text=None,
+        caption=caption,
+        entities=[],
+        caption_entities=[_mention_entity(caption, "@otherbot")],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=-100, type="group"),
+        from_user=SimpleNamespace(id=111),
+        reply_to_message=None,
+    )
+    assert adapter._should_process_message(msg) is False
+
+
+def test_text_mention_of_other_user_rejected():
+    """text_mention entity targeting a different user should be rejected."""
+    adapter = _make_adapter(require_mention=False)
+    msg = SimpleNamespace(
+        text="hello",
+        caption=None,
+        entities=[
+            SimpleNamespace(
+                type="text_mention",
+                offset=0,
+                length=5,
+                user=SimpleNamespace(id=555),  # not bot_id (999)
+            ),
+        ],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=-100, type="group"),
+        from_user=SimpleNamespace(id=111),
+        reply_to_message=None,
+    )
+    assert adapter._should_process_message(msg) is False
+
+
+def test_text_mention_of_self_not_rejected():
+    """text_mention entity targeting this bot (by user ID) should NOT be rejected."""
+    adapter = _make_adapter(require_mention=False)
+    msg = SimpleNamespace(
+        text="hello",
+        caption=None,
+        entities=[
+            SimpleNamespace(
+                type="text_mention",
+                offset=0,
+                length=5,
+                user=SimpleNamespace(id=999),  # bot_id
+            ),
+        ],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=-100, type="group"),
+        from_user=SimpleNamespace(id=111),
+        reply_to_message=None,
+    )
+    assert adapter._should_process_message(msg) is True

@@ -2829,17 +2829,35 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    def _message_mentions_bot(self, message: Message) -> bool:
+    @staticmethod
+    def _iter_entity_sources(message: Message):
+        """Yield (source_text, entities) pairs for text and caption."""
+        yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+        yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+    def _resolve_entity_targets(self, message: Message) -> tuple:
+        """Scan all entities and return (self_mentioned, other_mentioned, other_command).
+
+        Single-pass analysis of ``mention``, ``text_mention``, and
+        ``bot_command`` entities across both text and caption, resolving
+        whether this bot is mentioned, whether another entity is mentioned,
+        and whether a ``/command@otherbot`` targets a different bot.
+
+        Returns:
+            (self_mentioned, other_mentioned, other_command) — three bools.
+            ``other_command`` is set immediately on the first non-self
+            ``bot_command`` entity (can short-circuit the caller).
+        """
         if not self._bot:
-            return False
+            return (False, False, False)
 
         bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
         bot_id = getattr(self._bot, "id", None)
         expected = f"@{bot_username}" if bot_username else None
 
-        def _iter_sources():
-            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
-            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+        self_mentioned = False
+        other_mentioned = False
+        other_command = False
 
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
@@ -2847,7 +2865,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # raw substring matches like "foo@hermes_bot.example" are not mentions
         # (bug #12545). Entities also correctly handle @handles inside URLs, code
         # blocks, and quoted text, where a regex scan would over-match.
-        for source_text, entities in _iter_sources():
+        for source_text, entities in self._iter_entity_sources(message):
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
                 if entity_type == "mention" and expected:
@@ -2855,22 +2873,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
                         continue
-                    if source_text[offset:offset + length].strip().lower() == expected:
-                        return True
+                    mention_text = source_text[offset:offset + length].strip().lower()
+                    if mention_text == expected:
+                        self_mentioned = True
+                    else:
+                        other_mentioned = True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
-                    if user and getattr(user, "id", None) == bot_id:
-                        return True
+                    mentioned_id = getattr(user, "id", None) if user else None
+                    if mentioned_id == bot_id:
+                        self_mentioned = True
+                    elif mentioned_id is not None:
+                        other_mentioned = True
                 elif entity_type == "bot_command" and expected:
                     # Telegram's official group-disambiguation form for slash
                     # commands (``/cmd@botname``) is emitted as a single
                     # ``bot_command`` entity covering the whole span — there
-                    # is no accompanying ``mention`` entity. Treat it as a
-                    # direct address to this bot when the ``@botname`` suffix
-                    # matches. This is the form Telegram's own command menu
-                    # autocomplete produces in groups, so dropping it at the
-                    # mention gate would break /new, /reset, /help, ... for
-                    # every group that has ``require_mention`` enabled (#15415).
+                    # is no accompanying ``mention`` entity.  This is the
+                    # form Telegram's own command menu autocomplete produces
+                    # in groups (#15415).
                     offset = int(getattr(entity, "offset", -1))
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
@@ -2879,9 +2900,31 @@ class TelegramAdapter(BasePlatformAdapter):
                     at_index = command_text.find("@")
                     if at_index < 0:
                         continue
-                    if command_text[at_index:].strip().lower() == expected:
-                        return True
-        return False
+                    target = command_text[at_index:].strip().lower()
+                    if target == expected:
+                        self_mentioned = True
+                    else:
+                        other_command = True
+
+        return (self_mentioned, other_mentioned, other_command)
+
+    def _message_mentions_bot(self, message: Message) -> bool:
+        """Return True if the message contains an entity targeting this bot."""
+        self_mentioned, _, _ = self._resolve_entity_targets(message)
+        return self_mentioned
+
+    def _message_targets_other_bot(self, message: Message) -> bool:
+        """Return True if the message explicitly targets a *different* entity.
+
+        True when:
+        - a ``/command@otherbot`` targets a different bot (short-circuit), or
+        - a ``@mention`` / ``text_mention`` targets another entity without this
+          bot also being mentioned (multi-mention messages may include us).
+        """
+        self_mentioned, other_mentioned, other_command = self._resolve_entity_targets(message)
+        if other_command:
+            return True
+        return other_mentioned and not self_mentioned
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
@@ -2917,6 +2960,12 @@ class TelegramAdapter(BasePlatformAdapter):
         the Telegram bot menu (``/command@botname``) or by explicitly
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
+
+        Regardless of ``require_mention``, messages that contain a
+        ``/command@otherbot`` entity targeting a different bot, or a ``@mention``
+        entity that targets a different entity without also mentioning this bot,
+        are always rejected.  This prevents every bot in a shared group from
+        responding to a message intended for one specific bot.
         """
         if not self._is_group_chat(message):
             return True
@@ -2929,6 +2978,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
+        # Reject messages targeting other bots regardless of require_mention
+        if self._message_targets_other_bot(message):
+            return False
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):

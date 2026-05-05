@@ -2499,6 +2499,11 @@ def dispatch_once(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    # Only validate assignee profile readiness when the default spawn is in
+    # use: the default path runs ``hermes -p <profile> chat -q ...`` so the
+    # assignee MUST resolve to a runnable profile. Custom spawn_fns (tests,
+    # remote workers, simulators) may have unrelated assignee semantics.
+    check_profile = spawn_fn is None and not dry_run
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and spawned >= max_spawn:
@@ -2509,6 +2514,26 @@ def dispatch_once(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
+        if check_profile:
+            from hermes_cli.profiles import profile_readiness_error
+            ready_err = profile_readiness_error(row["assignee"])
+            if ready_err is not None:
+                # Profile readiness failures don't fix themselves between
+                # ticks — a half-created profile dir would otherwise burn
+                # through the spawn-failure circuit breaker N ticks at a
+                # time. Auto-block on the first detection so the task
+                # surfaces the precise reason instead of cascading into
+                # opaque provider/auth errors (see issue #20054).
+                claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+                if claimed is None:
+                    continue
+                _record_spawn_failure(
+                    conn, claimed.id,
+                    f"profile_not_runnable: {ready_err}",
+                    failure_limit=1,
+                )
+                result.auto_blocked.append(claimed.id)
+                continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue

@@ -141,6 +141,13 @@ def test_successful_spawn_resets_failure_counter(kanban_home):
 def test_workspace_resolution_failure_also_counts(kanban_home):
     """`dir:` workspace with no path should fail workspace resolution AND
     count against the failure budget — not just crash the tick."""
+    # Default spawn validates assignee profile readiness first (issue #20054),
+    # so seed a runnable profile for "worker" before exercising the
+    # workspace-resolution failure path.
+    worker_profile = kanban_home / "profiles" / "worker"
+    worker_profile.mkdir(parents=True)
+    (worker_profile / "config.yaml").write_text("model: x\n")
+
     conn = kb.connect()
     try:
         # Manually insert a broken task: dir workspace but workspace_path is NULL

@@ -31,6 +31,7 @@ from hermes_cli.profiles import (
     import_profile,
     generate_bash_completion,
     generate_zsh_completion,
+    profile_readiness_error,
     _get_profiles_root,
     _get_default_hermes_home,
 )
@@ -393,6 +394,51 @@ class TestResolveProfileEnv:
     def test_invalid_name_raises_value_error(self, profile_env):
         with pytest.raises(ValueError):
             resolve_profile_env("INVALID!")
+
+
+# ===================================================================
+# TestProfileReadinessError
+# ===================================================================
+
+class TestProfileReadinessError:
+    """Tests for profile_readiness_error() — Kanban dispatcher gate."""
+
+    def test_default_is_always_runnable(self, profile_env):
+        # The default profile IS HERMES_HOME; no config.yaml requirement.
+        assert profile_readiness_error("default") is None
+        assert profile_readiness_error("DEFAULT") is None
+
+    def test_missing_profile_dir_reports_error(self, profile_env):
+        err = profile_readiness_error("ghost")
+        assert err is not None
+        assert "ghost" in err
+        assert "does not exist" in err
+
+    def test_profile_without_config_yaml_reports_error(self, profile_env):
+        # Mimic the issue's repro: directory exists with skills/SOUL.md
+        # but no config.yaml.
+        tmp_path = profile_env
+        partial = tmp_path / ".hermes" / "profiles" / "debugger-v1"
+        partial.mkdir(parents=True)
+        (partial / "SOUL.md").write_text("# soul")
+        (partial / "skills").mkdir()
+
+        err = profile_readiness_error("debugger-v1")
+        assert err is not None
+        assert "debugger-v1" in err
+        assert "config.yaml" in err
+
+    def test_runnable_profile_returns_none(self, profile_env):
+        create_profile("ready", no_alias=True)
+        # create_profile bootstraps the dir but does not seed config.yaml.
+        # Write a minimal one so the readiness gate passes.
+        (get_profile_dir("ready") / "config.yaml").write_text("model: x\n")
+        assert profile_readiness_error("ready") is None
+
+    def test_invalid_name_reports_error(self, profile_env):
+        err = profile_readiness_error("")
+        assert err is not None
+        assert "invalid profile name" in err.lower()
 
 
 # ===================================================================

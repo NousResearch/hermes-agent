@@ -231,6 +231,40 @@ def profile_exists(name: str) -> bool:
     return get_profile_dir(canon).is_dir()
 
 
+def profile_readiness_error(name: str) -> Optional[str]:
+    """Return ``None`` if the profile is runnable, else a diagnostic string.
+
+    A profile directory can exist while still being un-runnable: skills /
+    SOUL.md may be present but ``config.yaml`` (provider/model resolution)
+    is missing.  The Kanban dispatcher uses this check to fail fast with a
+    precise error instead of spawning a worker that will die later through
+    provider/auth fallback (see issue #20054).
+
+    The ``default`` profile is always considered runnable: it IS the
+    HERMES_HOME root and may legitimately resolve provider/model from
+    other sources (env, ``cli-config.yaml``).
+    """
+    try:
+        canon = normalize_profile_name(name)
+    except (TypeError, ValueError) as exc:
+        return f"invalid profile name: {exc}"
+
+    if canon == "default":
+        return None
+
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        return f"profile {canon!r} does not exist (expected at {profile_dir})"
+
+    config_path = profile_dir / "config.yaml"
+    if not config_path.is_file():
+        return (
+            f"profile {canon!r} is not runnable: missing {config_path}"
+        )
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Alias / wrapper script management
 # ---------------------------------------------------------------------------

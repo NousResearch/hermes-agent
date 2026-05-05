@@ -380,6 +380,64 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home):
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_dispatch_blocks_unrunnable_assignee_profile(kanban_home, tmp_path):
+    """Default-spawn dispatch must auto-block tasks whose assignee profile
+    is not runnable (issue #20054). A half-created profile dir without
+    config.yaml is the canonical repro: previously the worker would spawn
+    and fail later through opaque provider/auth fallback.
+    """
+    # Create a half-baked profile dir at ~/.hermes/profiles/debugger-v1/
+    # without config.yaml — mimicking the bug's reproduction case.
+    partial = tmp_path / ".hermes" / "profiles" / "debugger-v1"
+    partial.mkdir(parents=True)
+    (partial / "SOUL.md").write_text("# soul")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="debugger-v1")
+        # spawn_fn is omitted on purpose — the readiness gate only fires
+        # for the default spawn path.
+        res = kb.dispatch_once(conn)
+
+    assert t in res.auto_blocked
+    assert not res.spawned
+    with kb.connect() as conn:
+        task = kb.get_task(conn, t)
+    assert task.status == "blocked"
+    assert "profile_not_runnable" in (task.last_spawn_error or "")
+    assert "debugger-v1" in (task.last_spawn_error or "")
+
+
+def test_dispatch_allows_runnable_assignee_profile(kanban_home, tmp_path):
+    """A profile with config.yaml passes the readiness gate and reaches
+    the spawn path. Use a no-op subprocess.Popen so we don't actually
+    fork hermes here.
+    """
+    import subprocess
+
+    full_profile = tmp_path / ".hermes" / "profiles" / "coder"
+    full_profile.mkdir(parents=True)
+    (full_profile / "config.yaml").write_text("model: x\n")
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            self.pid = 9999
+
+    orig_popen = subprocess.Popen
+    subprocess.Popen = _FakePopen
+    try:
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="ok", assignee="coder")
+            res = kb.dispatch_once(conn)
+    finally:
+        subprocess.Popen = orig_popen
+
+    assert not res.auto_blocked
+    assert any(s[0] == t for s in res.spawned)
+
+
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="alice")

@@ -173,7 +173,7 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
-_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform"}
+_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
 @dataclass
@@ -643,15 +643,17 @@ class PluginManager:
         #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
         #
-        # ``memory/`` and ``context_engine/`` are skipped at the top level —
-        # they have their own discovery systems. ``platforms/`` is a category
-        # holding platform adapters (scanned one level deeper below).
+        # ``memory/``, ``context_engine/``, and ``model-providers/`` are
+        # skipped at the top level — they have their own discovery systems
+        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
+        # is a category holding platform adapters (scanned one level deeper
+        # below).
         repo_plugins = get_bundled_plugins_dir()
         manifests.extend(
             self._scan_directory(
                 repo_plugins,
                 source="bundled",
-                skip_names={"memory", "context_engine", "platforms"},
+                skip_names={"memory", "context_engine", "platforms", "model-providers"},
             )
         )
         manifests.extend(
@@ -705,6 +707,21 @@ class PluginManager:
                 self._plugins[lookup_key] = loaded
                 logger.debug(
                     "Skipping '%s' (exclusive, handled by category discovery)",
+                    lookup_key,
+                )
+                continue
+
+            # Model provider plugins are loaded by providers/__init__.py
+            # (its own lazy discovery keyed off first get_provider_profile()
+            # call). We record the manifest here for introspection but do
+            # not import the module — a second import would create two
+            # ProviderProfile instances and break the "last writer wins"
+            # override semantics between bundled and user plugins.
+            if manifest.kind == "model-provider":
+                loaded = LoadedPlugin(manifest=manifest, enabled=True)
+                self._plugins[lookup_key] = loaded
+                logger.debug(
+                    "Skipping '%s' (model-provider, handled by providers/ discovery)",
                     lookup_key,
                 )
                 continue
@@ -884,6 +901,19 @@ class PluginManager:
                             logger.debug(
                                 "Plugin %s: detected memory provider, "
                                 "treating as kind='exclusive'",
+                                key,
+                            )
+                        elif (
+                            "register_provider" in source_text
+                            and "ProviderProfile" in source_text
+                        ):
+                            # Model provider plugin (calls register_provider()
+                            # from ``providers`` with a ProviderProfile). Route
+                            # to providers/__init__.py discovery.
+                            kind = "model-provider"
+                            logger.debug(
+                                "Plugin %s: detected model provider, "
+                                "treating as kind='model-provider'",
                                 key,
                             )
                     except Exception:

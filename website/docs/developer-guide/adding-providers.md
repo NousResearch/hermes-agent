@@ -99,10 +99,12 @@ If your provider is just an OpenAI-compatible endpoint that authenticates with a
 
 All you need is:
 
-1. A file in `providers/` (e.g. `providers/myprovider.py`) that calls `register_provider()` with the provider config.
-2. That's it. `auth.py` auto-registers every file in `providers/` at startup via a module-level import sweep.
+1. A plugin directory under `plugins/model-providers/<your-provider>/` containing:
+   - `__init__.py` — calls `register_provider(profile)` at module-level
+   - `plugin.yaml` — manifest (name, kind: model-provider, version, description)
+2. That's it. Provider plugins auto-load the first time anything calls `get_provider_profile()` or `list_providers()` — bundled plugins (this repo) and user plugins at `$HERMES_HOME/plugins/model-providers/` both get picked up.
 
-When you add a `providers/*.py` file and call `register_provider()`, the following wire up automatically:
+When you add a plugin and it calls `register_provider()`, the following wire up automatically:
 
 1. `PROVIDER_REGISTRY` entry in `auth.py` (credential resolution, env-var lookup)
 2. `api_mode` set to `chat_completions`
@@ -117,7 +119,9 @@ When you add a `providers/*.py` file and call `register_provider()`, the followi
 11. `HERMES_INFERENCE_PROVIDER` env-var override accepts the provider id
 12. Fallback model activation can switch into the provider cleanly
 
-See `providers/nvidia.py` or `providers/gmi.py` as a template.
+User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
+
+See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and `plugins/model-providers/README.md` for the full contract.
 
 ## Full path: OAuth and complex providers
 

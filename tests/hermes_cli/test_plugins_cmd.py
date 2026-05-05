@@ -508,7 +508,7 @@ class TestPromptPluginEnvVars:
 
 
 class TestCursesRadiolist:
-    """Test the curses_radiolist function (non-TTY fallback path)."""
+    """Test the curses_radiolist function."""
 
     def test_non_tty_returns_default(self):
         from hermes_cli.curses_ui import curses_radiolist
@@ -523,6 +523,14 @@ class TestCursesRadiolist:
             mock_stdin.isatty.return_value = False
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
             assert result == 1
+
+    def test_keyboard_interrupt_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+
+        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+            mock_stdin.isatty.return_value = True
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
+            assert result == -1
 
 
 # ── Provider discovery helpers ───────────────────────────────────────────

@@ -1,28 +1,56 @@
-"""SQLite-backed Kanban board for multi-profile collaboration.
+"""SQLite-backed Kanban board for multi-profile, multi-project collaboration.
 
-The board lives at ``<root>/kanban.db`` where ``<root>`` is the **shared
-Hermes root** (the parent of any active profile). Profiles intentionally
-collapse onto a single board: it IS the cross-profile coordination
-primitive. A worker spawned with ``hermes -p <profile>`` joins the same
-board as the dispatcher that claimed the task. The same applies to
-``<root>/kanban/workspaces/`` and ``<root>/kanban/logs/``.
+In a fresh install the board lives at ``<root>/kanban.db`` where
+``<root>`` is the **shared Hermes root** (the parent of any active
+profile). Profiles intentionally collapse onto a shared board: it IS
+the cross-profile coordination primitive. A worker spawned with
+``hermes -p <profile>`` joins the same board as the dispatcher that
+claimed the task. The same applies to ``<root>/kanban/workspaces/`` and
+``<root>/kanban/logs/``.
+
+**Multiple boards (projects):** users can create additional boards to
+separate unrelated streams of work (e.g. one per project / repo / domain).
+Each board is a directory under ``<root>/kanban/boards/<slug>/`` with
+its own ``kanban.db``, ``workspaces/``, and ``logs/``. All boards share
+the profile's Hermes home but are otherwise isolated: a worker spawned
+for a task on board ``atm10-server`` sees only that board's tasks,
+cannot enumerate other boards, and its dispatcher ticks don't touch
+other boards' DBs.
+
+The first (and for single-project users, only) board is ``default``.
+For back-compat its on-disk DB is ``<root>/kanban.db`` (not
+``boards/default/kanban.db``), so installs that predate the boards
+feature keep working with zero migration. See :func:`kanban_db_path`.
+
+Board resolution order (highest precedence first, all optional):
+
+* ``board=`` argument passed directly to :func:`connect` / :func:`init_db`
+  (explicit — used by the CLI ``--board`` flag and the dashboard
+  ``?board=...`` query param).
+* ``HERMES_KANBAN_BOARD`` env var (used by the dispatcher to pin workers
+  to the board their task lives on — workers cannot see other boards).
+* ``HERMES_KANBAN_DB`` env var (pins the DB file path directly — legacy
+  override still honoured; highest precedence when the file path itself
+  is what the caller wants to force).
+* ``<root>/kanban/current`` — a one-line text file holding the slug of
+  the "currently selected" board. Written by ``hermes kanban boards
+  switch <slug>``. When absent, the active board is ``default``.
 
 In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
 deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
-``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Three env-var overrides
-are available (highest precedence first, all optional):
+``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Legacy env-var
+overrides still work:
 
 * ``HERMES_KANBAN_DB`` — pin the database file path directly.
 * ``HERMES_KANBAN_WORKSPACES_ROOT`` — pin the workspaces root directly.
-* ``HERMES_KANBAN_HOME`` — pin the umbrella root that anchors all three
-  kanban paths (db + workspaces + logs). Useful for tests and unusual
-  deployments where a single override is enough.
+* ``HERMES_KANBAN_HOME`` — pin the umbrella root that anchors kanban
+  paths. Useful for tests and unusual deployments.
 
-The dispatcher injects ``HERMES_KANBAN_DB`` and
-``HERMES_KANBAN_WORKSPACES_ROOT`` into the worker subprocess env as a
-defense-in-depth measure: even if the worker's ``get_default_hermes_root()``
-resolution somehow disagrees with the dispatcher's (unusual symlink or
-Docker layout), the two processes still converge on the same files.
+The dispatcher injects ``HERMES_KANBAN_DB``,
+``HERMES_KANBAN_WORKSPACES_ROOT``, and ``HERMES_KANBAN_BOARD`` into
+worker subprocess env so workers converge on the exact DB the
+dispatcher used to claim their task — even under unusual symlink or
+Docker layouts.
 
 Schema is intentionally small: tasks, task_links, task_comments,
 task_events.  The ``workspace_kind`` field decouples coordination from git
@@ -35,6 +63,9 @@ transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
 ``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
 most one claimer can win any given task.  Losers observe zero affected
 rows and move on -- no retry loops, no distributed-lock machinery.
+The CAS coordination is **per-board** — each board is a separate DB,
+so multi-board installs get the same atomicity guarantees without any
+new locking.
 """
 
 from __future__ import annotations
@@ -42,6 +73,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -81,6 +113,31 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # Paths
 # ---------------------------------------------------------------------------
 
+DEFAULT_BOARD = "default"
+
+# Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
+# Strict enough to stop traversal (`..`) and embedded path separators, loose
+# enough that kebab-case names like ``atm10-server`` or ``hermes-agent``
+# pass without fuss. Board names with display formatting (spaces, emoji)
+# live in ``board.json``; the slug is just the directory name.
+_BOARD_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
+
+
+def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
+    """Lowercase + strip a slug; validate; return ``None`` for empty."""
+    if slug is None:
+        return None
+    s = str(slug).strip().lower()
+    if not s:
+        return None
+    if not _BOARD_SLUG_RE.match(s):
+        raise ValueError(
+            f"invalid board slug {slug!r}: must be 1-64 chars, lowercase "
+            f"alphanumerics / hyphens / underscores, not starting with '-' or '_'"
+        )
+    return s
+
+
 def kanban_home() -> Path:
     """Return the shared Hermes root that anchors the kanban board.
 
@@ -104,34 +161,390 @@ def kanban_home() -> Path:
     return get_default_hermes_root()
 
 
-def kanban_db_path() -> Path:
-    """Return the path to the shared ``kanban.db``.
+def boards_root() -> Path:
+    """Return ``<root>/kanban/boards`` — the parent of non-default board dirs.
 
-    Anchored at :func:`kanban_home`, not the active profile's
-    ``HERMES_HOME``, so profile workers and the dispatcher converge on
-    the same board.  ``HERMES_KANBAN_DB`` pins the path directly (highest
-    precedence) — the dispatcher injects this into worker subprocess env
-    as defense-in-depth.
+    ``default`` is intentionally NOT under this directory — its DB lives at
+    ``<root>/kanban.db`` for back-compat with pre-boards installs. This
+    function returns the directory where *additional* named boards live,
+    used by :func:`list_boards` to enumerate them.
+    """
+    return kanban_home() / "kanban" / "boards"
+
+
+def current_board_path() -> Path:
+    """Return the path to ``<root>/kanban/current``.
+
+    One-line text file written by ``hermes kanban boards switch <slug>``
+    to persist the user's board selection across CLI invocations. Absent
+    by default (meaning: active board is ``default``).
+    """
+    return kanban_home() / "kanban" / "current"
+
+
+def get_current_board() -> str:
+    """Return the active board slug, honouring the resolution chain.
+
+    Order (highest precedence first):
+
+    1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
+       spawn, or manually for ad-hoc overrides).
+    2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
+       switch``).
+    3. ``DEFAULT_BOARD`` (``"default"``).
+
+    A malformed slug at any step falls through to the next layer with a
+    best-effort warning — the dispatcher must never crash because a user
+    hand-edited a file.
+    """
+    env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if env:
+        try:
+            normed = _normalize_board_slug(env)
+            if normed:
+                return normed
+        except ValueError:
+            pass
+    try:
+        f = current_board_path()
+        if f.exists():
+            val = f.read_text(encoding="utf-8").strip()
+            if val:
+                try:
+                    normed = _normalize_board_slug(val)
+                    if normed:
+                        return normed
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return DEFAULT_BOARD
+
+
+def set_current_board(slug: str) -> Path:
+    """Persist ``slug`` as the active board. Returns the file written.
+
+    Writes ``<root>/kanban/current``. The caller should validate the slug
+    exists first (via :func:`board_exists`) — this function does not —
+    so that ``hermes kanban boards switch <typo>`` returns an error
+    instead of silently pointing at nothing.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    path = current_board_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normed + "\n", encoding="utf-8")
+    return path
+
+
+def clear_current_board() -> None:
+    """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
+    try:
+        current_board_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def board_dir(board: Optional[str] = None) -> Path:
+    """Return the on-disk directory for ``board``.
+
+    ``default`` is ``<root>/kanban/boards/default/`` **for metadata only**
+    (board.json + workspaces/ + logs/). Its DB file stays at
+    ``<root>/kanban.db`` for back-compat — see :func:`kanban_db_path`.
+
+    All other boards live at ``<root>/kanban/boards/<slug>/`` with
+    everything inside that directory including the ``kanban.db``.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    return boards_root() / slug
+
+
+def board_exists(board: Optional[str] = None) -> bool:
+    """Return True if the board has a DB or a metadata dir on disk.
+
+    ``default`` is considered to always exist — its DB is created
+    on first :func:`connect` and there's no way for it to be missing
+    in a configuration where the kanban feature is usable at all.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    if slug == DEFAULT_BOARD:
+        return True
+    d = board_dir(slug)
+    return d.is_dir() or (d / "kanban.db").exists()
+
+
+def kanban_db_path(board: Optional[str] = None) -> Path:
+    """Return the path to the ``kanban.db`` for ``board``.
+
+    Resolution (highest precedence first):
+
+    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
+       back-compat and for the dispatcher→worker handoff (defense in
+       depth: dispatcher injects this into worker env so workers are
+       immune to any path-resolution disagreement).
+    2. When ``board`` arg is None, the active board from
+       :func:`get_current_board` is used.
+    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+       Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
     if override:
         return Path(override).expanduser()
-    return kanban_home() / "kanban.db"
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
 
 
-def workspaces_root() -> Path:
+def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
-    Anchored at :func:`kanban_home` so workspace paths are stable across
-    profile workers spawned by the dispatcher.
+    Anchored per-board so workspaces don't leak between projects.
     ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
-    precedence) — the dispatcher injects this into worker subprocess env
-    as defense-in-depth.
+    precedence) — the dispatcher injects this into worker env.
+
+    ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
+    that existing scratch workspaces from before the boards feature are
+    preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
     """
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
         return Path(override).expanduser()
-    return kanban_home() / "kanban" / "workspaces"
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "workspaces"
+    return board_dir(slug) / "workspaces"
+
+
+def worker_logs_dir(board: Optional[str] = None) -> Path:
+    """Return the directory under which per-task worker logs are written.
+
+    ``default`` keeps the legacy path ``<root>/kanban/logs/``. Other
+    boards use ``<root>/kanban/boards/<slug>/logs/``. Logs follow the
+    board — makes ``hermes kanban log`` unambiguous even when multiple
+    boards have tasks with the same id.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "logs"
+    return board_dir(slug) / "logs"
+
+
+def board_metadata_path(board: Optional[str] = None) -> Path:
+    """Return the path to ``board.json`` for ``board``.
+
+    Stores display metadata (display name, description, icon, color,
+    created_at). The on-disk slug is the canonical identity; this file
+    is purely for presentation in the CLI / dashboard.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    return board_dir(slug) / "board.json"
+
+
+def _default_board_display_name(slug: str) -> str:
+    """Turn a slug into a reasonable default display name.
+
+    ``atm10-server`` → ``Atm10 Server``. Users can override via
+    ``board.json`` but the default should look presentable in the
+    dashboard without any follow-up editing.
+    """
+    return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
+
+
+def read_board_metadata(board: Optional[str] = None) -> dict:
+    """Return ``board.json`` contents (or synthesized defaults).
+
+    Never raises — a missing / malformed ``board.json`` falls back to a
+    synthesised entry so the dashboard always has something to render.
+    Includes the canonical ``slug`` and ``db_path`` so the caller
+    doesn't need to reconstruct them.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    meta: dict[str, Any] = {
+        "slug": slug,
+        "name": _default_board_display_name(slug),
+        "description": "",
+        "icon": "",
+        "color": "",
+        "created_at": None,
+        "archived": False,
+    }
+    try:
+        p = board_metadata_path(slug)
+        if p.exists():
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                # Never let the metadata file claim a different slug than
+                # its directory — trust the filesystem.
+                raw["slug"] = slug
+                meta.update(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    meta["db_path"] = str(kanban_db_path(slug))
+    return meta
+
+
+def write_board_metadata(
+    board: Optional[str],
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    icon: Optional[str] = None,
+    color: Optional[str] = None,
+    archived: Optional[bool] = None,
+) -> dict:
+    """Create / update ``board.json`` for ``board``.
+
+    Preserves any existing fields not mentioned in the call. Sets
+    ``created_at`` on first write. Returns the resulting metadata dict.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    meta = read_board_metadata(slug)
+    # Preserve existing DB-derived fields — they get re-computed each
+    # read but shouldn't be written into board.json.
+    meta.pop("db_path", None)
+    if name is not None:
+        meta["name"] = str(name).strip() or _default_board_display_name(slug)
+    if description is not None:
+        meta["description"] = str(description)
+    if icon is not None:
+        meta["icon"] = str(icon)
+    if color is not None:
+        meta["color"] = str(color)
+    if archived is not None:
+        meta["archived"] = bool(archived)
+    if not meta.get("created_at"):
+        meta["created_at"] = int(time.time())
+    path = board_metadata_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    meta["db_path"] = str(kanban_db_path(slug))
+    return meta
+
+
+def create_board(
+    slug: str,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    icon: Optional[str] = None,
+    color: Optional[str] = None,
+) -> dict:
+    """Create a new board directory + DB + metadata. Idempotent.
+
+    Returns the resulting metadata. Raises :class:`ValueError` for a
+    malformed slug; returns the existing metadata (not an error) if the
+    board already exists — matching ``mkdir -p`` semantics.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    meta = write_board_metadata(
+        normed,
+        name=name,
+        description=description,
+        icon=icon,
+        color=color,
+    )
+    # Touch the DB so list_boards() sees it immediately.
+    init_db(board=normed)
+    return meta
+
+
+def list_boards(*, include_archived: bool = True) -> list[dict]:
+    """Enumerate all boards that exist on disk.
+
+    Always includes ``default`` (even when the ``boards/default/``
+    metadata dir doesn't exist, because its DB is at the legacy path).
+    Other boards are discovered by scanning ``boards/`` for subdirectories
+    that either contain a ``kanban.db`` or a ``board.json``.
+
+    Returns a list of metadata dicts, sorted with ``default`` first and
+    the rest alphabetically.
+    """
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    # Default board is always first.
+    entries.append(read_board_metadata(DEFAULT_BOARD))
+    seen.add(DEFAULT_BOARD)
+
+    root = boards_root()
+    if root.is_dir():
+        for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if not child.is_dir():
+                continue
+            slug = child.name
+            # Keep slug normalisation soft for discovery — but skip dirs
+            # that don't parse as valid slugs so we don't surface junk.
+            try:
+                normed = _normalize_board_slug(slug)
+            except ValueError:
+                continue
+            if not normed or normed in seen:
+                continue
+            has_db = (child / "kanban.db").exists()
+            has_meta = (child / "board.json").exists()
+            if not (has_db or has_meta):
+                continue
+            meta = read_board_metadata(normed)
+            if meta.get("archived") and not include_archived:
+                continue
+            entries.append(meta)
+            seen.add(normed)
+    return entries
+
+
+def remove_board(slug: str, *, archive: bool = True) -> dict:
+    """Remove or archive a board.
+
+    ``archive=True`` (default) moves the board's directory to
+    ``<root>/kanban/boards/_archived/<slug>-<timestamp>/`` so the data
+    is recoverable. ``archive=False`` deletes the directory outright.
+
+    The ``default`` board cannot be removed — raises :class:`ValueError`.
+    Returns a summary dict describing what happened (``{"slug", "action",
+    "new_path"}``).
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    if normed == DEFAULT_BOARD:
+        raise ValueError("the 'default' board cannot be removed")
+    d = board_dir(normed)
+    if not d.exists():
+        raise ValueError(f"board {normed!r} does not exist")
+
+    # If the user removed the currently-active board, revert to default.
+    if get_current_board() == normed:
+        clear_current_board()
+
+    if archive:
+        archive_root = boards_root() / "_archived"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        target = archive_root / f"{normed}-{ts}"
+        # Avoid collision on rapid double-archives.
+        suffix = 1
+        while target.exists():
+            target = archive_root / f"{normed}-{ts}-{suffix}"
+            suffix += 1
+        d.rename(target)
+        return {"slug": normed, "action": "archived", "new_path": str(target)}
+    else:
+        import shutil
+        shutil.rmtree(d)
+        return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +842,11 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 
 
-def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def connect(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
     WAL mode is enabled on every connection; it's a no-op after the first
@@ -439,8 +856,19 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     fresh installs and test harnesses that construct `connect()`
     directly don't have to remember a separate init step. Subsequent
     connections skip the schema check via a module-level path cache.
+
+    Path resolution:
+
+    * ``db_path`` explicit → used as-is (legacy callers, tests).
+    * ``board`` explicit → resolves to that board's DB.
+    * Neither → :func:`kanban_db_path` resolves via
+      ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
+      ``<root>/kanban/current`` → ``default``.
     """
-    path = db_path or kanban_db_path()
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS
@@ -459,7 +887,11 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: Optional[Path] = None) -> Path:
+def init_db(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Path:
     """Create the schema if it doesn't exist; return the path used.
 
     Kept as a public entry point so CLI ``hermes kanban init`` and the
@@ -470,7 +902,10 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     external tools that upgrade an old DB file — can call this to
     force re-migration.
     """
-    path = db_path or kanban_db_path()
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     # Clear the cache entry so the underlying connect() re-runs the
@@ -651,6 +1086,15 @@ def _claimer_id() -> str:
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
+def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    if assignee is None:
+        return None
+    from hermes_cli.profiles import normalize_profile_name
+
+    return normalize_profile_name(assignee)
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -692,6 +1136,7 @@ def create_task(
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
     """
+    assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
     if workspace_kind not in VALID_WORKSPACE_KINDS:
@@ -856,7 +1301,7 @@ def list_tasks(
     params: list[Any] = []
     if assignee is not None:
         query += " AND assignee = ?"
-        params.append(assignee)
+        params.append(_canonical_assignee(assignee))
     if status is not None:
         if status not in VALID_STATUSES:
             raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -880,6 +1325,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
     """
+    profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
@@ -1574,13 +2020,13 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
-def resolve_workspace(task: Task) -> Path:
+def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
-    - ``scratch``: a fresh dir under ``<kanban-root>/kanban/workspaces/<id>/``,
-      where ``<kanban-root>`` is the shared Hermes root (see
-      :func:`kanban_home`). The path is the same for the dispatcher and
-      every profile worker, so handoff is path-stable.
+    - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
+      where ``<board-root>`` is the active board's root. The path is the
+      same for the dispatcher and every profile worker, so handoff is
+      path-stable.
     - ``dir:<path>``: the path stored in ``workspace_path``.  Created
       if missing.  MUST be absolute — relative paths are rejected to
       prevent confused-deputy traversal where ``../../../tmp/attacker``
@@ -1607,7 +2053,7 @@ def resolve_workspace(task: Task) -> Path:
                     f"{task.workspace_path!r}; workspace paths must be absolute"
                 )
         else:
-            p = workspaces_root() / task.id
+            p = workspaces_root(board=board) / task.id
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "dir":
@@ -2021,6 +2467,7 @@ def dispatch_once(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    board: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -2029,15 +2476,17 @@ def dispatch_once(
       2. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
       4. For each ready task with an assignee, atomically claim and call
-         ``spawn_fn(task, workspace_path) -> Optional[int]``. The return
-         value (if any) is recorded as ``worker_pid`` so subsequent ticks
-         can detect crashes before the TTL expires.
+         ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
+         return value (if any) is recorded as ``worker_pid`` so subsequent
+         ticks can detect crashes before the TTL expires.
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
     failures the task is auto-blocked with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
+    ``board`` pins workspace/log/db resolution for this tick to a specific
+    board. When omitted, the current-board resolution chain is used.
     """
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
@@ -2064,7 +2513,7 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed)
+            workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -2077,7 +2526,18 @@ def dispatch_once(
         set_workspace_path(conn, claimed.id, str(workspace))
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            pid = _spawn(claimed, str(workspace))
+            # Back-compat: older spawn_fn signatures accept only
+            # (task, workspace). Test stubs in the suite rely on that.
+            # Introspect the callable and pass `board` only when supported.
+            import inspect
+            try:
+                sig = inspect.signature(_spawn)
+                if "board" in sig.parameters:
+                    pid = _spawn(claimed, str(workspace), board=board)
+                else:
+                    pid = _spawn(claimed, str(workspace))
+            except (TypeError, ValueError):
+                pid = _spawn(claimed, str(workspace))
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             _clear_spawn_failures(conn, claimed.id)
@@ -2116,17 +2576,31 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
-def _default_spawn(task: Task, workspace: str) -> Optional[int]:
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the spawned child's PID so the dispatcher can detect crashes
     before the claim TTL expires. The child's completion is still observed
     via the ``complete`` / ``block`` transitions the worker writes itself;
     the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+
+    ``board`` pins the child's kanban context to that board: the child's
+    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
+    vars all resolve to the same board the dispatcher claimed the task
+    from. Workers cannot accidentally see other boards.
     """
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+
+    from hermes_cli.profiles import normalize_profile_name
+
+    profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
@@ -2140,17 +2614,22 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
     # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
     # resolution in `kanban_home()` — symmetric resolution is the norm,
     # but unusual symlink / Docker layouts are caught here too.
-    env["HERMES_KANBAN_DB"] = str(kanban_db_path())
-    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root())
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    # Board slug — the final defense-in-depth pin. If the worker ever
+    # resolves kanban paths without the DB / workspaces env vars, the
+    # board slug still forces it to the right directory.
+    resolved_board = _normalize_board_slug(board) or get_current_board()
+    env["HERMES_KANBAN_BOARD"] = resolved_board
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
-    env["HERMES_PROFILE"] = task.assignee
+    env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
         "hermes",
-        "-p", task.assignee,
+        "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry
         # diagnostics, block-reason examples) in its context, even if
@@ -2176,10 +2655,11 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         "chat",
         "-q", prompt,
     ])
-    # Redirect output to a per-task log under <kanban-root>/kanban/logs/.
-    # Anchored at the shared kanban root, not the worker's profile home,
-    # so `hermes kanban tail` reads the same file the worker writes to.
-    log_dir = kanban_home() / "kanban" / "logs"
+    # Redirect output to a per-task log under <board-root>/logs/.
+    # Anchored at the board root (not the shared kanban root), so
+    # `hermes kanban log` on a specific board reads its own file and
+    # logs don't collide across boards that happen to share task ids.
+    log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
@@ -2660,11 +3140,14 @@ def gc_events(
 
 def gc_worker_logs(
     *, older_than_seconds: int = 30 * 24 * 3600,
+    board: Optional[str] = None,
 ) -> int:
     """Delete worker log files older than ``older_than_seconds``. Returns
     the number of files removed. Kept separate from ``gc_events`` because
-    log files live on disk, not in SQLite."""
-    log_dir = kanban_home() / "kanban" / "logs"
+    log files live on disk, not in SQLite. Scoped to ``board`` (defaults
+    to the active board) — per-board isolation means deleting logs from
+    board A cannot touch board B's logs."""
+    log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0
     cutoff = time.time() - older_than_seconds
@@ -2683,19 +3166,25 @@ def gc_worker_logs(
 # Worker log accessor
 # ---------------------------------------------------------------------------
 
-def worker_log_path(task_id: str) -> Path:
+def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
     """Return the path to a worker's log file. The file may not exist
-    (task never spawned, or log already GC'd)."""
-    return kanban_home() / "kanban" / "logs" / f"{task_id}.log"
+    (task never spawned, or log already GC'd).
+
+    When ``board`` is None, resolves via the active board (env var →
+    current-board file → default). The dispatcher always passes the
+    board explicitly to avoid any resolution ambiguity when multiple
+    boards exist."""
+    return worker_logs_dir(board=board) / f"{task_id}.log"
 
 
 def read_worker_log(
     task_id: str, *, tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
 ) -> Optional[str]:
     """Read the worker log for ``task_id``. Returns None if the file
     doesn't exist. If ``tail_bytes`` is set, only the last N bytes are
     returned (useful for the dashboard drawer which shouldn't page megabytes)."""
-    path = worker_log_path(task_id)
+    path = worker_log_path(task_id, board=board)
     if not path.exists():
         return None
     try:
@@ -2732,7 +3221,8 @@ def list_profiles_on_disk() -> list[str]:
     ``config.yaml`` — a bare dir without config isn't a real profile.
     """
     try:
-        home = Path.home() / ".hermes" / "profiles"
+        from hermes_constants import get_default_hermes_root
+        home = get_default_hermes_root() / "profiles"
     except Exception:
         return []
     if not home.is_dir():

@@ -10,9 +10,10 @@ import json
 import logging
 import os
 import re
-from typing import Dict, Optional
 import ssl
 import time
+from email.utils import formatdate
+from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -604,11 +605,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Feishu: native media attachment support via adapter ---
+    if platform == Platform.FEISHU and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_feishu(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, qqbot and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -616,7 +634,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and qqbot"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, qqbot and feishu"
         )
 
     last_result = None
@@ -1668,7 +1686,9 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Supports text, images, voice, video, and files.
+    and post a message. Supports guild channels, C2C (private) chats,
+    and group chats with explicit routing. Also supports text, images,
+    voice, video, and file attachments via the QQ Bot v2 REST API.
     """
     try:
         import httpx
@@ -1711,11 +1731,14 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
+            # Step 2: Upload media files (if any) or prepare message payload
+            # QQ Bot API has separate endpoints for guild, C2C, and groups.
+            # Chat type is determined from chat_id prefix (c2c:/group:/guild:).
             headers = {
                 "Authorization": f"QQBot {access_token}",
             }
 
-            # Step 2: Upload media files if present
+            # Step 3: Upload media files if present
             file_info_list = []
             if media_files:
                 for media_item in media_files:
@@ -1775,7 +1798,7 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
                         return _error(f"QQBot: no file_info in upload response")
                     file_info_list.append(file_info)
 
-            # Step 3: Send message via REST
+            # Step 4: Send message via REST
             headers["Content-Type"] = "application/json"
 
             if chat_type == "c2c":
@@ -1797,8 +1820,8 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
                 data = resp.json()
                 return {"success": True, "platform": "qqbot", "chat_id": chat_id,
                         "message_id": data.get("id")}
-            else:
-                return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
+
+            return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 

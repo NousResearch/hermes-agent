@@ -252,6 +252,22 @@ def test_assign_reassigns_when_not_running(kanban_home):
         assert kb.get_task(conn, t).assignee == "b"
 
 
+def test_assignee_normalized_to_lowercase_on_create_and_assign(kanban_home):
+    """Dashboard/CLI may pass title-cased profile labels; DB + spawn use canonical id."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cased", assignee="Jules")
+        assert kb.get_task(conn, tid).assignee == "jules"
+        assert kb.assign_task(conn, tid, "Librarian")
+        assert kb.get_task(conn, tid).assignee == "librarian"
+
+
+def test_list_tasks_assignee_filter_case_insensitive(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="q", assignee="jules")
+        found = kb.list_tasks(conn, assignee="Jules")
+        assert len(found) == 1 and found[0].id == tid
+
+
 def test_archive_hides_from_default_list(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x")

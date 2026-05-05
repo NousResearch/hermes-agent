@@ -24,19 +24,25 @@ def apply_linux_subsystem_env(files_dir: str | Path) -> dict[str, str]:
     state = load_linux_subsystem_state(files_dir)
     if not state or not state.get("enabled"):
         return {}
-    shell_path = str(state.get("shell_path") or state.get("bash_path") or "/system/bin/sh")
-    native_library_dir = str(state.get("native_library_dir", ""))
+    native_shell_path = str(state.get("shell_path") or state.get("bash_path") or "")
+    process_shell_path = "/system/bin/sh"
+    shell_library_dir = ""
+    if native_shell_path and not native_shell_path.startswith("/system/"):
+        shell_library_dir = str(Path(native_shell_path).parent)
+    native_library_dir = str(state.get("native_library_dir", "")) or shell_library_dir
     lib_path = str(state.get("lib_path", ""))
     ld_library_path = ":".join(
-        item for item in [native_library_dir, lib_path, os.environ.get("LD_LIBRARY_PATH", "")] if item
+        item for item in [shell_library_dir, native_library_dir, lib_path, os.environ.get("LD_LIBRARY_PATH", "")] if item
     )
     execution_mode = str(state.get("execution_mode", "android_system_shell"))
     return {
         "TERMINAL_ENV": "android_linux",
         "HERMES_ANDROID_EXECUTION_MODE": execution_mode,
-        "HERMES_ANDROID_SHELL": shell_path,
+        "HERMES_ANDROID_SHELL": process_shell_path,
+        "HERMES_ANDROID_NATIVE_SHELL": native_shell_path,
         "HERMES_ANDROID_LINUX_PREFIX": str(state.get("prefix_path", "")),
-        "HERMES_ANDROID_LINUX_BASH": shell_path,
+        "HERMES_ANDROID_LINUX_BASH": process_shell_path,
+        "HERMES_ANDROID_LINUX_NATIVE_BASH": native_shell_path,
         "HERMES_ANDROID_LINUX_BIN": str(state.get("bin_path", "")),
         "HERMES_ANDROID_LINUX_LIB": lib_path,
         "HERMES_ANDROID_NATIVE_LIB": native_library_dir,

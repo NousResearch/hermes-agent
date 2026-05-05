@@ -133,3 +133,54 @@ def test_android_fal_client_stub_marks_image_generation_deferred():
     assert 'android.permission.SYSTEM_ALERT_WINDOW' in manifest
     assert 'android.permission.FOREGROUND_SERVICE' in manifest
     assert 'HermesRuntimeService' in manifest
+
+
+def test_android_declares_shizuku_privileged_access_support():
+    gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+    bridge = (
+        REPO_ROOT
+        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesPrivilegedAccessBridge.kt"
+    ).read_text(encoding="utf-8")
+    system_bridge = (
+        REPO_ROOT
+        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesSystemControlBridge.kt"
+    ).read_text(encoding="utf-8")
+
+    assert 'implementation("dev.rikka.shizuku:api:13.1.5")' in gradle
+    assert 'implementation("dev.rikka.shizuku:provider:13.1.5")' in gradle
+    assert 'moe.shizuku.manager.permission.API' in manifest
+    assert 'rikka.shizuku.ShizukuProvider' in manifest
+    assert 'android:authorities="${applicationId}.shizuku"' in manifest
+    assert "Shizuku.pingBinder()" in bridge
+    assert "Shizuku.checkSelfPermission()" in bridge
+    assert "Shizuku.requestPermission" in bridge
+    assert "open_wireless_debugging_settings" in bridge
+    assert "open_shizuku_app" in bridge
+    assert "privileged_access" in system_bridge
+
+
+def test_android_debug_version_code_tracks_project_semver():
+    gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+    version_file = (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.version").read_text(encoding="utf-8")
+
+    assert "fun semverVersionCode(versionText: String): Int?" in gradle
+    assert "return semverVersionCode(hermesVersionName()) ?: 1" in gradle
+    assert "semverVersionCode(releaseTag)?.let { return it }" in gradle
+    assert "versionName=0.13.16" in version_file
+    assert "versionCode=131690" in version_file
+
+
+def test_android_visual_harness_supports_wide_screenshots_and_clicks():
+    harness = (REPO_ROOT / "scripts/android_visual_harness.py").read_text(encoding="utf-8")
+
+    assert 'exec-out", "screencap", "-p"' in harness
+    assert "out.write_bytes(proc.stdout)" in harness
+    assert "proc.stdout.replace" not in harness
+    assert '"input", "tap"' in harness
+    assert '"swipe"' in harness
+    assert '"text"' in harness
+    assert '"wm", "size"' in harness
+    assert '"wm", "density"' in harness
+    assert "No activities found" in harness
+    assert "com.nousresearch.hermesagent" in harness

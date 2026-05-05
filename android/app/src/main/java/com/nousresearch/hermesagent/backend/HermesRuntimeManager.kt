@@ -98,6 +98,7 @@ object HermesRuntimeManager {
             }
 
             ensurePythonStarted(context.applicationContext)
+            refreshPythonRuntimeEnvironment(context.applicationContext)
             val effectiveProvider = if (localBackendStatus.started) "custom" else settings.provider
             val effectiveModel = if (localBackendStatus.started) localBackendStatus.modelName else settings.model
             val effectiveBaseUrl = if (localBackendStatus.started) localBackendStatus.baseUrl else settings.baseUrl

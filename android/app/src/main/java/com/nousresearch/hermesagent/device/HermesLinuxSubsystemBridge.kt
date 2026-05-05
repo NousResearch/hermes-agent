@@ -28,8 +28,13 @@ object HermesLinuxSubsystemBridge {
         val androidAbi = selectAndroidAbi()
         val currentAppVersionCode = appVersionCode(context)
         val currentAssetFingerprint = assetManifestSha256(context, androidAbi)
+        val currentNativeLibraryDir = context.applicationInfo.nativeLibraryDir.orEmpty()
         readState(context)?.let { state ->
             if (state.optString("android_abi") != androidAbi) {
+                reset(context)
+                return@let
+            }
+            if (state.optString("native_library_dir") != currentNativeLibraryDir) {
                 reset(context)
                 return@let
             }
@@ -38,10 +43,6 @@ object HermesLinuxSubsystemBridge {
                 return@let
             }
             if (state.optString("asset_manifest_sha256") != currentAssetFingerprint) {
-                reset(context)
-                return@let
-            }
-            if (state.optString("execution_mode") == SYSTEM_SHELL_MODE) {
                 reset(context)
                 return@let
             }
@@ -69,50 +70,61 @@ object HermesLinuxSubsystemBridge {
         if (prefixDir.exists()) {
             prefixDir.deleteRecursively()
         }
-        copyAssetTree(context.assets, "$ASSET_ROOT/$androidAbi/prefix", prefixDir)
-        File(prefixDir, "home").mkdirs()
-        File(prefixDir, "tmp").mkdirs()
-        markExecutableTree(File(prefixDir, "bin"))
-        markExecutableTree(File(prefixDir, "libexec"))
+        val state = runCatching {
+            copyAssetTree(context.assets, "$ASSET_ROOT/$androidAbi/prefix", prefixDir)
+            File(prefixDir, "home").mkdirs()
+            File(prefixDir, "tmp").mkdirs()
+            markExecutableTree(File(prefixDir, "bin"))
+            markExecutableTree(File(prefixDir, "libexec"))
 
-        val manifest = JSONObject(readAssetText(context.assets, "$ASSET_ROOT/$androidAbi/manifest.json"))
-        recreateLinks(prefixDir, manifest)
-        val bashPath = File(prefixDir, "bin/bash").absolutePath
-        val nativeBashPath = File(context.applicationInfo.nativeLibraryDir.orEmpty(), "libhermes_android_bash.so").absolutePath
-        val nativeLlamaServerPath = File(context.applicationInfo.nativeLibraryDir.orEmpty(), "libhermes_android_llama_server.so").absolutePath
-        val embeddedState = JSONObject().apply {
-            put("enabled", true)
-            put("app_version_code", currentAppVersionCode)
-            put("asset_manifest_sha256", currentAssetFingerprint)
-            put("execution_mode", EXECUTION_MODE)
-            put("android_abi", androidAbi)
-            put("termux_arch", manifest.optString("termux_arch"))
-            put("uses_termux", true)
-            put("prefix_path", prefixDir.absolutePath)
-            put("shell_path", nativeBashPath)
-            put("bash_path", nativeBashPath)
-            put("prefix_bash_path", bashPath)
-            put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())
-            put("native_bash_path", nativeBashPath)
-            put("native_llama_server_path", nativeLlamaServerPath)
-            put("bin_path", File(prefixDir, "bin").absolutePath)
-            put("lib_path", File(prefixDir, "lib").absolutePath)
-            put("home_path", File(prefixDir, "home").absolutePath)
-            put("tmp_path", File(prefixDir, "tmp").absolutePath)
-            put("root_packages", manifest.optJSONArray("root_packages"))
-            put("packages", manifest.optJSONArray("packages"))
-        }
-        val launchProbe = launchShellProbe(nativeBashPath, File(prefixDir, "home"), buildRunEnvironment(embeddedState))
-        val state = if (launchProbe.ready) {
-            embeddedState
-        } else {
+            val manifest = JSONObject(readAssetText(context.assets, "$ASSET_ROOT/$androidAbi/manifest.json"))
+            recreateLinks(prefixDir, manifest)
+            val bashPath = File(prefixDir, "bin/bash").absolutePath
+            val nativeBashPath = File(context.applicationInfo.nativeLibraryDir.orEmpty(), "libhermes_android_bash.so").absolutePath
+            val nativeLlamaServerPath = File(context.applicationInfo.nativeLibraryDir.orEmpty(), "libhermes_android_llama_server.so").absolutePath
+            val embeddedState = JSONObject().apply {
+                put("enabled", true)
+                put("app_version_code", currentAppVersionCode)
+                put("asset_manifest_sha256", currentAssetFingerprint)
+                put("execution_mode", EXECUTION_MODE)
+                put("android_abi", androidAbi)
+                put("termux_arch", manifest.optString("termux_arch"))
+                put("uses_termux", true)
+                put("prefix_path", prefixDir.absolutePath)
+                put("shell_path", nativeBashPath)
+                put("bash_path", nativeBashPath)
+                put("prefix_bash_path", bashPath)
+                put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())
+                put("native_bash_path", nativeBashPath)
+                put("native_llama_server_path", nativeLlamaServerPath)
+                put("bin_path", File(prefixDir, "bin").absolutePath)
+                put("lib_path", File(prefixDir, "lib").absolutePath)
+                put("home_path", File(prefixDir, "home").absolutePath)
+                put("tmp_path", File(prefixDir, "tmp").absolutePath)
+                put("root_packages", manifest.optJSONArray("root_packages"))
+                put("packages", manifest.optJSONArray("packages"))
+            }
+            val launchProbe = launchShellProbe(nativeBashPath, File(prefixDir, "home"), buildRunEnvironment(embeddedState))
+            if (launchProbe.ready) {
+                embeddedState
+            } else {
+                installRoot.deleteRecursively()
+                systemShellState(
+                    context = context,
+                    androidAbi = androidAbi,
+                    appVersionCode = currentAppVersionCode,
+                    assetManifestSha256 = currentAssetFingerprint,
+                    fallbackReason = launchProbe.detail,
+                )
+            }
+        }.getOrElse { exc ->
             installRoot.deleteRecursively()
             systemShellState(
                 context = context,
                 androidAbi = androidAbi,
                 appVersionCode = currentAppVersionCode,
                 assetManifestSha256 = currentAssetFingerprint,
-                fallbackReason = launchProbe.detail,
+                fallbackReason = "Embedded Linux assets unavailable: ${exc.message ?: exc::class.java.simpleName}",
             )
         }
         stateFile(context).apply {
@@ -148,6 +160,10 @@ object HermesLinuxSubsystemBridge {
         val binPath = state.optString("bin_path")
         val libPath = state.optString("lib_path")
         val nativeLibraryDir = state.optString("native_library_dir")
+        val nativeExecutableDir = state.optString("shell_path")
+            .takeUnless { it.startsWith("/system/") }
+            ?.let { File(it).parent.orEmpty() }
+            .orEmpty()
         val homePath = state.optString("home_path").ifBlank { prefixPath }
         val tmpPath = state.optString("tmp_path").ifBlank { homePath.ifBlank { prefixPath } }
         return mapOf(
@@ -157,7 +173,7 @@ object HermesLinuxSubsystemBridge {
                 .filter { it.isNotBlank() }
                 .distinct()
                 .joinToString(":"),
-            "LD_LIBRARY_PATH" to listOf(nativeLibraryDir, libPath, System.getenv("LD_LIBRARY_PATH").orEmpty())
+            "LD_LIBRARY_PATH" to listOf(nativeExecutableDir, nativeLibraryDir, libPath, System.getenv("LD_LIBRARY_PATH").orEmpty())
                 .filter { it.isNotBlank() }
                 .distinct()
                 .joinToString(":"),
@@ -166,6 +182,10 @@ object HermesLinuxSubsystemBridge {
             "ANDROID_DATA" to "/data",
             "ANDROID_ROOT" to "/system",
             "HERMES_ANDROID_EXECUTION_MODE" to state.optString("execution_mode"),
+            "HERMES_ANDROID_SHELL" to SYSTEM_SHELL_PATH,
+            "HERMES_ANDROID_NATIVE_SHELL" to state.optString("shell_path"),
+            "HERMES_ANDROID_LINUX_BASH" to SYSTEM_SHELL_PATH,
+            "HERMES_ANDROID_LINUX_NATIVE_BASH" to state.optString("shell_path"),
             "TERM" to "xterm-256color",
             "LANG" to "C.UTF-8",
         )

@@ -41,12 +41,8 @@ fun androidVersionName(): String {
     return hermesVersionName()
 }
 
-fun hermesVersionCode(): Int {
-    if (releaseTag.isBlank()) {
-        return 1
-    }
-
-    val semverMatch = Regex("""v?(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)(?:[.-]?(\d+))?)?""").matchEntire(releaseTag)
+fun semverVersionCode(versionText: String): Int? {
+    val semverMatch = Regex("""v?(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)(?:[.-]?(\d+))?)?""").matchEntire(versionText)
     if (semverMatch != null) {
         val major = semverMatch.groupValues[1].toInt()
         val minor = semverMatch.groupValues[2].toInt()
@@ -62,6 +58,15 @@ fun hermesVersionCode(): Int {
         }
         return (major * 1_000_000) + (minor * 10_000) + (patch * 100) + (prereleaseRank * 10) + prereleaseSeq
     }
+    return null
+}
+
+fun hermesVersionCode(): Int {
+    if (releaseTag.isBlank()) {
+        return semverVersionCode(hermesVersionName()) ?: 1
+    }
+
+    semverVersionCode(releaseTag)?.let { return it }
 
     val releaseMatch = Regex("""v(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?""").matchEntire(releaseTag)
         ?: return 1
@@ -353,6 +358,8 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
 
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")

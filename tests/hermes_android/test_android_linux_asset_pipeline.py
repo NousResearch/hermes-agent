@@ -75,7 +75,11 @@ def test_android_linux_subsystem_retries_after_app_update():
     assert 'put("app_version_code", currentAppVersionCode)' in bridge
     assert 'state.optString("asset_manifest_sha256") != currentAssetFingerprint' in bridge
     assert 'put("asset_manifest_sha256", currentAssetFingerprint)' in bridge
-    assert 'state.optString("execution_mode") == SYSTEM_SHELL_MODE' in bridge
+    assert 'state.optString("native_library_dir") != currentNativeLibraryDir' in bridge
+    assert 'state.optString("execution_mode") == SYSTEM_SHELL_MODE' not in bridge
+    assert "Embedded Linux assets unavailable" in bridge
+    assert '"HERMES_ANDROID_SHELL" to SYSTEM_SHELL_PATH' in bridge
+    assert '"HERMES_ANDROID_NATIVE_SHELL" to state.optString("shell_path")' in bridge
     assert "private fun appVersionCode(context: Context): Long" in bridge
 
 

@@ -63,6 +63,8 @@ class NativeAgentToolAccessInstrumentedTest {
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("deleted-ok"))
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("available_system_actions"))
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("active_network_label"))
+            assertTrue(toolMessages.toString(), toolMessages.toString().contains("privileged_access"))
+            assertTrue(toolMessages.toString(), toolMessages.toString().contains("shizuku_binder_alive"))
         } finally {
             server.stop()
         }
@@ -120,6 +122,11 @@ class NativeAgentToolAccessInstrumentedTest {
         val stoppedStatus = JSONObject(HermesSystemControlBridge.statusJson())
         assertFalse(stoppedStatus.toString(), stoppedStatus.getBoolean("background_persistence_enabled"))
         assertTrue(stoppedStatus.toString(), stoppedStatus.getJSONArray("available_system_actions").length() > 0)
+        assertTrue(stoppedStatus.toString(), stoppedStatus.has("privileged_access"))
+        assertTrue(
+            stoppedStatus.toString(),
+            stoppedStatus.getJSONObject("privileged_access").has("available_privileged_actions"),
+        )
     }
 
     private fun cron(module: PyObject, action: String, vararg args: Any?): JSONObject {

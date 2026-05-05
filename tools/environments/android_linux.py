@@ -42,12 +42,25 @@ class AndroidLinuxEnvironment(BaseEnvironment):
             or os.environ.get("HERMES_ANDROID_LINUX_BASH", "").strip()
             or "/system/bin/sh"
         )
+        self.native_shell_path = (
+            os.environ.get("HERMES_ANDROID_NATIVE_SHELL", "").strip()
+            or os.environ.get("HERMES_ANDROID_LINUX_NATIVE_BASH", "").strip()
+        )
         self.bin_path = os.environ.get("HERMES_ANDROID_LINUX_BIN", "").strip()
         self.lib_path = os.environ.get("HERMES_ANDROID_LINUX_LIB", "").strip()
         self.native_library_dir = os.environ.get("HERMES_ANDROID_NATIVE_LIB", "").strip()
         self.home_path = os.environ.get("HERMES_ANDROID_LINUX_HOME", "").strip()
         self.tmp_path = os.environ.get("HERMES_ANDROID_LINUX_TMP", "").strip()
         self.execution_mode = os.environ.get("HERMES_ANDROID_EXECUTION_MODE", "android_system_shell").strip()
+        self.shell_library_dir = ""
+        library_shell_path = self.native_shell_path or self.shell_path
+        if library_shell_path and not library_shell_path.startswith("/system/"):
+            self.shell_library_dir = str(Path(library_shell_path).parent)
+        if not self.native_library_dir:
+            self.native_library_dir = self.shell_library_dir
+        self.process_shell_path = (
+            self.shell_path if self.shell_path.startswith("/system/") else "/system/bin/sh"
+        )
 
         if not self.shell_path:
             raise ValueError("Android shell environment is not configured")
@@ -84,8 +97,11 @@ class AndroidLinuxEnvironment(BaseEnvironment):
         run_env["HOME"] = self.home_path or self.prefix_path
         run_env["TMPDIR"] = self.tmp_path or self.get_temp_dir()
         run_env["HERMES_ANDROID_SHELL"] = self.shell_path
+        if self.native_shell_path:
+            run_env["HERMES_ANDROID_NATIVE_SHELL"] = self.native_shell_path
         run_env["HERMES_ANDROID_EXECUTION_MODE"] = self.execution_mode or "android_system_shell"
         ld_parts = [
+            self.shell_library_dir,
             self.native_library_dir,
             self.lib_path,
             run_env.get("LD_LIBRARY_PATH", ""),
@@ -128,7 +144,7 @@ class AndroidLinuxEnvironment(BaseEnvironment):
     ) -> subprocess.Popen:
         del timeout  # spawn-per-call; enforced by BaseEnvironment
         del login
-        args = [self.shell_path, "-c", cmd_string]
+        args = [self.process_shell_path, "-c", cmd_string]
         proc = subprocess.Popen(
             args,
             text=True,

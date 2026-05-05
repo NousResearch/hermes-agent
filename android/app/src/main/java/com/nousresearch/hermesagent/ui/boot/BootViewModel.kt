@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +23,7 @@ data class BootUiState(
 )
 
 class BootViewModel(application: Application) : AndroidViewModel(application) {
+    private var firstRefresh = true
     private val _uiState = MutableStateFlow(BootUiState())
     val uiState: StateFlow<BootUiState> = _uiState.asStateFlow()
 
@@ -31,7 +33,12 @@ class BootViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refresh() {
         _uiState.value = BootUiState(status = "Booting Hermes runtime…")
+        val startupDelayMillis = if (firstRefresh) 1000L else 0L
+        firstRefresh = false
         viewModelScope.launch {
+            if (startupDelayMillis > 0L) {
+                delay(startupDelayMillis)
+            }
             val runtime = withContext(Dispatchers.IO) {
                 HermesRuntimeManager.ensureStarted(getApplication())
             }

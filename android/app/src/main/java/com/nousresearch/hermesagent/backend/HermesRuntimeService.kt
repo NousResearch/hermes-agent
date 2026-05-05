@@ -15,14 +15,23 @@ import androidx.core.content.ContextCompat
 import com.nousresearch.hermesagent.MainActivity
 import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.device.DeviceStateWriter
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class HermesRuntimeService : Service() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         promoteToForeground(runtime = null)
         running = true
-        DeviceStateWriter.write(applicationContext)
+        serviceScope.launch {
+            DeviceStateWriter.write(applicationContext)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -35,19 +44,21 @@ class HermesRuntimeService : Service() {
     override fun onDestroy() {
         running = false
         DeviceStateWriter.write(applicationContext)
+        serviceScope.cancel()
         super.onDestroy()
     }
 
     private fun startOrRefreshForeground() {
         promoteToForeground(runtime = null)
         running = true
-        DeviceStateWriter.write(applicationContext)
-
-        val runtime = HermesRuntimeManager.ensureStarted(applicationContext)
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, buildNotification(runtime))
-        running = true
-        DeviceStateWriter.write(applicationContext)
+        serviceScope.launch {
+            DeviceStateWriter.write(applicationContext)
+            val runtime = HermesRuntimeManager.ensureStarted(applicationContext)
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, buildNotification(runtime))
+            running = true
+            DeviceStateWriter.write(applicationContext)
+        }
     }
 
     private fun promoteToForeground(runtime: HermesRuntimeManager.RuntimeState?) {
@@ -119,7 +130,11 @@ class HermesRuntimeService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, HermesRuntimeService::class.java)
-            ContextCompat.startForegroundService(context, intent)
+            runCatching {
+                context.startService(intent)
+            }.onFailure {
+                ContextCompat.startForegroundService(context, intent)
+            }
         }
 
         fun stop(context: Context) {

@@ -33,6 +33,11 @@ private val DEFAULT_SYSTEM_ACTIONS = listOf(
     "open_notification_settings",
     "open_overlay_settings",
     "open_accessibility_settings",
+    "open_developer_options",
+    "open_wireless_debugging_settings",
+    "open_shizuku_app",
+    "open_shizuku_download",
+    "request_shizuku_permission",
     "start_background_runtime",
     "stop_background_runtime",
 )
@@ -58,6 +63,7 @@ data class HermesSystemStatus(
     val runtimeServiceRunning: Boolean = false,
     val resizableWindowSupport: Boolean = true,
     val freeformWindowSupported: Boolean = false,
+    val privilegedAccess: HermesPrivilegedAccessStatus? = null,
     val availableSystemActions: List<String> = DEFAULT_SYSTEM_ACTIONS,
 )
 
@@ -136,6 +142,7 @@ object HermesSystemControlBridge {
             runtimeServiceRunning = HermesRuntimeService.isRunning(),
             resizableWindowSupport = true,
             freeformWindowSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT),
+            privilegedAccess = HermesPrivilegedAccessBridge.readStatus(appContext),
         )
     }
 
@@ -158,6 +165,19 @@ object HermesSystemControlBridge {
                 "Opened overlay permission settings",
             )
             "open_accessibility_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), "Opened accessibility settings")
+            "open_developer_options",
+            "open_wireless_debugging_settings",
+            "open_shizuku_app",
+            "open_shizuku_download",
+            "request_shizuku_permission" -> HermesPrivilegedAccessBridge.actionToJson(
+                HermesPrivilegedAccessBridge.performAction(appContext, action)
+            ).let { json ->
+                HermesSystemActionResult(
+                    success = json.optBoolean("success"),
+                    action = json.optString("action", action),
+                    message = json.optString("message"),
+                )
+            }
             "start_background_runtime" -> {
                 DeviceCapabilityStore(appContext).saveBackgroundPersistenceEnabled(true)
                 HermesRuntimeService.start(appContext)
@@ -249,6 +269,10 @@ object HermesSystemControlBridge {
             put("runtime_service_running", status.runtimeServiceRunning)
             put("resizable_window_support", status.resizableWindowSupport)
             put("freeform_window_supported", status.freeformWindowSupported)
+            put(
+                "privileged_access",
+                status.privilegedAccess?.let { HermesPrivilegedAccessBridge.statusToJson(it) } ?: JSONObject(),
+            )
             put("available_system_actions", JSONArray(status.availableSystemActions))
         }
     }

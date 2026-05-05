@@ -82,8 +82,19 @@ class NativeToolCallingChatClient(
                     .put("content", toolResult)
             )
         }
-        return Result(content = toolCompletionReply(latestToolResult), executedToolCalls = executedToolCalls)
 
+        val followUp = postChatCompletion(
+            normalizedBaseUrl = normalizedBaseUrl,
+            modelName = modelName,
+            sessionId = sessionId,
+            messages = messages,
+            includeTools = false,
+            maxTokens = NATIVE_TOOL_MAX_TOKENS,
+        )
+        return Result(
+            content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },
+            executedToolCalls = executedToolCalls,
+        )
     }
 
     private fun toolCompletionReply(toolResult: String): String {
@@ -257,7 +268,8 @@ class NativeToolCallingChatClient(
                     "terminal_tool runs through /system/bin/sh in the Hermes app workspace. " +
                     "file_write_tool writes UTF-8 text files in the Hermes app workspace. " +
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
-                    "Protected Android settings require user-granted permissions or an opened settings panel.",
+                    "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
+                    "Protected Android settings require user-granted permissions, Shizuku/Sui, or an opened settings panel.",
             )
     }
 
@@ -342,7 +354,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_system_tool")
                             .put(
                                 "description",
-                                "Read Hermes Android phone/device status or perform a safe system action such as opening settings panels or starting/stopping the background runtime.",
+                                "Read Hermes Android phone/device status or perform a safe system action such as opening settings panels, Shizuku/wireless-debugging setup, or starting/stopping the background runtime.",
                             )
                             .put(
                                 "parameters",

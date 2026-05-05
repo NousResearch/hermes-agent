@@ -86,3 +86,155 @@ class TestSetConfiguredProviders:
         _set_configured_providers(config, names)
         names.append("c")
         assert config["memory"]["providers"] == ["a", "b"]
+
+
+# ── cmd_setup add-vs-replace integration ─────────────────────────────────
+
+class _DummyProvider:
+    """Minimal MemoryProvider stub with no post_setup hook."""
+    @property
+    def name(self): return "dummy"
+
+    def is_available(self): return True
+
+    def get_config_schema(self): return []
+
+    def initialize(self, session_id, **kwargs): pass
+
+
+class TestCmdSetupAddVsReplace:
+    """When existing active providers exist, the wizard asks add-vs-replace."""
+
+    def _mock_providers(self, monkeypatch, *provider_tuples, config_providers=None):
+        """Mock the provider discovery, config loading, and dependencies.
+
+        provider_tuples: (name, desc, provider_instance) as from _get_available_providers.
+        config_providers: list of already-active provider names.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._get_available_providers",
+            lambda: list(provider_tuples)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._install_dependencies",
+            lambda name: None
+        )
+
+        mem = {}
+        if config_providers:
+            mem.update({"providers": list(config_providers),
+                        "provider": config_providers[0]})
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"memory": mem}
+        )
+
+        # Capture what gets saved
+        saved_config = {}
+        def fake_save(cfg):
+            saved_config["memory"] = cfg.get("memory", {})
+        monkeypatch.setattr("hermes_cli.config.save_config", fake_save)
+
+        # Silence input() for schema prompts (press Enter past all)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
+
+        return saved_config
+
+    def test_first_provider_no_prompt(self, tmp_path, monkeypatch):
+        """No active providers → selected provider configured without asking."""
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home",
+                            lambda: tmp_path)
+        saved = self._mock_providers(
+            monkeypatch,
+            ("x", "local", _DummyProvider()),
+            config_providers=None
+        )
+
+        # Pick provider "x" (index 0) — no add-vs-replace needed
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._curses_select",
+            lambda *args, **kwargs: 0
+        )
+
+        from hermes_cli.memory_setup import cmd_setup
+        cmd_setup(None)
+
+        assert saved.get("memory", {}).get("providers") == ["x"]
+        assert saved.get("memory", {}).get("provider") == "x"
+
+    def test_add_alongside_existing(self, tmp_path, monkeypatch):
+        """Active providers ['a','b'] + pick 'Add c alongside' → ['a','b','c']."""
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home",
+                            lambda: tmp_path)
+        saved = self._mock_providers(
+            monkeypatch,
+            ("c", "local", _DummyProvider()),
+            config_providers=["a", "b"]
+        )
+
+        # Two _curses_select calls:
+        #   1st = provider picker (pick "c", index 0)
+        #   2nd = add-vs-replace (pick "Add c alongside", index 0)
+        selections = iter([0, 0])
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._curses_select",
+            lambda *args, **kwargs: next(selections)
+        )
+
+        from hermes_cli.memory_setup import cmd_setup
+        cmd_setup(None)
+
+        assert saved.get("memory", {}).get("providers") == ["a", "b", "c"]
+        assert saved.get("memory", {}).get("provider") == "a"
+
+    def test_replace_existing(self, tmp_path, monkeypatch):
+        """Active providers ['a','b'] + pick 'Replace all' → ['c'] only."""
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home",
+                            lambda: tmp_path)
+        saved = self._mock_providers(
+            monkeypatch,
+            ("c", "local", _DummyProvider()),
+            config_providers=["a", "b"]
+        )
+
+        # Two _curses_select calls:
+        #   1st = provider picker (pick "c", index 0)
+        #   2nd = add-vs-replace (pick "Replace all", index 1)
+        selections = iter([0, 1])
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._curses_select",
+            lambda *args, **kwargs: next(selections)
+        )
+
+        from hermes_cli.memory_setup import cmd_setup
+        cmd_setup(None)
+
+        assert saved.get("memory", {}).get("providers") == ["c"]
+        assert saved.get("memory", {}).get("provider") == "c"
+
+    def test_reselect_same_provider_no_duplicate(self, tmp_path, monkeypatch):
+        """Picking a provider that's already active doesn't duplicate or prompt."""
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home",
+                            lambda: tmp_path)
+        saved = self._mock_providers(
+            monkeypatch,
+            ("a", "local", _DummyProvider()),
+            ("b", "local", _DummyProvider()),
+            config_providers=["a"]
+        )
+
+        # Pick "b" (index 1) — a is already active, b is new
+        # Then add-vs-replace: "Add b alongside" (index 0)
+        selections = iter([1, 0])
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._curses_select",
+            lambda *args, **kwargs: next(selections)
+        )
+
+        from hermes_cli.memory_setup import cmd_setup
+        cmd_setup(None)
+
+        assert saved.get("memory", {}).get("providers") == ["a", "b"]
+        # "a" appears once — not duplicated

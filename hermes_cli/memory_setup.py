@@ -235,12 +235,24 @@ def cmd_setup_provider(provider_name: str) -> None:
     if hasattr(provider, "post_setup"):
         hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
-        # After post_setup, add to providers list
+        # After post_setup, ask add vs replace, then save
         active = _get_configured_providers(config)
         if name not in active:
-            active.append(name)
-            _set_configured_providers(config, active)
+            print(f"\n  Currently active: {', '.join(active)}")
+            choice_items = [
+                (f"Add {name} alongside", f"Keep {', '.join(active)} and add {name}"),
+                ("Replace all", f"Use {name} only"),
+            ]
+            choice_idx = _curses_select("  Active providers already configured", choice_items, default=0)
+            if choice_idx == 1:
+                _set_configured_providers(config, [name])
+                active = [name]
+            else:
+                active.append(name)
+                _set_configured_providers(config, active)
             save_config(config)
+        print(f"\n  Active providers: {', '.join(active)}")
+        print(f"  Start a new session to activate.\n")
         return
 
     # Generic schema-based setup: append to providers list
@@ -307,6 +319,18 @@ def cmd_setup(args) -> None:
 
     name, _, provider = providers[selected]
 
+    # If there are already active providers not including this one,
+    # ask whether to add alongside or replace entirely.
+    replace_existing = False
+    if active and name not in active:
+        print(f"\n  Currently active: {', '.join(active)}")
+        choice_items = [
+            (f"Add {name} alongside", f"Keep {', '.join(active)} and add {name}"),
+            ("Replace all", f"Use {name} only"),
+        ]
+        choice_idx = _curses_select("  Active providers already configured", choice_items, default=0)
+        replace_existing = (choice_idx == 1)
+
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
 
@@ -314,11 +338,15 @@ def cmd_setup(args) -> None:
     if hasattr(provider, "post_setup"):
         hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
-        # After post_setup, add to providers list
-        active = _get_configured_providers(config)
-        if name not in active:
-            active.append(name)
-        _set_configured_providers(config, active)
+        # After post_setup, add to providers list (or replace)
+        if replace_existing:
+            _set_configured_providers(config, [name])
+            active = [name]
+        else:
+            active = _get_configured_providers(config)
+            if name not in active:
+                active.append(name)
+            _set_configured_providers(config, active)
         save_config(config)
         print(f"\n  Active providers: {', '.join(active)}")
         # Ask if user wants to add another provider
@@ -400,11 +428,15 @@ def cmd_setup(args) -> None:
                     if env_var and env_var not in env_writes:
                         env_writes[env_var] = val
 
-    # Add to providers list (don't replace — append)
-    active = _get_configured_providers(config)
-    if name not in active:
-        active.append(name)
-    _set_configured_providers(config, active)
+    # Add to providers list (add alongside or replace based on user choice)
+    if replace_existing:
+        _set_configured_providers(config, [name])
+        active = [name]
+    else:
+        active = _get_configured_providers(config)
+        if name not in active:
+            active.append(name)
+        _set_configured_providers(config, active)
     save_config(config)
 
     # Write non-secret config to provider's native location

@@ -1071,10 +1071,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id)
+        # Workers hand off via ``task_runs.summary`` (kanban-worker skill);
+        # ``tasks.result`` is left NULL unless the caller explicitly passed
+        # ``result=``. Surfacing the latest summary here keeps ``show`` from
+        # looking like a no-op when the worker actually did real work.
+        latest_summary = kb.latest_summary(conn, args.task_id)
 
     if getattr(args, "json", False):
         payload = {
             "task": _task_to_dict(task),
+            "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
             "comments": [
@@ -1161,6 +1167,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print()
         print("Result:")
         print(task.result)
+    elif latest_summary:
+        # Worker handoff lives on the latest run, not on tasks.result.
+        # Surface it at top-level so a glance at ``hermes kanban show <id>``
+        # tells you what the worker did even if tasks.result is empty.
+        print()
+        print("Latest summary:")
+        print(latest_summary)
     if comments:
         print()
         print(f"Comments ({len(comments)}):")

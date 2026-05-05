@@ -4013,3 +4013,61 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the latest non-null ``task_runs.summary`` for ``task_id``.
+
+    The kanban-worker skill writes its handoff to ``task_runs.summary``
+    via ``complete_task(summary=...)``; ``tasks.result`` is left empty
+    unless the caller passes ``result=`` explicitly. Dashboards and CLI
+    "show" views need this value to surface what a worker actually did
+    — without it, ``tasks.result`` is NULL and the task looks like a
+    no-op even when the run completed.
+
+    Picks the most recent run by ``ended_at`` (falling back to ``id``
+    for ties or unfinished rows). Returns None if no run has a summary.
+    """
+    row = conn.execute(
+        "SELECT summary FROM task_runs "
+        "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row["summary"] if row else None
+
+
+def latest_summaries(
+    conn: sqlite3.Connection, task_ids: Iterable[str]
+) -> dict[str, str]:
+    """Batch-fetch latest non-null summaries for a list of task ids.
+
+    Used by the dashboard board endpoint to attach ``latest_summary`` to
+    every card in a single SQL query, avoiding the N+1 pattern of
+    calling :func:`latest_summary` per task. Returns a dict mapping
+    ``task_id`` → summary string, omitting tasks with no summary.
+
+    Approach: a window function picks the newest non-null-summary row
+    per ``task_id``; works against SQLite ≥ 3.25 (default on every
+    supported platform).
+    """
+    ids = list(task_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, summary FROM (
+            SELECT task_id, summary,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY task_id
+                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+                   ) AS rn
+              FROM task_runs
+             WHERE task_id IN ({placeholders})
+               AND summary IS NOT NULL AND summary != ''
+        ) WHERE rn = 1
+        """,
+        ids,
+    ).fetchall()
+    return {r["task_id"]: r["summary"] for r in rows}

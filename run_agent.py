@@ -13952,9 +13952,19 @@ class AIAgent:
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
 
-        # Extract reasoning from the last assistant message (if any)
+        # Extract reasoning from the CURRENT turn only.  Walk backwards
+        # but stop at the user message that started this turn — anything
+        # earlier is from a prior turn and must not leak into the reasoning
+        # box (confusing stale display; #17055).  Within the current turn
+        # we still want the *most recent* non-empty reasoning: many
+        # providers (Claude thinking, DeepSeek v4, Codex Responses) emit
+        # reasoning on the tool-call step and leave the final-answer step
+        # with reasoning=None, so picking only the last assistant would
+        # silently drop legitimate same-turn reasoning.
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break  # turn boundary — don't cross into prior turns
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break

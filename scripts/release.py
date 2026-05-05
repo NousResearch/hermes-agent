@@ -93,6 +93,7 @@ AUTHOR_MAP = {
     "harish.kukreja@gmail.com": "counterposition",
     "35294173+Fearvox@users.noreply.github.com": "Fearvox",
     "hypnus.yuan@gmail.com": "Hypnus-Yuan",
+    "15558128926@qq.com": "xsfX20",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

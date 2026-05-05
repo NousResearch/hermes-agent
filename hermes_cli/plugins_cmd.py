@@ -783,14 +783,16 @@ def _discover_context_engines() -> list[tuple[str, str]]:
 
 
 def _get_current_memory_provider() -> str:
-    """Return the current memory.provider from config (empty = built-in)."""
+    """Return the current memory.provider(s) from config (empty = built-in)."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
         mem = config.get("memory", {})
         providers = mem.get("providers", [])
         if providers:
-            return providers[0]
+            active = [p for p in providers if p]
+            if active:
+                return ", ".join(active)
         return cfg_get(config, "memory", "provider", default="") or ""
     except Exception:
         return ""
@@ -807,13 +809,16 @@ def _get_current_context_engine() -> str:
 
 
 def _save_memory_provider(name: str) -> None:
-    """Persist memory.provider to config.yaml."""
+    """Persist memory.provider to config.yaml (appends to providers list)."""
     from hermes_cli.config import load_config, save_config
     config = load_config()
     if "memory" not in config:
         config["memory"] = {}
-    # Write to new list format
-    config["memory"]["providers"] = [name] if name else []
+    # Read current providers, append if new name isn't there
+    existing = config["memory"].get("providers", [])
+    if name and name not in existing:
+        existing.append(name)
+    config["memory"]["providers"] = existing if name else []
     # Also set legacy single-provider for backwards compat
     config["memory"]["provider"] = name
     save_config(config)

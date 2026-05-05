@@ -20,7 +20,11 @@ import json as _json
 
 import requests
 
+from hermes_cli.anchors import expected_for_model, load_nearai_anchor
+
 logger = logging.getLogger(__name__)
+
+_NEARAI_ANCHOR = load_nearai_anchor()
 
 _PHALA_TDX_VERIFIER = "https://cloud-api.phala.network/api/v1/attestations/verify"
 _NVIDIA_NRAS = "https://nras.attestation.nvidia.com/v3/attest/gpu"
@@ -331,9 +335,55 @@ def _verify_near_ai_attestation(runtime_creds: Dict[str, Any], config: Dict[str,
         app_compose = tcb_info.get("app_compose") if tcb_info else None
         m_mr_config = m_intel.get("quote", {}).get("body", {}).get("mrconfig", "")
         compose_verified = False
+        compose_hash = ""
         if app_compose and m_mr_config:
             compose_hash = hashlib.sha256(app_compose.encode()).hexdigest()
             compose_verified = m_mr_config.lower().startswith(("01" + compose_hash).lower())
+
+        # Block B-static: enforce pinned anchor (app_id, compose_hash, os_image_hash, kms pubkey)
+        # Until on-chain Base RPC reads land, hermes_cli/anchors/nearai_mainnet.json is the
+        # authority for "is this CVM permitted to serve model M". Strict mode → _fail() raises.
+        expected = expected_for_model(_NEARAI_ANCHOR, model)
+        if expected is None:
+            return _fail(
+                f"Model {model!r} has no entry in hermes_cli/anchors/nearai_mainnet.json — "
+                f"add expected app_id/compose_hashes (refusing in strict mode)"
+            )
+        attested_app_id = (info.get("app_id") or "").lower().removeprefix("0x")
+        expected_app_id = expected["app_id"].lower().removeprefix("0x")
+        if attested_app_id != expected_app_id:
+            return _fail(
+                f"Model #{i+1} ({backend_id}) app_id 0x{attested_app_id} != "
+                f"anchored 0x{expected_app_id} for {model!r}"
+            )
+        if not compose_verified:
+            return _fail(
+                f"Model #{i+1} ({backend_id}) compose_hash unverifiable: "
+                f"in-quote app_compose sha256 does not match mr_config — quote vs evidence inconsistency"
+            )
+        allowed_composes = {c.lower().removeprefix("0x") for c in expected.get("compose_hashes", [])}
+        if compose_hash.lower() not in allowed_composes:
+            return _fail(
+                f"Model #{i+1} ({backend_id}) compose_hash 0x{compose_hash} not in anchored "
+                f"compose_hashes for {model!r} (allowed: {sorted(allowed_composes)})"
+            )
+        attested_os = (info.get("os_image_hash") or "").lower().removeprefix("0x")
+        allowed_os = {h.lower().removeprefix("0x") for h in _NEARAI_ANCHOR.get("os_image_hashes", [])}
+        if allowed_os and attested_os not in allowed_os:
+            return _fail(
+                f"Model #{i+1} ({backend_id}) os_image_hash 0x{attested_os} not in anchored "
+                f"os_image_hashes (allowed: {sorted(allowed_os)})"
+            )
+        kpi_raw = info.get("key_provider_info") or "{}"
+        kpi = _json.loads(kpi_raw) if isinstance(kpi_raw, str) else kpi_raw
+        attested_kpi_id = (kpi.get("id") or "").lower().removeprefix("0x")
+        expected_kpi_id = _NEARAI_ANCHOR.get("kms_provider_info_id", "").lower().removeprefix("0x")
+        if expected_kpi_id and attested_kpi_id != expected_kpi_id:
+            return _fail(
+                f"Model #{i+1} ({backend_id}) key_provider_info.id != anchored KMS pubkey "
+                f"(KMS substitution? expected sha256={hashlib.sha256(bytes.fromhex(expected_kpi_id)).hexdigest()[:16]}…, "
+                f"got sha256={hashlib.sha256(bytes.fromhex(attested_kpi_id)).hexdigest()[:16] if attested_kpi_id else '<none>'}…)"
+            )
 
         # verify signing_public_key derives to signing_address (so we know the E2EE key is hardware-bound)
         spk = model_att.get("signing_public_key")
@@ -360,9 +410,12 @@ def _verify_near_ai_attestation(runtime_creds: Dict[str, Any], config: Dict[str,
         model_details.append({
             "signing_address": signing_addr,
             "app_id": info.get("app_id"),
+            "compose_hash": compose_hash,
+            "os_image_hash": info.get("os_image_hash"),
             "status": m_status,
             "advisory_ids": m_advisories,
             "compose_hash_verified": compose_verified,
+            "anchor_matched": True,
             "gpu_verdict": gpu_result.get("verdict"),
         })
 

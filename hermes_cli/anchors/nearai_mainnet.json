@@ -1,0 +1,31 @@
+{
+  "_comment": "Pinned reference values for NEAR AI Cloud TEE backends (mainnet). Captured 2026-05-05 from https://cloud-api.near.ai/v1/attestation/report. The Base on-chain DstackKms/DstackApp registries are the authoritative source for app_id/compose_hash/os_image_hash/kms_pubkey; until hermes ships an RPC reader (Block B), we pin known-good values here. Refresh on operator rotation. Source captures: case-studies/near-ai-private-inference/sources/.",
+  "captured_at": "2026-05-05",
+  "kms_contract_addr": "0x8fa1593fac104c1aa0c59eaa3553f7e3e162d637",
+  "kms_provider_info_id": "3059301306072a8648ce3d020106082a8648ce3d03010703420004228f800590a10442cba9d0e6adb2fa9f195eea9e75e23dd35990d52b59dda2415a63674c38adebde4ffd4d4b265bf818985933820c8053cee3ce29b5fb0fbcbc",
+  "os_image_hashes": [
+    "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677"
+  ],
+  "models": {
+    "zai-org/GLM-5.1-FP8": {
+      "_note": "two compose hashes observed within ~30min on 2026-05-05 — operator rotated compose on the same backend (same signing_address) without key rotation. Both kept until clarified.",
+      "app_id": "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
+      "compose_hashes": [
+        "700adbf53ad4a14e58d2eae65776d451b914b1f5d377c20c7a4e6cca681446ec",
+        "242a62724303cc32f364da0fc92738706b0078e7587821b7ba3e75488223797b"
+      ]
+    },
+    "deepseek-ai/DeepSeek-V3.1": {
+      "app_id": "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
+      "compose_hashes": [
+        "242a62724303cc32f364da0fc92738706b0078e7587821b7ba3e75488223797b"
+      ]
+    },
+    "openai/gpt-oss-120b": {
+      "app_id": "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
+      "compose_hashes": [
+        "242a62724303cc32f364da0fc92738706b0078e7587821b7ba3e75488223797b"
+      ]
+    }
+  }
+}

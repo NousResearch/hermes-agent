@@ -872,6 +872,48 @@ class TestMCPServerTask:
 # ---------------------------------------------------------------------------
 
 class TestToolsetInjection:
+    def test_mcp_server_names_from_toolsets_requires_explicit_opt_in(self):
+        """Configured MCPs are selected only by raw/mcp-* server toolsets."""
+        from tools.mcp_tool import mcp_server_names_from_toolsets
+
+        cfg = {
+            "mcp_servers": {
+                "posthog": {"command": "posthog-mcp", "enabled": True},
+                "notion": {"command": "notion-mcp", "enabled": True},
+                "disabled": {"command": "disabled-mcp", "enabled": False},
+            }
+        }
+
+        assert mcp_server_names_from_toolsets(
+            ["file", "terminal", "skills", "zoho", "notion"],
+            cfg,
+        ) == ["notion"]
+        assert mcp_server_names_from_toolsets(["mcp-posthog"], cfg) == ["posthog"]
+        assert mcp_server_names_from_toolsets(["posthog"], cfg) == ["posthog"]
+        assert mcp_server_names_from_toolsets(["disabled"], cfg) == []
+        assert mcp_server_names_from_toolsets(["no_mcp", "posthog"], cfg) == []
+
+    def test_discover_mcp_tools_empty_allowlist_does_not_register_posthog(self, monkeypatch):
+        """A concrete empty allowlist means no MCP startup/registration."""
+        import tools.mcp_tool as mcp_mod
+
+        fresh_servers = {}
+        register_calls = []
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
+             patch(
+                 "tools.mcp_tool._load_mcp_config",
+                 return_value={"posthog": {"command": "posthog-mcp", "enabled": True}},
+             ), \
+             patch(
+                 "tools.mcp_tool.register_mcp_servers",
+                 side_effect=lambda servers: register_calls.append(servers) or [],
+             ):
+            assert mcp_mod.discover_mcp_tools(server_names=[]) == []
+
+        assert register_calls == []
+        assert "posthog" not in fresh_servers
+
     def test_mcp_tools_resolve_through_server_aliases(self):
         """Discovered MCP tools resolve through raw server-name aliases."""
         from tools.mcp_tool import MCPServerTask

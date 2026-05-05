@@ -82,7 +82,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -2792,6 +2792,56 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def mcp_server_names_from_toolsets(
+    toolsets: Optional[Iterable[str]],
+    config: Optional[dict] = None,
+    *,
+    include_default: bool = False,
+) -> Optional[List[str]]:
+    """Return configured MCP server names explicitly requested by toolsets.
+
+    ``None`` means the caller has no scoped toolset information.  The legacy
+    discovery path uses that to preserve "discover all configured servers".
+    A concrete list (including an empty list) is an allowlist.
+    """
+    if toolsets is None:
+        return None if include_default else []
+
+    requested_names = {str(name) for name in toolsets if str(name)}
+    if "no_mcp" in requested_names:
+        return []
+
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+
+    configured = config.get("mcp_servers") if isinstance(config, dict) else None
+    if not isinstance(configured, dict):
+        configured = _load_mcp_config()
+
+    enabled_servers = {
+        str(name)
+        for name, server_cfg in (configured or {}).items()
+        if isinstance(server_cfg, dict)
+        and _parse_boolish(server_cfg.get("enabled", True), default=True)
+    }
+    if not enabled_servers:
+        return []
+
+    selected = set()
+    for name in enabled_servers:
+        if name in requested_names or f"mcp-{name}" in requested_names:
+            selected.add(name)
+
+    if include_default and not selected:
+        selected = set(enabled_servers)
+
+    return sorted(selected)
+
+
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
@@ -2869,7 +2919,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(server_names: Optional[Iterable[str]] = None) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -2877,6 +2927,12 @@ def discover_mcp_tools() -> List[str]:
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
+
+    Args:
+        server_names: Optional allowlist of configured server names to start.
+            When provided, discovery connects only those servers.  An empty
+            allowlist is a no-op, which lets entry points with explicit
+            toolsets avoid starting unrelated MCP servers at process startup.
 
     Returns:
         List of all registered MCP tool names.
@@ -2889,6 +2945,16 @@ def discover_mcp_tools() -> List[str]:
     if not servers:
         logger.debug("No MCP servers configured")
         return []
+
+    if server_names is not None:
+        requested = {str(name) for name in server_names if str(name)}
+        if not requested:
+            logger.debug("No MCP servers requested for this startup context")
+            return _existing_tool_names()
+        servers = {name: cfg for name, cfg in servers.items() if str(name) in requested}
+        if not servers:
+            logger.debug("Requested MCP server allowlist did not match configured servers")
+            return _existing_tool_names()
 
     with _lock:
         new_server_names = [

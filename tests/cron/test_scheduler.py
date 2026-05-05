@@ -868,6 +868,45 @@ class TestRunJobSessionPersistence:
         # run cannot accidentally spin up frontier models.
         assert "moa" not in kwargs["enabled_toolsets"]
 
+    def test_cron_platform_defaults_do_not_include_global_mcp_servers(self):
+        """Cron/EOD default toolsets must not inherit all enabled MCPs."""
+        from cron.scheduler import _resolve_cron_enabled_toolsets
+
+        cfg = {
+            "mcp_servers": {
+                "posthog": {"command": "posthog-mcp", "enabled": True},
+                "product-analytics": {"command": "analytics-mcp", "enabled": True},
+                "notion": {"command": "notion-mcp", "enabled": True},
+            }
+        }
+
+        resolved = _resolve_cron_enabled_toolsets({}, cfg)
+
+        assert resolved is not None
+        assert "posthog" not in resolved
+        assert "mcp-posthog" not in resolved
+        assert "product-analytics" not in resolved
+        assert "mcp-product-analytics" not in resolved
+        assert "notion" not in resolved
+
+    def test_cron_platform_allows_explicit_mcp_server_opt_in(self):
+        """A cron platform config may still opt into a named MCP server."""
+        from cron.scheduler import _resolve_cron_enabled_toolsets
+
+        cfg = {
+            "platform_toolsets": {"cron": ["file", "posthog"]},
+            "mcp_servers": {
+                "posthog": {"command": "posthog-mcp", "enabled": True},
+                "product-analytics": {"command": "analytics-mcp", "enabled": True},
+            },
+        }
+
+        resolved = _resolve_cron_enabled_toolsets({}, cfg)
+
+        assert resolved is not None
+        assert "posthog" in resolved
+        assert "product-analytics" not in resolved
+
     def test_run_job_per_job_toolsets_win_over_platform_config(self, tmp_path):
         """Per-job enabled_toolsets (via cronjob tool) always take precedence
         over the platform-level ``hermes tools`` config."""

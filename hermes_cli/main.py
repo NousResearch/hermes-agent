@@ -10263,11 +10263,39 @@ Examples:
             )
         try:
             # MCP tool discovery — no event loop running in CLI/TUI startup,
-            # so inline is safe.  Moved here from model_tools.py module scope
-            # to avoid freezing the gateway's event loop on its first message
-            # via the same lazy import path (#16856).
-            from tools.mcp_tool import discover_mcp_tools
-            discover_mcp_tools()
+            # so inline is safe.  Keep discovery scoped to the startup
+            # toolsets: a restricted chat/cron invocation must not initialize
+            # unrelated globally configured MCP servers (for example PostHog
+            # during unattended EOD) before the agent applies -t filtering.
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import _get_platform_tools
+            from tools.mcp_tool import discover_mcp_tools, mcp_server_names_from_toolsets
+
+            cfg = load_config()
+            raw_toolsets = getattr(args, "toolsets", None)
+            if raw_toolsets:
+                raw_items = [raw_toolsets] if isinstance(raw_toolsets, str) else raw_toolsets
+                if not isinstance(raw_items, (list, tuple, set)):
+                    raw_items = [raw_items]
+                startup_toolsets = [
+                    part.strip()
+                    for item in raw_items
+                    for part in str(item).split(",")
+                    if part.strip()
+                ]
+            else:
+                platform_key = "cron" if args.command == "cron" else "cli"
+                startup_toolsets = sorted(_get_platform_tools(
+                    cfg,
+                    platform_key,
+                    include_default_mcp_servers=False,
+                ))
+
+            if any(name in {"all", "*"} for name in startup_toolsets):
+                server_names = None
+            else:
+                server_names = mcp_server_names_from_toolsets(startup_toolsets, cfg)
+            discover_mcp_tools(server_names=server_names)
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup", exc_info=True,

@@ -60,6 +60,7 @@ AUTHOR_MAP = {
     "bartokmagic@proton.me": "Bartok9",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",
+    "harryykyle1@gmail.com": "hharry11",
     "beardthelion@users.noreply.github.com": "beardthelion",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",

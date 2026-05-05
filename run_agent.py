@@ -10856,6 +10856,37 @@ class AIAgent:
                     )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
+            elif hasattr(self.context_compressor, "should_compress_preflight"):
+                # Sub-threshold path: let the engine decide if cheap incremental
+                # maintenance is needed before this turn (e.g. LCM's deferred
+                # leaf-chunk compaction below the 75% threshold).  The default
+                # ContextEngine.should_compress_preflight() returns False, so
+                # the built-in ContextCompressor is unaffected.  Engines that
+                # implement this hook (such as hermes-lcm) can ingest messages
+                # into their immutable store and return True to trigger a
+                # compress() call when the raw_backlog debt warrants it. (#20316)
+                try:
+                    _wants_preflight = self.context_compressor.should_compress_preflight(messages)
+                except Exception as _preflight_exc:
+                    logger.debug(
+                        "should_compress_preflight raised %s; skipping",
+                        _preflight_exc,
+                    )
+                    _wants_preflight = False
+                if _wants_preflight:
+                    logger.info(
+                        "Engine-driven preflight maintenance: %s engine requested compress() at ~%s tokens",
+                        getattr(self.context_compressor, "name", "context_engine"),
+                        f"{_preflight_tokens:,}",
+                    )
+                    messages, active_system_prompt = self._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                    # Compression may have created a new session — clear the
+                    # history reference so _flush_messages_to_session_db writes
+                    # the full compressed transcript to the new session's DB.
+                    conversation_history = None
 
         # Plugin hook: pre_llm_call
         # Fired once per turn before the tool-calling loop.  Plugins can

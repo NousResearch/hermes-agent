@@ -921,56 +921,70 @@ def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
 
 
 def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
-    unblock_agent = threading.Event()
+    """When set_session_title raises ValueError during post-message title flush,
+    pending_title should be dropped (non-retryable). Updated for post-#18370
+    lazy session creation where title is applied post-first-message.
+    """
 
-    class _FakeWorker:
-        def __init__(self, key, model):
-            self.key = key
-
-        def close(self):
-            return None
-
-    class _FakeAgent:
+    class _Agent:
+        session_id = "test-session"
         model = "x"
         provider = "openrouter"
         base_url = ""
         api_key = ""
+        _cached_system_prompt = ""
+
+        def run_conversation(self, prompt, **kw):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
 
     class _FakeDB:
-        def create_session(self, _key, source="tui", model=None):
-            return None
-
         def set_session_title(self, _key, _title):
             raise ValueError("Title already in use")
 
-    def _make_agent(_sid, _key):
-        unblock_agent.wait(timeout=2.0)
-        return _FakeAgent()
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
 
-    monkeypatch.setattr(server, "_make_agent", _make_agent)
-    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+        def start(self):
+            self._target()
+
+    agent = _Agent()
+    session = {
+        "agent": agent,
+        "session_key": "test-session",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "pending_title": "duplicate title",
+    }
+
+    server._sessions["sid"] = session
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
-    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
-    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
-
-    import tools.approval as _approval
-
-    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
-    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
-
-    resp = server.handle_request(
-        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *a, **kw: None
     )
-    sid = resp["result"]["session_id"]
-    session = server._sessions[sid]
-    session["pending_title"] = "duplicate title"
-    unblock_agent.set()
-    session["agent_ready"].wait(timeout=2.0)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
-    assert session["pending_title"] is None
-    server._sessions.pop(sid, None)
+    try:
+        server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
+        )
+        assert session["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_config_set_yolo_toggles_session_scope():

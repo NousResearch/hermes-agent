@@ -304,12 +304,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     _notify_session_boundary("on_session_finalize", session_id)
 
     # Mark session ended in DB so it doesn't linger as a ghost row in /resume.
-    # Adapted from #18283 (luyao618) and #18299 (Bartok9).
-    if session_key:
+    # Use session_id (from agent.session_id) not session_key — after compression,
+    # session_key may be stale (the ended parent) while session_id is the live
+    # continuation. Fix for #20001.
+    if session_id:
         try:
             db = _get_db()
             if db is not None:
-                db.end_session(session_key, end_reason)
+                db.end_session(session_id, end_reason)
         except Exception:
             pass
 
@@ -1175,7 +1177,13 @@ def _compress_session_history(
     return len(history) - len(compressed), usage
 
 
-def _sync_session_key_after_compress(sid: str, session: dict) -> None:
+def _sync_session_key_after_compress(
+    sid: str,
+    session: dict,
+    *,
+    clear_pending_title: bool = True,
+    restart_slash_worker: bool = True,
+) -> None:
     """Re-anchor session_key when AIAgent._compress_context rotates session_id.
 
     AIAgent._compress_context ends the current SessionDB session and creates
@@ -1184,7 +1192,14 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
     approval routing, slash worker init, DB title/history lookups, yolo
     state).  Without this sync, those operations would target the ended
     parent session while the agent writes to the new continuation session.
-    Mirrors HermesCLI._manual_compress's session_id sync.
+
+    Policy flags:
+        clear_pending_title: True for manual /compress (title belongs to old
+            session). False for post-turn auto-compression (preserve user
+            intent so pending_title can be applied to the continuation).
+        restart_slash_worker: True for manual /compress and post-turn
+            auto-compression (worker holds stale session key). False only
+            if the caller manages the worker lifecycle separately.
     """
     agent = session.get("agent")
     new_session_id = getattr(agent, "session_id", None) or ""
@@ -1229,11 +1244,13 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
         # don't keep targeting the ended row.
         session["session_key"] = new_session_id
 
-    session["pending_title"] = None
-    try:
-        _restart_slash_worker(session)
-    except Exception:
-        pass
+    if clear_pending_title:
+        session["pending_title"] = None
+    if restart_slash_worker:
+        try:
+            _restart_slash_worker(session)
+        except Exception:
+            pass
 
 
 def _get_usage(agent) -> dict:
@@ -2965,6 +2982,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 "History changed during this turn — the response above is visible "
                                 "but was not saved to session history."
                             )
+
+                # If auto-compression fired inside run_conversation(), agent.session_id
+                # may have rotated. Sync session_key before downstream title/goal/finalize
+                # handling uses it. Preserve pending_title (user intent) so it can be
+                # applied to the continuation. Restart slash worker so subsequent
+                # worker-backed commands (/title etc.) target the live session.
+                # Fix for #20001.
+                _sync_session_key_after_compress(
+                    sid, session, clear_pending_title=False, restart_slash_worker=True,
+                )
+
                 raw = result.get("final_response", "")
                 status = (
                     "interrupted"
@@ -3042,11 +3070,21 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if _pending and status == "complete":
                 _pdb = _get_db()
                 if _pdb:
+                    _session_key = session.get("session_key") or sid
                     try:
-                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
+                        if _pdb.set_session_title(_session_key, _pending):
                             session["pending_title"] = None
+                    except ValueError as exc:
+                        # Invalid/duplicate title — non-retryable, drop it.
+                        # Auto-title will take over. Fix for #19029.
+                        session["pending_title"] = None
+                        logger.info(
+                            "Dropping pending title for session %s: %s",
+                            _session_key, exc,
+                        )
                     except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                        # Transient DB failure — keep pending_title for retry.
+                        pass
 
             if (
                 status == "complete"

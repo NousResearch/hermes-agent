@@ -528,10 +528,10 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
-    def test_matrix_text_only_uses_lightweight_path(self):
-        """Text-only Matrix sends should NOT go through the heavy adapter path."""
-        helper = AsyncMock()
-        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+    def test_matrix_text_only_uses_adapter_path(self):
+        """Text-only Matrix sends should go through the adapter path for E2EE support."""
+        helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        lightweight = AsyncMock()
         with patch("tools.send_message_tool._send_matrix_via_adapter", helper), \
              patch("tools.send_message_tool._send_matrix", lightweight):
             result = asyncio.run(
@@ -544,8 +544,8 @@ class TestSendToPlatformChunking:
             )
 
         assert result["success"] is True
-        helper.assert_not_awaited()
-        lightweight.assert_awaited_once()
+        helper.assert_awaited_once()
+        lightweight.assert_not_awaited()
 
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"

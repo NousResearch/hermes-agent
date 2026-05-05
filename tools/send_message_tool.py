@@ -541,8 +541,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
-    if platform == Platform.MATRIX and media_files:
+    # --- Matrix: use the native adapter helper for all sends (E2EE support) ---
+    if platform == Platform.MATRIX:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -635,8 +635,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATTERMOST:
             result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
-        elif platform == Platform.MATRIX:
-            result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:

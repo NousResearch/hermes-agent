@@ -288,7 +288,12 @@ def _handle_send(args):
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
-                user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+                source_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+                source_chat_name = get_session_env("HERMES_SESSION_CHAT_NAME", "")
+                source_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+                source_user_name = get_session_env("HERMES_SESSION_USER_NAME", "")
+                source_session_key = get_session_env("HERMES_SESSION_KEY", "")
+                user_id = source_user_id or None
                 if mirror_to_session(
                     platform_name,
                     chat_id,
@@ -296,6 +301,12 @@ def _handle_send(args):
                     source_label=source_label,
                     thread_id=thread_id,
                     user_id=user_id,
+                    source_platform=source_label,
+                    source_chat_id=source_chat_id,
+                    source_chat_name=source_chat_name,
+                    source_user_id=source_user_id,
+                    source_user_name=source_user_name,
+                    source_session_key=source_session_key,
                 ):
                     result["mirrored"] = True
             except Exception:

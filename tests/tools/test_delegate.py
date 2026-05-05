@@ -114,6 +114,17 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("parent agent", result["error"])
 
+    def test_rejects_durable_background_worker_language(self):
+        parent = _make_mock_parent()
+        parent.platform = "telegram"
+        result = json.loads(delegate_task(
+            goal="Spawn a mini you in the background so we can keep chatting while it works",
+            parent_agent=parent,
+        ))
+        self.assertIn("error", result)
+        self.assertIn("delegate_task runs synchronously", result["error"])
+        self.assertIn("spawn_background_agent", result["error"])
+
     def test_depth_limit(self):
         parent = _make_mock_parent(depth=2)
         result = json.loads(delegate_task(goal="test", parent_agent=parent))
@@ -727,7 +738,7 @@ class TestSubagentCostRollup(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "spawn_background_agent", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):

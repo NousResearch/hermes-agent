@@ -9,6 +9,8 @@ from gateway.mirror import (
     mirror_to_session,
     _find_session_id,
     _append_to_jsonl,
+    build_mirror_message,
+    mirror_to_agent_history_entry,
 )
 
 
@@ -202,9 +204,14 @@ class TestMirrorToSession:
         assert transcript.exists()
         msg = json.loads(transcript.read_text().strip())
         assert msg["content"] == "Hello!"
-        assert msg["role"] == "assistant"
+        assert msg["role"] == "delivery"
+        assert msg["event_type"] == "delivery_mirror"
         assert msg["mirror"] is True
         assert msg["mirror_source"] == "cli"
+        assert msg["delivery"]["source"]["label"] == "cli"
+        assert msg["delivery"]["target"]["platform"] == "telegram"
+        assert msg["delivery"]["target"]["chat_id"] == "12345"
+        assert msg["delivery"]["target"]["session_id"] == "sess_abc"
 
     def test_successful_mirror_uses_thread_id(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
@@ -272,6 +279,45 @@ class TestMirrorToSession:
             result = mirror_to_session("telegram", "123", "msg")
 
         assert result is False
+
+
+class TestMirrorHistoryEntry:
+    def test_delivery_event_becomes_labelled_user_context_not_assistant_reply(self):
+        msg = build_mirror_message(
+            "telegram",
+            "12345",
+            "GCB failure summary",
+            session_id="sess_target",
+            source_label="telegram",
+            source_chat_id="-1001",
+            source_chat_name="Editors Chat",
+            source_user_id="u-alan",
+            source_user_name="Alan",
+            source_session_key="agent:main:telegram:group:-1001:u-alan",
+        )
+
+        entry = mirror_to_agent_history_entry(msg)
+
+        assert entry["role"] == "system"
+        assert "External delivery" in entry["content"]
+        assert "Alan" in entry["content"]
+        assert "Editors Chat" in entry["content"]
+        assert "not a reply authored by this session" in entry["content"]
+        assert "GCB failure summary" in entry["content"]
+
+    def test_legacy_assistant_mirror_also_becomes_labelled_user_context(self):
+        legacy = {
+            "role": "assistant",
+            "content": "old mirror text",
+            "mirror": True,
+            "mirror_source": "telegram",
+        }
+
+        entry = mirror_to_agent_history_entry(legacy)
+
+        assert entry["role"] == "system"
+        assert "External delivery" in entry["content"]
+        assert "old mirror text" in entry["content"]
 
 
 class TestAppendToSqlite:

@@ -40,12 +40,58 @@ from utils import base_url_hostname, is_truthy_value
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
+        "spawn_background_agent",  # no durable side-processes from children
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "execute_code",  # children should reason step-by-step, not write scripts
     ]
 )
+
+
+_DURABLE_BACKGROUND_MARKERS = (
+    "mini you",
+    "mini-agent",
+    "mini agent",
+    "background agent",
+    "background worker",
+    "in the background",
+    "keep chatting",
+    "chat remains usable",
+    "while i keep chatting",
+    "while we keep chatting",
+    "outlive this turn",
+    "continue after this turn",
+    "fire and forget",
+    "fire-and-forget",
+)
+
+
+def _looks_like_durable_background_request(task_list: List[Dict[str, Any]]) -> bool:
+    """Return True when task text asks for a worker that outlives this turn."""
+    haystacks: list[str] = []
+    for task in task_list or []:
+        haystacks.append(str(task.get("goal") or ""))
+        haystacks.append(str(task.get("context") or ""))
+    text = "\n".join(haystacks).lower()
+    if not text:
+        return False
+    if "background information" in text and not any(
+        marker in text for marker in ("mini", "keep chatting", "outlive", "fire")
+    ):
+        return False
+    return any(marker in text for marker in _DURABLE_BACKGROUND_MARKERS)
+
+
+def _durable_background_request_error() -> str:
+    return tool_error(
+        "This request asks for a durable/background worker, but delegate_task "
+        "runs synchronously inside the parent turn and is cancelled if the "
+        "parent is interrupted by another live message. Use "
+        "spawn_background_agent for a real background Hermes process, or use "
+        "terminal(background=True, notify_on_complete=True) / cronjob for "
+        "non-agent background work."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1942,6 +1988,11 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Durable/background work must not use delegate_task: children are tied to
+    # the current turn and are interrupted by live follow-up messages.
+    if _looks_like_durable_background_request(task_list):
+        return _durable_background_request_error()
+
     overall_start = time.monotonic()
     results = []
 
@@ -2398,9 +2449,11 @@ DELEGATE_TASK_SCHEMA = {
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
-        "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
+        "- Durable long-running work that must outlive the current turn or "
+        "let the user keep chatting -> use spawn_background_agent for a "
+        "background Hermes worker, or cronjob (action='create') / "
+        "terminal(background=True, notify_on_complete=True) for non-agent "
+        "background work. delegate_task runs SYNCHRONOUSLY "
         "inside the parent turn: if the parent is interrupted (user sends a "
         "new message, /stop, /new) the child is cancelled with status="
         "'interrupted' and its work is discarded. Children cannot continue "

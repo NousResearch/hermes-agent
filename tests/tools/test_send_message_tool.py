@@ -211,6 +211,12 @@ class TestSendMessageTool:
             source_label="telegram",
             thread_id=None,
             user_id="user-123",
+            source_platform="telegram",
+            source_chat_id="",
+            source_chat_name="",
+            source_user_id="user-123",
+            source_user_name="",
+            source_session_key="",
         )
 
     def test_top_level_send_failure_redacts_query_token(self):

@@ -153,6 +153,43 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_delivery_metadata_round_trips_and_replays_as_system_context(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        metadata = {
+            "mirror": True,
+            "mirror_source": "telegram",
+            "delivery": {
+                "source": {"label": "telegram", "user_name": "Alan", "chat_name": "Editors"},
+                "target": {"platform": "telegram", "chat_id": "12345", "session_id": "s1"},
+            },
+        }
+
+        db.append_message(
+            "s1",
+            role="delivery",
+            content="Failure summary",
+            event_type="delivery_mirror",
+            metadata=metadata,
+        )
+
+        messages = db.get_messages("s1")
+        assert messages[0]["role"] == "delivery"
+        assert messages[0]["event_type"] == "delivery_mirror"
+        assert messages[0]["metadata"] == metadata
+        assert messages[0]["mirror"] is True
+        assert messages[0]["delivery"]["source"]["user_name"] == "Alan"
+
+        conversation = db.get_messages_as_conversation("s1")
+        assert conversation == [{
+            "role": "system",
+            "content": (
+                "[External delivery from Alan, Editors, telegram: "
+                "this message was sent into this chat by the delivery/messaging "
+                "tool. It is context only, not a reply authored by this session.]\n"
+                "Failure summary"
+            ),
+        }]
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -1414,7 +1451,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1711,7 +1748,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2906,7 +2943,7 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 12
         finally:
             session_db.close()
 

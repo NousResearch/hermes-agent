@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    event_type TEXT,
+    metadata_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1273,6 +1275,8 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        event_type: str = None,
+        metadata: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1294,6 +1298,7 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        metadata_json = json.dumps(metadata) if metadata else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -1308,8 +1313,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, event_type, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1325,6 +1330,8 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    event_type,
+                    metadata_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1387,12 +1394,16 @@ class SessionDB:
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
+                metadata_json = (
+                    json.dumps(msg.get("metadata"))
+                    if msg.get("metadata") else msg.get("metadata_json")
+                )
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, event_type, metadata_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1408,6 +1419,8 @@ class SessionDB:
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,
+                        msg.get("event_type"),
+                        metadata_json,
                     ),
                 )
                 total_messages += 1
@@ -1443,6 +1456,16 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
+            if msg.get("metadata_json"):
+                try:
+                    metadata = json.loads(msg["metadata_json"])
+                    msg["metadata"] = metadata
+                    if isinstance(metadata, dict):
+                        for key in ("mirror", "mirror_source", "delivery"):
+                            if key in metadata and key not in msg:
+                                msg[key] = metadata[key]
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize message metadata in get_messages")
             result.append(msg)
         return result
 
@@ -1527,7 +1550,7 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
+                "codex_reasoning_items, codex_message_items, event_type, metadata_json "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
                 tuple(session_ids),
             ).fetchall()
@@ -1535,6 +1558,34 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
+            metadata = {}
+            if row["metadata_json"]:
+                try:
+                    metadata = json.loads(row["metadata_json"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize message metadata in conversation replay")
+                    metadata = {}
+            if (
+                row["role"] == "delivery"
+                or row["event_type"] == "delivery_mirror"
+                or (isinstance(metadata, dict) and metadata.get("mirror") is True)
+            ):
+                try:
+                    from gateway.mirror import mirror_to_agent_history_entry
+                    messages.append(mirror_to_agent_history_entry({
+                        "role": row["role"],
+                        "content": content,
+                        "event_type": row["event_type"],
+                        "mirror": bool(metadata.get("mirror")) if isinstance(metadata, dict) else False,
+                        "mirror_source": metadata.get("mirror_source") if isinstance(metadata, dict) else None,
+                        "delivery": metadata.get("delivery") if isinstance(metadata, dict) else {},
+                    }))
+                except Exception:
+                    messages.append({
+                        "role": "system",
+                        "content": f"[External delivery event; context only, not a local assistant reply.]\n{content}",
+                    })
+                continue
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}

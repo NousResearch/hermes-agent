@@ -12,7 +12,7 @@ the full SessionStore machinery.
 import json
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -20,6 +20,105 @@ logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = get_hermes_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
+
+DELIVERY_EVENT_ROLE = "delivery"
+DELIVERY_EVENT_TYPE = "delivery_mirror"
+
+
+def build_mirror_message(
+    platform: str,
+    chat_id: str,
+    message_text: str,
+    *,
+    session_id: Optional[str] = None,
+    source_label: str = "cli",
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    source_platform: Optional[str] = None,
+    source_chat_id: Optional[str] = None,
+    source_chat_name: Optional[str] = None,
+    source_user_id: Optional[str] = None,
+    source_user_name: Optional[str] = None,
+    source_session_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build the durable transcript record for a cross-chat delivery.
+
+    The record is deliberately *not* an ``assistant`` message. It represents an
+    external delivery event that happened in another chat/session, and keeping it
+    typed as such prevents future turns from mistaking it for a local assistant
+    reply to the recipient.
+    """
+
+    source = {
+        "label": source_label or source_platform or "unknown",
+        "platform": source_platform or source_label or "",
+        "chat_id": str(source_chat_id or ""),
+        "chat_name": str(source_chat_name or ""),
+        "user_id": str(source_user_id or ""),
+        "user_name": str(source_user_name or ""),
+        "session_key": str(source_session_key or ""),
+    }
+    target = {
+        "platform": str(platform or ""),
+        "chat_id": str(chat_id or ""),
+        "thread_id": str(thread_id or ""),
+        "user_id": str(user_id or ""),
+        "session_id": str(session_id or ""),
+    }
+    return {
+        "role": DELIVERY_EVENT_ROLE,
+        "content": message_text,
+        "timestamp": datetime.now().isoformat(),
+        "event_type": DELIVERY_EVENT_TYPE,
+        "mirror": True,
+        "mirror_source": source["label"],
+        "delivery": {
+            "source": source,
+            "target": target,
+        },
+    }
+
+
+def _compact_identity(*parts: Any) -> str:
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return ", ".join(out)
+
+
+def mirror_to_agent_history_entry(message: dict[str, Any]) -> dict[str, str]:
+    """Convert a durable delivery event into safe model-facing context.
+
+    Model providers do not understand the internal ``delivery`` transcript role,
+    and treating a cross-chat delivery as ``assistant`` caused contamination: the
+    receiving session appeared to have authored the delivered text. Replay it as
+    a clearly-labelled system note instead.
+    """
+
+    content = str(message.get("content") or "")
+    delivery = message.get("delivery") if isinstance(message.get("delivery"), dict) else {}
+    source = delivery.get("source") if isinstance(delivery.get("source"), dict) else {}
+
+    label = source.get("label") or message.get("mirror_source") or "another session"
+    source_user = source.get("user_name") or source.get("user_id")
+    source_chat = source.get("chat_name") or source.get("chat_id")
+    source_platform = source.get("platform")
+    origin = _compact_identity(source_user, source_chat, source_platform, label) or str(label)
+
+    return {
+        "role": "system",
+        "content": (
+            f"[External delivery from {origin}: this message was sent into "
+            "this chat by the delivery/messaging tool. It is context only, "
+            "not a reply authored by this session.]\n"
+            f"{content}"
+        ),
+    }
 
 
 def mirror_to_session(
@@ -29,6 +128,12 @@ def mirror_to_session(
     source_label: str = "cli",
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    source_platform: Optional[str] = None,
+    source_chat_id: Optional[str] = None,
+    source_chat_name: Optional[str] = None,
+    source_user_id: Optional[str] = None,
+    source_user_name: Optional[str] = None,
+    source_session_key: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -56,13 +161,21 @@ def mirror_to_session(
             )
             return False
 
-        mirror_msg = {
-            "role": "assistant",
-            "content": message_text,
-            "timestamp": datetime.now().isoformat(),
-            "mirror": True,
-            "mirror_source": source_label,
-        }
+        mirror_msg = build_mirror_message(
+            platform,
+            str(chat_id),
+            message_text,
+            session_id=session_id,
+            source_label=source_label,
+            thread_id=thread_id,
+            user_id=user_id,
+            source_platform=source_platform,
+            source_chat_id=source_chat_id,
+            source_chat_name=source_chat_name,
+            source_user_id=source_user_id,
+            source_user_name=source_user_name,
+            source_session_key=source_session_key,
+        )
 
         _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
@@ -166,10 +279,17 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     try:
         from hermes_state import SessionDB
         db = SessionDB()
+        metadata = {
+            "mirror": message.get("mirror") is True,
+            "mirror_source": message.get("mirror_source"),
+            "delivery": message.get("delivery") or {},
+        }
         db.append_message(
             session_id=session_id,
-            role=message.get("role", "assistant"),
+            role=message.get("role", DELIVERY_EVENT_ROLE),
             content=message.get("content"),
+            event_type=message.get("event_type"),
+            metadata=metadata,
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)

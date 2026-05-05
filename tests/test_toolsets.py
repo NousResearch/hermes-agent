@@ -56,6 +56,11 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_delegation_toolset_includes_background_agent_helper(self):
+        tools = resolve_toolset("delegation")
+        assert "delegate_task" in tools
+        assert "spawn_background_agent" in tools
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools

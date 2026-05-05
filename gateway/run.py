@@ -13487,6 +13487,22 @@ class GatewayRunner:
                 if role in ("session_meta",):
                     continue
                 
+                # Delivery mirror records are external transcript events, not
+                # assistant replies from this chat. Replay them as labelled
+                # system context so they cannot contaminate role history.
+                if role == "delivery" or msg.get("event_type") == "delivery_mirror" or msg.get("mirror"):
+                    try:
+                        from gateway.mirror import mirror_to_agent_history_entry
+                        agent_history.append(mirror_to_agent_history_entry(msg))
+                    except Exception:
+                        content = msg.get("content")
+                        if content:
+                            agent_history.append({
+                                "role": "system",
+                                "content": f"[External delivery event; context only, not a local assistant reply.]\n{content}",
+                            })
+                    continue
+
                 # Skip system messages -- the agent rebuilds its own system prompt
                 if role == "system":
                     continue

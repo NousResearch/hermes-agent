@@ -337,6 +337,28 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Human-readable reason (recorded on the reclaimed event)",
     )
 
+    # --- diagnostics (board-wide health) ---
+    p_diag = sub.add_parser(
+        "diagnostics",
+        aliases=["diag"],
+        help="List active diagnostics on the current board",
+    )
+    p_diag.add_argument(
+        "--severity",
+        choices=["warning", "error", "critical"],
+        default=None,
+        help="Only show diagnostics at or above this severity",
+    )
+    p_diag.add_argument(
+        "--task",
+        default=None,
+        help="Only show diagnostics for one task id",
+    )
+    p_diag.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON (structured) instead of the default human table",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -628,6 +650,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
+        "diagnostics": _cmd_diagnostics,
+        "diag":     _cmd_diagnostics,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -1091,6 +1115,31 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+
+    # Diagnostics section — surface active distress signals at the top
+    # of show output so CLI users see them before scrolling through
+    # comments / runs.
+    from hermes_cli import kanban_diagnostics as kd
+    diags = kd.compute_task_diagnostics(task, events, runs)
+    if diags:
+        sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+        print(f"\n  Diagnostics ({len(diags)}):")
+        for d in diags:
+            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.title}")
+            if d.data:
+                bits = []
+                for k, v in d.data.items():
+                    if isinstance(v, list):
+                        bits.append(f"{k}={','.join(str(x) for x in v)}")
+                    else:
+                        bits.append(f"{k}={v}")
+                if bits:
+                    print(f"       data: {' | '.join(bits)}")
+            # Only show suggested actions in show output to keep it tight;
+            # full list is available via `kanban diagnostics --task <id>`.
+            for a in d.actions:
+                if a.suggested:
+                    print(f"       → {a.label}")
     if task.started_at:
         print(f"  started:   {_fmt_ts(task.started_at)}")
     if task.completed_at:
@@ -1184,6 +1233,128 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
         f"{profile or '(unassigned)'}"
         + (" (claim reclaimed)" if getattr(args, "reclaim", False) else "")
     )
+    return 0
+
+
+def _cmd_diagnostics(args: argparse.Namespace) -> int:
+    """List active diagnostics on the board. Wraps the same rule engine
+    the dashboard uses, so CLI output matches what the UI shows.
+    """
+    from hermes_cli import kanban_diagnostics as kd
+
+    with kb.connect() as conn:
+        # Either one-task mode or fleet mode.
+        if getattr(args, "task", None):
+            task = kb.get_task(conn, args.task)
+            if task is None:
+                print(f"no such task: {args.task}", file=sys.stderr)
+                return 1
+            diags_by_task = {
+                args.task: kd.compute_task_diagnostics(
+                    task,
+                    kb.list_events(conn, args.task),
+                    kb.list_runs(conn, args.task),
+                )
+            }
+        else:
+            # Fleet mode: pull all non-archived tasks + their events/runs.
+            rows = list(conn.execute(
+                "SELECT * FROM tasks WHERE status != 'archived'"
+            ).fetchall())
+            ids = [r["id"] for r in rows]
+            if not ids:
+                diags_by_task = {}
+            else:
+                placeholders = ",".join(["?"] * len(ids))
+                ev_by = {i: [] for i in ids}
+                for row in conn.execute(
+                    f"SELECT * FROM task_events WHERE task_id IN ({placeholders}) ORDER BY id",
+                    tuple(ids),
+                ):
+                    ev_by.setdefault(row["task_id"], []).append(row)
+                run_by = {i: [] for i in ids}
+                for row in conn.execute(
+                    f"SELECT * FROM task_runs WHERE task_id IN ({placeholders}) ORDER BY id",
+                    tuple(ids),
+                ):
+                    run_by.setdefault(row["task_id"], []).append(row)
+                diags_by_task = {}
+                for r in rows:
+                    tid = r["id"]
+                    dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []))
+                    if dl:
+                        diags_by_task[tid] = dl
+
+        # Severity filter.
+        sev = getattr(args, "severity", None)
+        if sev:
+            for tid in list(diags_by_task.keys()):
+                kept = [d for d in diags_by_task[tid] if d.severity == sev]
+                if kept:
+                    diags_by_task[tid] = kept
+                else:
+                    del diags_by_task[tid]
+
+        # Map task_id → title/status/assignee for the table output.
+        meta: dict[str, dict] = {}
+        if diags_by_task:
+            placeholders = ",".join(["?"] * len(diags_by_task))
+            for r in conn.execute(
+                f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({placeholders})",
+                tuple(diags_by_task.keys()),
+            ):
+                meta[r["id"]] = {
+                    "title": r["title"], "status": r["status"],
+                    "assignee": r["assignee"],
+                }
+
+    if getattr(args, "json", False):
+        out_json = [
+            {
+                "task_id": tid,
+                **meta.get(tid, {}),
+                "diagnostics": [d.to_dict() for d in dl],
+            }
+            for tid, dl in diags_by_task.items()
+        ]
+        print(json.dumps(out_json, indent=2, ensure_ascii=False))
+        return 0
+
+    if not diags_by_task:
+        print("No active diagnostics on this board.")
+        return 0
+
+    # Human-readable summary: grouped by task, severity-marked, with
+    # suggested actions inline.
+    sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+    total = sum(len(dl) for dl in diags_by_task.values())
+    print(
+        f"{total} active diagnostic(s) across "
+        f"{len(diags_by_task)} task(s):\n"
+    )
+    for tid, dl in diags_by_task.items():
+        m = meta.get(tid, {})
+        title = m.get("title") or "(untitled)"
+        status = m.get("status") or "?"
+        assignee = m.get("assignee") or "(unassigned)"
+        print(f"  {tid}  {status:8s}  @{assignee:18s}  {title}")
+        for d in dl:
+            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.kind}: {d.title}")
+            if d.data:
+                # Compact key:value pairs on one line.
+                bits = []
+                for k, v in d.data.items():
+                    if isinstance(v, list):
+                        bits.append(f"{k}={','.join(str(x) for x in v)}")
+                    else:
+                        bits.append(f"{k}={v}")
+                if bits:
+                    print(f"       data: {' | '.join(bits)}")
+            # Suggested actions first.
+            for a in d.actions:
+                if a.suggested:
+                    print(f"       → {a.label}")
+        print()
     return 0
 
 

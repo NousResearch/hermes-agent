@@ -91,6 +91,7 @@ AUTHOR_MAP = {
     "jani@0xhoneyjar.xyz": "deep-name",
     "xiangyong@zspace.cn": "CES4751",
     "harish.kukreja@gmail.com": "counterposition",
+    "35294173+Fearvox@users.noreply.github.com": "Fearvox",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

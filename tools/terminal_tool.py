@@ -1542,6 +1542,22 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(r"\b(?:nohup|disown|setsid)\b", re.IGNORECASE)
 _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+# Matches double- or single-quoted string literals (non-greedy, no newline crossing).
+# Used to strip quoted content before safety-filter regex scans so that keywords
+# embedded in arguments, commit messages, or -c code snippets are not flagged.
+_QUOTED_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27')
+
+
+def _strip_quoted_strings(command: str) -> str:
+    """Remove all single- and double-quoted string literals from *command*.
+
+    Leaves the surrounding shell tokens intact so regex patterns still see the
+    unquoted command structure (e.g. ``nohup ./srv`` stays as-is, but
+    ``git commit -m "fix: nohup call"`` becomes ``git commit -m ``).  This
+    prevents false positives when safety-filter keywords appear only inside
+    quoted arguments rather than as real shell-level commands.
+    """
+    return _QUOTED_STRING_RE.sub("", command)
 _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
     re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
@@ -1570,25 +1586,32 @@ def _foreground_background_guidance(command: str) -> str | None:
 
     Prevents workflows that start a server/watch process and then stall before
     follow-up checks or test commands run.
+
+    Quoted string literals are stripped before safety-filter patterns are
+    applied so that keywords inside commit messages, ``-c`` code snippets, or
+    PR body arguments do not trigger false positives.
     """
     if _looks_like_help_or_version_command(command):
         return None
 
-    if _SHELL_LEVEL_BACKGROUND_RE.search(command):
+    # Strip quoted content so patterns only match actual shell-level tokens.
+    unquoted = _strip_quoted_strings(command)
+
+    if _SHELL_LEVEL_BACKGROUND_RE.search(unquoted):
         return (
             "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
             "Use terminal(background=true) so Hermes can track the process, then run "
             "readiness checks and tests in separate commands."
         )
 
-    if _INLINE_BACKGROUND_AMP_RE.search(command) or _TRAILING_BACKGROUND_AMP_RE.search(command):
+    if _INLINE_BACKGROUND_AMP_RE.search(unquoted) or _TRAILING_BACKGROUND_AMP_RE.search(unquoted):
         return (
             "Foreground command uses '&' backgrounding. Use terminal(background=true) for long-lived "
             "processes, then run health checks and tests in follow-up terminal calls."
         )
 
     for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
-        if pattern.search(command):
+        if pattern.search(unquoted):
             return (
                 "This foreground command appears to start a long-lived server/watch process. "
                 "Run it with background=true, verify readiness (health endpoint/log signal), "

@@ -83,6 +83,78 @@ def _parse_int_setting(value: Any, default: int) -> int:
         return default
 
 
+def _ensure_pgvector_compatible() -> None:
+    """Restore a locally-built pgvector if pg0's bundled one targets a newer glibc.
+
+    pg0-embedded ships a ``vector.so`` linked against glibc 2.38+.  Hosts
+    with an older glibc (e.g. Ubuntu 22.04's 2.35) cannot load it, which
+    crashes the embedded PostgreSQL and hangs the Hindsight daemon.
+
+    When a mismatch is detected and a previously-built stash exists at
+    ``~/.pg0/installation/<version>/lib/vector.so.local``, restore it so the
+    daemon can start cleanly.  If no stash exists the mismatch is logged but
+    not fixed — use the ``hindsight-fix`` skill to create one.
+    """
+    import platform as _plat
+    if _plat.system() != "Linux":
+        return
+
+    import subprocess as _sp
+    from pathlib import Path as _P
+
+    # Bail out if the host glibc is already new enough.
+    try:
+        ver_out = _sp.run(
+            ["ldd", "--version"], capture_output=True, text=True, timeout=5
+        ).stdout
+        import re as _re
+        m = _re.search(r"(\d+)\.(\d+)", ver_out)
+        if not m or (int(m.group(1)), int(m.group(2))) >= (2, 38):
+            return
+    except Exception:
+        return
+
+    pg0_root = _P.home() / ".pg0" / "installation"
+    if not pg0_root.exists():
+        return
+
+    for pg_dir in sorted(pg0_root.iterdir()):
+        if not pg_dir.is_dir():
+            continue
+        vector_so = pg_dir / "lib" / "vector.so"
+        if not vector_so.exists():
+            continue
+
+        # Does the bundled extension ask for a glibc newer than the host?
+        try:
+            ldd_out = _sp.run(
+                ["ldd", str(vector_so)], capture_output=True, text=True, timeout=10
+            )
+            if "GLIBC_2.38" not in ldd_out.stderr and "GLIBC_2.39" not in ldd_out.stderr:
+                continue
+        except Exception:
+            continue
+
+        # Mismatch detected — try restoring from stash.
+        stash = vector_so.parent / "vector.so.local"
+        if not stash.exists():
+            logger.warning(
+                "pgvector in %s requires a newer glibc than this host — "
+                "the Hindsight daemon may fail to start.  "
+                "Fix: load the hindsight-fix skill to rebuild it, then run "
+                "`cp ~/.pg0/installation/%s/lib/vector.so "
+                "~/.pg0/installation/%s/lib/vector.so.local` to create a stash.",
+                pg_dir.name, pg_dir.name, pg_dir.name,
+            )
+            continue
+
+        import shutil as _shutil
+        _shutil.copy2(str(stash), str(vector_so))
+        logger.info(
+            "hindsight: restored pgvector from local stash (%s)", pg_dir.name,
+        )
+
+
 def _check_local_runtime() -> tuple[bool, str | None]:
     """Return whether local embedded Hindsight imports cleanly.
 
@@ -94,6 +166,7 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     try:
         importlib.import_module("hindsight")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
+        _ensure_pgvector_compatible()
         return True, None
     except Exception as exc:
         return False, str(exc)

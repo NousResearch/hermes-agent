@@ -120,6 +120,26 @@ def _ext_to_mime(ext: str) -> str:
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
 
 
+def _detect_inbound_message_type(media_types: List[str]) -> MessageType:
+    """Classify inbound Signal attachments for gateway routing.
+
+    Signal attachments already carry MIME types. Anything that's not an
+    image or audio should surface as a document so the gateway injects the
+    saved file path into the agent context instead of silently treating the
+    turn as plain text.
+    """
+    normalized = [str(mtype or "").lower() for mtype in media_types if str(mtype or "").strip()]
+    if not normalized:
+        return MessageType.TEXT
+    if any(not mtype.startswith(("image/", "audio/")) for mtype in normalized):
+        return MessageType.DOCUMENT
+    if any(mtype.startswith("audio/") for mtype in normalized):
+        return MessageType.VOICE
+    if any(mtype.startswith("image/") for mtype in normalized):
+        return MessageType.PHOTO
+    return MessageType.TEXT
+
+
 def _render_mentions(text: str, mentions: list) -> str:
     """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
@@ -568,13 +588,8 @@ class SignalAdapter(BasePlatformAdapter):
             chat_id_alt=group_id if is_group else None,
         )
 
-        # Determine message type from media
-        msg_type = MessageType.TEXT
-        if media_types:
-            if any(mt.startswith("audio/") for mt in media_types):
-                msg_type = MessageType.VOICE
-            elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.PHOTO
+        # Determine message type from media.
+        msg_type = _detect_inbound_message_type(media_types)
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)

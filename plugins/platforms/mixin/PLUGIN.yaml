@@ -1,0 +1,32 @@
+name: mixin-platform
+kind: platform
+version: 2.0.0
+description: >
+  Mixin Messenger gateway adapter for Hermes Agent.
+  Connects via Mixin Blaze WebSocket (wss://blaze.mixin.one) for receiving
+  messages and uses the Mixin REST API for sending.
+
+  Supports three configuration methods (in priority order):
+    1. Environment variables: MIXIN_APP_ID, MIXIN_SESSION_ID, MIXIN_SESSION_PRIVATE_KEY
+    2. Config fields: gateway.platforms.mixin.extra.app_id / session_id / session_private_key
+    3. Keystore file: gateway.platforms.mixin.extra.keystore_path -> ~/.mixin/keystore.json
+
+  Only app_id, session_id, and session_private_key are required for messaging.
+  server_public_key and spend_private_key are only needed for Safe transactions/transfers.
+
+  To create a bot:
+    1. Go to https://developers.mixin.one/dashboard
+    2. Create or select your bot app
+    3. Settings → Copy the credentials
+author: LixvYang
+requires_env:
+  - MIXIN_APP_ID
+  - MIXIN_SESSION_ID
+  - MIXIN_SESSION_PRIVATE_KEY
+optional_env:
+  - MIXIN_SERVER_PUBLIC_KEY
+  - MIXIN_SPEND_PRIVATE_KEY
+  - MIXIN_KEYSTORE_PATH
+  - MIXIN_HOME_CHAT_ID
+  - MIXIN_ALLOWED_USERS
+  - MIXIN_ALLOW_ALL_USERS

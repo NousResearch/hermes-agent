@@ -1868,6 +1868,13 @@ class AIAgent:
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        try:
+            from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
+            _model_cthresh = _cthresh_fn(self.model)
+            if _model_cthresh is not None:
+                compression_threshold = _model_cthresh
+        except Exception:
+            pass
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))

@@ -2654,9 +2654,14 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-skills")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
+        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
         @discord.app_commands.choices(mode=[
-            discord.app_commands.Choice(name="channel — join your voice channel", value="channel"),
+            # `join` and `channel` both route to _handle_voice_channel_join in
+            # gateway/run.py — expose both in the slash UI so autocomplete
+            # matches what the docs advertise and what the runner accepts when
+            # the command is typed as plain text.
+            discord.app_commands.Choice(name="join — join your voice channel", value="join"),
+            discord.app_commands.Choice(name="channel — join your voice channel (alias)", value="channel"),
             discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),

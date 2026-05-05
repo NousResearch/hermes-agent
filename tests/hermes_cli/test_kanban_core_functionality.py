@@ -2786,3 +2786,269 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
             timeout=3.0,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Hallucination gate (created_cards verify + prose scan)
+# ---------------------------------------------------------------------------
+
+def test_complete_with_created_cards_all_verified_records_manifest(kanban_home):
+    """A completion with created_cards that all exist + belong to this
+    worker records them on the ``completed`` event payload."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        c1 = kb.create_task(conn, title="c1", assignee="x", created_by="alice")
+        c2 = kb.create_task(conn, title="c2", assignee="y", created_by="alice")
+        ok = kb.complete_task(
+            conn, parent,
+            summary="done, created c1+c2",
+            created_cards=[c1, c2],
+        )
+        assert ok is True
+        evs = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        completed = [e for e in evs if e["kind"] == "completed"]
+        assert len(completed) == 1
+        import json as _json
+        payload = _json.loads(completed[0]["payload"])
+        assert payload.get("verified_cards") == [c1, c2]
+    finally:
+        conn.close()
+
+
+def test_complete_with_phantom_created_cards_raises_and_audits(kanban_home):
+    """A completion claiming a card id that doesn't exist raises
+    HallucinatedCardsError, leaves the task in its prior state, and
+    records a ``completion_blocked_hallucination`` event for auditing."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        phantom_id = "t_deadbeefcafe"
+
+        with pytest.raises(kb.HallucinatedCardsError) as excinfo:
+            kb.complete_task(
+                conn, parent,
+                summary="claimed phantom",
+                created_cards=[real, phantom_id],
+            )
+        assert excinfo.value.phantom == [phantom_id]
+
+        # Task still in prior state (ready, not done).
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (parent,),
+        ).fetchone()
+        assert row["status"] == "ready"
+
+        # Audit event landed.
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "completion_blocked_hallucination" in kinds
+        assert "completed" not in kinds
+    finally:
+        conn.close()
+
+
+def test_complete_with_cross_worker_card_is_rejected(kanban_home):
+    """A card that exists but was created by a different worker profile
+    is treated as phantom (hallucinated attribution)."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        other = kb.create_task(conn, title="other", assignee="x", created_by="bob")
+
+        with pytest.raises(kb.HallucinatedCardsError) as excinfo:
+            kb.complete_task(
+                conn, parent,
+                summary="claiming someone else's card",
+                created_cards=[other],
+            )
+        assert excinfo.value.phantom == [other]
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_flags_nonexistent_ids(kanban_home):
+    """Successful completion whose summary references a ``t_<hex>`` id
+    that doesn't resolve emits a ``suspected_hallucinated_references``
+    event. Does not block the completion."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        ok = kb.complete_task(
+            conn, parent,
+            summary="also saw t_abcd1234ffff failing in CI",
+        )
+        assert ok is True
+        kinds_and_payloads = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        kinds = [r["kind"] for r in kinds_and_payloads]
+        assert "suspected_hallucinated_references" in kinds
+        import json as _json
+        susp = [
+            _json.loads(r["payload"])
+            for r in kinds_and_payloads
+            if r["kind"] == "suspected_hallucinated_references"
+        ][0]
+        assert "t_abcd1234ffff" in susp["phantom_refs"]
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_ignores_existing_ids(kanban_home):
+    """Summaries referencing real task ids don't emit a warning."""
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="other", assignee="x")
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        ok = kb.complete_task(
+            conn, parent,
+            summary=f"depended on {other}, now done",
+        )
+        assert ok is True
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recovery helpers (reclaim + reassign)
+# ---------------------------------------------------------------------------
+
+def test_reclaim_task_resets_running_to_ready(kanban_home):
+    """Manual reclaim releases the claim, resets status, and emits a
+    ``reclaimed`` event even when claim_expires has not passed."""
+    import time
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="stuck", assignee="broken")
+        # Simulate a live claim (not expired).
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 12345, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 12345, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+
+        # release_stale_claims should NOT reclaim (not expired).
+        assert kb.release_stale_claims(conn) == 0
+
+        # reclaim_task should work immediately.
+        assert kb.reclaim_task(conn, t, reason="test reason") is True
+
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+        assert row["worker_pid"] is None
+
+        import json as _json
+        reclaim_evs = [
+            _json.loads(r["payload"])
+            for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='reclaimed'",
+                (t,),
+            )
+        ]
+        assert len(reclaim_evs) == 1
+        assert reclaim_evs[0].get("manual") is True
+        assert reclaim_evs[0].get("reason") == "test reason"
+    finally:
+        conn.close()
+
+
+def test_reclaim_task_returns_false_for_already_ready(kanban_home):
+    """Reclaiming a task that's not running returns False (no-op)."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="ready task", assignee="x")
+        assert kb.reclaim_task(conn, t) is False
+    finally:
+        conn.close()
+
+
+def test_reassign_task_refuses_running_without_reclaim_first(kanban_home):
+    """Without ``reclaim_first=True``, reassigning a running task is a
+    no-op returning False (matches assign_task's RuntimeError via
+    internal catch)."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=? WHERE id=?",
+            ("live", t),
+        )
+        conn.commit()
+        assert kb.reassign_task(conn, t, "new") is False
+        # Assignee unchanged.
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "orig"
+    finally:
+        conn.close()
+
+
+def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
+    """With ``reclaim_first=True``, a running task is reclaimed and
+    reassigned in one operation."""
+    import time
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="switch me", assignee="orig")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+
+        assert kb.reassign_task(
+            conn, t, "new-profile",
+            reclaim_first=True, reason="switch model",
+        ) is True
+
+        row = conn.execute(
+            "SELECT assignee, status FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "new-profile"
+        assert row["status"] == "ready"
+    finally:
+        conn.close()

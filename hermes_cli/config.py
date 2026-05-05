@@ -809,6 +809,9 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        # HUD mode: multi-line status bar (like claude-hud).
+        # Set to true to enable by default; toggle at runtime with /statusbar hud.
+        "hud": True,
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 

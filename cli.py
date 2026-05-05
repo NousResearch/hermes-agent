@@ -591,6 +591,28 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
+# ── Status Bar v2.0 constants ─────────────────────────────────────────
+DEFAULT_STATUSBAR_FUNCORDER = [
+    "model", "cwd", "git", "duration", "session",
+    "context", "tokens", "speed", "cost",
+    "mcp", "skill", "tools", "agent", "todos",
+]
+VALID_STATUSBAR_ELEMENTS = set(DEFAULT_STATUSBAR_FUNCORDER)
+FUNCORDER_CONFIRM_TIMEOUT = 10.0  # seconds for funcorder replace confirmation
+CTRL_C_WARN_TIMEOUT = 3.0         # seconds for Ctrl+C activity warning
+
+# Element group mapping for multi-line HUD layout
+ELEMENT_GROUPS = {
+    "model": "header", "cwd": "header", "git": "header",
+    "duration": "header", "session": "header",
+    "context": "context", "tokens": "context", "speed": "context", "cost": "context",
+    "mcp": "environment", "skill": "environment",
+    "tools": "activity", "agent": "activity", "todos": "activity",
+}
+# Collapsed groups: only "header" and "context" shown in collapsed mode
+COLLAPSED_GROUPS = {"header", "context"}
+# ───────────────────────────────────────────────────────────────────────
+
 
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
@@ -2308,7 +2330,52 @@ class HermesCLI:
         self._voice_tts_done.set()
 
         # Status bar visibility (toggled via /statusbar)
-        self._status_bar_visible = True
+        # ── Status Bar v2.0 initialization ───────────────────────────
+        display_cfg = CLI_CONFIG.get("display", {})
+        # Mode: "single" | "more" | "off"
+        mode = display_cfg.get("statusbar_mode", "single")
+        if display_cfg.get("hud", False) and mode == "single":
+            mode = "more"  # legacy compat: hud:true → more
+        self._statusbar_mode = mode
+        self._status_bar_visible = (mode != "off")
+        self._hud_mode = (mode == "more")
+        self._hud_expanded = True
+        self._hud_line_count = 0
+
+        # Funcorder
+        raw_order = display_cfg.get("statusbar_funcorder", None)
+        if not raw_order:  # None, [], or missing
+            self._statusbar_funcorder = list(DEFAULT_STATUSBAR_FUNCORDER)
+        else:
+            # Strip unknown elements, keep valid ones in order
+            self._statusbar_funcorder = [e for e in raw_order if e in VALID_STATUSBAR_ELEMENTS]
+            if not self._statusbar_funcorder:
+                self._statusbar_funcorder = list(DEFAULT_STATUSBAR_FUNCORDER)
+
+        # Confirmation state for funcorder replace
+        self._funcorder_confirm_pending: str | None = None
+        self._funcorder_confirm_time: float = 0.0
+
+        # Ctrl+C anti-exit state
+        self._ctrl_c_activity_warned: bool = False
+        self._ctrl_c_warn_time: float = 0.0
+        
+        # Running tool tracking (Phase 9)
+        self._running_tool_name: str = ""
+        self._running_tool_target: str = ""
+
+        self._git_branch_cache: str = ""
+        self._git_branch_dirty: bool = False
+        self._tool_call_counts: Dict[str, int] = {}  # tool_name -> call count
+        # ─────────────────────────────────────────────────────────────
+        # Output speed tracking: tokens and timestamp at response start/end
+        self._output_speed_last: float = 0.0
+        self._output_speed_tokens_at_start: int = 0
+        self._output_speed_time_at_start: float = 0.0
+        # Agent activity tracking: delegate_task calls with elapsed time
+        self._agent_activity_cache: list = []
+        self._agent_activity_last_scan: int = 0
+        self._agent_activity_last_refresh: float = 0.0
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -2428,7 +2495,10 @@ class HermesCLI:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "provider": getattr(self, "provider", "") or "",
+            "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
             "duration": format_duration_compact(elapsed_seconds),
+            "elapsed_seconds": elapsed_seconds,
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
                 getattr(self, "_prompt_duration", 0.0),
@@ -2446,6 +2516,10 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "estimated_cost_usd": 0.0,
+            "output_speed": 0.0,  # tokens/sec of last response
+            "git_branch": getattr(self, "_git_branch_cache", "") or "",
+            "git_dirty": getattr(self, "_git_branch_dirty", False),
         }
 
         if not agent:
@@ -2459,6 +2533,17 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["estimated_cost_usd"] = getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0
+
+        # Rate limit state from provider response headers
+        try:
+            rl_state = agent.get_rate_limit_state() if hasattr(agent, "get_rate_limit_state") else None
+            snapshot["rate_limit_state"] = rl_state
+        except Exception:
+            snapshot["rate_limit_state"] = None
+
+        # Output speed: tokens/sec from last API response
+        snapshot["output_speed"] = self._get_output_speed()
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -2631,76 +2716,1340 @@ class HermesCLI:
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
+    # ── Status Bar v2.0 command helpers ──────────────────────────────
+
+    def _statusbar_show_current(self) -> None:
+        """Show current mode and element order (for bare /statusbar)."""
+        mode_names = {"single": "Single-line Dashboard", "more": "Multi-line HUD", "off": "Off"}
+        mode_name = mode_names.get(self._statusbar_mode, self._statusbar_mode)
+        self._console_print(f"  Status Bar: {mode_name}")
+        self._console_print(f"  Collapsed: {'Yes' if not getattr(self, '_hud_expanded', True) else 'No'}")
+        self._console_print(f"  Element order ({len(self._statusbar_funcorder)} elements):")
+        for i, elem in enumerate(self._statusbar_funcorder, 1):
+            self._console_print(f"    {i:2}. {elem}")
+        self._console_print(f"\n  Use /statusbar help for full command list.")
+
+    def _statusbar_print_help(self) -> None:
+        """Print full /statusbar help text per requirements §3.2."""
+        help_text = """\n Status Bar Commands:
+
+ /statusbar              Show current mode & elements
+ /statusbar help         Show this help
+ /statusbar single       Single-line dashboard (default)
+ /statusbar more         Multi-line HUD
+ /statusbar off          Hide status bar
+ /statusbar funcorder    Configure element display order
+
+ Available Elements:
+   model     — Current model name [cyan]
+   cwd       — Working directory name [gold]
+   git       — Git branch & dirty flag [purple]
+   duration  — Session elapsed time [gray]
+   session   — Session title [green]
+   context   — Context window usage bar [green/yellow/red]
+   tokens    — Token in/out/cache stats [gray]
+   speed     — Output speed tok/s [gray]
+   cost      — Estimated cost USD [gray]
+   mcp       — Connected MCP server count [blue]
+   skill     — Active skill name [purple]
+   tools     — Tool call counts [green check + cyan name]
+   agent     — Sub-agent activity [cyan]
+   todos     — Task completion status [green]
+
+ Funcorder Usage:
+   /statusbar funcorder                              — show current order
+   /statusbar funcorder reset                        — reset to default
+   /statusbar funcorder model cwd context mcp tools   — replace order (with confirm)
+   /statusbar funcorder +git +tokens                 — append elements
+   /statusbar funcorder -cost -agent                 — remove elements
+
+ ⚠  No +/- prefix = FULL REPLACE. Use + to append safely.
+
+ Persistence: order saved to config.yaml display.statusbar_funcorder\n"""
+        # Print line by line to avoid Rich markdown parsing
+        for line in help_text.split("\n"):
+            self._console_print(line)
+
+    def _statusbar_set_mode(self, mode: str) -> None:
+        """Set status bar mode and save config."""
+        self._statusbar_mode = mode
+        self._hud_mode = (mode == "more")
+        self._status_bar_visible = (mode != "off")
+        save_config_value("display.statusbar_mode", mode)
+        mode_names = {"single": "Single-line dashboard", "more": "Multi-line HUD", "off": "Off"}
+        self._console_print(f"  Status bar: {mode_names.get(mode, mode)}")
+
+    def _handle_statusbar_funcorder(self, args_str: str) -> None:
+        """Handle /statusbar funcorder commands per requirements §3.3."""
+        if not args_str:
+            # Show current order as numbered list
+            self._console_print(f"  Current element order ({len(self._statusbar_funcorder)} elements):")
+            for i, elem in enumerate(self._statusbar_funcorder, 1):
+                self._console_print(f"    {i:2}. {elem}")
+            return
+
+        tokens = args_str.split()
+
+        if tokens[0] == "reset":
+            self._statusbar_funcorder = list(DEFAULT_STATUSBAR_FUNCORDER)
+            save_config_value("display.statusbar_funcorder", self._statusbar_funcorder)
+            self._console_print("  Funcorder reset to default.")
+            return
+
+        # Determine mode: + prefix → APPEND, - prefix → REMOVE, else → REPLACE
+        has_append = any(t.startswith("+") for t in tokens)
+        has_remove = any(t.startswith("-") for t in tokens)
+
+        if has_append:
+            # APPEND mode
+            new_order = list(self._statusbar_funcorder)
+            for token in tokens:
+                if token.startswith("+"):
+                    elem = token[1:]
+                    if elem not in VALID_STATUSBAR_ELEMENTS:
+                        self._console_print(f"  ✗ Unknown element: {elem}")
+                        self._console_print(f"    Valid elements: {', '.join(sorted(VALID_STATUSBAR_ELEMENTS))}")
+                        return
+                    # If already present, move to end; else append
+                    if elem in new_order:
+                        new_order.remove(elem)
+                    new_order.append(elem)
+            self._statusbar_funcorder = new_order
+            save_config_value("display.statusbar_funcorder", new_order)
+            self._console_print(f"  Funcorder updated ({len(new_order)} elements).")
+            return
+
+        if has_remove:
+            # REMOVE mode
+            new_order = list(self._statusbar_funcorder)
+            for token in tokens:
+                if token.startswith("-"):
+                    elem = token[1:]
+                    if elem in new_order:
+                        new_order.remove(elem)
+                    # silent no-op if not present
+            if not new_order:
+                self._console_print("  ✗ Cannot remove all elements.")
+                return
+            self._statusbar_funcorder = new_order
+            save_config_value("display.statusbar_funcorder", new_order)
+            self._console_print(f"  Funcorder updated ({len(new_order)} elements).")
+            return
+
+        # REPLACE mode
+        # Validate all tokens first
+        for token in tokens:
+            if token not in VALID_STATUSBAR_ELEMENTS:
+                self._console_print(f"  ✗ Unknown element: {token}")
+                self._console_print(f"    Valid elements: {', '.join(sorted(VALID_STATUSBAR_ELEMENTS))}")
+                return
+
+        # Deduplicate keeping first occurrence
+        seen = set()
+        new_order = []
+        for t in tokens:
+            if t not in seen:
+                seen.add(t)
+                new_order.append(t)
+
+        # Confirmation check
+        args_normalized = " ".join(tokens)
+        now = time.time()
+        if (self._funcorder_confirm_pending == args_normalized
+                and (now - self._funcorder_confirm_time) < FUNCORDER_CONFIRM_TIMEOUT):
+            # Confirmed
+            self._statusbar_funcorder = new_order
+            save_config_value("display.statusbar_funcorder", new_order)
+            self._funcorder_confirm_pending = None
+            self._funcorder_confirm_time = 0.0
+            self._console_print(f"  Funcorder replaced ({len(new_order)} elements).")
+        else:
+            # First time: show confirmation
+            removed = [e for e in self._statusbar_funcorder if e not in new_order]
+            self._funcorder_confirm_pending = args_normalized
+            self._funcorder_confirm_time = now
+            self._console_print(
+                f"  ⚠  This will REPLACE your current element order "
+                f"({len(self._statusbar_funcorder)} elements → {len(new_order)} elements)."
+            )
+            if removed:
+                self._console_print(f"     Elements removed: {', '.join(removed)}")
+            self._console_print(
+                f"     Run the same command again to confirm, or use + to append instead.\n"
+                f"     (Confirmation expires in {int(FUNCORDER_CONFIRM_TIMEOUT)} seconds)"
+            )
+
+    # ── End Status Bar v2.0 command helpers ──────────────────────────
+
     def _get_status_bar_fragments(self):
+        """Single-line dashboard per requirements §4.3.
+
+        Layout: [Model] │ cwd │ ⏱ duration │ session    Context ██░░ 39%  │  N MCPs  │  skill  │  ✓ Tool ×N | ✓ ×M
+
+        Truncation uses intrinsic priority (not funcorder):
+          1. model (NEVER truncate)
+          2. context (NEVER truncate)
+          3. cwd → 4. duration → 5. session → 6. mcp → 7. skill → 8. tools
+        """
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
-            # Use prompt_toolkit's own terminal width when running inside the
-            # TUI — shutil.get_terminal_size() can return stale or fallback
-            # values (especially on SSH) that differ from what prompt_toolkit
-            # actually renders, causing the fragments to overflow to a second
-            # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
-            duration_label = snapshot["duration"]
 
-            if width < 52:
-                frags = [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
-                    ("class:status-bar", " "),
-                ]
+            # HUD style classes for the v2 single-line dashboard
+            dim = "class:hud-label"
+            model_s = "class:hud-model"
+            project_s = "class:hud-project"
+            git_s = "class:hud-git"
+            git_branch_s = "class:hud-git-branch"
+            tool_ok_s = "class:hud-tool-ok"
+            tool_name_s = "class:hud-tool-name"
+            skill_s = "class:hud-skill"
+            mcp_s = "class:hud-mcp"
+            session_s = "class:hud-session"
+            sep_s = "class:hud-separator"
+
+            # Refresh throttled data
+            self._refresh_git_branch()
+            self._update_tool_call_counts()
+
+            funcorder = self._statusbar_funcorder
+
+            # Build element fragments on demand
+            def _elem(label, value, style):
+                return (style, f" {label}:{value}" if label else f" {value}")
+
+            all_elems = {}  # elem_name -> [(style, text), ...]
+
+            # model (always)
+            all_elems["model"] = [(model_s, f"[{snapshot['model_short']}]")]
+
+            # cwd
+            cwd_name = self._hud_format_cwd(snapshot["cwd"], self._get_hud_path_depth())
+            if len(cwd_name) > 12:
+                cwd_name = cwd_name[:10] + ".."
+            all_elems["cwd"] = [(project_s, cwd_name)]
+
+            # duration
+            all_elems["duration"] = [(dim, f"⏱ {snapshot['duration']}")]
+
+            # session title
+            session_title = self._get_hud_session_title()
+            if session_title and session_title != cwd_name:
+                if len(session_title) > 16:
+                    session_title = session_title[:14] + ".."
+                all_elems["session"] = [(session_s, session_title)]
             else:
-                percent = snapshot["context_percent"]
-                percent_label = f"{percent}%" if percent is not None else "--"
-                if width < 76:
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
-                    ]
-                else:
-                    if snapshot["context_length"]:
-                        ctx_total = _format_context_length(snapshot["context_length"])
-                        ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                        context_label = f"{ctx_used}/{ctx_total}"
-                    else:
-                        context_label = "ctx --"
+                all_elems["session"] = []
 
-                    bar_style = self._status_bar_context_style(percent)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                    ]
-                    # Position 7: per-prompt elapsed timer (live or frozen)
-                    prompt_elapsed = snapshot.get("prompt_elapsed")
-                    if prompt_elapsed:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-dim", prompt_elapsed))
-                    frags.append(("class:status-bar", " "))
+            # context bar (always)
+            percent = snapshot["context_percent"]
+            percent_label = f"{percent}%" if percent is not None else "--"
+            if percent is not None:
+                if percent >= 85:
+                    ctx_style = "class:hud-context-critical"
+                elif percent >= 70:
+                    ctx_style = "class:hud-context-warn"
+                else:
+                    ctx_style = "class:hud-context-ok"
+            else:
+                ctx_style = dim
+            ctx_bar_width = min(16, max(8, width // 8))
+            filled = round((percent or 0) / 100 * ctx_bar_width) if percent is not None else 0
+            empty = ctx_bar_width - filled
+            ctx_bar_str = "█" * filled + "░" * empty
+            all_elems["context"] = [
+                ("class:hud-label", "Context "),
+                ("class:hud-bar-fill" if filled else "class:hud-bar-empty", ctx_bar_str),
+                (ctx_style, f" {percent_label}"),
+            ]
+
+            # git (single-line: branch + dirty)
+            git_frags = []
+            if snapshot.get("git_branch"):
+                dirty = "*" if snapshot.get("git_dirty") else ""
+                git_frags = [
+                    (git_s, "git:("),
+                    (git_branch_s, f"{snapshot['git_branch']}{dirty}"),
+                    (git_s, ")"),
+                ]
+            all_elems["git"] = git_frags
+
+            # MCP count (single-line: count only)
+            mcp_call_detail = self._get_hud_mcp_call_detail()
+            if mcp_call_detail:
+                total_mcp_calls = sum(d["count"] for d in mcp_call_detail)
+                all_elems["mcp"] = [(mcp_s, f" {len(mcp_call_detail)} MCPs")]
+            else:
+                all_elems["mcp"] = []
+
+            # Skill (single-line: name only if active)
+            skill_info = self._get_hud_skill_info()
+            if skill_info:
+                top_skill = sorted(skill_info, key=lambda x: x["count"], reverse=True)[0]["name"]
+                if len(top_skill) > 25:
+                    top_skill = top_skill[:23] + ".."
+                all_elems["skill"] = [(skill_s, top_skill)]
+            else:
+                all_elems["skill"] = []
+
+            # Tools (single-line: top 6)
+            counts = self._tool_call_counts
+            tool_frags = []
+            if counts:
+                non_mcp = [(k, v) for k, v in counts.items()
+                           if not k.startswith("mcp_") and k != "skill_view"]
+                non_mcp.sort(key=lambda x: x[1], reverse=True)
+                for idx, (name, cnt) in enumerate(non_mcp[:6]):
+                    short_name = name.replace("_tool", "").replace("_", " ").title()
+                    if len(short_name) > 18:
+                        short_name = short_name[:16] + ".."
+                    tool_frags.append((tool_ok_s, "✓"))
+                    tool_frags.append((dim, " "))
+                    tool_frags.append((tool_name_s, short_name))
+                    tool_frags.append((dim, f" ×{cnt}"))
+            all_elems["tools"] = tool_frags
+
+            # tokens, speed, cost, agent, todos — not in single-line mode
+            for e in ["tokens", "speed", "cost", "agent", "todos"]:
+                all_elems[e] = []
+
+            # ── Assemble in funcorder ──
+            frags = []
+            for elem_name in funcorder:
+                elem_frags = all_elems.get(elem_name, [])
+                if not elem_frags:
+                    continue
+                if frags:
+                    frags.append((sep_s, " │ "))
+                frags.extend(elem_frags)
+
+            if not frags:
+                frags = [(dim, " starting...")]
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
+
+            # Truncation: intrinsic priority order
             if total_width > width:
-                plain_text = "".join(text for _, text in frags)
-                trimmed = self._trim_status_bar_text(plain_text, width)
-                return [("class:status-bar", trimmed)]
+                truncate_order = ["tools", "skill", "mcp", "session", "duration", "cwd"]
+                # model and context are never truncated (positions 1,2 in priority)
+                for remove_elem in truncate_order:
+                    if sum(self._status_bar_display_width(text) for _, text in frags) <= width:
+                        break
+                    # Rebuild without this element
+                    new_frags = []
+                    for elem_name in funcorder:
+                        if elem_name == remove_elem or elem_name in truncate_order[:truncate_order.index(remove_elem)]:
+                            continue
+                        elem_frags = all_elems.get(elem_name, [])
+                        if not elem_frags:
+                            continue
+                        if new_frags:
+                            new_frags.append((sep_s, " │ "))
+                        new_frags.extend(elem_frags)
+                    if new_frags:
+                        new_width = sum(self._status_bar_display_width(text) for _, text in new_frags)
+                        if new_width <= width:
+                            frags = new_frags
+                            break
+                else:
+                    # If even model+context too wide, trim to plain text
+                    plain = "".join(text for _, text in frags)
+                    trimmed = self._trim_status_bar_text(plain, width)
+                    return [("class:status-bar", trimmed)]
+
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    # ====================================================================
+    # HUD (Heads-Up Display) — multi-line status panel
+    # ====================================================================
+
+    # Incremental message scan state — only scan new messages since last check
+    _hud_last_msg_index: int = 0
+
+    def _invalidate_git_branch_cache(self) -> None:
+        """Force next refresh to re-read git branch (call after git commands)."""
+        self._git_branch_last_refresh = 0.0
+
+    def _refresh_git_branch(self) -> None:
+        """Update cached git branch info (throttled to avoid per-frame subprocess).
+
+        Uses a single subprocess call with shell scriptlet to get both branch
+        name and dirty status in one shot. Throttle 2s; call _invalidate_git_branch_cache()
+        to force immediate refresh (e.g. after git checkout/switch).
+        """
+        now = time.monotonic()
+        if hasattr(self, "_git_branch_last_refresh") and (now - self._git_branch_last_refresh) < 2.0:
+            return
+        self._git_branch_last_refresh = now
+        try:
+            import subprocess
+            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+            # Single subprocess: get branch + dirty flag in one call
+            result = subprocess.run(
+                ["bash", "-c", "branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); "
+                                  "if [ -n \"$(git status --porcelain 2>/dev/null)\" ]; then "
+                                  "echo \"${branch}*\"; else echo \"${branch}\"; fi"],
+                capture_output=True, text=True, timeout=3, cwd=cwd,
+            )
+            if result.returncode == 0:
+                combined = result.stdout.strip()
+                if combined.endswith("*"):
+                    self._git_branch_cache = combined[:-1]
+                    self._git_branch_dirty = True
+                elif combined:
+                    self._git_branch_cache = combined
+                    self._git_branch_dirty = False
+                else:
+                    self._git_branch_cache = ""
+                    self._git_branch_dirty = False
+            else:
+                self._git_branch_cache = ""
+                self._git_branch_dirty = False
+        except Exception:
+            self._git_branch_cache = ""
+            self._git_branch_dirty = False
+
+    def _update_tool_call_counts(self) -> None:
+        """Scan agent messages for tool call stats (incremental — only new messages).
+
+        Tracks `_hud_last_msg_index` so we only process messages added since
+        the last call, rather than re-scanning the entire history every 3s.
+        """
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return
+        messages = getattr(agent, "_session_messages", None)
+        if not messages:
+            return
+
+        start = getattr(self, "_hud_last_msg_index", 0)
+        if start >= len(messages):
+            return
+
+        now = time.monotonic()
+        if hasattr(self, "_tool_counts_last_refresh") and (now - self._tool_counts_last_refresh) < 3.0:
+            return
+        self._tool_counts_last_refresh = now
+
+        counts = getattr(self, "_tool_call_counts", {})
+        for msg in messages[start:]:
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else str(tc)
+                    if name:
+                        counts[name] = counts.get(name, 0) + 1
+
+        self._tool_call_counts = counts
+        self._hud_last_msg_index = len(messages)
+
+    def _get_hud_skill_info(self) -> list:
+        """Scan tool_call_counts for skill_view calls (cached, throttled).
+
+        Returns list of dicts: {"name": str, "count": int}
+        """
+        now = time.monotonic()
+        if hasattr(self, "_skill_counts_last_refresh") and (now - self._skill_counts_last_refresh) < 3.0:
+            return getattr(self, "_skill_info_cache", [])
+        self._skill_counts_last_refresh = now
+        agent = getattr(self, "agent", None)
+        if not agent:
+            self._skill_info_cache = []
+            return []
+        messages = getattr(agent, "_session_messages", None)
+        if not messages:
+            self._skill_info_cache = []
+            return []
+        counts: Dict[str, int] = {}
+        for msg in messages:
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fname = tc.get("function", {}).get("name", "")
+                if fname != "skill_view":
+                    continue
+                args_raw = tc.get("function", {}).get("arguments", "")
+                if isinstance(args_raw, str):
+                    try:
+                        import json as _json
+                        args = _json.loads(args_raw)
+                    except Exception:
+                        args = {}
+                elif isinstance(args_raw, dict):
+                    args = args_raw
+                else:
+                    args = {}
+                skill_name = args.get("name", "")
+                if skill_name:
+                    counts[skill_name] = counts.get(skill_name, 0) + 1
+        result = [{"name": k, "count": v} for k, v in counts.items()]
+        self._skill_info_cache = result
+        return result
+
+    def _get_hud_skill_stages(self) -> tuple:
+        """Returns (running_skills, completed_skills) from agent activity cache.
+
+        Running: entries from _agent_activity_cache where duration == "..."
+        Completed: entries where duration != "..."
+
+        Returns tuple of two lists of dicts:
+          {"name": str, "description": str, "duration": str, "elapsed": str}
+        Only running entries get an "elapsed" key (computed live).
+        """
+        running = []
+        completed = []
+        self._update_tool_call_counts()  # ensure fresh cache
+        agent_acts = self._get_hud_agent_activity()
+        for act in agent_acts:
+            # delegate_task goal is plain text like "分析 burn 项目架构"
+            # No skill hierarchy to parse — just use the full goal as description
+            entry = {
+                "name": "delegate_task",
+                "description": act["goal_preview"],
+                "duration": act["duration"],
+            }
+            if act["duration"] == "...":
+                entry["elapsed"] = self._format_elapsed_since(
+                    self._agent_activity_last_refresh
+                )
+                running.append(entry)
+            else:
+                completed.append(entry)
+        return running, completed
+
+    def _format_elapsed_since(self, since_time: float) -> str:
+        """Format elapsed time since a timestamp."""
+        if not since_time:
+            return "0s"
+        elapsed = time.monotonic() - since_time
+        if elapsed < 60:
+            return f"{int(elapsed)}s"
+        m, s = divmod(int(elapsed), 60)
+        return f"{m}m {s}s"
+
+    def _get_hud_session_title(self) -> str:
+        """Get session title or fallback to session ID short."""
+        try:
+            db = getattr(self, "_session_db", None)
+            sid = getattr(self, "session_id", "")
+            if db and sid:
+                title = db.get_session_title(sid)
+                if title:
+                    return title
+        except Exception:
+            pass
+        sid = getattr(self, "session_id", "")
+        return sid[-12:] if len(sid) > 12 else sid
+
+    def _get_hud_mcp_info(self) -> list:
+        """Collect MCP server info: active servers, per-server call counts, last status.
+
+        Returns list of dicts with keys: name, connected, call_count, last_status, tools_count.
+        """
+        result: list = []
+        try:
+            from tools.mcp_tool import _servers as mcp_servers
+            for name, server in mcp_servers.items():
+                connected = bool(getattr(server, "session", None))
+                tools_count = len(getattr(server, "_registered_tool_names", []) or [])
+                result.append({
+                    "name": name,
+                    "connected": connected,
+                    "call_count": 0,
+                    "last_status": "",
+                    "tools_count": tools_count,
+                })
+        except Exception:
+            pass
+
+        # Scan session messages for MCP tool call counts and last status
+        agent = getattr(self, "agent", None)
+        if agent:
+            messages = getattr(agent, "_session_messages", None) or []
+            per_server: Dict[str, int] = {}
+            per_server_last: Dict[str, str] = {}
+            for msg in messages:
+                tool_calls = msg.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for tc in tool_calls:
+                    fname = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
+                    if not fname or not fname.startswith("mcp_"):
+                        continue
+                    parts = fname.split("_", 2)
+                    if len(parts) >= 2:
+                        server_key = parts[1]
+                        per_server[server_key] = per_server.get(server_key, 0) + 1
+
+            for msg in messages:
+                if msg.get("role") != "tool":
+                    continue
+                tc_name = msg.get("name", "")
+                if not tc_name or not tc_name.startswith("mcp_"):
+                    continue
+                parts = tc_name.split("_", 2)
+                if len(parts) >= 2:
+                    server_key = parts[1]
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        if '"error"' in content[:200]:
+                            per_server_last[server_key] = "\u2717 err"
+                        elif '"result"' in content[:200] or content.strip():
+                            # Don't overwrite an error with a later success
+                            if server_key not in per_server_last:
+                                per_server_last[server_key] = "\u2713 ok"
+
+            for entry in result:
+                entry["call_count"] = per_server.get(entry["name"], 0)
+                entry["last_status"] = per_server_last.get(entry["name"], "")
+
+        return result
+
+    def _get_hud_mcp_call_detail(self) -> list:
+        """Get per-MCP-server call counts from tool_call_counts.
+
+        Returns list of dicts: {"server": str, "count": int}, sorted desc by count.
+        Uses ELEMENT_GROUPS-style data extraction from _tool_call_counts.
+        """
+        result: dict = {}
+        for name, count in self._tool_call_counts.items():
+            if name.startswith("mcp_"):
+                parts = name.split("_", 2)
+                if len(parts) >= 3:
+                    server = parts[1]
+                    result[server] = result.get(server, 0) + count
+        return sorted(
+            [{"server": k, "count": v} for k, v in result.items()],
+            key=lambda x: x["count"], reverse=True
+        )
+
+    def _get_hud_todo_status(self) -> str:
+        """Get todo completion status from agent's TodoStore."""
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return ""
+        store = getattr(agent, "_todo_store", None)
+        if not store:
+            return ""
+        try:
+            items = getattr(store, "items", []) or []
+            if not items:
+                return ""
+            total = len(items)
+            done = sum(1 for i in items if getattr(i, "status", None) == "completed")
+            if done == total:
+                return f"\u2713 todos {done}/{total}"
+            elif done > 0:
+                return f"\u25cb todos {done}/{total}"
+            else:
+                return f"\u25cb {total} todos"
+        except Exception:
+            return ""
+
+    def _get_hud_session_stats(self) -> Dict[str, Any]:
+        """Gather session statistics: tokens, API calls, error count, cost estimate.
+
+        Uses incremental scanning via _hud_last_msg_index to avoid re-scanning
+        the entire message history on every render.
+        """
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return {}
+
+        # Token counts from agent attributes (already tracked by run_agent)
+        stats: Dict[str, Any] = {
+            "input_tokens": getattr(agent, "session_input_tokens", 0) or 0,
+            "output_tokens": getattr(agent, "session_output_tokens", 0) or 0,
+            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+            "cache_read": getattr(agent, "session_cache_read_tokens", 0) or 0,
+            "api_calls": getattr(agent, "session_api_calls", 0) or 0,
+        }
+
+        # Count errors from tool result messages (incremental)
+        error_count = getattr(self, "_hud_error_count", 0)
+        messages = getattr(agent, "_session_messages", None) or []
+        start = getattr(self, "_hud_error_scan_index", 0)
+        if start < len(messages):
+            for msg in messages[start:]:
+                if msg.get("role") == "tool":
+                    content = msg.get("content", "")
+                    if isinstance(content, str) and ("error" in content[:100].lower() or '"error"' in content[:100]):
+                        error_count += 1
+            self._hud_error_count = error_count
+            self._hud_error_scan_index = len(messages)
+        stats["errors"] = error_count
+
+        # Compressions count
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor:
+            stats["compressions"] = getattr(compressor, "compression_count", 0) or 0
+
+        return stats
+
+    @staticmethod
+    def _hud_format_tokens(n: int) -> str:
+        """Compact token count formatting."""
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.1f}K"
+        return str(n)
+
+    def _get_output_speed(self) -> float:
+        """Calculate output token speed (tokens/sec) from last API response.
+
+        Snapshots output_tokens at the start of each API call and computes
+        the delta when polled. Returns 0.0 if no recent activity.
+        """
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return 0.0
+        if not hasattr(self, "_output_speed_tokens_at_start"):
+            return 0.0
+        current_out = getattr(agent, "session_output_tokens", 0) or 0
+        # If tokens grew since last snapshot, compute speed
+        if current_out > self._output_speed_tokens_at_start:
+            delta_tokens = current_out - self._output_speed_tokens_at_start
+            elapsed = time.monotonic() - self._output_speed_time_at_start
+            if elapsed > 0.1:
+                speed = delta_tokens / elapsed
+                self._output_speed_last = speed
+        # Update baseline for next measurement when a new turn starts
+        if hasattr(self, "_prompt_start_time") and self._prompt_start_time is not None:
+            # Mid-stream: keep baseline from before this turn
+            pass
+        return self._output_speed_last
+
+    def _snapshot_output_speed_baseline(self) -> None:
+        """Record output token count before an API call (for speed calc)."""
+        agent = getattr(self, "agent", None)
+        self._output_speed_tokens_at_start = getattr(agent, "session_output_tokens", 0) or 0
+        self._output_speed_time_at_start = time.monotonic()
+
+    def _get_hud_custom_line(self) -> str:
+        """Get custom line from display.hud_custom_line config."""
+        try:
+            return CLI_CONFIG.get("display", {}).get("hud_custom_line", "") or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _hud_format_cwd(cwd: str, depth: int = 1) -> str:
+        """Format cwd path with N trailing directory levels.
+
+        depth=1: "hermes-agent"
+        depth=2: ".hermes/hermes-agent"
+        depth=3: "yimiliya/.hermes/hermes-agent"
+        """
+        if depth <= 1:
+            return os.path.basename(cwd)
+        parts = cwd.strip("/").split("/")
+        if len(parts) <= depth:
+            return cwd.strip("/") or "/"
+        return "/".join(parts[-depth:])
+
+    def _get_hud_path_depth(self) -> int:
+        """Read hud_path_depth config (1-3, default 1)."""
+        try:
+            depth = CLI_CONFIG.get("display", {}).get("hud_path_depth", 1)
+            depth = int(depth)
+            return max(1, min(3, depth))
+        except Exception:
+            return 1
+
+    @staticmethod
+    def _hud_format_duration(seconds: float) -> str:
+        """Format duration for HUD — shows hours even beyond 24h."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        minutes = seconds / 60
+        if minutes < 60:
+            return f"{int(minutes)}m"
+        hours = minutes / 60
+        remaining_min = int(minutes % 60)
+        if remaining_min:
+            return f"{int(hours)}h {remaining_min}m"
+        return f"{int(hours)}h"
+
+    def _get_hud_agent_activity(self) -> list:
+        """Scan messages for delegate_task activity with elapsed time.
+        
+        Returns list of dicts: {"goal_preview": str, "duration": str}
+        Throttled to 3s between scans.
+        Rebuilds cache from scratch each scan so running entries get updated.
+        """
+        now = time.monotonic()
+        if self._agent_activity_last_refresh and (now - self._agent_activity_last_refresh) < 3.0:
+            return self._agent_activity_cache
+        self._agent_activity_last_refresh = now
+
+        agent = getattr(self, "agent", None)
+        if not agent:
+            self._agent_activity_cache = []
+            return []
+
+        messages = getattr(agent, "_session_messages", None) or []
+        if not messages:
+            self._agent_activity_cache = []
+            return []
+
+        import json as _json
+
+        def _duration(seconds: float) -> str:
+            if seconds < 1:
+                return "<1s"
+            if seconds < 60:
+                return f"{int(seconds)}s"
+            m, s = divmod(int(seconds), 60)
+            if m < 60:
+                return f"{m}m {s}s"
+            h, m_rem = divmod(m, 60)
+            return f"{h}h {m_rem}m"
+
+        # Full scan: build a map of tool_call_id -> activity
+        # First pass: collect all delegate_task tool_calls
+        pending: dict = {}  # tool_call_id -> {"goal_preview": str, "duration": str}
+        for msg in messages:
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fname = tc.get("function", {}).get("name", "")
+                if fname != "delegate_task":
+                    continue
+                tc_id = tc.get("id", "")
+                if not tc_id:
+                    continue
+                args_raw = tc.get("function", {}).get("arguments", "")
+                if isinstance(args_raw, str):
+                    try:
+                        args = _json.loads(args_raw)
+                    except Exception:
+                        args = {}
+                elif isinstance(args_raw, dict):
+                    args = args_raw
+                else:
+                    args = {}
+                goal = args.get("goal", "") or ""
+                pending[tc_id] = {"goal_preview": goal, "duration": "..."}
+
+        # Second pass: match tool results to update duration
+        for msg in messages:
+            if msg.get("role") != "tool":
+                continue
+            if msg.get("name") != "delegate_task":
+                continue
+            tc_id = msg.get("tool_call_id", "")
+            if tc_id not in pending:
+                continue
+            content = msg.get("content", "")
+            duration = "done"
+            if isinstance(content, str) and content:
+                try:
+                    result_data = _json.loads(content)
+                    dur_seconds = result_data.get("total_duration_seconds", 0)
+                    if dur_seconds and dur_seconds > 0:
+                        duration = _duration(dur_seconds)
+                except Exception:
+                    pass
+            pending[tc_id]["duration"] = duration
+
+        # Preserve order: activities in the order they appeared
+        activities = list(pending.values())
+        # Keep last 10
+        if len(activities) > 10:
+            activities = activities[-10:]
+        self._agent_activity_cache = activities
+        return self._agent_activity_cache
+
+    def _get_running_tool(self) -> dict | None:
+        """Detect currently running tool from _spinner_text.
+
+        Returns dict with keys: name, target (or None if no tool running).
+        Used by HUD to show ◐ ToolName: target indicator (Phase 9 / R1 rule).
+
+        Spinner text formats:
+          "📖 /path/to/file"     → emoji + preview (target = "/path/to/file")
+          "📖 Read: /path/..."   → emoji + tool_name: target
+          "⚡ tool_name"          → emoji + function_name (no target)
+          "Running tool..."      → legacy format
+        """
+        if not self._agent_running:
+            return None
+        spinner = getattr(self, "_spinner_text", "")
+        if not spinner:
+            return None
+        text = spinner.strip()
+
+        # Legacy format: "Running Read..." or "Running Read: /path..."
+        if text.startswith("Running "):
+            rest = text[len("Running "):].rstrip(".").strip()
+            if ": " in rest:
+                name, target = rest.split(": ", 1)
+                return {"name": name.strip(), "target": target.strip()}
+            return {"name": rest, "target": ""}
+
+        # Emoji format: "📖 Read: /path/to/file" or "📖 /path/to/file"
+        # Strip leading emoji(s) — emoji are non-ASCII
+        import unicodedata
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if unicodedata.category(ch).startswith('So') or ord(ch) > 127:
+                i += 1
+            else:
+                break
+        rest = text[i:].strip()
+
+        # Try "ToolName: target" split first
+        if ": " in rest:
+            colon_idx = rest.index(": ")
+            name = rest[:colon_idx].strip()
+            target = rest[colon_idx + 2:].strip()
+            # If name looks like a function_name (snake_case), use it as-is
+            # Otherwise it might be the target itself (preview-only format)
+            if name and '_' in name and name.islower():
+                return {"name": name, "target": target}
+            # Preview-only: rest IS the target, infer name from known patterns
+            return {"name": self._infer_tool_from_target(target), "target": target}
+
+        # Single word: likely just the tool name
+        if rest:
+            return {"name": rest, "target": ""}
+        return None
+
+    @staticmethod
+    def _infer_tool_from_target(target: str) -> str:
+        """Guess the tool name from a target string."""
+        import os
+        if target.startswith('/') or target.startswith('~/'):
+            return "read_file"  # most common for file paths
+        return "terminal"
+
+    def _get_hud_group_order(self) -> list:
+        """Derive vertical group order from funcorder.
+        
+        Scan funcorder left-to-right; first element from each group
+        determines the group's vertical position per requirements §4.1.
+        Ensures all four groups (header, context, environment, activity)
+        are present.
+        """
+        order = self._statusbar_funcorder
+        seen_groups = []
+        for elem in order:
+            group = ELEMENT_GROUPS.get(elem)
+            if group and group not in seen_groups:
+                seen_groups.append(group)
+        # Ensure all groups present
+        for g in ["header", "context", "environment", "activity"]:
+            if g not in seen_groups:
+                seen_groups.append(g)
+        return seen_groups
+
+    def _render_hud_group(self, group_name: str, expanded: bool,
+                          snapshot: dict, width: int,
+                          dim: str, model_s: str, project_s: str, git_s: str,
+                          git_branch_s: str, tool_ok_s: str, tool_name_s: str,
+                          skill_s: str, mcp_s: str, session_s: str,
+                          bar_fill: str, bar_empty: str) -> list:
+        """Render one HUD element group. Returns list of fragment lines."""
+        lines: list = []
+        funcorder = self._statusbar_funcorder
+        
+        if group_name == "header":
+            # Line: [Model] │ cwd │ git:(branch*) │ session │ ⏱ duration
+            line1: list = [(model_s, f"[{snapshot['model_short']}]")]
+            cwd_name = self._hud_format_cwd(snapshot["cwd"], self._get_hud_path_depth())
+            line1.append((dim, " │ "))
+            line1.append((project_s, cwd_name))
+            
+            if snapshot.get("git_branch"):
+                dirty = "*" if snapshot.get("git_dirty") else ""
+                line1.append((dim, " │ "))
+                line1.append((git_s, "git:("))
+                line1.append((git_branch_s, f"{snapshot['git_branch']}{dirty}"))
+                line1.append((git_s, ")"))
+            
+            session_title = self._get_hud_session_title()
+            if session_title and session_title != cwd_name:
+                if len(session_title) > 20:
+                    session_title = session_title[:18] + ".."
+                line1.append((dim, " │ "))
+                line1.append((session_s, session_title))
+            
+            hud_duration = snapshot["duration"]
+            custom_line = self._get_hud_custom_line()
+            right_segs = [f"⏱ {hud_duration}"]
+            if custom_line:
+                right_segs.append(custom_line)
+            right_text = " │ ".join(right_segs)
+            
+            left_width = sum(self._status_bar_display_width(t) for _, t in line1)
+            right_width = self._status_bar_display_width(right_text)
+            padding = max(1, width - left_width - right_width - 1)
+            if padding > 2:
+                line1.append((dim, " " * padding))
+            line1.append((dim, f" {right_text}"))
+            lines.append(line1)
+            
+        elif group_name == "context":
+            # Line 1: Context bar + %
+            percent = snapshot["context_percent"]
+            percent_label = f"{percent}%" if percent is not None else "--"
+            if percent is not None:
+                if percent >= 85:
+                    ctx_style = "class:hud-context-critical"
+                elif percent >= 70:
+                    ctx_style = "class:hud-context-warn"
+                else:
+                    ctx_style = "class:hud-context-ok"
+            else:
+                ctx_style = dim
+            ctx_bar_width = min(20, max(10, width // 6))
+            filled = round((percent or 0) / 100 * ctx_bar_width) if percent is not None else 0
+            empty = ctx_bar_width - filled
+            ctx_bar_str = "█" * filled + "░" * empty
+            lines.append([
+                (dim, " Context "),
+                (bar_fill if filled else bar_empty, ctx_bar_str),
+                (ctx_style, f" {percent_label}"),
+            ])
+            
+            # Line 2: Token / call / speed / cost stats
+            stats = self._get_hud_session_stats()
+            in_tok = stats.get("input_tokens", 0)
+            out_tok = stats.get("output_tokens", 0)
+            api_calls = stats.get("api_calls", 0)
+            compressions = stats.get("compressions", 0)
+            cache_read = snapshot.get("session_cache_read_tokens", 0)
+            out_speed = snapshot.get("output_speed", 0.0)
+            cost_usd = snapshot.get("estimated_cost_usd", 0.0)
+            
+            stat_segs: list = []
+            if in_tok or out_tok:
+                stat_segs.append(f"in {self._hud_format_tokens(in_tok)} out {self._hud_format_tokens(out_tok)}")
+            if cache_read:
+                stat_segs.append(f"cache: {self._hud_format_tokens(cache_read)}")
+            if api_calls:
+                stat_segs.append(f"{api_calls} calls")
+            if compressions:
+                stat_segs.append(f"{compressions} compress")
+            if out_speed > 0:
+                stat_segs.append(f"out: {out_speed:.1f} tok/s")
+            if cost_usd > 0:
+                stat_segs.append(f"~${cost_usd:.2f}")
+            
+            if stat_segs:
+                stat_text = " " + " │ ".join(stat_segs)
+                available = width - 2
+                if self._status_bar_display_width(stat_text) > available:
+                    stat_text = self._trim_status_bar_text(stat_text, available)
+                lines.append([(dim, stat_text)])
+
+            # Rate limit line (from provider response headers)
+            rl = snapshot.get("rate_limit_state")
+            if rl and hasattr(rl, "has_data") and rl.has_data:
+                rl_parts = []
+                rl_warn_style = dim
+                for label, bucket, fmt_fn in [
+                    ("RPM", rl.requests_min, lambda b: f"{b.remaining}/{b.limit}"),
+                    ("RPH", rl.requests_hour, lambda b: f"{self._hud_format_tokens(b.remaining)}/{self._hud_format_tokens(b.limit)}"),
+                    ("TPM", rl.tokens_min, lambda b: f"{self._hud_format_tokens(b.remaining)}/{self._hud_format_tokens(b.limit)}"),
+                    ("TPH", rl.tokens_hour, lambda b: f"{self._hud_format_tokens(b.remaining)}/{self._hud_format_tokens(b.limit)}"),
+                ]:
+                    if bucket.limit > 0:
+                        usage = bucket.usage_pct
+                        if usage >= 80:
+                            rl_warn_style = "class:hud-context-critical"
+                        elif usage >= 60:
+                            rl_warn_style = "class:hud-context-warn"
+                        bar_w = 6
+                        filled = max(0, min(bar_w, round(usage / 100 * bar_w)))
+                        bar = "█" * filled + "░" * (bar_w - filled)
+                        rl_parts.append(f"{label} {fmt_fn(bucket)} {bar}")
+
+                if rl_parts:
+                    rl_text = " " + " │ ".join(rl_parts)
+                    # Show reset timer from most constrained bucket
+                    rh = rl.requests_hour
+                    th = rl.tokens_hour
+                    reset_sec = 0
+                    if rh.limit > 0 and rh.remaining_seconds_now > 0:
+                        reset_sec = rh.remaining_seconds_now
+                    if th.limit > 0 and th.remaining_seconds_now > 0:
+                        reset_sec = min(reset_sec or float("inf"), th.remaining_seconds_now)
+                    if reset_sec > 0:
+                        m, s = divmod(int(reset_sec), 60)
+                        if m > 0:
+                            rl_text += f" (reset {m}m)"
+                        else:
+                            rl_text += f" (reset {s}s)"
+                    available = width - 2
+                    if self._status_bar_display_width(rl_text) > available:
+                        rl_text = self._trim_status_bar_text(rl_text, available)
+                    lines.append([(rl_warn_style, rl_text)])
+
+        elif group_name == "environment":
+            if not expanded:
+                return lines
+            
+            # MCP detail line
+            mcp_call_detail = self._get_hud_mcp_call_detail()
+            if mcp_call_detail:
+                # Show top 5 servers
+                top5 = mcp_call_detail[:5]
+                mcp_parts = []
+                mcp_parts.append((mcp_s, f"{len(mcp_call_detail)} MCPs"))
+                mcp_parts.append((dim, " │ "))
+                for idx, d in enumerate(top5):
+                    if idx > 0:
+                        mcp_parts.append((dim, " | "))
+                    server_name = d["server"]
+                    if len(server_name) > 16:
+                        server_name = server_name[:14] + ".."
+                    mcp_parts.append((mcp_s, server_name))
+                    mcp_parts.append((dim, f" ×{d['count']}"))
+                if len(mcp_call_detail) > 5:
+                    mcp_parts.append((dim, f" +{len(mcp_call_detail) - 5} more"))
+                mcp_line = [(dim, " ")]
+                mcp_line.extend(mcp_parts)
+                lines.append(mcp_line)
+            
+        elif group_name == "activity":
+            if not expanded:
+                return lines
+            
+            # Skill stage lines (running and completed) - moved from environment
+            running_skills, completed_skills = self._get_hud_skill_stages()
+            
+            # Show completed skills first (with duration)
+            for cs in completed_skills:
+                # ✓ description (duration)
+                desc = cs["description"]
+                if len(desc) > 60:
+                    desc = desc[:57] + ".."
+                skill_line = [
+                    (tool_ok_s, "✓"),
+                    (dim, " "),
+                    (skill_s, desc),
+                ]
+                dur = cs.get("duration", "")
+                if dur and dur not in ("...", "done"):
+                    skill_line.append((dim, f" ({dur})"))
+                lines.append(skill_line)
+            
+            # Show running skills (with elapsed time)
+            for rs in running_skills:
+                # ◐ description (elapsed)
+                desc = rs["description"]
+                if len(desc) > 60:
+                    desc = desc[:57] + ".."
+                skill_line = [
+                    ("class:hud-tool-running", "◐"),
+                    (dim, " "),
+                    ("class:hud-tool-name", desc),
+                ]
+                if rs.get("elapsed"):
+                    skill_line.append((dim, f" ({rs['elapsed']})"))
+                lines.append(skill_line)
+            
+            # Running tool indicator (Phase 9)
+            running_tool = self._get_running_tool()
+            if running_tool:
+                friendly_name = running_tool["name"].replace("_tool", "").replace("_", " ").title()
+                if len(friendly_name) > 14:
+                    friendly_name = friendly_name[:12] + ".."
+                tool_line = [
+                    ("class:hud-tool-running", " ◐ "),
+                    ("class:hud-tool-name", friendly_name),
+                ]
+                target = running_tool.get("target", "")
+                if target:
+                    # Truncate target for display
+                    if len(target) > 50:
+                        # Keep start and end for paths
+                        if target.startswith("/") or target.startswith("~/"):
+                            target = target[:30] + "..." + target[-15:]
+                        else:
+                            target = target[:47] + "..."
+                    tool_line.append((dim, f": {target}"))
+                lines.append(tool_line)
+            
+            # Tool activity (multi-line, full names)
+            counts = self._tool_call_counts
+            if counts:
+                non_mcp = [(k, v) for k, v in counts.items()
+                           if not k.startswith("mcp_") and k != "skill_view"]
+                if non_mcp:
+                    non_mcp.sort(key=lambda x: x[1], reverse=True)
+                    # Show all tools, split into multiple lines if needed
+                    current_line: list = []
+                    current_width = 0
+                    available = width - 2
+                    sep_width = self._status_bar_display_width(" | ")
+                    
+                    for idx, (name, cnt) in enumerate(non_mcp):
+                        # Build tool entry: ✓ ToolName ×count
+                        tool_entry: list = [(tool_ok_s, "✓"), (dim, " ")]
+                        full_name = name.replace("_tool", "").replace("_", " ").title()
+                        tool_entry.append((tool_name_s, full_name))
+                        tool_entry.append((dim, f" ×{cnt}"))
+                        
+                        entry_width = sum(self._status_bar_display_width(t) for _, t in tool_entry)
+                        
+                        # Check if we need a separator
+                        if current_line:
+                            total_with_sep = current_width + sep_width + entry_width
+                            if total_with_sep <= available:
+                                current_line.append((dim, " | "))
+                                current_line.extend(tool_entry)
+                                current_width = total_with_sep
+                            else:
+                                # New line
+                                if current_line:
+                                    lines.append(current_line)
+                                current_line = [(dim, " ")] + tool_entry
+                                current_width = 1 + entry_width
+                        else:
+                            current_line = [(dim, " ")] + tool_entry
+                            current_width = 1 + entry_width
+                    
+                    # Don't forget the last line
+                    if current_line:
+                        lines.append(current_line)
+                    
+                    # Show count message if tools were omitted (not applicable since we show all)
+                    # if len(non_mcp) > limit: ...
+            
+            # Agent activity — only show running agents (R1 rule)
+            running_agents, _ = self._get_hud_skill_stages()
+            # _get_hud_skill_stages reuses agent activity, so check independently
+            agent_acts = self._get_hud_agent_activity()
+            for act in agent_acts[-5:]:
+                if act["duration"] == "...":
+                    # Running agent
+                    lines.append([
+                        ("class:hud-tool-running", " ◐ agent: "),
+                        ("class:hud-tool-name", act["goal_preview"][:40]),
+                        (dim, f" ({self._format_elapsed_since(self._agent_activity_last_refresh)})"),
+                    ])
+            
+            # Todo status
+            todo_store = getattr(getattr(self, "agent", None), "_todo_store", None)
+            if todo_store:
+                items = getattr(todo_store, "items", []) or []
+                total = len(items)
+                if total > 0:
+                    done = sum(1 for i in items if getattr(i, "status", None) == "completed")
+                    if done == total:
+                        lines.append([("class:hud-tool-ok", f" ✓ All todos complete ({done}/{total})")])
+                    elif done > 0:
+                        lines.append([(dim, f" ○ todos "), (project_s, f"{done}/{total}")])
+                    else:
+                        lines.append([(dim, f" ○ {total} todos")])
+        return lines
+
+    def _get_hud_expanded_fragments(self, snapshot: dict, width: int,
+                                     dim: str, model_s: str, project_s: str,
+                                     git_s: str, git_branch_s: str, tool_ok_s: str,
+                                     tool_name_s: str, skill_s: str, mcp_s: str,
+                                     session_s: str, bar_fill: str, bar_empty: str) -> list:
+        """Render all HUD groups in expanded mode."""
+        groups = self._get_hud_group_order()
+        all_lines = []
+        for group in groups:
+            group_lines = self._render_hud_group(
+                group, True, snapshot, width,
+                dim, model_s, project_s, git_s, git_branch_s,
+                tool_ok_s, tool_name_s, skill_s, mcp_s, session_s,
+                bar_fill, bar_empty
+            )
+            all_lines.extend(group_lines)
+        # Collapse hint at bottom
+        all_lines.append([(dim, " [Alt+H] collapse")])
+        return all_lines
+
+    def _get_hud_collapsed_fragments(self, snapshot: dict, width: int,
+                                      dim: str, model_s: str, project_s: str,
+                                      git_s: str, git_branch_s: str, tool_ok_s: str,
+                                      tool_name_s: str, skill_s: str, mcp_s: str,
+                                      session_s: str, bar_fill: str, bar_empty: str) -> list:
+        """Render only header + context groups (collapsed mode)."""
+        all_lines = []
+        for group in ["header", "context"]:
+            group_lines = self._render_hud_group(
+                group, False, snapshot, width,
+                dim, model_s, project_s, git_s, git_branch_s,
+                tool_ok_s, tool_name_s, skill_s, mcp_s, session_s,
+                bar_fill, bar_empty
+            )
+            all_lines.extend(group_lines)
+        all_lines.append([(dim, " [Alt+H] expand")])
+        return all_lines
+
+    def _get_hud_fragments(self):
+        """Return multi-line HUD fragments v2.0 — group-based layout.
+
+        Uses ELEMENT_GROUPS and funcorder-driven group ordering.
+        Supports collapsed/expanded via Alt+H.
+        Follows R1/R2/R3 display rules for running vs completed indicators.
+        """
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            width = self._get_tui_terminal_width()
+            dim = "class:hud-label"
+            model_s = "class:hud-model"
+            project_s = "class:hud-project"
+            git_s = "class:hud-git"
+            git_branch_s = "class:hud-git-branch"
+            tool_ok_s = "class:hud-tool-ok"
+            tool_name_s = "class:hud-tool-name"
+            skill_s = "class:hud-skill"
+            mcp_s = "class:hud-mcp"
+            session_s = "class:hud-session"
+            bar_fill = "class:hud-bar-fill"
+            bar_empty = "class:hud-bar-empty"
+
+            # Refresh cached data (all throttled internally)
+            self._refresh_git_branch()
+            self._update_tool_call_counts()
+
+            expanded = getattr(self, "_hud_expanded", True)
+
+            if expanded:
+                lines = self._get_hud_expanded_fragments(
+                    snapshot, width, dim, model_s, project_s,
+                    git_s, git_branch_s, tool_ok_s, tool_name_s,
+                    skill_s, mcp_s, session_s, bar_fill, bar_empty
+                )
+            else:
+                lines = self._get_hud_collapsed_fragments(
+                    snapshot, width, dim, model_s, project_s,
+                    git_s, git_branch_s, tool_ok_s, tool_name_s,
+                    skill_s, mcp_s, session_s, bar_fill, bar_empty
+                )
+
+            self._hud_line_count = len(lines) if lines else 1
+
+            # Return as newline-separated fragments
+            result = []
+            for i, line_frags in enumerate(lines):
+                if i > 0:
+                    result.append(("\n", "\n"))
+                result.extend(line_frags)
+            return result
+        except Exception:
+            self._hud_line_count = 1
+            return [("class:status-bar", " HUD error ")]
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -6504,9 +7853,36 @@ class HermesCLI:
         elif canonical == "status":
             self._show_session_status()
         elif canonical == "statusbar":
-            self._status_bar_visible = not self._status_bar_visible
-            state = "visible" if self._status_bar_visible else "hidden"
-            self._console_print(f"  Status bar {state}")
+            # Parse args: everything after "/statusbar"
+            args_str = cmd_original.replace("statusbar", "", 1).strip() if cmd_original.startswith("/") else ""
+            if not args_str or args_str == "/statusbar":
+                args_str = ""
+            args_list = args_str.split() if args_str else []
+            
+            if not args_list:
+                self._statusbar_show_current()
+            elif args_list[0] == "help":
+                self._statusbar_print_help()
+            elif args_list[0] == "single":
+                self._statusbar_set_mode("single")
+            elif args_list[0] == "more":
+                self._statusbar_set_mode("more")
+            elif args_list[0] == "off":
+                self._statusbar_set_mode("off")
+            elif args_list[0] == "hud":
+                # Backward compat: /statusbar hud → toggle to "more"
+                self._statusbar_set_mode("more")
+            elif args_list[0] == "on":
+                # Backward compat: /statusbar on → single
+                self._statusbar_set_mode("single")
+            elif args_list[0] == "collapsed":
+                # Backward compat: /statusbar collapsed → single
+                self._statusbar_set_mode("single")
+            elif args_list[0] == "funcorder":
+                self._handle_statusbar_funcorder(" ".join(args_list[1:]) if len(args_list) > 1 else "")
+            else:
+                # Unknown subcommand: toggle visibility
+                self._statusbar_set_mode("single" if self._statusbar_mode == "off" else "single")
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "footer":
@@ -8119,6 +9495,16 @@ class HermesCLI:
         """
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            # Invalidate git cache after terminal commands that may change branch
+            if function_name in ("terminal", "execute_code"):
+                stored = self._pending_tool_info.get(function_name)
+                if stored:
+                    sa = stored[0] if isinstance(stored, list) and stored else {}
+                else:
+                    sa = function_args or {}
+                cmd = sa.get("command", "")
+                if "git checkout" in cmd or "git switch" in cmd or "git pull" in cmd or "git merge" in cmd or "git rebase" in cmd:
+                    self._invalidate_git_branch_cache()
             # Print stacked scrollback line for "all" / "new" modes
             if function_name and self.tool_progress_mode in ("all", "new"):
                 duration = kwargs.get("duration", 0.0)
@@ -9341,6 +10727,7 @@ class HermesCLI:
             # finishes; reset on the next turn.
             self._prompt_start_time = time.time()
             self._prompt_duration = 0.0
+            self._snapshot_output_speed_baseline()
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
 
@@ -9844,6 +11231,7 @@ class HermesCLI:
         model_picker_widget=None,
         spinner_widget=None,
         spacer,
+        hud_panel=None,
         status_bar,
         input_rule_top,
         image_bar,
@@ -9869,6 +11257,7 @@ class HermesCLI:
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
+                hud_panel,
                 status_bar,
                 input_rule_top,
                 image_bar,
@@ -10484,20 +11873,9 @@ class HermesCLI:
                     self._should_exit = True
                     event.app.exit()
 
-        @kb.add('c-S-c')  # Ctrl+Shift+C
-        def handle_ctrl_shift_c(event):
-            """Copy text to clipboard (terminal-native).
-
-            This is a no-op at the application level. Terminal emulators
-            handle the actual copy operation when Ctrl+Shift+C is pressed.
-            This binding prevents Hermes from intercepting the keystroke
-            as an interrupt signal.
-
-            On macOS the standard copy shortcut is Cmd+C (no Hermes binding
-            needed). On Linux/Windows Ctrl+Shift+C is the conventional
-            terminal copy shortcut.
-            """
-            return  # No-op — let the terminal perform native copy
+        # Note: Ctrl+Shift+C (terminal copy) is not bound here because
+        # prompt_toolkit does not support the 'c-S-c' key notation and
+        # terminals handle Ctrl+Shift+C natively without interception.
 
         @kb.add('c-q')  # Ctrl+Q
         def handle_ctrl_q(event):
@@ -10564,6 +11942,37 @@ class HermesCLI:
                 return
 
             if self._agent_running and self.agent:
+                tool_count = sum(self._tool_call_counts.values())
+
+                # AGENT_WORKING: agent running + has tool calls
+                if tool_count > 0 and not self._ctrl_c_activity_warned:
+                    self._ctrl_c_activity_warned = True
+                    self._ctrl_c_warn_time = time.time()
+                    # Build summary (top 3 non-MCP tools)
+                    non_mcp = sorted(
+                        [(k, v) for k, v in self._tool_call_counts.items()
+                         if not k.startswith("mcp_")],
+                        key=lambda x: -x[1]
+                    )[:3]
+                    parts = [f"✓ {name.replace('_tool','').replace('_',' ').title()} ×{cnt}" for name, cnt in non_mcp]
+                    summary = " | ".join(parts) if parts else f"{tool_count} tool calls"
+                    print(f"\n⚡ Agent is working ({summary}). Press Ctrl+C again to force exit.")
+                    event.app.invalidate()
+                    return
+
+                if self._ctrl_c_activity_warned:
+                    elapsed = time.time() - self._ctrl_c_warn_time
+                    if elapsed < CTRL_C_WARN_TIMEOUT:
+                        # Second Ctrl+C within 3s → force exit
+                        print("\n⚡ Force exiting...")
+                        self._should_exit = True
+                        event.app.exit()
+                        return
+                    else:
+                        # Timeout expired → clear warning, fall through to interrupt
+                        self._ctrl_c_activity_warned = False
+
+                # AGENT_RUNNING / AGENT_THINKING: existing behavior
                 print("\n⚡ Interrupting agent...")
                 self.agent.interrupt()
             else:
@@ -10788,6 +12197,125 @@ class HermesCLI:
             else:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
+
+        @kb.add('escape', 'h')
+        def handle_alt_h(event):
+            """Alt+H — toggle HUD detail expansion."""
+            if getattr(self, '_hud_mode', False):
+                self._hud_expanded = not getattr(self, '_hud_expanded', False)
+                event.app.invalidate()
+
+        # ── macOS-style Option (Alt) key shortcuts ──────────────────────
+        # In macOS terminals, Cmd is intercepted by the terminal app itself
+        # (Cmd+C = copy, Cmd+V = paste, etc.), so Option/Alt is the
+        # conventional way to access line-editing shortcuts.
+
+        @kb.add('escape', 'b')  # Option+B / Alt+B
+        def handle_alt_b(event):
+            """Alt+B — move cursor back one word (macOS: Option+Left)."""
+            event.current_buffer.start_of_line()
+            # Use prompt_toolkit's built-in word-left if available
+            buf = event.current_buffer
+            # Find previous word boundary
+            pos = buf.cursor_position
+            text = buf.text
+            # Skip whitespace backwards
+            while pos > 0 and text[pos - 1] == ' ':
+                pos -= 1
+            # Skip non-whitespace backwards
+            while pos > 0 and text[pos - 1] != ' ':
+                pos -= 1
+            buf.cursor_position = pos
+
+        @kb.add('escape', 'f')  # Option+F / Alt+F
+        def handle_alt_f(event):
+            """Alt+F — move cursor forward one word (macOS: Option+Right)."""
+            buf = event.current_buffer
+            pos = buf.cursor_position
+            text = buf.text
+            # Skip non-whitespace forwards
+            while pos < len(text) and text[pos] != ' ':
+                pos += 1
+            # Skip whitespace forwards
+            while pos < len(text) and text[pos] == ' ':
+                pos += 1
+            buf.cursor_position = pos
+
+        @kb.add('escape', 'd')  # Option+D / Alt+D
+        def handle_alt_d(event):
+            """Alt+D — delete word after cursor (macOS: Option+Delete forward)."""
+            buf = event.current_buffer
+            pos = buf.cursor_position
+            text = buf.text
+            end = pos
+            while end < len(text) and text[end] != ' ':
+                end += 1
+            while end < len(text) and text[end] == ' ':
+                end += 1
+            if end > pos:
+                buf.delete(count=end - pos)
+
+        @kb.add('escape', 'backspace')  # Option+Backspace / Alt+Backspace
+        def handle_alt_backspace(event):
+            """Alt+Backspace — delete previous word (macOS: Option+Delete)."""
+            buf = event.current_buffer
+            pos = buf.cursor_position
+            text = buf.text
+            start = pos
+            while start > 0 and text[start - 1] == ' ':
+                start -= 1
+            while start > 0 and text[start - 1] != ' ':
+                start -= 1
+            if start < pos:
+                buf.delete(count=-(pos - start))
+
+        @kb.add('escape', 'w')  # Option+W / Alt+W (bash kill-word)
+        def handle_alt_w(event):
+            """Alt+W — delete previous word (bash kill-word, macOS: Option+Delete equivalent)."""
+            buf = event.current_buffer
+            pos = buf.cursor_position
+            text = buf.text
+            start = pos
+            while start > 0 and text[start - 1] == ' ':
+                start -= 1
+            while start > 0 and text[start - 1] != ' ':
+                start -= 1
+            if start < pos:
+                buf.delete(count=-(pos - start))
+
+        @kb.add('escape', 'u')  # Option+U / Alt+U
+        def handle_alt_u(event):
+            """Alt+U — uppercase word from cursor (bash uppercase-word)."""
+            buf = event.current_buffer
+            pos = buf.cursor_position
+            text = buf.text
+            start = pos
+            while start < len(text) and text[start] == ' ':
+                start += 1
+            end = start
+            while end < len(text) and text[end] != ' ':
+                end += 1
+            if end > start:
+                new_word = text[start:end].upper()
+                buf.text = text[:start] + new_word + text[end:]
+                buf.cursor_position = end
+
+        @kb.add('escape', 'l')  # Option+L / Alt+L
+        def handle_alt_l(event):
+            """Alt+L — lowercase word from cursor (bash lowercase-word)."""
+            buf = event.current_buffer
+            pos = buf.cursor_position
+            text = buf.text
+            start = pos
+            while start < len(text) and text[start] == ' ':
+                start += 1
+            end = start
+            while end < len(text) and text[end] != ' ':
+                end += 1
+            if end > start:
+                new_word = text[start:end].lower()
+                buf.text = text[:start] + new_word + text[end:]
+                buf.cursor_position = end
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -11429,6 +12957,17 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
+        # HUD panel: multi-line status display (shown above the compact status bar
+        # when /statusbar hud is active). Uses dynamic height based on content.
+        hud_panel = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_hud_fragments()),
+                height=lambda: cli_ref._hud_line_count,
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._hud_mode and cli_ref._status_bar_visible),
+        )
+
         status_bar = ConditionalContainer(
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
@@ -11443,7 +12982,7 @@ class HermesCLI:
                 # guard against any future width mismatch.
                 wrap_lines=False,
             ),
-            filter=Condition(lambda: cli_ref._status_bar_visible),
+            filter=Condition(lambda: cli_ref._status_bar_visible and not cli_ref._hud_mode),
         )
 
         # Allow wrapper CLIs to register extra keybindings.
@@ -11464,6 +13003,7 @@ class HermesCLI:
                     model_picker_widget=model_picker_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
+                    hud_panel=hud_panel,
                     status_bar=status_bar,
                     input_rule_top=input_rule_top,
                     image_bar=image_bar,
@@ -11489,6 +13029,25 @@ class HermesCLI:
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
+            # HUD color classes (matching Claude HUD palette)
+            'hud-model': 'bg:#1a1a2e #5ECAFC bold',
+            'hud-project': 'bg:#1a1a2e #FFD700',
+            'hud-git': 'bg:#1a1a2e #C678DD',
+            'hud-git-branch': 'bg:#1a1a2e #5ECAFC',
+            'hud-label': 'bg:#1a1a2e #8B8682',
+            'hud-context-ok': 'bg:#1a1a2e #8FBC8F bold',
+            'hud-context-warn': 'bg:#1a1a2e #FFD700 bold',
+            'hud-context-critical': 'bg:#1a1a2e #FF6B6B bold',
+            'hud-tool-ok': 'bg:#1a1a2e #8FBC8F',
+            'hud-tool-running': 'bg:#1a1a2e #FFD700',
+            'hud-tool-name': 'bg:#1a1a2e #5ECAFC',
+            'hud-skill': 'bg:#1a1a2e #C678DD',
+            'hud-mcp': 'bg:#1a1a2e #61AFEF',
+            'hud-session': 'bg:#1a1a2e #98C379',
+            'hud-bar-fill': 'bg:#1a1a2e #8FBC8F',
+            'hud-bar-empty': 'bg:#1a1a2e #555555',
+            'hud-separator': 'bg:#1a1a2e #555555',
+            # HUD panel inherits status-bar colors (same bg, consistent look)
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

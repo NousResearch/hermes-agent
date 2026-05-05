@@ -415,6 +415,49 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_splits_long_markdown_into_multiple_feishu_messages(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id=f"om_chunk_{len(captured)}"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "**first paragraph**\n\n**second paragraph**\n\n**third paragraph**"
+        with (
+            patch("gateway.platforms.feishu._FEISHU_CHAT_CHUNK_TARGET_LENGTH", 24),
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+        ):
+            result = asyncio.run(adapter.send("oc_chat", content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_chunk_3")
+        self.assertEqual(len(captured), 3)
+        for request, expected in zip(captured, ("first", "second", "third")):
+            self.assertEqual(request.request_body.msg_type, "post")
+            payload = json.loads(request.request_body.content)
+            rows = payload["zh_cn"]["content"]
+            self.assertIn(expected, rows[0][0]["text"])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

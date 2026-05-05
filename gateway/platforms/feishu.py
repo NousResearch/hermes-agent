@@ -171,6 +171,7 @@ _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
+_FEISHU_CHAT_CHUNK_TARGET_LENGTH = 2000
 _FEISHU_DOC_UPLOAD_TYPES = {
     ".pdf": "pdf",
     ".doc": "doc",
@@ -602,6 +603,84 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+def _split_markdown_blocks_for_feishu(content: str) -> List[str]:
+    if not content:
+        return []
+
+    blocks: List[str] = []
+    current: List[str] = []
+    in_code_block = False
+
+    def _flush_current() -> None:
+        nonlocal current
+        if current:
+            block = "\n".join(current).strip()
+            if block:
+                blocks.append(block)
+            current = []
+
+    for raw_line in content.splitlines():
+        stripped_line = raw_line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        )
+
+        if is_fence:
+            if not in_code_block:
+                _flush_current()
+            current.append(raw_line.rstrip())
+            in_code_block = not in_code_block
+            if not in_code_block:
+                _flush_current()
+            continue
+
+        if in_code_block:
+            current.append(raw_line.rstrip())
+            continue
+
+        if not raw_line.strip():
+            _flush_current()
+            continue
+        current.append(raw_line.rstrip())
+
+    _flush_current()
+    return blocks
+
+
+def _split_delivery_chunks_for_feishu(content: str, max_length: int) -> List[str]:
+    max_length = max(1, int(max_length or 1))
+    target_length = min(max_length, max(1, _FEISHU_CHAT_CHUNK_TARGET_LENGTH))
+    if len(content) <= target_length:
+        return [content]
+
+    chunks: List[str] = []
+    current = ""
+    for block in _split_markdown_blocks_for_feishu(content):
+        block_lines = block.splitlines()
+        is_code_block = bool(block_lines and _MARKDOWN_FENCE_OPEN_RE.match(block_lines[0].strip()))
+        if len(block) > max_length:
+            units = BasePlatformAdapter.truncate_message(block, max_length)
+        elif len(block) > target_length and not is_code_block:
+            units = BasePlatformAdapter.truncate_message(block, target_length)
+        else:
+            units = [block]
+
+        for unit in units:
+            candidate = unit if not current else f"{current}\n\n{unit}"
+            if len(candidate) <= target_length:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+            current = unit
+
+    if current:
+        chunks.append(current)
+    return chunks or [content]
 
 
 def parse_feishu_post_payload(
@@ -1703,7 +1782,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = _split_delivery_chunks_for_feishu(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
         try:

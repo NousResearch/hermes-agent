@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from hermes_constants import get_hermes_dir
+from tools.environments.local import _new_process_group_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -456,8 +457,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
                 env=bridge_env,
+                **_new_process_group_kwargs(),
             )
             
             # Wait for the bridge to connect to WhatsApp.

@@ -6,12 +6,41 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+# Python 3.11+ supports process_group= in subprocess.Popen, which allows
+# the use of vfork (instead of fork) when preexec_fn is absent.  The fork
+# path triggers a spurious "MallocStackLogging: can't turn off malloc stack
+# logging because it was not enabled" warning that leaks onto the user's
+# terminal on macOS — vfork avoids this by not duplicating parent memory.
+# Using process_group=0 places the child in its own process group (needed
+# for killpg() cleanup) without requiring preexec_fn.
+_HAS_PROCESS_GROUP = sys.version_info >= (3, 11) and not _IS_WINDOWS
+
+
+def _new_process_group_kwargs() -> dict:
+    """Return Popen kwargs to place the child in its own process group.
+
+    On Python 3.11+ (non-Windows), uses ``process_group=0`` which avoids
+    the need for ``preexec_fn``, enabling CPython's vfork fast-path.  This
+    prevents macOS MallocStackLogging warnings caused by fork duplicating
+    parent memory (where malloc cleanup runs before exec).
+
+    On older Python or Windows, falls back to ``preexec_fn=os.setsid``
+    (POSIX) or nothing (Windows).
+    """
+    if _IS_WINDOWS:
+        return {}
+    if _HAS_PROCESS_GROUP:
+        return {"process_group": 0}
+    return {"preexec_fn": os.setsid}
+
 
 logger = logging.getLogger(__name__)
 
@@ -412,8 +441,8 @@ class LocalEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=self.cwd,
+            **_new_process_group_kwargs(),
         )
         if not _IS_WINDOWS:
             try:

@@ -41,7 +41,7 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _new_process_group_kwargs
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -545,7 +545,7 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            **_new_process_group_kwargs(),
         )
 
         session.process = proc

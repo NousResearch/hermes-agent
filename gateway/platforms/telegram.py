@@ -2516,11 +2516,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as e:
                     if message_thread_id is not None and self._is_thread_not_found_error(e):
-                        await self._bot.send_chat_action(
-                            chat_id=int(chat_id),
-                            action="typing",
-                            message_thread_id=None,
-                        )
+                        if str(_typing_thread) == self._GENERAL_TOPIC_THREAD_ID:
+                            await self._bot.send_chat_action(
+                                chat_id=int(chat_id),
+                                action="typing",
+                                message_thread_id=None,
+                            )
                     else:
                         raise
             except Exception as e:

@@ -96,6 +96,7 @@ AUTHOR_MAP = {
     "15558128926@qq.com": "xsfX20",
     "binhnt.ht.92@gmail.com": "binhnt92",
     "johnny@Jons-MBA-M4.local": "acesjohnny",
+    "1581133593@qq.com": "liu-collab",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

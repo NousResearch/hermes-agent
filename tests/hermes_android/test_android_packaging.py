@@ -163,12 +163,16 @@ def test_android_declares_shizuku_privileged_access_support():
 def test_android_debug_version_code_tracks_project_semver():
     gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
     version_file = (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.version").read_text(encoding="utf-8")
+    project_metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project_version = project_metadata["project"]["version"]
+    major, minor, patch = (int(part) for part in project_version.split("."))
+    expected_version_code = (major * 1_000_000) + (minor * 10_000) + (patch * 100) + 90
 
     assert "fun semverVersionCode(versionText: String): Int?" in gradle
     assert "return semverVersionCode(hermesVersionName()) ?: 1" in gradle
     assert "semverVersionCode(releaseTag)?.let { return it }" in gradle
-    assert "versionName=0.13.16" in version_file
-    assert "versionCode=131690" in version_file
+    assert f"versionName={project_version}" in version_file
+    assert f"versionCode={expected_version_code}" in version_file
 
 
 def test_android_visual_harness_supports_wide_screenshots_and_clicks():
@@ -182,5 +186,7 @@ def test_android_visual_harness_supports_wide_screenshots_and_clicks():
     assert '"text"' in harness
     assert '"wm", "size"' in harness
     assert '"wm", "density"' in harness
+    assert "DEFAULT_READY_TEXT" in harness
+    assert "wait_for_ui_text" in harness
     assert "No activities found" in harness
     assert "com.nousresearch.hermesagent" in harness

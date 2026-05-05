@@ -474,8 +474,10 @@ KANBAN_COMPLETE_SCHEMA = {
                 "description": (
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "\"findings\": [...]}. If you claim follow-up cards, "
+                    "put their real ids in \"created_cards\": [\"t_...\"]; "
+                    "completion rejects missing or unrelated ids. Surfaced "
+                    "to downstream workers alongside ``summary``."
                 ),
             },
             "result": {

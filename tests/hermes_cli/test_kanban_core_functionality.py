@@ -1544,6 +1544,99 @@ def test_completed_event_payload_summary_none_when_missing(kanban_home):
         conn.close()
 
 
+def test_complete_rejects_missing_created_cards_metadata(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, tid)
+
+        with pytest.raises(ValueError, match="unknown task id"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="created follow-up",
+                metadata={"created_cards": ["t_missing"]},
+            )
+
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_accepts_created_cards_linked_to_parent(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        child = kb.create_task(
+            conn,
+            title="follow-up",
+            assignee="worker",
+            parents=[tid],
+            created_by="someone-else",
+        )
+        kb.claim_task(conn, tid)
+
+        ok = kb.complete_task(
+            conn,
+            tid,
+            summary="created follow-up",
+            metadata={"created_cards": [child]},
+        )
+
+        assert ok is True
+        assert kb.get_task(conn, tid).status == "done"
+        assert kb.latest_run(conn, tid).metadata == {"created_cards": [child]}
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_unrelated_created_cards_metadata(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        other = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="worker",
+            created_by="someone-else",
+        )
+        kb.claim_task(conn, tid)
+
+        with pytest.raises(ValueError, match="unrelated"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="created unrelated follow-up",
+                metadata={"created_cards": [other]},
+            )
+
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_accepts_created_cards_created_by_worker(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        child = kb.create_task(
+            conn,
+            title="follow-up",
+            assignee="worker",
+            created_by="worker",
+        )
+        kb.claim_task(conn, tid)
+
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="created follow-up",
+            metadata={"created_cards": [child]},
+        )
+    finally:
+        conn.close()
+
+
 # -------------------------------------------------------------------------
 # Deep-scan fixes (Apr 2026 second audit)
 # -------------------------------------------------------------------------

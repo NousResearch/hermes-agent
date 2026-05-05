@@ -1841,6 +1841,68 @@ def release_stale_claims(conn: sqlite3.Connection) -> int:
     return reclaimed
 
 
+def _validate_created_cards_handoff(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+) -> None:
+    """Validate ``metadata.created_cards`` before accepting completion."""
+    if not metadata or "created_cards" not in metadata:
+        return
+    raw_ids = metadata.get("created_cards")
+    if not isinstance(raw_ids, list):
+        raise ValueError("metadata.created_cards must be a list of task ids")
+    if any(not isinstance(tid, str) or not tid.strip() for tid in raw_ids):
+        raise ValueError("metadata.created_cards must contain non-empty task ids")
+    card_ids = [tid.strip() for tid in raw_ids]
+    if not card_ids:
+        return
+
+    task_row = conn.execute(
+        "SELECT assignee, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    allowed_creators: set[str] = set()
+    if task_row:
+        if task_row["assignee"]:
+            allowed_creators.add(str(task_row["assignee"]))
+        if task_row["current_run_id"]:
+            run_row = conn.execute(
+                "SELECT profile FROM task_runs WHERE id = ?",
+                (int(task_row["current_run_id"]),),
+            ).fetchone()
+            if run_row and run_row["profile"]:
+                allowed_creators.add(str(run_row["profile"]))
+
+    linked_children = set(child_ids(conn, task_id))
+    missing: list[str] = []
+    unrelated: list[str] = []
+    for card_id in card_ids:
+        row = conn.execute(
+            "SELECT created_by FROM tasks WHERE id = ?", (card_id,),
+        ).fetchone()
+        if row is None:
+            missing.append(card_id)
+            continue
+        if card_id in linked_children:
+            continue
+        if row["created_by"] and str(row["created_by"]) in allowed_creators:
+            continue
+        unrelated.append(card_id)
+
+    if missing:
+        raise ValueError(
+            "metadata.created_cards references unknown task id(s): "
+            + ", ".join(missing)
+        )
+    if unrelated:
+        raise ValueError(
+            "metadata.created_cards must name tasks linked as children of "
+            f"{task_id} or created by its worker profile; unrelated id(s): "
+            + ", ".join(unrelated)
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1864,6 +1926,7 @@ def complete_task(
     """
     now = int(time.time())
     with write_txn(conn):
+        _validate_created_cards_handoff(conn, task_id, metadata)
         cur = conn.execute(
             """
             UPDATE tasks

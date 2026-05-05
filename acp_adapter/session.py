@@ -9,6 +9,7 @@ history.
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home
+from hermes_state import SessionDB
 
 import copy
 import json
@@ -609,6 +610,7 @@ class SessionManager:
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,
+            "session_db": self._get_db(),
         }
 
         try:

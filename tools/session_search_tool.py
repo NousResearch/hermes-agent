@@ -323,7 +323,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
 
 
 def session_search(
-    query: str,
+    query: str = "",
     role_filter: str = None,
     limit: int = 3,
     db=None,
@@ -336,8 +336,14 @@ def session_search(
     configured auxiliary session_search model.
     The current session is excluded from results since the agent already has that context.
     """
+    # Lazy-init DB if not provided (common when called via handle_function_call)
     if db is None:
-        return tool_error("Session database not available.", success=False)
+        try:
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            db = SessionDB(db_path=get_hermes_home() / "state.db")
+        except Exception as e:
+            return tool_error(f"Session database unavailable: {e}", success=False)
 
     # Defensive: models (especially open-source) may send non-int limit values
     # (None when JSON null, string "int", or even a type object).  Coerce to a

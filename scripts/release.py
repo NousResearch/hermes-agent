@@ -89,6 +89,7 @@ AUTHOR_MAP = {
     "tony@tonysimons.dev": "asimons81",
     "jetha@google.com": "jethac",
     "jani@0xhoneyjar.xyz": "deep-name",
+    "xiangyong@zspace.cn": "CES4751",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

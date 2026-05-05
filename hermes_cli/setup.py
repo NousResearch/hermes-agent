@@ -1302,17 +1302,20 @@ def setup_terminal_backend(config: dict):
     is_linux = _platform.system() == "Linux"
 
     # Build backend choices with descriptions
+    # NOTE: boxd is appended at the end (after vercel_sandbox) on purpose —
+    # tests/hermes_cli/test_setup.py picks vercel_sandbox by its index (5),
+    # so inserting boxd before it would silently break those tests.
     terminal_choices = [
         "Local - run directly on this machine (default)",
         "Docker - isolated container with configurable resources",
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
-        "boxd - persistent cloud microVM with sub-ms suspend/resume",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "boxd - persistent cloud microVM with sub-ms suspend/resume",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "boxd", 6: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "boxd": 5, "vercel_sandbox": 6}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "boxd"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "boxd": 6}
 
     next_idx = 7
     if is_linux:

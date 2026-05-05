@@ -20,6 +20,11 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Keep verb segment width stable so status-bar content to the right doesn't
+// jitter when the ticker rotates between short/long verbs.
+export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
+export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
 const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
@@ -102,8 +107,8 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${verb}…` : ''
-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
+  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const durationSegment = startedAt ? `· ${fmtDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>

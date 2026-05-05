@@ -273,6 +273,20 @@ _CREDENTIAL_PATTERN = re.compile(
 # Security helpers
 # ---------------------------------------------------------------------------
 
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _resolve_env_placeholders(value):
+    """Resolve ${VAR} placeholders in MCP config values from process env."""
+    if isinstance(value, str):
+        return _ENV_PLACEHOLDER_RE.sub(lambda match: os.getenv(match.group(1), ""), value)
+    if isinstance(value, dict):
+        return {key: _resolve_env_placeholders(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_placeholders(item) for item in value]
+    return value
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
 
@@ -288,7 +302,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):
             env[key] = value
     if user_env:
-        env.update(user_env)
+        env.update(_resolve_env_placeholders(user_env))
     return env
 
 
@@ -1149,8 +1163,8 @@ class MCPServerTask:
                 "Upgrade the mcp package to get HTTP support."
             )
 
-        url = config["url"]
-        headers = dict(config.get("headers") or {})
+        url = _resolve_env_placeholders(config["url"])
+        headers = dict(_resolve_env_placeholders(config.get("headers") or {}))
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as

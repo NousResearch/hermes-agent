@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -60,6 +61,18 @@ _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
 
+def _resolve_env_placeholder(value: Any, fallback_env: str | None = None) -> str:
+    """Resolve ${VAR} config placeholders without exposing secrets in config.yaml."""
+    if value is None or value == "":
+        if fallback_env:
+            return os.getenv(fallback_env, "")
+        return ""
+    text = str(value)
+    if text.startswith("${") and text.endswith("}") and len(text) > 3:
+        return os.getenv(text[2:-1], "")
+    return text
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -72,8 +85,17 @@ class WebhookAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.WEBHOOK)
         self._host: str = config.extra.get("host", DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
-        self._global_secret: str = config.extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._global_secret: str = _resolve_env_placeholder(
+            config.extra.get("secret"), "HERMES_WEBHOOK_SECRET"
+        )
+        self._static_routes: Dict[str, dict] = {
+            name: {
+                **route,
+                "secret": _resolve_env_placeholder(route.get("secret"))
+                if "secret" in route else route.get("secret"),
+            }
+            for name, route in config.extra.get("routes", {}).items()
+        }
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)

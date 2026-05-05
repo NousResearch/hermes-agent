@@ -53,6 +53,30 @@ def _make_mock_server(name, session=None, tools=None):
 # ---------------------------------------------------------------------------
 
 class TestLoadMCPConfig:
+    def test_env_placeholders_resolved_for_stdio_env(self, monkeypatch):
+        """${VAR} placeholders in stdio env resolve from process env."""
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-secret")
+        from tools.mcp_tool import _build_safe_env
+
+        env = _build_safe_env({"FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"})
+
+        assert env["FIRECRAWL_API_KEY"] == "fc-secret"
+
+    def test_env_placeholders_resolved_inside_nested_values(self, monkeypatch):
+        """${VAR} placeholders work inside URLs, headers, lists, and dicts."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tv-secret")
+        from tools.mcp_tool import _resolve_env_placeholders
+
+        resolved = _resolve_env_placeholders({
+            "url": "https://example.com/mcp?apiKey=${TAVILY_API_KEY}",
+            "headers": {"Authorization": "Bearer ${TAVILY_API_KEY}"},
+            "args": ["--token", "${TAVILY_API_KEY}"],
+        })
+
+        assert resolved["url"] == "https://example.com/mcp?apiKey=tv-secret"
+        assert resolved["headers"]["Authorization"] == "Bearer tv-secret"
+        assert resolved["args"] == ["--token", "tv-secret"]
+
     def test_no_config_returns_empty(self):
         """No mcp_servers key in config -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"model": "test"}):

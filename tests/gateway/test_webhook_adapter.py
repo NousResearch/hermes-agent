@@ -30,6 +30,7 @@ from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
+    _resolve_env_placeholder,
     check_webhook_requirements,
 )
 
@@ -37,6 +38,25 @@ from gateway.platforms.webhook import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_resolve_env_placeholder(monkeypatch):
+    monkeypatch.setenv("HERMES_WEBHOOK_SECRET", "from-env")
+    assert _resolve_env_placeholder("${HERMES_WEBHOOK_SECRET}") == "from-env"
+    assert _resolve_env_placeholder("literal") == "literal"
+    assert _resolve_env_placeholder("${MISSING_SECRET}") == ""
+
+
+def test_adapter_uses_env_backed_global_and_route_secrets(monkeypatch):
+    monkeypatch.setenv("HERMES_WEBHOOK_SECRET", "global-env")
+    monkeypatch.setenv("ROUTE_WEBHOOK_SECRET", "route-env")
+    adapter = _make_adapter(
+        routes={"test": {"prompt": "hello", "secret": "${ROUTE_WEBHOOK_SECRET}"}},
+        secret="${HERMES_WEBHOOK_SECRET}",
+    )
+    assert adapter._global_secret == "global-env"
+    assert adapter._routes["test"]["secret"] == "route-env"
+
 
 def _make_config(
     routes=None,

@@ -862,7 +862,7 @@ class TestSlashCommands:
 
         assert "Context usage: ~25,000 / 100,000 tokens (25.0%)" in result
         assert "Compression: ~55,000 tokens until threshold (~80,000, 80%)" in result
-        assert "Tip: run /compact" in result
+        assert "Tip: run /compress" in result
 
     def test_context_says_compression_due_when_past_threshold(self, agent, mock_manager):
         state = self._make_state(mock_manager)
@@ -879,7 +879,7 @@ class TestSlashCommands:
             result = agent._handle_slash_command("/context", state)
 
         assert "Context usage: ~82,000 / 100,000 tokens (82.0%)" in result
-        assert "Compression: due now (threshold ~80,000, 80%). Run /compact." in result
+        assert "Compression: due now (threshold ~80,000, 80%). Run /compress." in result
 
     def test_reset_clears_history(self, agent, mock_manager):
         state = self._make_state(mock_manager)

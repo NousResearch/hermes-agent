@@ -5,7 +5,7 @@ Verifies that:
    and trigger compression instead of aborting.
 2. The gateway does not persist messages when the agent fails early, preventing
    the session from growing on each failure.
-3. Context-overflow failures produce helpful error messages suggesting /compact.
+3. Context-overflow failures produce helpful error messages suggesting /compress.
 """
 
 import pytest

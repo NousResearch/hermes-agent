@@ -1252,7 +1252,7 @@ class HermesACPAgent(acp.Agent):
                     lines.append(
                         f"Compression: due now (threshold ~{threshold_tokens:,}"
                         + (f", {threshold_pct:.0f}%" if threshold_pct else "")
-                        + "). Run /compact."
+                        + "). Run /compress."
                     )
                 else:
                     lines.append(
@@ -1267,7 +1267,7 @@ class HermesACPAgent(acp.Agent):
         if getattr(agent, "compression_enabled", True) is False:
             lines.append("Compression is disabled for this agent.")
         else:
-            lines.append("Tip: run /compact to compress manually before the threshold.")
+            lines.append("Tip: run /compress to compress manually before the threshold.")
 
         return "\n".join(lines)
 

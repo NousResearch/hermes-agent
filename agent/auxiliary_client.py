@@ -196,6 +196,12 @@ def _is_kimi_model(model: Optional[str]) -> bool:
     return bare.startswith("kimi-") or bare == "kimi"
 
 
+def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
+    """True for Arcee Trinity Large Thinking (direct or via OpenRouter)."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare == "trinity-large-thinking"
+
+
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -213,6 +219,23 @@ def _fixed_temperature_for_model(
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
+    if _is_arcee_trinity_thinking(model):
+        return 0.5
+    return None
+
+
+def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
+    """Return a context-compression threshold override for specific models.
+
+    The threshold is the fraction of the model's context window that must be
+    consumed before Hermes triggers summarization.  Higher values delay
+    compression and preserve more raw context.
+
+    Returns a float in (0, 1] to override the global ``compression.threshold``
+    config value, or ``None`` to leave the user's config value unchanged.
+    """
+    if _is_arcee_trinity_thinking(model):
+        return 0.75
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)

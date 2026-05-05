@@ -3953,7 +3953,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if isinstance(seen_data, list):
             entries: Dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
         elif isinstance(seen_data, dict):
-            entries = {k: float(v) for k, v in seen_data.items() if isinstance(k, str) and k.strip()}
+            entries = {}
+            for key, value in seen_data.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                try:
+                    entries[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
         else:
             return
         # Filter out TTL-expired entries (entries saved with ts=0.0 are treated as immortal

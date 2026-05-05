@@ -630,6 +630,9 @@ class BulkTaskBody(BaseModel):
     assignee: Optional[str] = None  # "" or None = unassign
     priority: Optional[int] = None
     archive: bool = False
+    result: Optional[str] = None
+    summary: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 @router.post("/tasks/bulk")
@@ -660,7 +663,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
-                        ok = kanban_db.complete_task(conn, tid)
+                        ok = kanban_db.complete_task(
+                            conn, tid,
+                            result=payload.result,
+                            summary=payload.summary,
+                            metadata=payload.metadata,
+                        )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)
                     elif s == "ready":

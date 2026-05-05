@@ -2506,6 +2506,23 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        # Skip ready tasks whose assignee is not a real Hermes profile.
+        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
+        # with "Profile 'X' does not exist" when the assignee names a
+        # control-plane lane (e.g. an interactive Claude Code terminal
+        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
+        # profile. Those task lanes are pulled by terminals via
+        # ``claim_task`` directly and should NEVER auto-spawn — the
+        # subprocess would crash on startup, get reaped as a zombie,
+        # the task would loop back to ``ready`` on next tick, and we'd
+        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        try:
+            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        except Exception:
+            profile_exists = None  # type: ignore[assignment]
+        if profile_exists is not None and not profile_exists(row["assignee"]):
+            result.skipped_unassigned.append(row["id"])
+            continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue

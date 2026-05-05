@@ -128,3 +128,97 @@ class TestIsLocalEndpoint:
     def test_near_but_not_cgnat_is_remote(self, url):
         """Hosts adjacent to but outside 100.64.0.0/10 must not match."""
         assert is_local_endpoint(url) is False
+
+    @pytest.mark.parametrize("url", [
+        # mDNS — RFC 6762 reserved
+        "http://nas.local:11434",
+        "http://printer.local",
+        "https://hass.local:8123",
+        # Common consumer-router LAN suffixes
+        "http://my-server.lan:11434",
+        "http://router.home:11434",
+        "http://router.home.arpa:8080",   # RFC 8375 homenet
+        "http://gateway.internal:11434",
+        "http://server.intranet:11434",
+        "http://box.localdomain:11434",
+        "http://vault.private:11434",
+    ])
+    def test_private_dns_suffixes_are_local(self, url):
+        """mDNS/.lan/.home/.internal etc. resolve only on local
+        networks and must be treated as local. Regression for #20346.
+        """
+        assert is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "http://homeassistant:8123",
+        "http://nas:8000",
+        "http://ollama-box:11434",
+        "http://printer",
+    ])
+    def test_unqualified_hostnames_are_local(self, url):
+        """Bare hostnames with no dots typically resolve via /etc/hosts,
+        NetBIOS, or local DHCP — not public DNS — so are private.
+        Regression for #20346.
+        """
+        assert is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize("url", [
+        # These contain ``.local`` but not as a suffix — must NOT match
+        "https://local.example.com",
+        "https://my-local.cloud-provider.com",
+        # Foo.localhost is loopback per RFC, but our check rejects;
+        # we only treat the literal ``localhost`` string. That's the
+        # current (intentional) behaviour — this guards against scope
+        # creep.
+        "https://something-local.io",
+        # Multi-label domain that ends in a public suffix lookalike
+        "https://api.intranet.example.com",
+    ])
+    def test_remote_lookalikes_are_not_local(self, url):
+        """Domains that contain LAN-suffix-like substrings but are
+        actually public must not match. Regression for #20346.
+        """
+        assert is_local_endpoint(url) is False
+
+    def test_dns_resolution_disabled_by_default(self, monkeypatch):
+        """Without HERMES_LOCAL_ENDPOINT_RESOLVE_DNS=1, a hostname that
+        is not a private suffix and is not unqualified must not be
+        looked up — treat as remote.
+        """
+        monkeypatch.delenv("HERMES_LOCAL_ENDPOINT_RESOLVE_DNS", raising=False)
+        # Intentionally use a public host that we know exists. The
+        # function must not call DNS by default; even if it did, the
+        # public IP would not be private.
+        assert is_local_endpoint("https://example.com") is False
+
+    def test_dns_resolution_opt_in_marks_private_ip_local(self, monkeypatch):
+        """With HERMES_LOCAL_ENDPOINT_RESOLVE_DNS=1, a hostname that
+        resolves to an RFC-1918 IP must be treated as local. Uses a
+        stubbed ``socket.getaddrinfo`` so the test is offline-safe.
+        """
+        import socket
+
+        monkeypatch.setenv("HERMES_LOCAL_ENDPOINT_RESOLVE_DNS", "1")
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            # Pretend ``ollama.example.com`` resolves to 10.0.0.5
+            if host == "ollama.example.com":
+                return [(2, 1, 6, "", ("10.0.0.5", 0))]
+            raise socket.gaierror("not found")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        assert is_local_endpoint("http://ollama.example.com:11434") is True
+
+    def test_dns_resolution_opt_in_public_ip_remains_remote(self, monkeypatch):
+        """With opt-in DNS, a public-DNS hostname that resolves to a
+        public IP must still be treated as remote.
+        """
+        import socket
+
+        monkeypatch.setenv("HERMES_LOCAL_ENDPOINT_RESOLVE_DNS", "1")
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            return [(2, 1, 6, "", ("8.8.8.8", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        assert is_local_endpoint("https://api.example.com") is False

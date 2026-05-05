@@ -3261,9 +3261,7 @@ def _chromium_installed() -> bool:
 
     1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
        agent-browser at a pre-installed Chrome/Chromium.
-    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium-browser``,
-       ``chrome``).
-    3. Playwright's browser cache (current logic) — directories containing
+    2. Playwright's browser cache (current logic) — directories containing
        ``chromium-*`` or ``chromium_headless_shell-*``.
 
     agent-browser (0.26+) downloads Playwright's chromium / headless-shell
@@ -3284,13 +3282,7 @@ def _chromium_installed() -> bool:
             _cached_chromium_installed = True
             return True
 
-    # 2. System Chrome/Chromium in PATH (common names)
-    system_chrome = shutil.which("google-chrome") or shutil.which("chromium-browser") or shutil.which("chrome")
-    if system_chrome:
-        _cached_chromium_installed = True
-        return True
-
-    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
+    # 2. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
     for root in _chromium_search_roots():
         if not root or not os.path.isdir(root):
             continue

@@ -766,18 +766,15 @@ def skill_manage(
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
-        # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
-        # that mutate an existing skill's guidance), drop the record on delete.
-        # Only mark a skill as agent-created when the background self-improvement
-        # review fork creates it — foreground `skill_manage(create)` calls are
-        # user-directed, and those skills belong to the user (the curator must
-        # not touch them). Best-effort; telemetry failures never break the tool.
+        # Curator telemetry: every skill created through the agent-facing
+        # skill_manage(create) path is agent-authored procedural memory, so opt it
+        # into curator management immediately. Critical skills should be pinned;
+        # unpinned skills remain recoverably archivable/consolidatable by the
+        # curator. Best-effort; telemetry failures never break the tool.
         try:
             from tools.skill_usage import bump_patch, forget, mark_agent_created
-            from tools.skill_provenance import is_background_review
             if action == "create":
-                if is_background_review():
-                    mark_agent_created(name)
+                mark_agent_created(name)
             elif action in ("patch", "edit", "write_file", "remove_file"):
                 bump_patch(name)
             elif action == "delete":
@@ -811,7 +808,10 @@ SKILL_MANAGE_SCHEMA = {
         "exist — create/patch the umbrella first, then delete.\n\n"
         "Create when: complex task succeeded (5+ calls), errors overcome, "
         "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
+        "or user asks you to remember a procedure. New skills created through "
+        "this tool are marked curator-managed so the Curator can later keep, "
+        "patch, consolidate, or archive them; pin mission-critical skills with "
+        "`hermes curator pin <name>` if they must never be auto-archived.\n"
         "Update when: instructions stale/wrong, OS-specific failures, "
         "missing steps or pitfalls found during use. "
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"

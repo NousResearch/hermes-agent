@@ -1655,23 +1655,33 @@ def convert_messages_to_anthropic(
                     if not isinstance(sb, dict):
                         continue
                     sb_type = sb.get("type", "")
-                    is_tool_search_result = (
+                    if sb_type == "server_tool_use":
+                        # server_tool_use is request-shape compatible; pass
+                        # through as-is.
+                        blocks.append(dict(sb))
+                    elif sb_type == "web_search_tool_result":
+                        blocks.append(dict(sb))
+                    elif (
                         isinstance(sb_type, str)
                         and sb_type.startswith("tool_search_tool_")
                         and sb_type.endswith("_tool_result")
-                    )
-                    if sb_type in ("server_tool_use", "web_search_tool_result") or (
-                        isinstance(sb_type, str)
-                        and sb_type.startswith("tool_search_tool_")
                     ):
-                        sb_copy = dict(sb)
-                        # tool_search_tool_<variant>_tool_result includes a
-                        # ``citations`` field on the response that Anthropic
-                        # rejects on input ("Extra inputs are not permitted").
-                        # Strip it so the round-trip is accepted.
-                        if is_tool_search_result:
-                            sb_copy.pop("citations", None)
-                        blocks.append(sb_copy)
+                        # Response shape uses a variant-suffixed type
+                        # (e.g. tool_search_tool_regex_tool_result) and
+                        # carries response-only fields like ``citations``
+                        # and ``text`` that Anthropic rejects on input
+                        # ("Extra inputs are not permitted"). The accepted
+                        # input shape per the SDK is the canonical
+                        # ``tool_search_tool_result`` with only
+                        # ``tool_use_id`` and ``content``. Rebuild it.
+                        canonical: dict = {
+                            "type": "tool_search_tool_result",
+                            "tool_use_id": sb.get("tool_use_id"),
+                            "content": sb.get("content"),
+                        }
+                        if "cache_control" in sb:
+                            canonical["cache_control"] = sb["cache_control"]
+                        blocks.append(canonical)
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)

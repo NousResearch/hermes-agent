@@ -519,11 +519,13 @@ niche skills belong in `optional-skills/`.
 
 ### SKILL.md frontmatter
 
-Standard fields: `name`, `description`, `version`, `platforms`
-(OS-gating list: `[macos]`, `[linux, macos]`, ...),
+Standard fields: `name`, `description`, `version`, `author`, `license`,
+`platforms` (OS-gating list: `[macos]`, `[linux, macos]`, ...),
 `metadata.hermes.tags`, `metadata.hermes.category`,
-`metadata.hermes.config` (config.yaml settings the skill needs — stored
-under `skills.config.<key>`, prompted during setup, injected at load time).
+`metadata.hermes.related_skills` (list of sibling skill names to surface
+together when a skill is recommended), `metadata.hermes.config`
+(config.yaml settings the skill needs — stored under
+`skills.config.<key>`, prompted during setup, injected at load time).
 
 ---
 

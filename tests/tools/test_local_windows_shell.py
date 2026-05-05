@@ -173,6 +173,40 @@ def test_find_cmd_allows_explicit_override(monkeypatch):
     assert local_env._find_cmd() == "D:/Tools/cmd.exe"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only cwd normalization")
+def test_windows_msys_cwd_is_not_treated_as_missing(tmp_path, monkeypatch, caplog):
+    local_env._IS_WINDOWS = True
+    native_cwd = str(tmp_path).replace("\\", "/")
+    drive = native_cwd[0].lower()
+    msys_cwd = f"/{drive}/{native_cwd[3:]}"
+    captured = {}
+
+    class DummyProcess:
+        pid = 1234
+        stdout = None
+        stdin = None
+
+    def fake_popen(_args, **kwargs):
+        captured["cwd"] = kwargs["cwd"]
+        return DummyProcess()
+
+    with patch.object(local_env.LocalEnvironment, "init_session", autospec=True, return_value=None):
+        env = local_env.LocalEnvironment(cwd=native_cwd, timeout=10)
+    env.cwd = msys_cwd
+
+    monkeypatch.setattr(local_env, "_find_bash", lambda: "C:/Program Files/Git/bin/bash.exe")
+    monkeypatch.setattr(local_env.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_env, "_pipe_stdin", lambda *_args, **_kwargs: None)
+
+    with caplog.at_level("WARNING", logger="tools.environments.local"):
+        proc = env._run_bash("echo ok")
+
+    assert proc.pid == 1234
+    assert captured["cwd"] == native_cwd
+    assert env.cwd == msys_cwd
+    assert not any("missing on disk" in rec.message for rec in caplog.records)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only live regression")
 def test_local_environment_captures_stdout_on_windows():
     try:

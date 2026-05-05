@@ -797,21 +797,17 @@ class LocalEnvironment(BaseEnvironment):
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
         # the cwd before bash starts, wedging every subsequent call until the
         # gateway restarts.
-        safe_cwd = _resolve_safe_cwd(self.cwd)
-        if safe_cwd != self.cwd:
+        cwd_for_popen = self._to_shell_path(self.cwd) if _IS_WINDOWS else self.cwd
+        safe_cwd = _resolve_safe_cwd(cwd_for_popen)
+        if safe_cwd != cwd_for_popen:
             logger.warning(
                 "LocalEnvironment cwd %r is missing on disk; "
                 "falling back to %r so terminal commands keep working.",
                 self.cwd,
                 safe_cwd,
             )
-            self.cwd = safe_cwd
-
-        native_cwd = self.cwd
-        if _IS_WINDOWS:
-            msys_match = re.match(r"^/([A-Za-z])/(.*)$", native_cwd or "")
-            if msys_match:
-                native_cwd = f"{msys_match.group(1).upper()}:/{msys_match.group(2)}"
+            self.cwd = self._to_shell_path(safe_cwd) if _IS_WINDOWS else safe_cwd
+            cwd_for_popen = safe_cwd
 
         proc = subprocess.Popen(
             args,
@@ -823,7 +819,7 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=native_cwd,
+            cwd=cwd_for_popen,
         )
         if not _IS_WINDOWS:
             try:

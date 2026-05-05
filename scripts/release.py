@@ -64,6 +64,7 @@ AUTHOR_MAP = {
     "wysie@users.noreply.github.com": "wysie",
     "jkausel@gmail.com": "jkausel-ai",
     "e.silacandmr@gmail.com": "Es1la",
+    "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "beardthelion@users.noreply.github.com": "beardthelion",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",

@@ -140,6 +140,29 @@ class TestSystemdServiceRefresh:
         assert markers == [321]
         assert calls == [["stop", gateway_cli.get_service_name()]]
 
+    def test_systemd_stop_timeout_prints_status_guidance(self, monkeypatch, capsys):
+        markers = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 321)
+        monkeypatch.setattr(
+            status,
+            "write_planned_stop_marker",
+            lambda pid: markers.append(pid) or True,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_stop()
+
+        assert markers == [321]
+        output = capsys.readouterr().out
+        assert "still stopping after 90s" in output
+        assert "hermes gateway status" in output
 
     def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
         """run_gateway() should refresh the systemd unit on boot so that

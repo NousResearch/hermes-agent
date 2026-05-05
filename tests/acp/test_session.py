@@ -188,6 +188,31 @@ class TestListAndCleanup:
         manager.create_session(cwd="/empty")
         assert manager.list_sessions() == []
 
+    def test_save_session_preserves_existing_messages_on_encode_failure(self, manager):
+        """Regression for #13675: a bad message in state.history must not
+        clobber the previously-persisted transcript.  replace_messages()
+        wraps DELETE + INSERT in a single rolled-back-on-exception txn.
+        """
+        state = manager.create_session()
+        state.history.append({"role": "user", "content": "original"})
+        manager.save_session(state.session_id)
+
+        # Now swap history with a message whose tool_calls is non-JSON-serializable.
+        # _execute_write rolls back; the previously persisted "original" stays.
+        state.history = [
+            {"role": "user", "content": "replacement"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"bad": object()}],
+            },
+        ]
+        manager.save_session(state.session_id)
+
+        db = manager._get_db()
+        messages = db.get_messages_as_conversation(state.session_id)
+        assert messages == [{"role": "user", "content": "original"}]
+
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
         s2 = manager.create_session()

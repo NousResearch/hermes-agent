@@ -20,9 +20,11 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import atexit
 import logging
 import os
 import re
+import shutil
 import signal
 import sys
 import tempfile
@@ -239,6 +241,53 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "DINGTALK_REQUIRE_MENTION",
     "MATRIX_REQUIRE_MENTION",
 })
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    """Return True when path resolves at or below parent."""
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _protect_collection_environment() -> None:
+    """Protect pytest collection/import time, before autouse fixtures run.
+
+    The per-test fixture below isolates HERMES_HOME during test execution, but
+    pytest imports conftest and test modules before fixtures are applied. Any
+    collection-time import that calls get_hermes_home() must also be pointed at
+    a temp home, otherwise local runs can read/write the real ~/.hermes/auth.json
+    or sessions before the fixture gets a chance to monkeypatch the environment.
+    """
+    real_hermes_home = Path.home() / ".hermes"
+    current_home = os.environ.get("HERMES_HOME")
+    needs_session_home = not current_home
+    if current_home:
+        current_path = Path(current_home).expanduser()
+        needs_session_home = _is_under(current_path, real_hermes_home)
+
+    if needs_session_home:
+        session_home = Path(tempfile.mkdtemp(prefix="hermes_pytest_session_"))
+        atexit.register(lambda p=session_home: shutil.rmtree(p, ignore_errors=True))
+        for child in ("sessions", "cron", "memories", "skills", "logs"):
+            (session_home / child).mkdir(parents=True, exist_ok=True)
+        os.environ["HERMES_HOME"] = str(session_home)
+
+    # Scrub credentials and behavior-changing env vars before test modules are
+    # imported. The autouse fixture repeats this per test with monkeypatch.
+    for name in list(os.environ.keys()):
+        if _looks_like_credential(name) or name in _HERMES_BEHAVIORAL_VARS:
+            os.environ.pop(name, None)
+
+    os.environ.setdefault("TZ", "UTC")
+    os.environ.setdefault("LANG", "C.UTF-8")
+    os.environ.setdefault("LC_ALL", "C.UTF-8")
+    os.environ.setdefault("PYTHONHASHSEED", "0")
+
+
+_protect_collection_environment()
 
 
 @pytest.fixture(autouse=True)

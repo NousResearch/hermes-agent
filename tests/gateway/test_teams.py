@@ -36,6 +36,9 @@ def _ensure_teams_mock():
     microsoft_teams_api_models_adaptive_card = types.ModuleType("microsoft_teams.api.models.adaptive_card")
     microsoft_teams_api_models_invoke_response = types.ModuleType("microsoft_teams.api.models.invoke_response")
     microsoft_teams_cards = types.ModuleType("microsoft_teams.cards")
+    microsoft_teams_common = types.ModuleType("microsoft_teams.common")
+    microsoft_teams_common_http = types.ModuleType("microsoft_teams.common.http")
+    microsoft_teams_common_http_client = types.ModuleType("microsoft_teams.common.http.client")
     microsoft_teams_apps_http = types.ModuleType("microsoft_teams.apps.http")
     microsoft_teams_apps_http_adapter = types.ModuleType("microsoft_teams.apps.http.adapter")
 
@@ -119,6 +122,9 @@ def _ensure_teams_mock():
     microsoft_teams_cards.ExecuteAction = MagicMock
     microsoft_teams_cards.TextBlock = MagicMock
 
+    # ClientOptions mock required by the adapter's SDK import block.
+    microsoft_teams_common_http_client.ClientOptions = MagicMock
+
     # HttpRequest TypedDict mock
     def HttpRequest(body=None, headers=None):
         return {"body": body, "headers": headers}
@@ -147,13 +153,21 @@ def _ensure_teams_mock():
         "microsoft_teams.api.models.adaptive_card": microsoft_teams_api_models_adaptive_card,
         "microsoft_teams.api.models.invoke_response": microsoft_teams_api_models_invoke_response,
         "microsoft_teams.cards": microsoft_teams_cards,
+        "microsoft_teams.common": microsoft_teams_common,
+        "microsoft_teams.common.http": microsoft_teams_common_http,
+        "microsoft_teams.common.http.client": microsoft_teams_common_http_client,
         "microsoft_teams.apps.http": microsoft_teams_apps_http,
         "microsoft_teams.apps.http.adapter": microsoft_teams_apps_http_adapter,
     }.items():
-        sys.modules.setdefault(name, mod)
+        sys.modules[name] = mod
 
 
 _ensure_teams_mock()
+# load_plugin_adapter() caches plugin modules by name. If an earlier full-suite
+# test loaded the Teams adapter before this SDK mock existed, force a fresh import
+# so the adapter's module-level SDK symbols (e.g. TypingActivityInput) are real
+# mocks instead of None from the ImportError fallback.
+sys.modules.pop("plugin_adapter_teams", None)
 
 # Load plugins/platforms/teams/adapter.py under a unique module name
 # (plugin_adapter_teams) so it cannot collide with sibling plugin adapters.

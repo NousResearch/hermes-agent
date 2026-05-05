@@ -8,11 +8,21 @@ Covers:
      input() call) and the stash is applied automatically
 """
 
+import importlib
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.main import cmd_update
+
+def _cmd_update(args):
+    """Call the current hermes_cli.main.cmd_update module binding.
+
+    Some hermes_cli tests intentionally delete/reimport hermes_cli.main. Avoid a
+    stale direct-imported function whose globals no longer match string patches
+    like patch("hermes_cli.main.sys").
+    """
+
+    return importlib.import_module("hermes_cli.main").cmd_update(args)
 
 
 def _make_run_side_effect(
@@ -74,7 +84,7 @@ class TestUpdateYesConfigMigration:
         args = SimpleNamespace(yes=True)
 
         with patch("builtins.input") as mock_input:
-            cmd_update(args)
+            _cmd_update(args)
             # Never prompted the user.
             mock_input.assert_not_called()
 
@@ -118,7 +128,7 @@ class TestUpdateYesConfigMigration:
         ) as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
-            cmd_update(args)
+            _cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]
@@ -156,7 +166,7 @@ class TestUpdateYesStashRestore:
 
         args = SimpleNamespace(yes=True)
 
-        cmd_update(args)
+        _cmd_update(args)
 
         # _restore_stashed_changes was called, and called with prompt_user=False
         # every time (so the user never sees "Restore local changes now?").

@@ -26,6 +26,15 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _disable_real_claude_code_keychain(monkeypatch):
+    """Keep auth tests isolated from the developer's real macOS Keychain."""
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------

@@ -205,6 +205,25 @@ class TestTakeCheckpoint:
         r = mgr.ensure_checkpoint(str(Path.home()), "home")
         assert r is False
 
+    def test_skip_home_dir_when_home_is_symlink_alias(self, tmp_path, checkpoint_base, monkeypatch):
+        real_home = tmp_path / "real_home"
+        real_home.mkdir()
+        alias_home = tmp_path / "home_link"
+        alias_home.symlink_to(real_home, target_is_directory=True)
+        monkeypatch.setenv("HOME", str(alias_home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: alias_home))
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        mgr = CheckpointManager(enabled=True, max_snapshots=50)
+        monkeypatch.setattr(
+            mgr,
+            "_take",
+            lambda *_args, **_kwargs: pytest.fail("checkpoint should skip the home directory before taking"),
+        )
+        r = mgr.ensure_checkpoint(str(Path.home()), "home")
+
+        assert r is False
+
 
 # =========================================================================
 # CheckpointManager — listing checkpoints

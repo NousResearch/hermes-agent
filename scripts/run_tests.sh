@@ -41,10 +41,14 @@ fi
 
 PYTHON="$VENV/bin/python"
 
-# ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
+# ── Ensure pytest-split is installed when possible (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
-  echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  if "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    echo "→ installing pytest-split into $VENV"
+    "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  else
+    echo "⚠ pytest-split is not installed and this venv has no pip; continuing without it" >&2
+  fi
 fi
 
 # ── Hermetic environment ────────────────────────────────────────────────────
@@ -72,6 +76,17 @@ unset HERMES_YOLO_MODE HERMES_INTERACTIVE HERMES_QUIET HERMES_TOOL_PROGRESS \
       HERMES_REDACT_SECRETS HERMES_BACKGROUND_NOTIFICATIONS HERMES_EXEC_ASK \
       HERMES_HOME_MODE 2>/dev/null || true
 
+# Force an isolated Hermes home before pytest imports/collects anything.
+# Per-test fixtures replace this with narrower temp dirs, but this session-level
+# home protects collection-time imports and subprocesses from touching the real
+# ~/.hermes (auth.json, sessions, logs, history, etc.).
+HERMES_TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/hermes_pytest_home.XXXXXX")"
+export HERMES_HOME="$HERMES_TEST_HOME"
+cleanup_hermes_test_home() {
+  rm -rf "$HERMES_TEST_HOME"
+}
+trap cleanup_hermes_test_home EXIT
+
 # Pin deterministic runtime.
 export TZ=UTC
 export LANG=C.UTF-8
@@ -95,10 +110,16 @@ echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
+set +e
+"$PYTHON" -m pytest \
   -o "addopts=" \
   -n "$WORKERS" \
   --ignore=tests/integration \
   --ignore=tests/e2e \
   -m "not integration" \
   "${ARGS[@]}"
+status=$?
+set -e
+cleanup_hermes_test_home
+trap - EXIT
+exit "$status"

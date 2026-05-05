@@ -753,8 +753,15 @@ def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
         server._sessions.pop("sid", None)
 
 
-def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
+def test_pending_title_drops_on_valueerror_after_first_turn(monkeypatch):
     unblock_agent = threading.Event()
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
 
     class _FakeWorker:
         def __init__(self, key, model):
@@ -768,6 +775,12 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         provider = "openrouter"
         base_url = ""
         api_key = ""
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
 
     class _FakeDB:
         def create_session(self, _key, source="tui", model=None):
@@ -787,6 +800,8 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
     import tools.approval as _approval
 
@@ -802,6 +817,20 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     unblock_agent.set()
     session["agent_ready"].wait(timeout=2.0)
 
+    # Agent construction no longer applies queued titles; the first completed
+    # turn does, after run_conversation has created the DB row.
+    assert session["pending_title"] == "duplicate title"
+
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    submit = server.handle_request(
+        {
+            "id": "2",
+            "method": "prompt.submit",
+            "params": {"session_id": sid, "text": "ping"},
+        }
+    )
+
+    assert submit["result"]["status"] == "streaming"
     assert session["pending_title"] is None
     server._sessions.pop(sid, None)
 
@@ -3434,6 +3463,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
+            patch("platform.system", return_value="Linux"),
             patch(
                 "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
             ),
@@ -3490,6 +3520,7 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
+            patch("platform.system", return_value="Linux"),
             patch(
                 "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
             ),

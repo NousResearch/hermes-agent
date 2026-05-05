@@ -3039,8 +3039,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     try:
                         if _pdb.set_session_title(session.get("session_key") or sid, _pending):
                             session["pending_title"] = None
+                    except ValueError:
+                        # Duplicate/invalid titles are permanent user-facing
+                        # errors; do not retry them after every turn.
+                        session["pending_title"] = None
                     except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                        pass  # Transient best-effort failure; retry later.
 
             if (
                 status == "complete"

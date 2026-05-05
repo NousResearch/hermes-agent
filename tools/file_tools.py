@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -155,6 +156,17 @@ _SENSITIVE_PATH_PREFIXES = (
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
+def _is_current_macos_temp_path(resolved: str) -> bool:
+    """Return True for files under the active macOS per-user temp dir."""
+    try:
+        temp_root = str(Path(tempfile.gettempdir()).resolve()).rstrip(os.sep)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if not (temp_root.startswith("/private/var/folders/") or temp_root.startswith("/var/folders/")):
+        return False
+    return resolved == temp_root or resolved.startswith(temp_root + os.sep)
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -166,6 +178,12 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    # On macOS, tempfile defaults to /var/folders/... which resolves under
+    # /private/var/folders/..., but that is a per-user scratch directory, not a
+    # privileged system config path. Keep /private/var/* blocked except for the
+    # active temp root so normal tempfile-backed writes still work.
+    if _is_current_macos_temp_path(resolved):
+        return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

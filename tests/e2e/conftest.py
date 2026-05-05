@@ -63,10 +63,66 @@ def _ensure_discord_mock():
 
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
+    discord_mod.Client = MagicMock
+    discord_mod.File = MagicMock
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
+    discord_mod.Message = type("Message", (), {})
+    discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
+
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None,
+                     url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+
+    discord_mod.ui = SimpleNamespace(
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
+        button=lambda *a, **k: (lambda fn: fn),
+    )
+    discord_mod.SelectOption = _FakeSelectOption
+    discord_mod.ButtonStyle = SimpleNamespace(
+        success=1, primary=2, secondary=2, danger=3,
+        green=1, grey=2, blurple=2, red=3,
+    )
+    discord_mod.Color = SimpleNamespace(
+        orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+    )
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
@@ -79,10 +135,13 @@ def _ensure_discord_mock():
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-    sys.modules.setdefault("discord.opus", discord_mod.opus)
+    # Overwrite partial/ad-hoc mocks from other test packages. Using setdefault
+    # here makes full-suite order matter because gateway.platforms.discord may
+    # cache a different mock than the one used to build fake DM/Thread objects.
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
+    sys.modules["discord.opus"] = discord_mod.opus
 
 
 def _ensure_slack_mock():
@@ -113,6 +172,15 @@ def _ensure_slack_mock():
 _ensure_telegram_mock()
 _ensure_discord_mock()
 _ensure_slack_mock()
+
+# If another test package imported gateway.platforms.discord before this e2e
+# conftest installed its comprehensive discord mock, reload the adapter module so
+# its module-level `discord` binding and UI view classes use the same fake types
+# as make_fake_dm_channel()/make_fake_thread().
+if "gateway.platforms.discord" in sys.modules and not hasattr(sys.modules["discord"], "__file__"):
+    import importlib
+
+    importlib.reload(sys.modules["gateway.platforms.discord"])
 
 import discord  # noqa: E402 — mocked above
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
@@ -330,15 +398,19 @@ def make_fake_text_channel(channel_id: int = CHANNEL_ID, name: str = "general", 
 
 
 def make_fake_dm_channel(channel_id: int = 55555):
+    from gateway.platforms import discord as discord_platform
+
     ch = MagicMock(spec=[])
     ch.id = channel_id
     ch.name = "DM"
     ch.topic = None
-    ch.__class__ = discord.DMChannel
+    ch.__class__ = discord_platform.discord.DMChannel
     return ch
 
 
 def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", parent=None):
+    from gateway.platforms import discord as discord_platform
+
     th = MagicMock(spec=[])
     th.id = thread_id
     th.name = name
@@ -347,7 +419,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
     th.guild = th.parent.guild
     th.topic = None
     th.type = 11
-    th.__class__ = discord.Thread
+    th.__class__ = discord_platform.discord.Thread
     return th
 
 
@@ -368,11 +440,13 @@ def make_discord_message(
     if attachments is None:
         attachments = []
 
+    from gateway.platforms import discord as discord_platform
+
     return SimpleNamespace(
         id=message_id, content=content, author=author, channel=channel,
         guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
-        type=getattr(discord, "MessageType", SimpleNamespace()).default,
+        type=getattr(discord_platform.discord, "MessageType", SimpleNamespace()).default,
         reference=None, created_at=datetime.now(timezone.utc),
         create_thread=AsyncMock(),
     )

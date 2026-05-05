@@ -189,7 +189,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import discord as discord_mod_ref  # noqa: E402
+import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
@@ -230,7 +230,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+        with patch.object(discord_platform.discord, "File", MagicMock()) as file_cls:
             result = _run(
                 adapter.send_document(
                     chat_id="67890",
@@ -256,7 +256,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+        with patch.object(discord_platform.discord, "File", MagicMock()) as file_cls:
             result = _run(
                 adapter.send_video(
                     chat_id="67890",

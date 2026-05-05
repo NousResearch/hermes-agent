@@ -85,7 +85,26 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+def _discord_binding_instance(class_name: str):
+    """Create an object compatible with gateway.platforms.discord.discord.<class_name>.
+
+    Full-suite collection can leave sys.modules["discord"] and the adapter's
+    cached discord binding pointing at different module objects/classes. The
+    production authorization checks use the adapter binding, so DM/thread test
+    channels must satisfy isinstance() against that binding, while avoiding
+    real discord.py constructors that require internal state.
+    """
+    bound_cls = getattr(discord_platform.discord, class_name, None)
+    if not isinstance(bound_cls, type):
+        bound_cls = type(class_name, (), {})
+        setattr(discord_platform.discord, class_name, bound_cls)
+        return bound_cls()
+    fixture_cls = type(f"{class_name}Fixture", (bound_cls,), {})
+    return object.__new__(fixture_cls)
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +131,8 @@ def _stub_discord_permissions(monkeypatch):
         def __init__(self, value=0, **_):
             self.value = value
 
-    monkeypatch.setattr(discord, "Permissions", _Perm)
+    monkeypatch.setattr(discord, "Permissions", _Perm, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Permissions", _Perm, raising=False)
 
 
 @pytest.fixture
@@ -136,14 +156,12 @@ def _make_interaction(
     payload missing a resolvable channel id (fail-closed exercise).
     Pass ``user=None`` to simulate a payload missing the user object.
     """
-    import discord
-
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
 
     if in_dm:
-        channel = discord.DMChannel()
+        channel = _discord_binding_instance("DMChannel")
     elif in_thread:
-        channel = discord.Thread()
+        channel = _discord_binding_instance("Thread")
         channel.id = channel_id
         channel.parent_id = parent_channel_id
     elif channel_id is None:

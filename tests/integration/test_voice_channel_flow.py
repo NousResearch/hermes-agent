@@ -8,10 +8,22 @@ Requires: PyNaCl>=1.5.0, discord.py[voice] (opus codec)
 """
 
 import struct
+import sys
 import time
+import importlib
 import pytest
 
 pytestmark = pytest.mark.integration
+
+# Gateway/e2e tests install lightweight `discord` MagicMock modules for unit
+# isolation.  These integration tests require the real discord.py package and
+# opus bindings, so discard those stubs if collection order put them in
+# sys.modules first.
+_existing_discord = sys.modules.get("discord")
+if _existing_discord is not None and not hasattr(_existing_discord, "__file__"):
+    for _name in list(sys.modules):
+        if _name == "discord" or _name.startswith("discord."):
+            sys.modules.pop(_name, None)
 
 # Skip entire module if voice deps are missing
 pytest.importorskip("nacl.secret", reason="PyNaCl required for voice integration tests")
@@ -38,7 +50,11 @@ except Exception:
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-from gateway.platforms.discord import VoiceReceiver
+import gateway.platforms.discord as discord_platform
+
+if not hasattr(getattr(discord_platform, "discord", None), "__file__"):
+    discord_platform = importlib.reload(discord_platform)
+VoiceReceiver = discord_platform.VoiceReceiver
 
 
 # ---------------------------------------------------------------------------

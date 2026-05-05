@@ -212,20 +212,30 @@ class FakeHAServer:
             "result": None,
         })
 
-        # Step 6: push events from queue until closed
+        # Step 6: push events from queue until closed.  Poll the socket too;
+        # otherwise a client close frame can sit unread while the fake waits on
+        # the event queue, making adapter.disconnect() hang until its timeout.
         try:
             while not ws.closed:
                 try:
-                    event_data = await asyncio.wait_for(
-                        self._event_queue.get(), timeout=0.1,
-                    )
+                    msg = await ws.receive(timeout=0.1)
+                    if msg.type in {
+                        aiohttp.WSMsgType.CLOSE,
+                        aiohttp.WSMsgType.CLOSING,
+                        aiohttp.WSMsgType.CLOSED,
+                        aiohttp.WSMsgType.ERROR,
+                    }:
+                        break
+                except asyncio.TimeoutError:
+                    pass
+
+                while not self._event_queue.empty() and not ws.closed:
+                    event_data = self._event_queue.get_nowait()
                     await ws.send_json({
                         "id": sub_id,
                         "type": "event",
                         "event": event_data,
                     })
-                except asyncio.TimeoutError:
-                    continue
         except (ConnectionResetError, asyncio.CancelledError):
             pass
 

@@ -1511,7 +1511,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         parent = _make_mock_parent()
         touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
+        enough_heartbeats = threading.Event()
+
+        def _touch(desc):
+            touch_calls.append(desc)
+            if len(touch_calls) > 6:
+                enough_heartbeats.set()
+
+        parent._touch_activity = _touch
 
         child = MagicMock()
         # Child is stuck inside a single terminal call for the whole run.
@@ -1524,10 +1531,10 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Wait until the heartbeat has proven it can continue past the old
+            # idle threshold.  This avoids relying on exact scheduler timing in
+            # loaded full-suite runs.
+            enough_heartbeats.wait(timeout=2.0)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1545,13 +1552,13 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
-        self.assertGreater(
-            len(touch_calls), 6,
+        # With the old idle threshold, heartbeat would stop around 5 touches
+        # and `enough_heartbeats` would never be set. The in-tool threshold
+        # should allow continued touches while current_tool remains set.
+        self.assertTrue(
+            enough_heartbeats.is_set(),
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches at 0.05s interval",
         )
 
     def test_heartbeat_still_trips_idle_stale_when_no_tool(self):

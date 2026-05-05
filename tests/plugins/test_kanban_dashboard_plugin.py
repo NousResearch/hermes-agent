@@ -481,6 +481,12 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     import types
     stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    # If hermes_cli.web_server was imported earlier in the full suite, the
+    # package attribute still points at the real module even after sys.modules
+    # is patched.  Patch the package binding too so plugin_api's
+    # ``from hermes_cli import web_server`` sees this test's token.
+    import hermes_cli
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")

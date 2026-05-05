@@ -75,7 +75,21 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+def _discord_binding_class(class_name: str):
+    """Return the class cached in gateway.platforms.discord.discord.
+
+    Adapter code uses its module-level discord binding for isinstance checks;
+    full-suite order can make that binding differ from sys.modules["discord"].
+    """
+    bound_cls = getattr(discord_platform.discord, class_name, None)
+    if not isinstance(bound_cls, type):
+        bound_cls = type(class_name, (), {})
+        setattr(discord_platform.discord, class_name, bound_cls)
+    return bound_cls
 
 
 class FakeTree:
@@ -612,9 +626,6 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 # ------------------------------------------------------------------
 
 
-import discord as _discord_mod  # noqa: E402 — mock or real, used below
-
-
 class _FakeTextChannel:
     """A channel that is NOT a discord.Thread or discord.DMChannel."""
 
@@ -625,17 +636,29 @@ class _FakeTextChannel:
         self.topic = None
 
 
-class _FakeThreadChannel(_discord_mod.Thread):
-    """isinstance(ch, discord.Thread) → True."""
+def _FakeThreadChannel(channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
+    """Return an object satisfying isinstance(ch, current adapter discord.Thread)."""
+    # Build at call time because integration test collection may reload
+    # gateway.platforms.discord after this module is collected.
+    def _get_parent(self):
+        return getattr(self, "_parent", None)
 
-    def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
-        # Don't call super().__init__ — mock Thread is just an empty type
-        self.id = channel_id
-        self.name = name
-        self.guild = SimpleNamespace(name=guild_name, id=1)
-        self.topic = None
-        self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+    def _set_parent(self, value):
+        object.__setattr__(self, "_parent", value)
 
+    fixture_cls = type(
+        "FakeThreadChannel",
+        (_discord_binding_class("Thread"),),
+        {"parent": property(_get_parent, _set_parent)},
+    )
+    channel = object.__new__(fixture_cls)
+    channel.id = channel_id
+    channel.name = name
+    channel.guild = SimpleNamespace(name=guild_name, id=1)
+    channel.topic = None
+    channel.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+    channel.parent_id = parent_id
+    return channel
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):
     return SimpleNamespace(

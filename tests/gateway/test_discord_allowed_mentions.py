@@ -81,6 +81,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from gateway.platforms import discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import _build_allowed_mentions  # noqa: E402
 
 
@@ -98,6 +99,13 @@ _ENV_VARS = (
 def _clear_allowed_mention_env(monkeypatch):
     for name in _ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # Full-suite order can import gateway.platforms.discord before this module,
+    # leaving its module-level `discord` binding pointed at a generic MagicMock.
+    # Patch the binding used by _build_allowed_mentions(), not only
+    # sys.modules["discord"], so these tests stay order-independent.
+    _ensure_discord_mock()
+    monkeypatch.setattr(discord_platform.discord, "AllowedMentions", _FakeAllowedMentions, raising=False)
+    monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
 
 
 def test_safe_defaults_block_everyone_and_roles():

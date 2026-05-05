@@ -49,6 +49,10 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
 
     monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: _FakeClient())
     monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length",
+        lambda *args, **kwargs: 128_000,
+    )
+    monkeypatch.setattr(
         "run_agent.get_tool_definitions",
         lambda *args, **kwargs: [{"function": {"name": "read_file"}}],
     )

@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.environments.base as base_env
 from tools.environments.local import LocalEnvironment
 
 
@@ -96,13 +97,40 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     env = LocalEnvironment(cwd="/tmp")
     try:
         result_holder = {}
-        proc_holder = {}
-        started = threading.Event()
-        raise_at = [None]  # set by the main thread to tell worker when
+        command_proc_holder = {}
+        command_proc_started = threading.Event()
+        wait_loop_started = threading.Event()
+        worker_tid_holder = {}
+        original_run_bash = env._run_bash
+        original_is_interrupted = base_env.is_interrupted
+
+        def recording_is_interrupted():
+            if (
+                threading.current_thread().ident == worker_tid_holder.get("tid")
+                and command_proc_started.is_set()
+            ):
+                wait_loop_started.set()
+            return original_is_interrupted()
+
+        base_env.is_interrupted = recording_is_interrupted
+
+        def recording_run_bash(cmd_string, *args, **kwargs):
+            proc = original_run_bash(cmd_string, *args, **kwargs)
+            # init_session() spawns a login-shell bootstrap first. Capture the
+            # actual user command process directly instead of scraping the
+            # platform process table for "sleep 30"; cmdline visibility is
+            # flaky on loaded macOS runners and can hide the child argv.
+            if not kwargs.get("login", False) and "sleep 30" in cmd_string:
+                command_proc_holder["proc"] = proc
+                command_proc_started.set()
+            return proc
+
+        env._run_bash = recording_run_bash
 
         # Drive execute() on a separate thread so we can SIGNAL-interrupt it
         # via a thread-targeted exception without killing our test process.
         def worker():
+            worker_tid_holder["tid"] = threading.current_thread().ident
             # Spawn a subprocess that will definitely be alive long enough
             # to observe the cleanup, via env.execute(...) — the normal path
             # that goes through _wait_for_process.
@@ -113,43 +141,17 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        # Wait until the subprocess actually exists.  LocalEnvironment.execute
-        # does init_session() (one spawn) before the real command, so we need
-        # to wait until a sleep 30 is visible.  Use pgrep-style lookup via
-        # /proc to find the bash process running our sleep.
-        deadline = time.monotonic() + 5.0
-        target_pid = None
-        while time.monotonic() < deadline:
-            # Walk our children and grand-children to find one running 'sleep 30'
-            try:
-                import psutil  # optional — fall back if absent
-                for p in psutil.Process(os.getpid()).children(recursive=True):
-                    try:
-                        if "sleep 30" in " ".join(p.cmdline()):
-                            target_pid = p.pid
-                            break
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except ImportError:
-                # Fall back to ps
-                ps = subprocess.run(
-                    ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
-                )
-                for line in ps.stdout.splitlines():
-                    if "sleep 30" in line and "grep" not in line:
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            target_pid = int(parts[0])
-                            break
-            if target_pid:
-                break
-            time.sleep(0.1)
 
-        assert target_pid is not None, (
-            "test setup: couldn't find 'sleep 30' subprocess after 5 s"
+        assert command_proc_started.wait(timeout=10.0), (
+            "test setup: user command subprocess did not start after 10 s"
         )
-        pgid = os.getpgid(target_pid)
-        assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
+        assert wait_loop_started.wait(timeout=10.0), (
+            "test setup: _wait_for_process did not enter its poll loop after 10 s"
+        )
+        proc = command_proc_holder["proc"]
+        assert proc.poll() is None, "sanity: subprocess should still be running"
+        pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+        assert _pgid_still_alive(pgid), "sanity: subprocess group should be alive"
 
         # Now inject a KeyboardInterrupt into the worker thread the same
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
@@ -188,6 +190,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             f"propagation after cleanup"
         )
     finally:
+        base_env.is_interrupted = original_is_interrupted
         try:
             env.cleanup()
         except Exception:

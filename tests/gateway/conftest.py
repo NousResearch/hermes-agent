@@ -219,6 +219,25 @@ def _ensure_discord_mock() -> None:
 _ensure_telegram_mock()
 _ensure_discord_mock()
 
+# Some non-gateway tests import gateway platform modules before this directory's
+# conftest.py is loaded, often with tiny ad-hoc MagicMocks for platform SDKs.
+# Overwriting sys.modules is not enough after that: adapter modules cache
+# module-level SDK bindings and enum/class objects. Reload them once after
+# installing the comprehensive mocks so gateway tests are order-independent in a
+# full-suite run.
+if (
+    "gateway.platforms.telegram" in sys.modules
+    and not hasattr(sys.modules["telegram"], "__file__")
+):
+    import importlib
+
+    importlib.reload(sys.modules["gateway.platforms.telegram"])
+
+if "gateway.platforms.discord" in sys.modules and not hasattr(sys.modules["discord"], "__file__"):
+    import importlib
+
+    importlib.reload(sys.modules["gateway.platforms.discord"])
+
 
 # ---------------------------------------------------------------------------
 # Plugin-adapter anti-pattern guard

@@ -3,7 +3,7 @@
 Covers the fix from #15914 / PR #15920:
 - _seed_from_env reads API keys from ~/.hermes/.env when not in os.environ
 - _resolve_api_key_provider_secret falls back to credential_pool when env vars are empty
-- env vars take priority over .env file (handled by get_env_value itself)
+- credential pool seeding treats ~/.hermes/.env as authoritative over stale shell exports
 - env vars take priority over credential pool (fallback only kicks in when env is empty)
 """
 
@@ -106,8 +106,8 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert active_sources == set()
         assert entries == []
 
-    def test_os_environ_still_wins_over_dotenv(self, isolated_hermes_home, monkeypatch):
-        """get_env_value checks os.environ first — verify seeding picks that up."""
+    def test_dotenv_wins_over_os_environ_when_seeding_pool(self, isolated_hermes_home, monkeypatch):
+        """_seed_from_env treats ~/.hermes/.env as authoritative over stale shell exports."""
         _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-stale")
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-fresh-xyz")
 
@@ -118,7 +118,8 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert changed is True
         seeded = [e for e in entries if e.source == "env:DEEPSEEK_API_KEY"]
         assert len(seeded) == 1
-        assert seeded[0].access_token == "sk-env-fresh-xyz"
+        dotenv_value = (isolated_hermes_home / ".env").read_text().split("=", 1)[1].strip()
+        assert seeded[0].access_token == dotenv_value
 
 
 class TestAuthResolvesFromDotEnv:

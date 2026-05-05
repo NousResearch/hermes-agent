@@ -98,6 +98,38 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    def test_current_macos_temp_root_allowed(self, monkeypatch):
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(
+            file_tools.tempfile,
+            "gettempdir",
+            lambda: "/private/var/folders/ab/cd/T",
+        )
+        monkeypatch.setattr(
+            file_tools,
+            "_resolve_path_for_task",
+            lambda *_args, **_kwargs: Path("/private/var/folders/ab/cd/T/file.txt"),
+        )
+
+        assert file_tools._check_sensitive_path("/var/folders/ab/cd/T/file.txt") is None
+
+    def test_private_var_folders_outside_current_temp_still_blocked(self, monkeypatch):
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(
+            file_tools.tempfile,
+            "gettempdir",
+            lambda: "/private/var/folders/ab/cd/T",
+        )
+        monkeypatch.setattr(
+            file_tools,
+            "_resolve_path_for_task",
+            lambda *_args, **_kwargs: Path("/private/var/folders/other/T/file.txt"),
+        )
+
+        assert file_tools._check_sensitive_path("/private/var/folders/other/T/file.txt") is not None
+
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None

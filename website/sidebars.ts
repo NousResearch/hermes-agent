@@ -48,6 +48,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/skills',
             'user-guide/features/curator',
             'user-guide/features/memory',
+            'user-guide/features/knowledge-ledger',
             'user-guide/features/memory-providers',
             'user-guide/features/context-files',
             'user-guide/features/context-references',

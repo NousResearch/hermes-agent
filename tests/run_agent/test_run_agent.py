@@ -44,6 +44,19 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _large_context_for_aiagent_unit_tests(monkeypatch):
+    """Keep AIAgent init-focused unit tests independent of model metadata.
+
+    These tests exercise run_agent behavior, not the minimum-context gate.  The
+    dedicated feasibility tests cover sub-64K rejection explicitly.
+    """
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length",
+        lambda *args, **kwargs: 128_000,
+    )
+
+
 def test_is_destructive_command_treats_cp_as_mutating():
     assert run_agent._is_destructive_command("cp .env.local .env") is True
 

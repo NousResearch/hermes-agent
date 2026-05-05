@@ -1,84 +1,234 @@
 # Hermes Agent Security Policy
 
-This document outlines the security protocols, trust model, and deployment hardening guidelines for the **Hermes Agent** project.
+This document describes Hermes Agent's trust model, names the one
+security boundary the project treats as load-bearing, and defines the
+scope for vulnerability reports.
 
-## 1. Vulnerability Reporting
+## 1. Reporting a Vulnerability
 
-Hermes Agent does **not** operate a bug bounty program. Security issues should be reported via [GitHub Security Advisories (GHSA)](https://github.com/NousResearch/hermes-agent/security/advisories/new) or by emailing **security@nousresearch.com**. Do not open public issues for security vulnerabilities.
+Report privately via [GitHub Security Advisories](https://github.com/NousResearch/hermes-agent/security/advisories/new)
+or **security@nousresearch.com**. Do not open public issues for
+security vulnerabilities. **Hermes Agent does not operate a bug
+bounty program.**
 
-### Required Submission Details
-- **Title & Severity:** Concise description and CVSS score/rating.
-- **Affected Component:** Exact file path and line range (e.g., `tools/approval.py:120-145`).
-- **Environment:** Output of `hermes version`, commit SHA, OS, and Python version.
-- **Reproduction:** Step-by-step Proof-of-Concept (PoC) against `main` or the latest release.
-- **Impact:** Explanation of what trust boundary was crossed.
+A useful report includes:
+
+- A concise description and severity assessment.
+- The affected component, identified by file path and line range
+  (e.g. `path/to/file.py:120-145`).
+- Environment details (`hermes version`, commit SHA, OS, Python
+  version).
+- A reproduction against `main` or the latest release.
+- A statement of which trust boundary in §2 is crossed.
+
+Please read §2 and §3 before submitting. Reports that demonstrate
+limits of an in-process heuristic this policy does not treat as a
+boundary will be closed as out-of-scope under §3 — but see §3.2:
+they are still welcome as regular issues or pull requests, just not
+through the private security channel.
 
 ---
 
 ## 2. Trust Model
 
-The core assumption is that Hermes is a **personal agent** with one trusted operator.
+Hermes is a single-tenant personal agent. Its posture is layered, and
+the layers are not equally load-bearing. Reporters and operators
+should reason about them in the same terms.
 
-### Operator & Session Trust
-- **Single Tenant:** The system protects the operator from LLM actions, not from malicious co-tenants. Multi-user isolation must happen at the OS/host level.
-- **Gateway Security:** Authorized callers (Telegram, Discord, Slack, etc.) receive equal trust. Session keys are used for routing, not as authorization boundaries.
-- **Execution:** Defaults to `terminal.backend: local` (direct host execution). Container isolation (Docker, Modal, Daytona) is opt-in for sandboxing.
+### 2.1 The Boundary: OS-Level Isolation
 
-### Dangerous Command Approval
-The approval system (`tools/approval.py`) is a core security boundary. Terminal commands, file operations, and other potentially destructive actions are gated behind explicit user confirmation before execution. The approval mode is configurable via `approvals.mode` in `config.yaml`:
-- `"on"` (default) — prompts the user to approve dangerous commands.
-- `"auto"` — auto-approves after a configurable delay.
-- `"off"` — disables the gate entirely (break-glass; see Section 3).
+**The only security boundary against an adversarial LLM is the
+operating system.** Nothing inside the agent process constitutes
+containment — not the approval gate, not output redaction, not any
+pattern scanner, not any tool allowlist. Any in-process component
+that screens LLM output is a heuristic operating on an
+attacker-influenced string, and this policy treats it as such.
 
-### Output Redaction
-`agent/redact.py` strips secret-like patterns (API keys, tokens, credentials) from all display output before it reaches the terminal or gateway platform. This prevents accidental credential leakage in chat logs, tool previews, and response text. Redaction operates on the display layer only — underlying values remain intact for internal agent operations.
+Hermes supports two OS-level isolation postures. They address
+different threats and an operator should choose deliberately.
 
-### Skills vs. MCP Servers
-- **Installed Skills:** High trust. Equivalent to local host code; skills can read environment variables and run arbitrary commands.
-- **MCP Servers:** Lower trust. MCP subprocesses receive a filtered environment (`_build_safe_env()` in `tools/mcp_tool.py`) — only safe baseline variables (`PATH`, `HOME`, `XDG_*`) plus variables explicitly declared in the server's `env` config block are passed through. Host credentials are stripped by default. Additionally, packages invoked via `npx`/`uvx` are checked against the OSV malware database before spawning.
+**Terminal-backend isolation** sandboxes the shell tool. A
+non-default terminal backend runs LLM-emitted shell commands inside
+a container, remote host, or cloud sandbox. This confines the blast
+radius of destructive shell — but only of shell. The Python process
+running the agent itself stays on the host, along with every code
+path that doesn't go through the shell tool: the code-execution
+tool, MCP subprocesses, file tools, plugin loading, hook dispatch,
+skill loading. This is the right posture when the concern is
+LLM-emitted destructive shell and the operator is otherwise
+trusted.
 
-### Code Execution Sandbox
-The `execute_code` tool (`tools/code_execution_tool.py`) runs LLM-generated Python scripts in a child process with API keys and tokens stripped from the environment to prevent credential exfiltration. Only environment variables explicitly declared by loaded skills (via `env_passthrough`) or by the user in `config.yaml` (`terminal.env_passthrough`) are passed through. The child accesses Hermes tools via RPC, not direct API calls.
+**Whole-process wrapping** sandboxes the agent itself. The agent
+runs inside an external runtime that enforces filesystem, network,
+process, and inference policies across the entire agent process
+tree. [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) is
+the reference deployment. Under this posture, every code path in
+the agent is subject to the same policy, and the in-process
+heuristics in §2.3 become accident-prevention layered on top of a
+real boundary. This is the supported posture when the agent
+ingests content from surfaces the operator does not control — the
+open web, inbound email, multi-user channels, untrusted MCP
+servers — and for production or shared deployments.
 
-### Subagents
-- **No recursive delegation:** The `delegate_task` tool is disabled for child agents.
-- **Depth limit:** `MAX_DEPTH = 2` — parent (depth 0) can spawn a child (depth 1); grandchildren are rejected.
-- **Memory isolation:** Subagents run with `skip_memory=True` and do not have access to the parent's persistent memory provider. The parent receives only the task prompt and final response as an observation.
+Operators running the default local backend with untrusted input
+surfaces, or running a terminal-backend sandbox and expecting it to
+contain code paths that don't go through the shell, are operating
+outside the supported security posture.
+
+### 2.2 Credential Scoping
+
+Hermes filters the environment it passes to its lower-trust
+in-process components: shell subprocesses, MCP subprocesses, and
+the code-execution child. Credentials like provider API keys and
+gateway tokens are stripped by default; variables explicitly
+declared by the operator or by a loaded skill are passed through.
+
+This reduces casual exfiltration. It is not containment. A
+component with code-execution primitives can always reach
+filesystem-resident credentials that the agent process itself can
+read.
+
+### 2.3 In-Process Heuristics
+
+The following components screen or warn about LLM behavior. They
+are useful. They are not boundaries.
+
+- The **approval gate** detects common destructive shell patterns
+  and prompts the operator before execution. Shell is Turing-
+  complete; a denylist over shell strings is structurally
+  incomplete. The gate catches cooperative-mode mistakes, not
+  adversarial output.
+- **Output redaction** strips secret-like patterns from display.
+  A motivated output producer will defeat it.
+- **Skills Guard** scans installable skill content for injection
+  patterns. It is a review aid; the boundary for third-party skills
+  is operator review before install.
+
+### 2.4 Gateway Authorization
+
+When the gateway integrates with a messaging platform, each platform
+adapter authenticates callers against an operator-configured
+allowlist. **An allowlist is required for every enabled adapter.**
+Adapters should refuse to dispatch agent work, resolve approvals, or
+relay output until an allowlist is set; code paths that fail open
+when no allowlist is configured are code bugs in scope under §3.1.
+Within the allowlist, all authorized callers are equally trusted.
+Session identifiers are routing handles, not authorization
+boundaries.
+
+### 2.5 Agent-Loaded Content
+
+Hermes chooses, by design, to load and execute content from specific
+on-disk locations at its own initiative — skills, hooks, plugins,
+operator-configured shortcuts. Content placed in these locations
+becomes code the agent runs on its next session, hook dispatch, or
+command invocation.
+
+Hermes does not claim these locations are protected files.
+Filesystem-level protection is whatever the OS provides under the
+operator's chosen isolation posture (§2.1). What Hermes commits to
+is narrower and different: **attacker-influenced input must not be
+chainable into a write that Hermes would later load and execute on
+its own initiative**. The concern is not what the filesystem
+allows; it is what Hermes loads.
 
 ---
 
-## 3. Out of Scope (Non-Vulnerabilities)
+## 3. Scope
 
-The following scenarios are **not** considered security breaches:
-- **Prompt Injection:** Unless it results in a concrete bypass of the approval system, toolset restrictions, or container sandbox.
-- **Public Exposure:** Deploying the gateway to the public internet without external authentication or network protection.
-- **Trusted State Access:** Reports that require pre-existing write access to `~/.hermes/`, `.env`, or `config.yaml` (these are operator-owned files).
-- **Default Behavior:** Host-level command execution when `terminal.backend` is set to `local` — this is the documented default, not a vulnerability.
-- **Configuration Trade-offs:** Intentional break-glass settings such as `approvals.mode: "off"` or `terminal.backend: local` in production.
-- **Tool-level read/access restrictions:** The agent has unrestricted shell access via the `terminal` tool by design. Reports that a specific tool (e.g., `read_file`) can access a resource are not vulnerabilities if the same access is available through `terminal`. Tool-level deny lists only constitute a meaningful security boundary when paired with equivalent restrictions on the terminal side (as with write operations, where `WRITE_DENIED_PATHS` is paired with the dangerous command approval system).
+### 3.1 In Scope
+
+- Escape from a declared OS-level isolation posture (§2.1): an
+  attacker-controlled code path reaching state that the posture
+  claimed to confine.
+- Unauthorized gateway access: a caller outside the configured
+  allowlist dispatching work, receiving output, or resolving
+  approvals (§2.4).
+- Credential exfiltration: leakage of operator credentials or
+  session authorization material to a destination outside the
+  operator's trust envelope.
+- Untrusted input chaining into agent-loaded content: an untrusted
+  input surface chains into a write whose target is a location
+  Hermes loads and executes on its own initiative (§2.5).
+- Output integrity failures into external platforms: agent output
+  rendered on a receiving platform with unintended authority —
+  broadcast-mention passthrough, content that fetches attacker
+  resources for every recipient, markup injection into hosted UIs.
+- Trust-model documentation violations: code behaving contrary to
+  what this policy states, where an operator relying on the policy
+  would reasonably expect otherwise.
+
+### 3.2 Out of Scope
+
+"Out of scope" here means "not a security vulnerability under this
+policy." It does not mean "not worth reporting." Improvements to the
+in-process heuristics, hardening ideas, and UX fixes are welcome as
+regular issues or pull requests — we can always make the approval
+gate catch more patterns, make redaction smarter, or tighten adapter
+behavior. These items just don't go through the private-disclosure
+channel and don't receive advisories.
+
+- **Bypasses of in-process heuristics (§2.3)** — approval-gate regex
+  bypasses, redaction bypasses, Skills Guard pattern bypasses, and
+  analogous reports against future heuristics. These components are
+  not boundaries; defeating them is not a vulnerability under this
+  policy.
+- **Prompt injection that does not chain to a §3.1 outcome.** Getting
+  the LLM to emit unusual text or "ignore previous instructions" is
+  not itself a vulnerability; it becomes one only when it results in
+  something §3.1 describes.
+- **Consequences of a chosen isolation posture.** Reports that a
+  code path operating within its posture's scope can do what that
+  posture permits are not vulnerabilities. Examples: shell tools
+  reaching host state under the local backend; code-execution or
+  file tools reaching host state under terminal-backend isolation
+  that only sandboxes shell; reports whose preconditions require
+  pre-existing write access to operator-owned configuration or
+  credential files (those are already inside the operator's trust
+  envelope).
+- **Public exposure without external controls.** Exposing the
+  gateway or API to the public internet without authentication,
+  VPN, or firewall.
+- **Documented break-glass settings.** Disabled approvals, local
+  backend in production, development profiles that bypass
+  hermes-home security, and similar operator-selected trade-offs.
+- **Tool-level read/write restrictions on a posture where shell is
+  permitted.** If a path is reachable via the terminal tool, reports
+  that other file tools can reach it add nothing.
 
 ---
 
-## 4. Deployment Hardening & Best Practices
+## 4. Deployment Hardening
 
-### Filesystem & Network
-- **Production sandboxing:** Use container backends (`docker`, `modal`, `daytona`) instead of `local` for untrusted workloads.
-- **File permissions:** Run as non-root (the Docker image uses UID 10000); protect credentials with `chmod 600 ~/.hermes/.env` on local installs.
-- **Network exposure:** Do not expose the gateway or API server to the public internet without VPN, Tailscale, or firewall protection. SSRF protection is enabled by default across all gateway platform adapters (Telegram, Discord, Slack, Matrix, Mattermost, etc.) with redirect validation. Note: the local terminal backend does not apply SSRF filtering, as it operates within the trusted operator's environment.
+The single most important hardening decision is matching isolation
+(§2.1) to the trust of the content the agent will ingest. Beyond
+that:
 
-### Skills & Supply Chain
-- **Skill installation:** Review Skills Guard reports (`tools/skills_guard.py`) before installing third-party skills. The audit log at `~/.hermes/skills/.hub/audit.log` tracks every install and removal.
-- **MCP safety:** OSV malware checking runs automatically for `npx`/`uvx` packages before MCP server processes are spawned.
-- **CI/CD:** GitHub Actions are pinned to full commit SHAs. The `supply-chain-audit.yml` workflow blocks PRs containing `.pth` files or suspicious `base64`+`exec` patterns.
-
-### Credential Storage
-- API keys and tokens belong exclusively in `~/.hermes/.env` — never in `config.yaml` or checked into version control.
-- The credential pool system (`agent/credential_pool.py`) handles key rotation and fallback. Credentials are resolved from environment variables, not stored in plaintext databases.
+- Run the agent as a non-root user. The supplied container image
+  does this by default.
+- Keep credentials in the operator credential file with tight
+  permissions, never in the main config, never in version control.
+  Under OpenShell, use its Provider store rather than an on-disk
+  credential file.
+- Do not expose the gateway or API to the public internet without
+  VPN, Tailscale, or firewall protection. Under OpenShell, use the
+  network policy layer to restrict egress.
+- Configure a caller allowlist for every gateway adapter you enable
+  (§2.4).
+- Review third-party skills before install. Skills Guard reports and
+  the install audit log are the review surface.
+- The OSV malware database is consulted before launching
+  ecosystem-resolved MCP servers. Additional supply-chain guards
+  on dependency and bundled-package changes run in CI; see
+  `CONTRIBUTING.md` for specifics.
 
 ---
 
-## 5. Disclosure Process
+## 5. Disclosure
 
-- **Coordinated Disclosure:** 90-day window or until a fix is released, whichever comes first.
-- **Communication:** All updates occur via the GHSA thread or email correspondence with security@nousresearch.com.
-- **Credits:** Reporters are credited in release notes unless anonymity is requested.
+- **Coordinated disclosure window:** 90 days from report, or until a
+  fix is released, whichever comes first.
+- **Channel:** the GHSA thread or email correspondence with
+  security@nousresearch.com.
+- **Credit:** reporters are credited in release notes unless
+  anonymity is requested.

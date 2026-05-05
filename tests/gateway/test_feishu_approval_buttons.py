@@ -38,6 +38,7 @@ def _ensure_feishu_mocks():
 _ensure_feishu_mocks()
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType, SessionSource
 import gateway.platforms.feishu as feishu_module
 from gateway.platforms.feishu import FeishuAdapter
 
@@ -208,6 +209,89 @@ class TestFeishuExecApproval:
         assert ids[0] != ids[1]
 
 
+class TestFeishuClarifyPrompt:
+    """Test send_clarify_prompt sends an interactive decision card."""
+
+    @pytest.mark.asyncio
+    async def test_sends_interactive_clarify_card(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_clarify_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_clarify_prompt(
+                chat_id="oc_12345",
+                question="架构方案设计好了，是否继续执行？",
+                choices=["同意执行", "需要修改", "废弃当前方案"],
+                clarify_id="clarify_001",
+                metadata={"session_key": "sess-clarify-001"},
+            )
+
+        assert result.success is True
+        kwargs = mock_send.call_args[1]
+        assert kwargs["msg_type"] == "interactive"
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "blue"
+        assert "继续执行" in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert len(actions) == 3
+        assert actions[0]["value"]["clarify_id"] == "clarify_001"
+        assert actions[0]["value"]["clarify_choice"] == "同意执行"
+        assert adapter._clarify_state["clarify_001"]["session_key"] == "sess-clarify-001"
+        for action in actions:
+            assert set(action["value"].keys()) == {"clarify_id", "clarify_choice"}
+            assert "binding_metadata" not in action["value"]
+            assert "formal_release" not in action["value"]
+            assert "tenant_id" not in action["value"]
+
+    @pytest.mark.asyncio
+    async def test_requires_at_least_one_choice(self):
+        adapter = _make_adapter()
+        result = await adapter.send_clarify_prompt(
+            chat_id="oc_12345",
+            question="继续吗？",
+            choices=[],
+            clarify_id="clarify_002",
+        )
+        assert result.success is False
+        assert "at least one choice" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_clarify_falls_back_when_interactive_send_fails(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._pending_clarify = {}
+        response_queue = MagicMock()
+        runner._pending_clarify["sess-1"] = {
+            "clarify_id": "clarify_003",
+            "choices": ["同意执行", "需要修改"],
+            "response_queue": response_queue,
+        }
+
+        source = SessionSource(
+            platform=MagicMock(value="feishu"),
+            chat_id="oc_12345",
+            chat_type="private",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text='/card button {"clarify_id":"clarify_003","clarify_choice":"需要修改"}',
+            message_type=MessageType.COMMAND,
+            source=source,
+            message_id="msg_card_clarify",
+        )
+
+        assert runner._consume_pending_clarify(event, "sess-1") is True
+        response_queue.put_nowait.assert_called_once_with("需要修改")
+
+
 # ===========================================================================
 # _resolve_approval — approval state pop + gateway resolution
 # ===========================================================================
@@ -311,6 +395,39 @@ class TestNonApprovalCardAction:
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
 
+    @pytest.mark.asyncio
+    async def test_clarify_card_action_preserves_private_chat_type_and_skips_ack_id(self):
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"clarify_id": "clarify_123", "clarify_choice": "approve"},
+            chat_id="oc_private_dm",
+            open_id="ou_u1",
+            token="c-card-token-123",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u1", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(
+                adapter,
+                "get_chat_info",
+                new_callable=AsyncMock,
+                return_value={"name": "Private Chat", "type": "dm", "raw_type": "p2p"},
+            ),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        assert event.source.chat_type in {"private", "dm"}
+        assert event.message_id is None
+        assert '"clarify_id": "clarify_123"' in event.text
+        assert '"clarify_choice": "approve"' in event.text
+
 
 # ===========================================================================
 # _on_card_action_trigger — inline card response for approval actions
@@ -410,6 +527,35 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
+
+    def test_returns_card_for_clarify_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._clarify_state["clarify_123"] = {
+            "session_key": "sess-clarify-123",
+            "message_id": "msg_clarify_123",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"clarify_id": "clarify_123", "clarify_choice": "同意执行"},
+            open_id="ou_alice",
+        )
+        adapter._sender_name_cache["ou_alice"] = ("Alice", 9999999999)
+
+        with patch.object(adapter, "_resolve_clarify", new_callable=AsyncMock) as mock_resolve, \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_submit.assert_called_once()
+        mock_resolve.assert_called_once_with("clarify_123", "同意执行", "Alice")
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Decision Recorded" in card["header"]["title"]["content"]
+        assert "同意执行" in card["elements"][0]["content"]
+        assert "Alice" in card["elements"][0]["content"]
 
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
         adapter = _make_adapter()

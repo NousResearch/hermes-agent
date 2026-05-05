@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"C:\\\\Program Files\\\\Tailscale\\\\tailscale.exe\" ping iphone172 2>&1)",
+      "PowerShell(Get-Process | Where-Object { $_.Name -match \"node|python|mcp\" } | Select-Object Name, Id, @{N='Mem\\(MB\\)';E={[math]::Round\\($_.WorkingSet64/1MB,1\\)}})",
+      "PowerShell(Measure-Command { & \"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -NoProfile -Command \"exit\" } | Select-Object TotalSeconds)",
+      "Bash(powershell.exe -Command \"Measure-Command { pwsh -NoProfile -Command 'exit' } | Select-Object TotalSeconds, TotalMilliseconds\")"
+    ]
+  }
+}

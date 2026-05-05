@@ -599,6 +599,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
+        _get_model_config,
     )
     from hermes_cli.auth import AuthError
 
@@ -617,6 +618,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    # Get max_tokens from model config
+    model_cfg = _get_model_config()
+    max_tokens = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -625,12 +630,13 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": max_tokens,
     }
 
 
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import resolve_runtime_provider, _get_model_config
     try:
         import yaml as _y
         cfg_path = _hermes_home / "config.yaml"
@@ -643,6 +649,9 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         # Normalize to list
         fb_list = fb if isinstance(fb, list) else [fb]
+        # Get max_tokens from model config
+        model_cfg = _get_model_config()
+        max_tokens = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
         for entry in fb_list:
             if not isinstance(entry, dict):
                 continue
@@ -661,6 +670,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "max_tokens": max_tokens,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -1546,6 +1556,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,

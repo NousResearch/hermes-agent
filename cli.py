@@ -1976,6 +1976,7 @@ class HermesCLI:
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
+        max_tokens: int = None,
         verbose: bool = False,
         compact: bool = False,
         resume: str = None,
@@ -1993,6 +1994,7 @@ class HermesCLI:
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations shared with subagents (default: 90)
+            max_tokens: Maximum output token limit for model responses (default: from config or model default)
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
@@ -2114,6 +2116,13 @@ class HermesCLI:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        # Max tokens priority: CLI arg > config file > model default
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
+        elif isinstance(_model_config, dict) and _model_config.get("max_tokens"):
+            self.max_tokens = _model_config["max_tokens"]
+        else:
+            self.max_tokens = None
         # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns

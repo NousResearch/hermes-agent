@@ -68,7 +68,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ⚕"              # Shown on exit
       response_label: " ⚕ Hermes "       # Response box header label
-      prompt_symbol: "❯ "                # Input prompt symbol
+      prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
 
     # Tool prefix: character for tool output lines (default: ┊)
@@ -190,7 +190,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
@@ -242,7 +242,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Ares Agent! Type your message or /help for commands.",
             "goodbye": "Farewell, warrior! ⚔",
             "response_label": " ⚔ Ares ",
-            "prompt_symbol": "⚔ ❯ ",
+            "prompt_symbol": "⚔",
             "help_header": "(⚔) Available Commands",
         },
         "tool_prefix": "╎",
@@ -301,7 +301,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
         "tool_prefix": "┊",
@@ -340,7 +340,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
@@ -377,7 +377,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
         "tool_prefix": "│",
@@ -414,7 +414,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! \u2695",
             "response_label": " \u2695 Hermes ",
-            "prompt_symbol": "\u276f ",
+            "prompt_symbol": "\u276f",
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "\u250a",
@@ -467,7 +467,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Poseidon Agent! Type your message or /help for commands.",
             "goodbye": "Fair winds! Ψ",
             "response_label": " Ψ Poseidon ",
-            "prompt_symbol": "Ψ ❯ ",
+            "prompt_symbol": "Ψ",
             "help_header": "(Ψ) Available Commands",
         },
         "tool_prefix": "│",
@@ -539,7 +539,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Sisyphus Agent! Type your message or /help for commands.",
             "goodbye": "The boulder waits. ◉",
             "response_label": " ◉ Sisyphus ",
-            "prompt_symbol": "◉ ❯ ",
+            "prompt_symbol": "◉",
             "help_header": "(◉) Available Commands",
         },
         "tool_prefix": "│",
@@ -612,7 +612,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Charizard Agent! Type your message or /help for commands.",
             "goodbye": "Flame out! ✦",
             "response_label": " ✦ Charizard ",
-            "prompt_symbol": "✦ ❯ ",
+            "prompt_symbol": "✦",
             "help_header": "(✦) Available Commands",
         },
         "tool_prefix": "│",
@@ -780,12 +780,21 @@ def init_skin_from_config(config: dict) -> None:
 # =============================================================================
 
 
-def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
-    """Get the interactive prompt symbol from the active skin."""
+def get_active_prompt_symbol(fallback: str = "❯") -> str:
+    """Return the interactive prompt symbol with a single trailing space.
+
+    Skins store ``prompt_symbol`` as a bare token (no spaces). The trailing
+    space is appended here so callers can drop it straight into a rendered
+    prompt without hand-rolling whitespace.
+    """
     try:
-        return get_active_skin().get_branding("prompt_symbol", fallback)
+        raw = get_active_skin().get_branding("prompt_symbol", fallback)
     except Exception:
-        return fallback
+        raw = fallback
+
+    cleaned = (raw or fallback).strip()
+
+    return f"{cleaned or fallback.strip()} "
 
 
 

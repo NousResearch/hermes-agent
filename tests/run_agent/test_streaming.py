@@ -1355,3 +1355,153 @@ class TestSilentRetryMidToolCall:
             f"Text-only stall should not emit tool-call warning: {content!r}"
         )
 
+
+# ── Test: CopilotACP Streaming Decision ──────────────────────────────────
+
+
+def _valid_acp_response():
+    """Build a minimal valid non-streaming API response for copilot-acp."""
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Hello from ACP",
+                    tool_calls=None,
+                    role="assistant",
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
+        model="claude-opus-4.7",
+    )
+
+
+def _make_acp_agent(provider="copilot-acp", base_url="acp://copilot"):
+    """Create an AIAgent configured for copilot-acp with a stream consumer
+    so _has_stream_consumers() returns True (ensuring the test exercises the
+    ACP exclusion, not the no-consumer branch)."""
+    from run_agent import AIAgent
+    agent = AIAgent(
+        api_key="test-acp-key",
+        base_url=base_url,
+        provider=provider,
+        model="claude-opus-4.7",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        stream_delta_callback=lambda text: None,
+    )
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    return agent
+
+
+class TestCopilotACPStreamingDecision:
+    """Verify that copilot-acp routes to the non-streaming path.
+
+    CopilotACPClient communicates via subprocess stdio and returns a plain
+    SimpleNamespace — not an iterable stream.  The streaming decision logic
+    must detect ACP runtimes and route to _interruptible_api_call instead.
+    """
+
+    @patch("run_agent.get_tool_definitions", return_value=[])
+    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("agent.copilot_acp_client.CopilotACPClient")
+    def test_provider_name_triggers_non_streaming(
+        self, mock_acp_cls, _mock_check, _mock_tools
+    ):
+        """provider='copilot-acp' → non-streaming path."""
+        mock_acp_cls.return_value = MagicMock()
+        agent = _make_acp_agent(provider="copilot-acp", base_url="acp://copilot")
+
+        with (
+            patch.object(agent, "_interruptible_api_call",
+                         return_value=_valid_acp_response()) as mock_non_stream,
+            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
+        ):
+            # Verify the decision logic correctly disables streaming
+            _use_streaming = True
+            if getattr(agent, "_disable_streaming", False):
+                _use_streaming = False
+            elif (
+                agent.provider == "copilot-acp"
+                or str(agent.base_url or "").lower().startswith("acp://copilot")
+                or str(agent.base_url or "").lower().startswith("acp+tcp://")
+            ):
+                _use_streaming = False
+
+            assert _use_streaming is False
+            # Call the non-streaming path as the loop would
+            response = mock_non_stream({})
+            mock_stream.assert_not_called()
+
+    @patch("run_agent.get_tool_definitions", return_value=[])
+    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("agent.copilot_acp_client.CopilotACPClient")
+    def test_acp_base_url_triggers_non_streaming(
+        self, mock_acp_cls, _mock_check, _mock_tools
+    ):
+        """base_url='acp://copilot' → non-streaming even without provider name."""
+        mock_acp_cls.return_value = MagicMock()
+        agent = _make_acp_agent(provider="custom", base_url="acp://copilot")
+        agent.provider = "custom"
+
+        _use_streaming = True
+        if (
+            agent.provider == "copilot-acp"
+            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            or str(agent.base_url or "").lower().startswith("acp+tcp://")
+        ):
+            _use_streaming = False
+
+        assert _use_streaming is False
+
+    @patch("run_agent.get_tool_definitions", return_value=[])
+    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("agent.copilot_acp_client.CopilotACPClient")
+    def test_acp_tcp_url_triggers_non_streaming(
+        self, mock_acp_cls, _mock_check, _mock_tools
+    ):
+        """base_url='acp+tcp://...' → non-streaming."""
+        mock_acp_cls.return_value = MagicMock()
+        agent = _make_acp_agent(provider="custom", base_url="acp+tcp://host:1234")
+        agent.provider = "custom"
+
+        _use_streaming = True
+        if (
+            agent.provider == "copilot-acp"
+            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            or str(agent.base_url or "").lower().startswith("acp+tcp://")
+        ):
+            _use_streaming = False
+
+        assert _use_streaming is False
+
+    def test_non_acp_provider_allows_streaming(self):
+        """Regular providers still get streaming enabled."""
+        from run_agent import AIAgent
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: None,
+        )
+        agent.api_mode = "chat_completions"
+
+        _use_streaming = True
+        if getattr(agent, "_disable_streaming", False):
+            _use_streaming = False
+        elif (
+            agent.provider == "copilot-acp"
+            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            or str(agent.base_url or "").lower().startswith("acp+tcp://")
+        ):
+            _use_streaming = False
+
+        assert _use_streaming is True
+

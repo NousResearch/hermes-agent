@@ -125,6 +125,33 @@ class TestYoloMode:
                                          approval_callback=lambda *a: "deny")
         assert not result["approved"]
 
+    @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])
+    def test_false_like_yolo_values_do_not_bypass_dangerous_command(self, monkeypatch, value):
+        """False-like env strings must not silently enable YOLO bypass."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", value)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
+
+        result = check_dangerous_command(
+            "rm -rf /tmp/stuff",
+            "local",
+            approval_callback=lambda *a: "deny",
+        )
+        assert not result["approved"]
+
+    @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])
+    def test_false_like_yolo_values_do_not_bypass_combined_guard(self, monkeypatch, value):
+        """Combined guard must treat false-like YOLO env strings as disabled."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", value)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+        result = check_all_command_guards(
+            "rm -rf /tmp/stuff",
+            "local",
+            approval_callback=lambda *a: "deny",
+        )
+        assert not result["approved"]
+
     def test_session_scoped_yolo_only_bypasses_current_session(self, monkeypatch):
         """Gateway /yolo should only bypass approvals for the active session."""
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)

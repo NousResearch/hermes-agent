@@ -118,6 +118,7 @@ image = pipe(
 
 Diffusers is built around three core components:
 
+<!-- ascii-guard-ignore -->
 ```
 Pipeline (orchestration)
 ├── Model (neural networks)
@@ -126,6 +127,7 @@ Pipeline (orchestration)
 │   └── Text Encoder (CLIP/T5)
 └── Scheduler (denoising algorithm)
 ```
+<!-- ascii-guard-ignore-end -->
 
 ### Pipeline inference flow
 

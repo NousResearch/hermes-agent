@@ -25,6 +25,7 @@ Lifecycle (called by MemoryManager, wired in run_agent.py):
 Optional hooks (override to opt in):
   on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
   on_session_end(messages)               — end-of-session extraction
+  on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
@@ -158,6 +159,45 @@ class MemoryProvider(ABC):
 
         NOT called after every turn — only at actual session boundaries
         (CLI exit, /reset, gateway session expiry).
+        """
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Called when the agent switches session_id mid-process.
+
+        Fires on ``/resume``, ``/branch``, ``/reset``, ``/new`` (CLI), the
+        gateway equivalents, and context compression — any path that
+        reassigns ``AIAgent.session_id`` without tearing the provider down.
+
+        Providers that cache per-session state in ``initialize()``
+        (``_session_id``, ``_document_id``, accumulated turn buffers,
+        counters) should update or reset that state here so subsequent
+        writes land in the correct session's record.
+
+        Parameters
+        ----------
+        new_session_id:
+            The session_id the agent just switched to.
+        parent_session_id:
+            The previous session_id, if meaningful — set for ``/branch``
+            (fork lineage), context compression (continuation lineage),
+            and ``/resume`` (the session we're leaving). Empty string
+            when no lineage applies.
+        reset:
+            ``True`` when this is a genuinely new conversation, not a
+            resumption of an existing one. Fired by ``/reset`` / ``/new``.
+            Providers should flush accumulated per-session buffers
+            (``_session_turns``, ``_turn_counter``, etc.) when this is
+            set. ``False`` for ``/resume`` / ``/branch`` / compression
+            where the logical conversation continues under the new id.
+
+        Default is no-op for backward compatibility.
         """
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:

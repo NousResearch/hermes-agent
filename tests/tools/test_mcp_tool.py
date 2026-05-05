@@ -266,6 +266,58 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
+        """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "workdir": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Optional working directory",
+                },
+            },
+            "required": ["command"],
+        })
+
+        assert schema["properties"]["workdir"] == {
+            "type": "string",
+            "nullable": True,
+            "default": None,
+            "description": "Optional working directory",
+        }
+        assert schema["required"] == ["command"]
+
+    def test_nested_nullable_array_items_are_collapsed(self):
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {"field": {"type": "string"}},
+                            },
+                            {"type": "null"},
+                        ]
+                    },
+                }
+            },
+        })
+
+        assert schema["properties"]["filters"]["items"] == {
+            "type": "object",
+            "properties": {"field": {"type": "string"}},
+            "nullable": True,
+        }
+
     def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
         """A Tool object without .inputSchema must not crash registration."""
         import types
@@ -653,6 +705,106 @@ class TestMCPServerTask:
             server = MCPServerTask("bad")
             with pytest.raises(ValueError, match="no 'command'"):
                 await server.start({"args": []})
+
+        asyncio.run(_test())
+
+    def test_refresh_tools_deregisters_removed_tools(self):
+        """Dynamic refresh removes stale registry entries for deleted tools."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import MCPServerTask
+
+        mock_registry = ToolRegistry()
+        server = MCPServerTask("srv")
+        server._config = {"command": "test"}
+        server._tools = [_make_mcp_tool("old"), _make_mcp_tool("keep")]
+        server._registered_tool_names = ["mcp_srv_old", "mcp_srv_keep"]
+        server.session = MagicMock()
+        server.session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[_make_mcp_tool("keep"), _make_mcp_tool("new")])
+        )
+
+        with patch("tools.registry.registry", mock_registry):
+            mock_registry.register(
+                name="mcp_srv_old",
+                toolset="mcp-srv",
+                schema={"name": "mcp_srv_old", "description": "Old"},
+                handler=lambda *_args, **_kwargs: "{}",
+            )
+            mock_registry.register(
+                name="mcp_srv_keep",
+                toolset="mcp-srv",
+                schema={"name": "mcp_srv_keep", "description": "Keep"},
+                handler=lambda *_args, **_kwargs: "{}",
+            )
+
+            asyncio.run(server._refresh_tools())
+
+            names = mock_registry.get_all_tool_names()
+            assert "mcp_srv_old" not in names
+            assert "mcp_srv_keep" in names
+            assert "mcp_srv_new" in names
+            assert set(server._registered_tool_names) == {
+                "mcp_srv_keep",
+                "mcp_srv_new",
+                "mcp_srv_list_resources",
+                "mcp_srv_read_resource",
+                "mcp_srv_list_prompts",
+                "mcp_srv_get_prompt",
+            }
+
+    def test_schedule_tools_refresh_keeps_task_until_done(self):
+        """Background refresh tasks are strongly referenced and then discarded."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            started = asyncio.Event()
+            finish = asyncio.Event()
+            server = MCPServerTask("srv")
+
+            async def fake_refresh(_server):
+                started.set()
+                await finish.wait()
+
+            with patch.object(MCPServerTask, "_refresh_tools", new=fake_refresh):
+                server._schedule_tools_refresh()
+
+                await started.wait()
+                assert len(server._pending_refresh_tasks) == 1
+                task = next(iter(server._pending_refresh_tasks))
+                assert not task.done()
+
+                finish.set()
+                await task
+                await asyncio.sleep(0)
+                assert server._pending_refresh_tasks == set()
+
+        asyncio.run(_test())
+
+    def test_shutdown_cancels_pending_refresh_tasks(self):
+        """shutdown() cancels in-flight background refresh tasks."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+            server = MCPServerTask("srv")
+
+            async def fake_refresh(_server):
+                started.set()
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+            with patch.object(MCPServerTask, "_refresh_tools", new=fake_refresh):
+                server._schedule_tools_refresh()
+                await started.wait()
+
+                await server.shutdown()
+
+            assert cancelled.is_set()
+            assert server._pending_refresh_tasks == set()
 
         asyncio.run(_test())
 
@@ -1910,17 +2062,46 @@ class TestUtilityToolRegistration:
 import math
 import time
 
-from mcp.types import (
-    CreateMessageResult,
-    CreateMessageResultWithTools,
-    ErrorData,
-    SamplingCapability,
-    SamplingToolsCapability,
-    TextContent,
-    ToolUseContent,
-)
+class _CompatType:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
 
-from tools.mcp_tool import SamplingHandler, _safe_numeric
+
+try:
+    from mcp.types import (
+        CreateMessageResult,
+        ErrorData,
+        SamplingCapability,
+        TextContent,
+    )
+except ImportError:
+    CreateMessageResult = _CompatType
+    ErrorData = _CompatType
+    SamplingCapability = _CompatType
+    TextContent = _CompatType
+
+try:
+    from mcp.types import CreateMessageResultWithTools
+except ImportError:
+    CreateMessageResultWithTools = _CompatType
+
+try:
+    from mcp.types import SamplingToolsCapability
+except ImportError:
+    SamplingToolsCapability = _CompatType
+
+try:
+    from mcp.types import ToolUseContent
+except ImportError:
+    ToolUseContent = _CompatType
+
+from tools.mcp_tool import (
+    CreateMessageResultWithTools,
+    SamplingHandler,
+    SamplingToolsCapability,
+    ToolUseContent,
+    _safe_numeric,
+)
 
 
 # ---------------------------------------------------------------------------

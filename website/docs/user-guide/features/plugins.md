@@ -9,6 +9,11 @@ description: "Extend Hermes with custom tools, hooks, and integrations via the p
 
 Hermes has a plugin system for adding custom tools, hooks, and integrations without modifying core code.
 
+If you want to create a custom tool for yourself, your team, or one project,
+this is usually the right path. The developer guide's
+[Adding Tools](/docs/developer-guide/adding-tools) page is for built-in Hermes
+core tools that live in `tools/` and `toolsets.py`.
+
 **→ [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin)** — step-by-step guide with a complete working example.
 
 ## Quick overview
@@ -42,6 +47,8 @@ description: A minimal example plugin
 ```python
 """Minimal Hermes plugin — registers a tool and a hook."""
 
+import json
+
 
 def register(ctx):
     # --- Tool: hello_world ---
@@ -60,11 +67,18 @@ def register(ctx):
         },
     }
 
-    def handle_hello(params):
+    def handle_hello(params, **kwargs):
+        del kwargs
         name = params.get("name", "World")
-        return f"Hello, {name}! 👋  (from the hello-world plugin)"
+        return json.dumps({"success": True, "greeting": f"Hello, {name}!"})
 
-    ctx.register_tool("hello_world", schema, handle_hello)
+    ctx.register_tool(
+        name="hello_world",
+        toolset="hello_world",
+        schema=schema,
+        handler=handle_hello,
+        description="Return a friendly greeting for the given name.",
+    )
 
     # --- Hook: log every tool call ---
     def on_tool_call(tool_name, params, result):
@@ -81,7 +95,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 
 | Capability | How |
 |-----------|-----|
-| Add tools | `ctx.register_tool(name, schema, handler)` |
+| Add tools | `ctx.register_tool(name=..., toolset=..., schema=..., handler=...)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
@@ -99,6 +113,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
+| Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](/docs/getting-started/nix-setup#plugins) |
 
 Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it.
 
@@ -141,6 +156,9 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |
+| [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session (`/new`, GC, CLI quit) |
+| [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
+| [`subagent_stop`](/docs/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
 | [`pre_gateway_dispatch`](/docs/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
 
 ## Plugin types
@@ -154,6 +172,23 @@ Hermes has three kinds of plugins:
 | **Context engines** | Replace the built-in context compressor | Single-select (one active) | `plugins/context_engine/` |
 
 Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. General plugins can be enabled in any combination.
+
+## NixOS declarative plugins
+
+On NixOS, plugins can be installed declaratively via the module options — no `hermes plugins install` needed. See the **[Nix Setup guide](/docs/getting-started/nix-setup#plugins)** for full details.
+
+```nix
+services.hermes-agent = {
+  # Directory plugin (source tree with plugin.yaml)
+  extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
+  # Entry-point plugin (pip package)
+  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  # Enable in config
+  settings.plugins.enabled = [ "my-plugin" ];
+};
+```
+
+Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist with manually installed plugins and are cleaned up automatically when removed from the Nix config.
 
 ## Managing plugins
 

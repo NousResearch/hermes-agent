@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
+    cfg_get,
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
@@ -55,6 +56,7 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
+    ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
@@ -77,7 +79,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -225,6 +227,14 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "tts_provider": "kittentts",
                 "post_setup": "kittentts",
+            },
+            {
+                "name": "Piper",
+                "badge": "local · free",
+                "tag": "Local neural TTS, 44 languages (voices ~20-90MB)",
+                "env_vars": [],
+                "tts_provider": "piper",
+                "post_setup": "piper",
             },
         ],
     },
@@ -425,6 +435,31 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "langfuse": {
+        "name": "Langfuse Observability",
+        "icon": "📊",
+        "providers": [
+            {
+                "name": "Langfuse Cloud",
+                "tag": "Hosted Langfuse (cloud.langfuse.com)",
+                "env_vars": [
+                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
+                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
+                ],
+                "post_setup": "langfuse",
+            },
+            {
+                "name": "Langfuse Self-Hosted",
+                "tag": "Self-hosted Langfuse instance",
+                "env_vars": [
+                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
+                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
+                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
+                ],
+                "post_setup": "langfuse",
+            },
+        ],
+    },
 }
 
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
@@ -442,7 +477,10 @@ def _run_post_setup(post_setup_key: str):
     import shutil
     if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        if not node_modules.exists() and shutil.which("npm"):
+        npm_bin = shutil.which("npm")
+        npx_bin = shutil.which("npx")
+        # Step 1: install the agent-browser npm package into node_modules/
+        if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
             result = subprocess.run(
@@ -454,8 +492,94 @@ def _run_post_setup(post_setup_key: str):
             else:
                 from hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
+                if result.stderr:
+                    _print_info(f"      {result.stderr.strip()[:200]}")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+            return
+
+        # Step 2: only the local browser provider actually needs Chromium on
+        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
+        # their own Chromium and don't need the local install.
+        if post_setup_key != "agent_browser":
+            return
+
+        # Step 3: ensure the Chromium / headless-shell build agent-browser
+        # drives is actually installed. Without it the CLI hangs on first
+        # use until the command timeout fires. Skip inside Docker — the
+        # image bakes Chromium in at build time, and runtime users usually
+        # can't write to PLAYWRIGHT_BROWSERS_PATH anyway.
+        try:
+            # Import lazily so the tools_config UI doesn't pull in the full
+            # browser_tool module at import time.
+            from tools.browser_tool import (
+                _chromium_installed,
+                _running_in_docker,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            _print_warning(f"    Could not check Chromium status: {exc}")
+            return
+
+        if _chromium_installed():
+            _print_success("    Chromium browser already installed")
+            return
+
+        if _running_in_docker():
+            _print_warning(
+                "    Chromium is missing but you're running in Docker."
+            )
+            _print_info(
+                "    Pull the latest image to get the bundled Chromium:"
+            )
+            _print_info(
+                "      docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+            return
+
+        if not npx_bin:
+            _print_warning(
+                "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
+            )
+            return
+
+        _print_info("    Installing Chromium (~170MB one-time download)...")
+        import subprocess
+        # Prefer the bundled agent-browser install subcommand so the
+        # version of Chromium matches the CLI. Fall back to npx shim on
+        # setups where the local bin stub isn't present.
+        local_ab = PROJECT_ROOT / "node_modules" / ".bin" / "agent-browser"
+        if sys.platform == "win32":
+            local_ab_win = local_ab.with_suffix(".cmd")
+            if local_ab_win.exists():
+                local_ab = local_ab_win
+        install_cmd = (
+            [str(local_ab), "install", "--with-deps"]
+            if local_ab.exists()
+            else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
+        )
+        try:
+            result = subprocess.run(
+                install_cmd,
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+            )
+            if result.returncode == 0:
+                _print_success("    Chromium installed")
+                # Invalidate the cached "missing" result so subsequent
+                # check_browser_requirements() calls see the new install.
+                import tools.browser_tool as _bt
+                _bt._cached_chromium_installed = None
+            else:
+                _print_warning("    Chromium install failed:")
+                tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+                for line in tail:
+                    _print_info(f"      {line[:200]}")
+                _print_info("    Run manually: npx agent-browser install --with-deps")
+        except subprocess.TimeoutExpired:
+            _print_warning("    Chromium install timed out (>10min)")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
+        except Exception as exc:
+            _print_warning(f"    Chromium install failed: {exc}")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
@@ -508,6 +632,33 @@ def _run_post_setup(post_setup_key: str):
         except subprocess.TimeoutExpired:
             _print_warning("    kittentts install timed out (>5min)")
             _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+
+    elif post_setup_key == "piper":
+        try:
+            __import__("piper")
+            _print_success("    piper-tts is already installed")
+        except ImportError:
+            import subprocess
+            _print_info("    Installing piper-tts (~14MB wheel, voices downloaded on first use)...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-U", "piper-tts", "--quiet"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if result.returncode == 0:
+                    _print_success("    piper-tts installed")
+                else:
+                    _print_warning("    piper-tts install failed:")
+                    _print_info(f"      {result.stderr.strip()[:300]}")
+                    _print_info("    Run manually: python -m pip install -U piper-tts")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    piper-tts install timed out (>5min)")
+                _print_info("    Run manually: python -m pip install -U piper-tts")
+                return
+        _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
+        _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
+        _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
 
     elif post_setup_key == "spotify":
         # Run the full `hermes auth spotify` flow — if the user has no
@@ -566,6 +717,40 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    tinker-atropos submodule not found - run:")
                 _print_info("      git submodule update --init --recursive")
                 _print_info('      uv pip install -e "./tinker-atropos"')
+
+    elif post_setup_key == "langfuse":
+        # Install the langfuse SDK.
+        try:
+            __import__("langfuse")
+            _print_success("    langfuse SDK already installed")
+        except ImportError:
+            import subprocess
+            _print_info("    Installing langfuse SDK...")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "langfuse", "--quiet"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                _print_success("    langfuse SDK installed")
+            else:
+                _print_warning("    langfuse SDK install failed — run manually: pip install langfuse")
+        # Opt the bundled observability/langfuse plugin into plugins.enabled.
+        # The plugin ships in the repo but doesn't load until the user enables
+        # it (standalone plugins are opt-in).
+        try:
+            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
+            enabled = _get_enabled_set()
+            if "observability/langfuse" in enabled or "langfuse" in enabled:
+                _print_success("    Plugin observability/langfuse already enabled")
+            else:
+                enabled.add("observability/langfuse")
+                _save_enabled_set(enabled)
+                _print_success("    Plugin observability/langfuse enabled")
+        except Exception as exc:
+            _print_warning(f"    Could not enable plugin automatically: {exc}")
+            _print_info("    Run manually: hermes plugins enable observability/langfuse")
+        _print_info("    Restart Hermes for tracing to take effect.")
+        _print_info("    Verify: hermes plugins list")
 
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
@@ -632,7 +817,12 @@ def _get_platform_tools(
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
-        default_ts = PLATFORMS[platform]["default_toolset"]
+        plat_info = PLATFORMS.get(platform)
+        if plat_info:
+            default_ts = plat_info["default_toolset"]
+        else:
+            # Plugin platform — derive toolset name from platform key
+            default_ts = f"hermes-{platform}"
         toolset_names = [default_ts]
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
@@ -695,7 +885,9 @@ def _get_platform_tools(
     # checklist or in a user-saved config.  Must run in BOTH branches —
     # otherwise saving via `hermes tools` (which flips has_explicit_config
     # to True) silently drops them.
-    platform_tool_universe = set(resolve_toolset(PLATFORMS[platform]["default_toolset"]))
+    _plat_info = PLATFORMS.get(platform)
+    _default_ts = _plat_info["default_toolset"] if _plat_info else f"hermes-{platform}"
+    platform_tool_universe = set(resolve_toolset(_default_ts))
     configurable_tool_universe = set()
     for ck in configurable_keys:
         configurable_tool_universe.update(resolve_toolset(ck))
@@ -777,6 +969,16 @@ def _get_platform_tools(
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 
+    # Honor agent.disabled_toolsets from config.yaml — allows users to
+    # globally suppress specific toolsets (e.g. "memory") across all
+    # platforms without per-platform toolset configuration.  This runs
+    # last so it overrides everything above.
+    agent_cfg = config.get("agent") or {}
+    disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    if disabled_toolsets:
+        disabled_set = {str(ts) for ts in disabled_toolsets}
+        enabled_toolsets -= disabled_set
+
     return enabled_toolsets
 
 
@@ -807,7 +1009,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # Get existing toolsets for this platform
-    existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
+    existing_toolsets = cfg_get(config, "platform_toolsets", platform, default=[])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
     existing_toolsets = [str(ts) for ts in existing_toolsets]
@@ -1194,23 +1396,23 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
-                and config.get("tts", {}).get("provider") == provider["tts_provider"]
+                and cfg_get(config, "tts", "provider") == provider["tts_provider"]
             )
         if "browser_provider" in provider:
-            current = config.get("browser", {}).get("cloud_provider")
+            current = cfg_get(config, "browser", "cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
-            current = config.get("web", {}).get("backend")
+            current = cfg_get(config, "web", "backend")
             return feature.managed_by_nous and current == provider["web_backend"]
         return feature.managed_by_nous
 
     if provider.get("tts_provider"):
-        return config.get("tts", {}).get("provider") == provider["tts_provider"]
+        return cfg_get(config, "tts", "provider") == provider["tts_provider"]
     if "browser_provider" in provider:
-        current = config.get("browser", {}).get("cloud_provider")
+        current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("web_backend"):
-        current = config.get("web", {}).get("backend")
+        current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
     if provider.get("imagegen_backend"):
         image_cfg = config.get("image_gen", {})
@@ -1621,7 +1823,7 @@ def _reconfigure_tool(config: dict):
         cat = TOOL_CATEGORIES.get(ts_key)
         reqs = TOOLSET_ENV_REQUIREMENTS.get(ts_key)
         if cat or reqs:
-            if _toolset_has_keys(ts_key, config):
+            if _toolset_has_keys(ts_key, config) or _toolset_enabled_for_reconfigure(ts_key, config):
                 configurable.append((ts_key, ts_label))
 
     if not configurable:
@@ -1645,6 +1847,28 @@ def _reconfigure_tool(config: dict):
         _reconfigure_simple_requirements(ts_key)
 
     save_config(config)
+
+
+def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
+    """Return True if a configurable toolset is enabled anywhere.
+
+    Reconfigure must include enabled-but-unconfigured categories so users can
+    finish provider/API-key setup without disabling and re-enabling the toolset.
+    """
+    for platform in PLATFORMS:
+        if not _toolset_allowed_for_platform(ts_key, platform):
+            continue
+        try:
+            enabled = _get_platform_tools(
+                config,
+                platform,
+                include_default_mcp_servers=False,
+            )
+        except Exception:
+            continue
+        if ts_key in enabled:
+            return True
+    return False
 
 
 def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
@@ -1696,21 +1920,27 @@ def _reconfigure_provider(provider: dict, config: dict):
             return
 
     if provider.get("tts_provider"):
-        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = provider["tts_provider"]
+        tts_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
+        browser_cfg = config.setdefault("browser", {})
         if bp == "local":
-            config.setdefault("browser", {})["cloud_provider"] = "local"
+            browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
-            config.setdefault("browser", {})["cloud_provider"] = bp
+            browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
+        browser_cfg["use_gateway"] = bool(managed_feature)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        web_cfg = config.setdefault("web", {})
+        web_cfg["backend"] = provider["web_backend"]
+        web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if managed_feature and managed_feature not in ("web", "tts", "browser"):

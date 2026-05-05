@@ -128,6 +128,15 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
+    # Bare "custom" is an incomplete spec — the canonical form is
+    # "custom:<name>" matching a custom_providers entry. LLMs frequently
+    # supply the bare type because the schema does not advertise the
+    # ":<name>" suffix, which used to bypass the pinning path below and
+    # leave the job stored with an unresolvable "custom" provider. Treat
+    # the bare value as "no provider supplied" so the current main
+    # provider gets pinned instead.
+    if provider_name == "custom":
+        provider_name = None
     if model_name and not provider_name:
         # Pin to the current main provider so the job is stable
         try:
@@ -147,6 +156,27 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     text = str(value).strip()
     if strip_trailing_slash:
         text = text.rstrip("/")
+    return text or None
+
+
+def _normalize_deliver_param(value: Any) -> Optional[str]:
+    """Normalize a user-supplied ``deliver`` value to the canonical string form.
+
+    The cron schema documents ``deliver`` as a string (``"local"``, ``"origin"``,
+    ``"telegram"``, ``"telegram:chat_id[:thread_id]"``, or comma-separated combos).
+    Some callers — MCP clients passing arrays, scripts building the payload as a
+    list — supply ``["telegram"]``.  ``create_job``/``update_job`` store it as-is,
+    and the scheduler's ``str(deliver).split(",")`` then serializes the list to
+    the literal ``"['telegram']"`` which is not a known platform.  Flatten lists
+    / tuples at the API boundary so storage is always a string.  Returns ``None``
+    for ``None``/empty so callers can treat it as "not supplied".
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = [str(p).strip() for p in value if str(p).strip()]
+        return ",".join(parts) if parts else None
+    text = str(value).strip()
     return text or None
 
 
@@ -215,6 +245,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("no_agent"):
+        result["no_agent"] = True
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -241,6 +273,7 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    no_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -253,8 +286,22 @@ def cronjob(
             if not schedule:
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
-            if not prompt and not canonical_skills:
-                return tool_error("create requires either prompt or at least one skill", success=False)
+            _no_agent = bool(no_agent)
+            # Job-shape validation differs by mode:
+            #   - no_agent=True → script is the job; prompt/skills are optional
+            #     (and irrelevant to execution).
+            #   - no_agent=False (default) → at least one of prompt/skills must
+            #     be set, same as before.
+            if _no_agent:
+                if not script:
+                    return tool_error(
+                        "create with no_agent=True requires a script — "
+                        "the script is the job.",
+                        success=False,
+                    )
+            else:
+                if not prompt and not canonical_skills:
+                    return tool_error("create requires either prompt or at least one skill", success=False)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -283,7 +330,7 @@ def cronjob(
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=deliver,
+                deliver=_normalize_deliver_param(deliver),
                 origin=_origin_from_env(),
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
@@ -293,6 +340,7 @@ def cronjob(
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
+                no_agent=_no_agent,
             )
             return json.dumps(
                 {
@@ -364,7 +412,7 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = deliver
+                updates["deliver"] = _normalize_deliver_param(deliver)
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -406,6 +454,20 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if no_agent is not None:
+                # Toggling no_agent on/off at update time. If flipping to True,
+                # we need a script to already exist on the job (or be part of
+                # the same update) — otherwise the next tick would error out.
+                target_no_agent = bool(no_agent)
+                if target_no_agent:
+                    effective_script = updates.get("script") if "script" in updates else job.get("script")
+                    if not effective_script:
+                        return tool_error(
+                            "Cannot set no_agent=True on a job without a script. "
+                            "Set `script` in the same update, or on the job first.",
+                            success=False,
+                        )
+                updates["no_agent"] = target_no_agent
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -492,7 +554,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Provider name (e.g. 'openrouter', 'anthropic'). Omit to use and pin the current provider."
+                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider."
                     },
                     "model": {
                         "type": "string",
@@ -503,7 +565,25 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
+                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+            },
+            "no_agent": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
+                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
+                    "\n\n"
+                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
+                    "\n\n"
+                    "DELIVERY SEMANTICS when True: "
+                    "(a) non-empty stdout is sent verbatim as the message; "
+                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
+                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
+                    "\n\n"
+                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
+                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
+                ),
             },
             "context_from": {
                 "type": "array",
@@ -574,6 +654,7 @@ registry.register(
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
+        no_agent=args.get("no_agent"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

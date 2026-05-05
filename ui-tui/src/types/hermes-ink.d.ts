@@ -28,16 +28,44 @@ declare module '@hermes/ink' {
   export type InputEvent = {
     readonly input: string
     readonly key: Key
-    readonly keypress: { readonly raw?: string }
+    readonly keypress: { readonly isPasted?: boolean; readonly raw?: string }
   }
 
   export type InputHandler = (input: string, key: Key, event: InputEvent) => void
+
+  export type FrameEvent = {
+    readonly durationMs: number
+    readonly phases?: {
+      readonly renderer: number
+      readonly diff: number
+      readonly optimize: number
+      readonly write: number
+      readonly patches: number
+      readonly optimizedPatches: number
+      readonly writeBytes: number
+      readonly backpressure: boolean
+      readonly prevFrameDrainMs: number
+      readonly yoga: number
+      readonly commit: number
+      readonly yogaVisited: number
+      readonly yogaMeasured: number
+      readonly yogaCacheHits: number
+      readonly yogaLive: number
+    }
+    readonly flickers: ReadonlyArray<{
+      readonly desiredHeight: number
+      readonly availableHeight: number
+      readonly reason: 'resize' | 'offscreen' | 'clear'
+    }>
+  }
 
   export type RenderOptions = {
     readonly stdin?: NodeJS.ReadStream
     readonly stdout?: NodeJS.WriteStream
     readonly stderr?: NodeJS.WriteStream
     readonly exitOnCtrlC?: boolean
+    readonly patchConsole?: boolean
+    readonly onFrame?: (event: FrameEvent) => void
   }
 
   export type Instance = {
@@ -55,10 +83,13 @@ declare module '@hermes/ink' {
     readonly getScrollTop: () => number
     readonly getPendingDelta: () => number
     readonly getScrollHeight: () => number
+    readonly getFreshScrollHeight: () => number
     readonly getViewportHeight: () => number
     readonly getViewportTop: () => number
+    readonly getLastManualScrollAt: () => number
     readonly isSticky: () => boolean
     readonly subscribe: (listener: () => void) => () => void
+    readonly setClampBounds: (min: number | undefined, max: number | undefined) => void
   }
 
   export const Box: React.ComponentType<any>
@@ -74,7 +105,34 @@ declare module '@hermes/ink' {
   export const Text: React.ComponentType<any>
   export const TextInput: React.ComponentType<any>
   export const stringWidth: (s: string) => number
+  export function isXtermJs(): boolean
 
+  export type ScrollFastPathStats = {
+    captured: number
+    taken: number
+    declined: {
+      noPrevScreen: number
+      heightDeltaMismatch: number
+      other: number
+    }
+    lastDeclineReason?: string
+    lastHeightDelta?: number
+    lastHintDelta?: number
+    lastScrollHeight?: number
+    lastPrevHeight?: number
+  }
+  export const scrollFastPathStats: ScrollFastPathStats
+
+  export type EvictLevel = 'all' | 'half'
+  export type InkCacheSizes = {
+    readonly lineWidth: number
+    readonly slice: number
+    readonly width: number
+    readonly wrap: number
+  }
+  export function evictInkCaches(level?: EvictLevel): InkCacheSizes
+
+  export function forceRedraw(stdout?: NodeJS.WriteStream): boolean
   export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance
 
   export function useApp(): { readonly exit: (error?: Error) => void }
@@ -88,6 +146,7 @@ declare module '@hermes/ink' {
     readonly clearSelection: () => void
     readonly hasSelection: () => boolean
     readonly getState: () => unknown
+    readonly version: () => number
     readonly subscribe: (cb: () => void) => () => void
     readonly shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
     readonly shiftSelection: (dRow: number, minRow: number, maxRow: number) => void

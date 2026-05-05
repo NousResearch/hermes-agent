@@ -100,6 +100,9 @@ TIPS = [
     "hermes gateway install sets up Hermes as a system service (systemd/launchd).",
     "hermes memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).",
     "hermes webhook subscribe creates event-driven webhook routes with HMAC validation.",
+    "Save money: hermes tools disables unused tools, hermes skills config trims skills down.",
+    "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
+    "hermes models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---
     "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
@@ -263,7 +266,6 @@ TIPS = [
     "hermes status --deep runs deeper diagnostic checks across all components.",
 
     # --- Hidden Gems & Power-User Tricks ---
-    "BOOT.md at ~/.hermes/BOOT.md runs automatically on every gateway start — use it for startup checks.",
     "Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context.",
     "Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines.",
     "prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.",

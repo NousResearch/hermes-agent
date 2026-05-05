@@ -228,7 +228,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0, limits=platform_httpx_limits(),
+            )
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret

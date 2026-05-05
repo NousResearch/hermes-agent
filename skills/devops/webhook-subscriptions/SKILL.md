@@ -1,6 +1,6 @@
 ---
 name: webhook-subscriptions
-description: Create and manage webhook subscriptions for event-driven agent activation, or for direct push notifications (zero LLM cost). Use when the user wants external services to trigger agent runs OR push notifications to chats.
+description: "Webhook subscriptions: event-driven agent runs."
 version: 1.1.0
 metadata:
   hermes:

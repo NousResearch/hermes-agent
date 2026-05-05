@@ -46,11 +46,13 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "gmi",
+    "tencent-tokenhub",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -59,7 +61,9 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "ollama",
     "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
+    "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
+    "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal",
@@ -206,6 +210,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    # Tencent — Hy3 Preview (Hunyuan) with 256K context window
+    "hy3-preview": 256000,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee
@@ -307,6 +313,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "integrate.api.nvidia.com": "nvidia",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "api.gmi-serving.com": "gmi",
+    "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
 
@@ -617,8 +625,6 @@ def fetch_endpoint_model_metadata(
                         if isinstance(ctx, int) and ctx > 0:
                             context_length = ctx
                             break
-                    if context_length is None:
-                        context_length = _extract_context_length(model)
                     if context_length is not None:
                         entry["context_length"] = context_length
 
@@ -700,6 +706,29 @@ def fetch_endpoint_model_metadata(
     _endpoint_model_metadata_cache[normalized] = {}
     _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}
+
+
+def _resolve_endpoint_context_length(
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve context length from an endpoint's live ``/models`` metadata."""
+    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    matched = endpoint_metadata.get(model)
+    if not matched:
+        if len(endpoint_metadata) == 1:
+            matched = next(iter(endpoint_metadata.values()))
+        else:
+            for key, entry in endpoint_metadata.items():
+                if model in key or key in model:
+                    matched = entry
+                    break
+    if matched:
+        context_length = matched.get("context_length")
+        if isinstance(context_length, int):
+            return context_length
+    return None
 
 
 def _get_context_cache_path() -> Path:
@@ -985,10 +1014,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
-                            # Fall back to max_context_length (theoretical model max)
-                            ctx = m.get("max_context_length") or m.get("context_length")
-                            if ctx and isinstance(ctx, (int, float)):
-                                return int(ctx)
+                            break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
@@ -1221,7 +1247,7 @@ def get_model_context_length(
     6. Nous suffix-match via OpenRouter cache
     7. models.dev registry lookup (provider-aware)
     8. Thin hardcoded defaults (broad family patterns)
-    9. Default fallback (128K)
+    9. Default fallback (256K)
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -1250,7 +1276,10 @@ def get_model_context_length(
     model = _strip_provider_prefix(model)
 
     # 1. Check persistent cache (model+provider)
-    if base_url:
+    # LM Studio is excluded — its loaded context length is transient (the
+    # user can reload the model with a different context_length at any time
+    # via /api/v1/models/load), so a stale cached value would mask reloads.
+    if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1295,28 +1324,16 @@ def get_model_context_length(
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
-        matched = endpoint_metadata.get(model)
-        if not matched:
-            # Single-model servers: if only one model is loaded, use it
-            if len(endpoint_metadata) == 1:
-                matched = next(iter(endpoint_metadata.values()))
-            else:
-                # Fuzzy match: substring in either direction
-                for key, entry in endpoint_metadata.items():
-                    if model in key or key in model:
-                        matched = entry
-                        break
-        if matched:
-            context_length = matched.get("context_length")
-            if isinstance(context_length, int):
-                return context_length
+        context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if context_length is not None:
+            return context_length
         if not _is_known_provider_base_url(base_url):
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
+                    if provider != "lmstudio":
+                        save_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -1374,6 +1391,12 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
+    if effective_provider == "gmi" and base_url:
+        # GMI exposes authoritative context_length via /models, but it is not
+        # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
+        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
@@ -1400,10 +1423,11 @@ def get_model_context_length(
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
-            save_context_length(model, base_url, local_ctx)
+            if provider != "lmstudio":
+                save_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 10. Default fallback — 128K
+    # 10. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
 
 

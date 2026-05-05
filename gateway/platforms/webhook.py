@@ -202,26 +202,22 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Cross-platform delivery — any platform with a gateway adapter
-        if self.gateway_runner and deliver_type in (
-            "telegram",
-            "discord",
-            "slack",
-            "signal",
-            "sms",
-            "whatsapp",
-            "matrix",
-            "mattermost",
-            "homeassistant",
-            "email",
-            "dingtalk",
-            "feishu",
-            "wecom",
-            "wecom_callback",
-            "weixin",
-            "bluebubbles",
-            "qqbot",
-        ):
+        # Cross-platform delivery — any platform with a gateway adapter.
+        # Check both built-in names and plugin-registered platforms.
+        _BUILTIN_DELIVER_PLATFORMS = {
+            "telegram", "discord", "slack", "signal", "sms", "whatsapp",
+            "matrix", "mattermost", "homeassistant", "email", "dingtalk",
+            "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+            "qqbot", "yuanbao",
+        }
+        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
+        if not _is_known_platform:
+            try:
+                from gateway.platform_registry import platform_registry
+                _is_known_platform = platform_registry.is_registered(deliver_type)
+            except Exception:
+                pass
+        if self.gateway_runner and _is_known_platform:
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
             )

@@ -80,15 +80,19 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             secret_file = root / "config.env"
             secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012")
 
-            response = self._dispatch(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 3,
-                    "method": "fs/read_text_file",
-                    "params": {"path": str(secret_file)},
-                },
-                cwd=str(root),
-            )
+            # agent.redact snapshots HERMES_REDACT_SECRETS at import time into
+            # _REDACT_ENABLED, so patching os.environ is a no-op. Flip the
+            # module-level constant directly for the duration of the call.
+            with patch("agent.redact._REDACT_ENABLED", True):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(secret_file)},
+                    },
+                    cwd=str(root),
+                )
 
         content = ((response.get("result") or {}).get("content") or "")
         self.assertNotIn("abc123def456", content)

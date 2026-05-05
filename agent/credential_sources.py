@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, List, Optional
 
 
@@ -253,6 +252,19 @@ def _remove_nous_device_code(provider: str, removed) -> RemovalResult:
     return result
 
 
+def _remove_minimax_oauth(provider: str, removed) -> RemovalResult:
+    """MiniMax OAuth lives in auth.json providers.minimax-oauth — clear it.
+
+    Same pattern as Nous: single-source OAuth state with refresh tokens.
+    Suppression of the `oauth` source ensures the pool reseed path
+    (_seed_from_singletons) doesn't instantly undo the removal.
+    """
+    result = RemovalResult()
+    if _clear_auth_store_provider(provider):
+        result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
+    return result
+
+
 def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     """Codex tokens live in TWO places: our auth store AND ~/.codex/auth.json.
 
@@ -389,6 +401,11 @@ def _register_all_sources() -> None:
         provider="qwen-oauth", source_id="qwen-cli",
         remove_fn=_remove_qwen_cli,
         description="~/.qwen/oauth_creds.json",
+    ))
+    register(RemovalStep(
+        provider="minimax-oauth", source_id="oauth",
+        remove_fn=_remove_minimax_oauth,
+        description="auth.json providers.minimax-oauth",
     ))
     register(RemovalStep(
         provider="*", source_id="config:",

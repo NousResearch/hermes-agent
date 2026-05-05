@@ -230,3 +230,30 @@ class TestHandleResumeCommand:
 
         assert real_key not in runner._running_agents
         db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_evicts_cached_agent(self, tmp_path):
+        """Gateway /resume evicts the cached AIAgent so the next message
+        rebuilds with the correct session_id end-to-end — mirrors /branch
+        and /reset. Without this, the cached agent's memory provider keeps
+        writing into the wrong session. See #6672.
+        """
+        import threading
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        # Seed the cache with a fake agent
+        real_key = _session_key_for_event(event)
+        runner._agent_cache = {real_key: (MagicMock(), object())}
+        runner._agent_cache_lock = threading.RLock()
+
+        await runner._handle_resume_command(event)
+
+        assert real_key not in runner._agent_cache
+        db.close()

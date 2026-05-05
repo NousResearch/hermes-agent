@@ -43,6 +43,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
+from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,14 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
+MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
+MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
+MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
+MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
+MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
+MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
+MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -109,6 +118,12 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
 DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
 GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 
+# LM Studio's default no-auth mode still requires *some* non-empty bearer for
+# the API-key code paths (auxiliary_client, runtime resolver) to treat the
+# provider as configured. This sentinel is sent only to LM Studio, never to
+# any remote service.
+LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
+
 
 # =============================================================================
 # Provider Registry
@@ -119,7 +134,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", or "api_key"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -158,6 +173,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Google Gemini (OAuth)",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+    ),
+    "lmstudio": ProviderConfig(
+        id="lmstudio",
+        name="LM Studio",
+        auth_type="api_key",
+        inference_base_url="http://127.0.0.1:1234/v1",
+        api_key_env_vars=("LM_API_KEY",),
+        base_url_env_var="LM_BASE_URL",
     ),
     "copilot": ProviderConfig(
         id="copilot",
@@ -224,6 +247,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ARCEEAI_API_KEY",),
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "gmi": ProviderConfig(
+        id="gmi",
+        name="GMI Cloud",
+        auth_type="api_key",
+        inference_base_url="https://api.gmi-serving.com/v1",
+        api_key_env_vars=("GMI_API_KEY",),
+        base_url_env_var="GMI_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -231,6 +262,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimax.io/anthropic",
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "minimax-oauth": ProviderConfig(
+        id="minimax-oauth",
+        name="MiniMax (OAuth \u00b7 minimax.io)",
+        auth_type="oauth_minimax",
+        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+        inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        scope=MINIMAX_OAUTH_SCOPE,
+        extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
+               "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE},
     ),
     "anthropic": ProviderConfig(
         id="anthropic",
@@ -339,6 +381,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
+    ),
+    "tencent-tokenhub": ProviderConfig(
+        id="tencent-tokenhub",
+        name="Tencent TokenHub",
+        auth_type="api_key",
+        inference_base_url="https://tokenhub.tencentmaas.com/v1",
+        api_key_env_vars=("TOKENHUB_API_KEY",),
+        base_url_env_var="TOKENHUB_BASE_URL",
     ),
     "ollama-cloud": ProviderConfig(
         id="ollama-cloud",
@@ -812,7 +862,7 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, auth_file)
+        atomic_replace(tmp_path, auth_file)
         try:
             dir_fd = os.open(str(auth_file.parent), os.O_RDONLY)
         except OSError:
@@ -1120,7 +1170,9 @@ def resolve_provider(
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
+        "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
         "claude": "anthropic", "claude-code": "anthropic",
@@ -1132,11 +1184,13 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
+        "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
         # Local server aliases — route through the generic custom provider
-        "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
@@ -1183,8 +1237,11 @@ def resolve_provider(
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses
-        # Copilot/GitHub Models as the provider.
-        if pid == "copilot":
+        # Copilot/GitHub Models as the provider. LM Studio is a local server
+        # whose availability isn't implied by LM_API_KEY presence (it may be
+        # offline, and the no-auth setup uses a placeholder value), so it
+        # also requires explicit selection.
+        if pid in ("copilot", "lmstudio"):
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -2423,8 +2480,8 @@ def _resolve_verify(
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
     effective_insecure = (
-        bool(insecure) if insecure is not None
-        else bool(tls_state.get("insecure", False))
+        is_truthy_value(insecure, default=False) if insecure is not None
+        else is_truthy_value(tls_state.get("insecure", False), default=False)
     )
     effective_ca = (
         ca_bundle
@@ -2531,6 +2588,208 @@ def _poll_for_token(
 # =============================================================================
 # Nous Portal — token refresh, agent key minting, model discovery
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# Shared Nous token store — lets OAuth credentials persist across profiles
+# so a new `hermes --profile <name> auth add nous --type oauth` can one-tap
+# import instead of running the full device-code flow every time.
+#
+# File lives at ${HERMES_SHARED_AUTH_DIR}/nous_auth.json, defaulting to
+# ~/.hermes/shared/nous_auth.json. It is OUTSIDE any named profile's
+# HERMES_HOME so named profiles (which typically live under
+# ~/.hermes/profiles/<name>/) all see the same file.
+#
+# Written on successful login and on every runtime refresh so the stored
+# refresh_token stays current even if one profile refreshes and rotates it.
+# If ever the stored refresh_token does go stale server-side, import fails
+# gracefully and the user falls back to the normal device-code flow.
+# -----------------------------------------------------------------------------
+
+NOUS_SHARED_STORE_FILENAME = "nous_auth.json"
+
+
+def _nous_shared_auth_dir() -> Path:
+    """Resolve the directory that holds the shared Nous token store.
+
+    Honors ``HERMES_SHARED_AUTH_DIR`` so tests can redirect it to a tmp
+    path without touching the real user's home. Defaults to
+    ``~/.hermes/shared/``.
+    """
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".hermes" / "shared"
+
+
+def _nous_shared_store_path() -> Path:
+    path = _nous_shared_auth_dir() / NOUS_SHARED_STORE_FILENAME
+    # Seat belt: if pytest is running and this resolves to a path under the
+    # real user's home, refuse rather than silently corrupt cross-profile
+    # state. Tests must set HERMES_SHARED_AUTH_DIR to a tmp_path (conftest
+    # does not do this automatically — mirror the _auth_file_path() guard
+    # so forgetting to set it fails loudly instead of writing to the real
+    # shared store).
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_shared = (
+            Path.home() / ".hermes" / "shared" / NOUS_SHARED_STORE_FILENAME
+        ).resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_shared:
+            raise RuntimeError(
+                f"Refusing to touch real user shared Nous auth store during test run: "
+                f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
+            )
+    return path
+
+
+def _write_shared_nous_state(state: Dict[str, Any]) -> None:
+    """Persist a minimal copy of the Nous OAuth state to the shared store.
+
+    Best-effort: any failure is swallowed after logging. The shared store
+    is a convenience layer; the per-profile auth.json remains the source
+    of truth.
+
+    We deliberately omit the short-lived ``agent_key`` (24h TTL, profile-
+    specific) — only the long-lived OAuth tokens are cross-profile useful.
+    """
+    refresh_token = state.get("refresh_token")
+    access_token = state.get("access_token")
+    if not (isinstance(refresh_token, str) and refresh_token.strip()):
+        # No refresh_token = nothing worth sharing across profiles
+        return
+    if not (isinstance(access_token, str) and access_token.strip()):
+        return
+
+    shared = {
+        "_schema": 1,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": state.get("token_type") or "Bearer",
+        "scope": state.get("scope") or DEFAULT_NOUS_SCOPE,
+        "client_id": state.get("client_id") or DEFAULT_NOUS_CLIENT_ID,
+        "portal_base_url": state.get("portal_base_url") or DEFAULT_NOUS_PORTAL_URL,
+        "inference_base_url": state.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
+        "obtained_at": state.get("obtained_at"),
+        "expires_at": state.get("expires_at"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        path = _nous_shared_store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(shared, indent=2, sort_keys=True))
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        _oauth_trace(
+            "nous_shared_store_written",
+            path=str(path),
+            refresh_token_fp=_token_fingerprint(refresh_token),
+        )
+    except Exception as exc:
+        logger.debug("Failed to write shared Nous auth store: %s", exc)
+
+
+def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
+    """Return the shared Nous OAuth state if present and well-formed.
+
+    Returns ``None`` when the file is missing, unreadable, malformed, or
+    lacks required fields. Callers should treat ``None`` as "no shared
+    credentials available — fall through to device-code".
+    """
+    try:
+        path = _nous_shared_store_path()
+    except RuntimeError:
+        # Test seat belt tripped — treat as missing
+        return None
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.debug("Shared Nous auth store at %s is unreadable: %s", path, exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    refresh_token = payload.get("refresh_token")
+    access_token = payload.get("access_token")
+    if not (isinstance(refresh_token, str) and refresh_token.strip()):
+        return None
+    if not (isinstance(access_token, str) and access_token.strip()):
+        return None
+    return payload
+
+
+def _try_import_shared_nous_state(
+    *,
+    timeout_seconds: float = 15.0,
+    min_key_ttl_seconds: int = 5 * 60,
+) -> Optional[Dict[str, Any]]:
+    """Attempt to rehydrate Nous OAuth state from the shared store.
+
+    Reads the shared file (if present), runs a forced refresh+mint using
+    the stored refresh_token to produce a fresh access_token + agent_key
+    scoped to this profile, and returns the full auth_state dict ready
+    for ``persist_nous_credentials()``.
+
+    Returns ``None`` when no shared state is available or the rehydrate
+    fails for any reason (expired refresh_token, portal unreachable,
+    etc.) — caller should then fall through to the normal device-code
+    flow.
+    """
+    shared = _read_shared_nous_state()
+    if not shared:
+        return None
+
+    # Build a full state dict so refresh_nous_oauth_from_state has every
+    # field it needs. force_refresh=True gets us a fresh access_token
+    # for this profile; force_mint=True gets us a fresh agent_key.
+    state: Dict[str, Any] = {
+        "access_token": shared.get("access_token"),
+        "refresh_token": shared.get("refresh_token"),
+        "client_id": shared.get("client_id") or DEFAULT_NOUS_CLIENT_ID,
+        "portal_base_url": shared.get("portal_base_url") or DEFAULT_NOUS_PORTAL_URL,
+        "inference_base_url": shared.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
+        "token_type": shared.get("token_type") or "Bearer",
+        "scope": shared.get("scope") or DEFAULT_NOUS_SCOPE,
+        "obtained_at": shared.get("obtained_at"),
+        "expires_at": shared.get("expires_at"),
+        "agent_key": None,
+        "agent_key_expires_at": None,
+        "tls": {"insecure": False, "ca_bundle": None},
+    }
+
+    try:
+        refreshed = refresh_nous_oauth_from_state(
+            state,
+            min_key_ttl_seconds=min_key_ttl_seconds,
+            timeout_seconds=timeout_seconds,
+            force_refresh=True,
+            force_mint=True,
+        )
+    except AuthError as exc:
+        _oauth_trace(
+            "nous_shared_import_failed",
+            error_type=type(exc).__name__,
+            error_code=getattr(exc, "code", None),
+        )
+        logger.debug("Shared Nous import failed: %s", exc)
+        return None
+    except Exception as exc:
+        _oauth_trace(
+            "nous_shared_import_failed",
+            error_type=type(exc).__name__,
+        )
+        logger.debug("Shared Nous import failed: %s", exc)
+        return None
+
+    return refreshed
+
 
 def _refresh_access_token(
     *,
@@ -2934,6 +3193,12 @@ def persist_nous_credentials(
         _save_provider_state(auth_store, "nous", state)
         _save_auth_store(auth_store)
 
+    # Mirror to the shared store so a new profile can one-tap import
+    # these credentials via `hermes auth add nous --type oauth`. Best-
+    # effort: any I/O failure is logged and swallowed (the per-profile
+    # auth.json is still the source of truth).
+    _write_shared_nous_state(state)
+
     pool = load_pool("nous")
     return next(
         (e for e in pool.entries() if e.source == NOUS_DEVICE_CODE_SOURCE),
@@ -3002,6 +3267,11 @@ def resolve_nous_runtime_credentials(
                 refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
                 access_token_fp=_token_fingerprint(state.get("access_token")),
             )
+            # Mirror post-refresh state to the shared store so sibling
+            # profiles don't hold stale refresh_tokens after rotation.
+            # Best-effort — any failure is logged and swallowed inside
+            # _write_shared_nous_state.
+            _write_shared_nous_state(state)
 
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
         timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
@@ -3462,6 +3732,13 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
+    # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
+    # see the local server as configured. doctor still reports unconfigured
+    # because get_api_key_provider_status uses the raw secret resolver.
+    if not api_key and provider_id == "lmstudio":
+        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+        key_source = key_source or "default"
+
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
@@ -3589,7 +3866,7 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -3648,7 +3925,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -4072,6 +4349,328 @@ def _codex_device_code_login() -> Dict[str, Any]:
     }
 
 
+# ==================== MiniMax Portal OAuth ====================
+
+def _minimax_pkce_pair() -> tuple:
+    """Generate (code_verifier, code_challenge_S256, state) for MiniMax OAuth."""
+    import secrets
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).decode().rstrip("=")
+    state = secrets.token_urlsafe(16)
+    return verifier, challenge, state
+
+
+def _minimax_request_user_code(
+    client: httpx.Client, *, portal_base_url: str, client_id: str,
+    code_challenge: str, state: str,
+) -> Dict[str, Any]:
+    response = client.post(
+        f"{portal_base_url}/oauth/code",
+        data={
+            "response_type": "code",
+            "client_id": client_id,
+            "scope": MINIMAX_OAUTH_SCOPE,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "x-request-id": str(uuid.uuid4()),
+        },
+    )
+    if response.status_code != 200:
+        raise AuthError(
+            f"MiniMax OAuth authorization failed: {response.text or response.reason_phrase}",
+            provider="minimax-oauth", code="authorization_failed",
+        )
+    payload = response.json()
+    for field in ("user_code", "verification_uri", "expired_in"):
+        if field not in payload:
+            raise AuthError(
+                f"MiniMax OAuth response missing field: {field}",
+                provider="minimax-oauth", code="authorization_incomplete",
+            )
+    if payload.get("state") != state:
+        raise AuthError(
+            "MiniMax OAuth state mismatch (possible CSRF).",
+            provider="minimax-oauth", code="state_mismatch",
+        )
+    return payload
+
+
+def _minimax_poll_token(
+    client: httpx.Client, *, portal_base_url: str, client_id: str,
+    user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
+) -> Dict[str, Any]:
+    # OpenClaw treats expired_in as a unix-ms timestamp (Date.now() < expireTimeMs).
+    # Defensive parsing: if it's small enough to be a duration, treat as seconds.
+    import time as _time
+    now_ms = int(_time.time() * 1000)
+    if expired_in > now_ms // 2:
+        # Looks like a unix-ms timestamp.
+        deadline = expired_in / 1000.0
+    else:
+        # Treat as duration in seconds from now.
+        deadline = _time.time() + max(1, expired_in)
+    interval = max(2.0, (interval_ms or 2000) / 1000.0)
+
+    while _time.time() < deadline:
+        response = client.post(
+            f"{portal_base_url}/oauth/token",
+            data={
+                "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
+                "client_id": client_id,
+                "user_code": user_code,
+                "code_verifier": code_verifier,
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            payload = response.json() if response.text else {}
+        except Exception:
+            payload = {}
+
+        if response.status_code != 200:
+            msg = (payload.get("base_resp", {}) or {}).get("status_msg") or response.text
+            raise AuthError(
+                f"MiniMax OAuth error: {msg or 'unknown'}",
+                provider="minimax-oauth", code="token_exchange_failed",
+            )
+
+        status = payload.get("status")
+        if status == "error":
+            raise AuthError(
+                "MiniMax OAuth reported an error. Please try again later.",
+                provider="minimax-oauth", code="authorization_denied",
+            )
+        if status == "success":
+            if not all(payload.get(k) for k in ("access_token", "refresh_token", "expired_in")):
+                raise AuthError(
+                    "MiniMax OAuth success payload missing required token fields.",
+                    provider="minimax-oauth", code="token_incomplete",
+                )
+            return payload
+        # "pending" or any other status -> keep polling
+        _time.sleep(interval)
+
+    raise AuthError(
+        "MiniMax OAuth timed out before authorization completed.",
+        provider="minimax-oauth", code="timeout",
+    )
+
+
+def _minimax_save_auth_state(auth_state: Dict[str, Any]) -> None:
+    """Persist MiniMax OAuth state to Hermes auth store (~/.hermes/auth.json)."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "minimax-oauth", auth_state)
+        _save_auth_store(auth_store)
+
+
+def _minimax_oauth_login(
+    *, region: str = "global", open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+) -> Dict[str, Any]:
+    """Run MiniMax OAuth flow, persist tokens, return auth state dict."""
+    pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+    if region == "cn":
+        portal_base_url = pconfig.extra["cn_portal_base_url"]
+        inference_base_url = pconfig.extra["cn_inference_base_url"]
+    else:
+        portal_base_url = pconfig.portal_base_url
+        inference_base_url = pconfig.inference_base_url
+
+    verifier, challenge, state = _minimax_pkce_pair()
+
+    if _is_remote_session():
+        open_browser = False
+
+    print(f"Starting Hermes login via MiniMax ({region}) OAuth...")
+    print(f"Portal: {portal_base_url}")
+
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      headers={"Accept": "application/json"},
+                      follow_redirects=True) as client:
+        code_data = _minimax_request_user_code(
+            client, portal_base_url=portal_base_url,
+            client_id=pconfig.client_id,
+            code_challenge=challenge, state=state,
+        )
+        verification_url = str(code_data["verification_uri"])
+        user_code = str(code_data["user_code"])
+
+        print()
+        print("To continue:")
+        print(f"  1. Open: {verification_url}")
+        print(f"  2. If prompted, enter code: {user_code}")
+        if open_browser:
+            if webbrowser.open(verification_url):
+                print("  (Opened browser for verification)")
+            else:
+                print("  Could not open browser automatically -- use the URL above.")
+
+        interval_raw = code_data.get("interval")
+        interval_ms = int(interval_raw) if interval_raw is not None else None
+        print("Waiting for approval...")
+
+        token_data = _minimax_poll_token(
+            client, portal_base_url=portal_base_url,
+            client_id=pconfig.client_id,
+            user_code=user_code, code_verifier=verifier,
+            expired_in=int(code_data["expired_in"]),
+            interval_ms=interval_ms,
+        )
+
+    now = datetime.now(timezone.utc)
+    expires_in_s = int(token_data["expired_in"])
+    expires_at = now.timestamp() + expires_in_s
+
+    auth_state = {
+        "provider": "minimax-oauth",
+        "region": region,
+        "portal_base_url": portal_base_url,
+        "inference_base_url": inference_base_url,
+        "client_id": pconfig.client_id,
+        "scope": MINIMAX_OAUTH_SCOPE,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "access_token": token_data["access_token"],
+        "refresh_token": token_data["refresh_token"],
+        "resource_url": token_data.get("resource_url"),
+        "obtained_at": now.isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "expires_in": expires_in_s,
+    }
+
+    _minimax_save_auth_state(auth_state)
+    print("\u2713 MiniMax OAuth login successful.")
+    if msg := token_data.get("notification_message"):
+        print(f"Note from MiniMax: {msg}")
+    return auth_state
+
+
+def _refresh_minimax_oauth_state(
+    state: Dict[str, Any], *, timeout_seconds: float = 15.0,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
+    if not state.get("refresh_token"):
+        raise AuthError(
+            "MiniMax OAuth state has no refresh_token; please re-login.",
+            provider="minimax-oauth", code="no_refresh_token", relogin_required=True,
+        )
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+    except Exception:
+        expires_at = 0.0
+    now = time.time()
+    if not force and (expires_at - now) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
+        return state
+
+    portal_base_url = state["portal_base_url"]
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      follow_redirects=True) as client:
+        response = client.post(
+            f"{portal_base_url}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": state["client_id"],
+                "refresh_token": state["refresh_token"],
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+    if response.status_code != 200:
+        body = response.text.lower()
+        relogin = any(m in body for m in
+                      ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
+        raise AuthError(
+            f"MiniMax OAuth refresh failed: {response.text or response.reason_phrase}",
+            provider="minimax-oauth", code="refresh_failed",
+            relogin_required=relogin,
+        )
+    payload = response.json()
+    if payload.get("status") != "success":
+        raise AuthError(
+            "MiniMax OAuth refresh did not return success.",
+            provider="minimax-oauth", code="refresh_failed",
+            relogin_required=True,
+        )
+    now_dt = datetime.now(timezone.utc)
+    expires_in_s = int(payload["expired_in"])
+    new_state = dict(state)
+    new_state.update({
+        "access_token": payload["access_token"],
+        "refresh_token": payload.get("refresh_token", state["refresh_token"]),
+        "obtained_at": now_dt.isoformat(),
+        "expires_at": datetime.fromtimestamp(now_dt.timestamp() + expires_in_s,
+                                             tz=timezone.utc).isoformat(),
+        "expires_in": expires_in_s,
+    })
+    _minimax_save_auth_state(new_state)
+    return new_state
+
+
+def resolve_minimax_oauth_runtime_credentials(
+    *, min_token_ttl_seconds: int = MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    """Return {provider, api_key, base_url, source} for minimax-oauth."""
+    state = get_provider_auth_state("minimax-oauth")
+    if not state or not state.get("access_token"):
+        raise AuthError(
+            "Not logged into MiniMax OAuth. Run `hermes model` and select "
+            "MiniMax (OAuth).",
+            provider="minimax-oauth", code="not_logged_in", relogin_required=True,
+        )
+    state = _refresh_minimax_oauth_state(state)
+    return {
+        "provider": "minimax-oauth",
+        "api_key": state["access_token"],
+        "base_url": state["inference_base_url"].rstrip("/"),
+        "source": "oauth",
+    }
+
+
+def get_minimax_oauth_auth_status() -> Dict[str, Any]:
+    """Return auth status dict for MiniMax OAuth provider."""
+    state = get_provider_auth_state("minimax-oauth")
+    if not state or not state.get("access_token"):
+        return {"logged_in": False, "provider": "minimax-oauth"}
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+        token_valid = (expires_at - time.time()) > 0
+    except Exception:
+        token_valid = bool(state.get("access_token"))
+    return {
+        "logged_in": token_valid,
+        "provider": "minimax-oauth",
+        "region": state.get("region", "global"),
+        "expires_at": state.get("expires_at"),
+    }
+
+
+def _login_minimax_oauth(args, pconfig: ProviderConfig) -> None:
+    """CLI entry for MiniMax OAuth login."""
+    region = getattr(args, "region", None) or "global"
+    open_browser = not getattr(args, "no_browser", False)
+    timeout = getattr(args, "timeout", None) or 15.0
+    try:
+        _minimax_oauth_login(
+            region=region, open_browser=open_browser, timeout_seconds=timeout,
+        )
+    except AuthError as exc:
+        print(format_auth_error(exc))
+        raise SystemExit(1)
+
+
 def _nous_device_code_login(
     *,
     portal_base_url: Optional[str] = None,
@@ -4214,17 +4813,47 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
     )
 
     try:
-        auth_state = _nous_device_code_login(
-            portal_base_url=getattr(args, "portal_url", None),
-            inference_base_url=getattr(args, "inference_url", None),
-            client_id=getattr(args, "client_id", None) or pconfig.client_id,
-            scope=getattr(args, "scope", None) or pconfig.scope,
-            open_browser=not getattr(args, "no_browser", False),
-            timeout_seconds=timeout_seconds,
-            insecure=insecure,
-            ca_bundle=ca_bundle,
-            min_key_ttl_seconds=5 * 60,
-        )
+        auth_state = None
+
+        # Codex-style auto-import: before launching a fresh device-code
+        # flow, check the shared store for an existing Nous credential
+        # from any other profile. If present, offer to rehydrate it.
+        shared = _read_shared_nous_state()
+        if shared:
+            try:
+                shared_path = _nous_shared_store_path()
+            except RuntimeError:
+                shared_path = None
+            print()
+            if shared_path:
+                print(f"Found existing Nous OAuth credentials at {shared_path}")
+            else:
+                print("Found existing shared Nous OAuth credentials")
+            try:
+                do_import = input("Import these credentials? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "y"
+            if do_import in ("", "y", "yes"):
+                print("Rehydrating Nous session from shared credentials...")
+                auth_state = _try_import_shared_nous_state(
+                    timeout_seconds=timeout_seconds,
+                    min_key_ttl_seconds=5 * 60,
+                )
+                if auth_state is None:
+                    print("Could not refresh shared credentials — falling back to device-code login.")
+
+        if auth_state is None:
+            auth_state = _nous_device_code_login(
+                portal_base_url=getattr(args, "portal_url", None),
+                inference_base_url=getattr(args, "inference_url", None),
+                client_id=getattr(args, "client_id", None) or pconfig.client_id,
+                scope=getattr(args, "scope", None) or pconfig.scope,
+                open_browser=not getattr(args, "no_browser", False),
+                timeout_seconds=timeout_seconds,
+                insecure=insecure,
+                ca_bundle=ca_bundle,
+                min_key_ttl_seconds=5 * 60,
+            )
 
         inference_base_url = auth_state["inference_base_url"]
 
@@ -4240,6 +4869,11 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             auth_store = _load_auth_store()
             _save_provider_state(auth_store, "nous", auth_state)
             saved_to = _save_auth_store(auth_store)
+
+        # Mirror to the shared store so other profiles can one-tap import
+        # these credentials. Best-effort: any I/O failure is logged and
+        # swallowed inside the helper.
+        _write_shared_nous_state(auth_state)
 
         print()
         print("Login successful!")

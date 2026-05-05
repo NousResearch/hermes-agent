@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-26T19:27:12Z",
+  "updated_at": "2026-05-04T09:41:25Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -59,6 +59,10 @@
         {
           "id": "xiaomi/mimo-v2.5",
           "description": ""
+        },
+        {
+          "id": "tencent/hy3-preview:free",
+          "description": "free"
         },
         {
           "id": "openai/gpt-5.3-codex",
@@ -162,6 +166,9 @@
           "id": "xiaomi/mimo-v2.5"
         },
         {
+          "id": "tencent/hy3-preview"
+        },
+        {
           "id": "anthropic/claude-opus-4.7"
         },
         {
@@ -225,7 +232,7 @@
           "id": "z-ai/glm-5-turbo"
         },
         {
-          "id": "x-ai/grok-4.20-beta"
+          "id": "x-ai/grok-4.20"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"

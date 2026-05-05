@@ -1,14 +1,14 @@
 ---
-title: "Evaluating Llms Harness — Evaluates LLMs across 60+ academic benchmarks (MMLU, HumanEval, GSM8K, TruthfulQA, HellaSwag)"
+title: "Evaluating Llms Harness — lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc"
 sidebar_label: "Evaluating Llms Harness"
-description: "Evaluates LLMs across 60+ academic benchmarks (MMLU, HumanEval, GSM8K, TruthfulQA, HellaSwag)"
+description: "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Evaluating Llms Harness
 
-Evaluates LLMs across 60+ academic benchmarks (MMLU, HumanEval, GSM8K, TruthfulQA, HellaSwag). Use when benchmarking model quality, comparing models, reporting academic results, or tracking training progress. Industry standard used by EleutherAI, HuggingFace, and major labs. Supports HuggingFace, vLLM, APIs.
+lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.).
 
 ## Skill metadata
 
@@ -29,6 +29,10 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # lm-evaluation-harness - LLM Benchmarking
+
+## What's inside
+
+Evaluates LLMs across 60+ academic benchmarks (MMLU, HumanEval, GSM8K, TruthfulQA, HellaSwag). Use when benchmarking model quality, comparing models, reporting academic results, or tracking training progress. Industry standard used by EleutherAI, HuggingFace, and major labs. Supports HuggingFace, vLLM, APIs.
 
 ## Quick start
 

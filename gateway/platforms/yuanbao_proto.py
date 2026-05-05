@@ -19,9 +19,8 @@ yuanbao_proto.py - Yuanbao WebSocket 协议编解码（纯 Python 实现）
 from __future__ import annotations
 
 import logging
-import struct
 import threading
-from typing import Optional, Union
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   getPluginComponent,
   getPluginLoadError,
@@ -51,7 +51,7 @@ export function PluginPage({ name }: { name: string }) {
         "font-mondwest text-sm tracking-[0.1em] text-midground/60",
       )}
     >
-      <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+      <Spinner className="shrink-0" />
       <span>{t.common.loading}</span>
     </div>
   );

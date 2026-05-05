@@ -1,4 +1,4 @@
-import { Typography } from "@nous-research/ui";
+import { Typography } from "@/components/NouiTypography";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
@@ -17,7 +17,7 @@ export function SidebarFooter() {
     >
       <Typography
         mondwest
-        className="font-mono-ui text-[0.7rem] tabular-nums tracking-[0.1em] text-muted-foreground/70"
+        className="font-mono-ui text-[0.7rem] tabular-nums tracking-[0.1em] text-muted-foreground/70 lowercase"
       >
         {status?.version != null ? `v${status.version}` : "—"}
       </Typography>

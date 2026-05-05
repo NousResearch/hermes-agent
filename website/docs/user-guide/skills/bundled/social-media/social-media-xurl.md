@@ -1,14 +1,14 @@
 ---
-title: "Xurl — Interact with X/Twitter via xurl, the official X API CLI"
+title: "Xurl — X/Twitter via xurl CLI: post, search, DM, media, v2 API"
 sidebar_label: "Xurl"
-description: "Interact with X/Twitter via xurl, the official X API CLI"
+description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Xurl
 
-Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access.
+X/Twitter via xurl CLI: post, search, DM, media, v2 API.
 
 ## Skill metadata
 

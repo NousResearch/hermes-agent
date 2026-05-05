@@ -22,7 +22,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Typography } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -101,11 +102,15 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage() {
+export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Exposed to the main metrics-sync effect so it can refit the terminal
+  // the moment `isActive` flips back to true (display:none → display:flex
+  // collapses the host's box, so ResizeObserver never fires on return).
+  const syncMetricsRef = useRef<(() => void) | null>(null);
   const [searchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
@@ -116,10 +121,19 @@ export default function ChatPage() {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  // Raw state for the mobile side-sheet + a derived value that force-
+  // closes whenever the chat tab isn't active.  The *derived* value is
+  // what side-effects (body-scroll lock, keydown listener, portal render)
+  // key on — that way switching to another tab triggers the effect's
+  // cleanup, releasing the scroll-lock on /sessions etc.  Returning to
+  // /chat re-runs the effect (derived flips back to true) and re-locks.
+  // Keying on the raw state would leak the body.overflow="hidden" across
+  // tabs because the dep wouldn't change on tab switch.
+  const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
+  const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
-  const closeMobilePanel = useCallback(() => setMobilePanelOpen(false), []);
+  const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
     [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
@@ -161,37 +175,43 @@ export default function ChatPage() {
   useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobilePanelOpen(false);
+      if (e.matches) setMobilePanelOpenRaw(false);
     };
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
   useEffect(() => {
+    // When hidden (non-chat tab) we must not register the header button —
+    // another page owns the header's end slot at that point.
+    if (!isActive) {
+      setEnd(null);
+      return;
+    }
     if (!narrow) {
       setEnd(null);
       return;
     }
     setEnd(
-      <button
-        type="button"
-        onClick={() => setMobilePanelOpen(true)}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded border border-current/20",
-          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
-          "text-midground/80 hover:text-midground hover:bg-midground/5",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          "shrink-0 cursor-pointer",
-        )}
+      <Button
+        ghost
+        onClick={() => setMobilePanelOpenRaw(true)}
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
+        className={cn(
+          "shrink-0 rounded border border-current/20",
+          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
+          "text-midground/80 hover:text-midground hover:bg-midground/5",
+        )}
       >
-        <PanelRight className="h-3 w-3 shrink-0" />
-        {modelToolsLabel}
-      </button>,
+        <span className="inline-flex items-center gap-1.5">
+          <PanelRight className="h-3 w-3 shrink-0" />
+          {modelToolsLabel}
+        </span>
+      </Button>,
     );
     return () => setEnd(null);
-  }, [narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -392,6 +412,12 @@ export default function ChatPage() {
 
     let metricsDebounce: ReturnType<typeof setTimeout> | null = null;
     const syncTerminalMetrics = () => {
+      // display:none hosts have clientWidth/Height = 0, which fit() turns
+      // into a 1x1 terminal.  Skip entirely while hidden; the visibility
+      // effect below runs another fit as soon as the tab is shown again.
+      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+        return;
+      }
       const w = terminalTierWidthPx(host);
       const nextSize = terminalFontSizeForWidth(w);
       const nextLh = terminalLineHeightForWidth(w);
@@ -422,6 +448,7 @@ export default function ChatPage() {
         wsRef.current.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
       }
     };
+    syncMetricsRef.current = syncTerminalMetrics;
 
     const scheduleSyncTerminalMetrics = () => {
       if (metricsDebounce) clearTimeout(metricsDebounce);
@@ -565,6 +592,7 @@ export default function ChatPage() {
 
     return () => {
       unmounting = true;
+      syncMetricsRef.current = null;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
@@ -593,6 +621,51 @@ export default function ChatPage() {
     };
   }, [channel]);
 
+  // When the user returns to the chat tab (isActive: false → true), the
+  // terminal host just transitioned from display:none to display:flex.
+  // ResizeObserver won't fire on that kind of style-driven box change —
+  // xterm thinks its grid is still whatever it was when the tab was
+  // hidden (or 0×0, if it was hidden before first fit).  Force a refit
+  // after two animation frames so layout has committed.
+  //
+  // Focus handling: we only steal focus back into the terminal when
+  // nothing else inside ChatPage was holding it (typically the first
+  // activation after mount, where document.activeElement is <body>; or
+  // a return after the user had been typing in the terminal, where
+  // focus was already on the xterm textarea before the tab got hidden
+  // and has since fallen back to <body>).  If the user had clicked
+  // into the sidebar (model picker, tool-call entry) before switching
+  // tabs, we must not yank focus away from wherever they left it when
+  // they come back — that's a surprise and an a11y foot-gun.
+  useEffect(() => {
+    if (!isActive) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf1 = 0;
+      raf2 = requestAnimationFrame(() => {
+        raf2 = 0;
+        syncMetricsRef.current?.();
+        const host = hostRef.current;
+        const active = typeof document !== "undefined"
+          ? document.activeElement
+          : null;
+        const focusIsElsewhereInChatPage =
+          active !== null &&
+          active !== document.body &&
+          host !== null &&
+          !host.contains(active);
+        if (!focusIsElsewhereInChatPage) {
+          termRef.current?.focus();
+        }
+      });
+    });
+    return () => {
+      if (raf1) cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [isActive]);
+
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
@@ -612,18 +685,19 @@ export default function ChatPage() {
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
   const mobileModelToolsPortal =
+    isActive &&
     narrow &&
     portalRoot &&
     createPortal(
       <>
         {mobilePanelOpen && (
-          <button
-            type="button"
+          <Button
+            ghost
             aria-label={t.app.closeModelTools}
             onClick={closeMobilePanel}
             className={cn(
-              "fixed inset-0 z-[55]",
-              "bg-black/60 backdrop-blur-sm cursor-pointer",
+              "fixed inset-0 z-[55] p-0 block",
+              "bg-black/60 backdrop-blur-sm",
             )}
           />
         )}
@@ -659,18 +733,15 @@ export default function ChatPage() {
               {t.app.modelToolsSheetSubtitle}
             </Typography>
 
-            <button
-              type="button"
+            <Button
+              ghost
+              size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className={cn(
-                "inline-flex h-7 w-7 items-center justify-center",
-                "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-              )}
+              className="text-midground/70 hover:text-midground"
             >
-              <X className="h-4 w-4" />
-            </button>
+              <X />
+            </Button>
           </div>
 
           <div
@@ -713,29 +784,29 @@ export default function ChatPage() {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <button
-            type="button"
+          <Button
+            ghost
             onClick={handleCopyLast}
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(
-              "absolute z-10 flex items-center gap-1.5",
+              "absolute z-10",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",
               "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current",
-              "cursor-pointer",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
               "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
               "lg:bottom-4 lg:right-4",
             )}
             style={{ color: TERMINAL_THEME.foreground }}
           >
-            <Copy className="h-3 w-3 shrink-0" />
-            <span className="hidden min-[400px]:inline tracking-wide">
-              {copyState === "copied" ? "copied" : "copy last response"}
+            <span className="inline-flex items-center gap-1.5">
+              <Copy className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {copyState === "copied" ? "copied" : "copy last response"}
+              </span>
             </span>
-          </button>
+          </Button>
         </div>
 
         {!narrow && (

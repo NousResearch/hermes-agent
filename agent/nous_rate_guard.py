@@ -18,6 +18,7 @@ import os
 import tempfile
 import time
 from typing import Any, Mapping, Optional
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def record_nous_rate_limit(
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(state, f)
-            os.replace(tmp_path, path)
+            atomic_replace(tmp_path, path)
         except Exception:
             # Clean up temp file on failure
             try:

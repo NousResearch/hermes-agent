@@ -173,6 +173,69 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
 
 @pytest.mark.asyncio
+async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monkeypatch):
+    """Regression for #18187: calling connect() twice without disconnect() in
+    between (e.g. during an in-process reconnect attempt) must close the old
+    commands.Bot before creating a new one. Without this guard, two websockets
+    stay alive and both fire on_message, producing double responses with
+    different wording.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    class TrackedBot(FakeBot):
+        """FakeBot that records close() calls and reports open/closed state."""
+        _closed = False
+
+        def is_closed(self):
+            return self._closed
+
+        async def close(self):
+            self._closed = True
+
+    created: list[TrackedBot] = []
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        bot = TrackedBot(intents=intents, allowed_mentions=allowed_mentions)
+        created.append(bot)
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    # First connect — fresh adapter, no prior client.
+    assert await adapter.connect() is True
+    assert len(created) == 1
+    first_bot = created[0]
+    assert first_bot._closed is False, "first bot should still be open after connect()"
+
+    # Second connect WITHOUT disconnect — simulates an in-process reconnect.
+    # Without the fix, first_bot would remain open (zombie), and both would
+    # receive every Discord event, causing double responses.
+    assert await adapter.connect() is True
+    assert len(created) == 2
+    second_bot = created[1]
+
+    # The first bot must be closed before the second is assigned.
+    assert first_bot._closed is True, (
+        "First Discord client must be closed on re-entry of connect() to prevent "
+        "zombie websocket (#18187)"
+    )
+    assert second_bot._closed is False, "second bot should still be open"
+    assert adapter._client is second_bot
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 

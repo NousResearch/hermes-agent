@@ -243,10 +243,14 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
+            # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
+            # faster behind proxies like Cloudflare Warp (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                limits=platform_httpx_limits(),
             )
 
             # 1. Get access token
@@ -393,13 +397,24 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        self._session = aiohttp.ClientSession()
+        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
+        # local patch, so QQ can regress to direct-connect timeouts after update.
+        self._session = aiohttp.ClientSession(trust_env=True)
+        ws_proxy = (
+            os.getenv("WSS_PROXY")
+            or os.getenv("wss_proxy")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("ALL_PROXY")
+            or os.getenv("all_proxy")
+        )
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={
                 "User-Agent": build_user_agent(),
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
+            proxy=ws_proxy,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
@@ -976,6 +991,18 @@ class QQAdapter(BasePlatformAdapter):
         if not channel_id:
             return
 
+        # Apply group_policy ACL — guild channels are group-like contexts.
+        # Without this check any member of any guild the bot is in could
+        # bypass the configured allowlist.
+        guild_id = str(d.get("guild_id", ""))
+        author_id = str(author.get("id", ""))
+        if not self._is_group_allowed(guild_id or channel_id, author_id):
+            logger.debug(
+                "[%s] Guild message blocked by ACL: channel=%s user=%s",
+                self._log_tag, channel_id, author_id,
+            )
+            return
+
         member = d.get("member") if isinstance(d.get("member"), dict) else {}
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
 
@@ -1030,6 +1057,17 @@ class QQAdapter(BasePlatformAdapter):
         """Handle a guild DM message event."""
         guild_id = str(d.get("guild_id", ""))
         if not guild_id:
+            return
+
+        # Apply dm_policy ACL — guild DMs were previously unauthenticated.
+        # Without this check any member of any guild the bot is in could
+        # bypass the configured allowlist via direct messages.
+        author_id = str(author.get("id", ""))
+        if not self._is_dm_allowed(author_id):
+            logger.debug(
+                "[%s] Guild DM blocked by ACL: guild=%s user=%s",
+                self._log_tag, guild_id, author_id,
+            )
             return
 
         text = content
@@ -1957,7 +1995,7 @@ class QQAdapter(BasePlatformAdapter):
             self, openid: str, content: str, reply_to: Optional[str] = None
     ) -> SendResult:
         """Send text to a C2C user via REST API."""
-        msg_seq = self._next_msg_seq(reply_to or openid)
+        self._next_msg_seq(reply_to or openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
@@ -1970,7 +2008,7 @@ class QQAdapter(BasePlatformAdapter):
             self, group_openid: str, content: str, reply_to: Optional[str] = None
     ) -> SendResult:
         """Send text to a group via REST API."""
-        msg_seq = self._next_msg_seq(reply_to or group_openid)
+        self._next_msg_seq(reply_to or group_openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
@@ -2135,11 +2173,6 @@ class QQAdapter(BasePlatformAdapter):
 
             # Route
             chat_type = self._guess_chat_type(chat_id)
-            target_path = (
-                f"/v2/users/{chat_id}/files"
-                if chat_type == "c2c"
-                else f"/v2/groups/{chat_id}/files"
-            )
 
             if chat_type == "guild":
                 # Guild channels don't support native media upload in the same way

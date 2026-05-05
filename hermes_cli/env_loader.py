@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from utils import atomic_replace
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -127,7 +128,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                     f.writelines(sanitized)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp, path)
+                atomic_replace(tmp, path)
             except BaseException:
                 try:
                     os.unlink(tmp)

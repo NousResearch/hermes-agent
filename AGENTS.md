@@ -38,7 +38,7 @@ hermes-agent/
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
 │   │                     #   dingtalk, wecom, weixin, feishu, qqbot, bluebubbles,
 │   │                     #   webhook, api_server, ...). See ADDING_A_PLATFORM.md.
-│   └── builtin_hooks/    # Always-registered gateway hooks (boot-md, ...)
+│   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
@@ -257,7 +257,16 @@ The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes
 
 ## Adding New Tools
 
-Requires changes in **2 files**:
+For most custom or local-only tools, do **not** edit Hermes core. Use the plugin
+route instead: create `~/.hermes/plugins/<name>/plugin.yaml` and
+`~/.hermes/plugins/<name>/__init__.py`, then register tools with
+`ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be
+enabled or disabled without touching `tools/` or `toolsets.py`.
+
+Use the built-in route below only when the user is explicitly contributing a new
+core Hermes tool that should ship in the base system.
+
+Built-in/core tools require changes in **2 files**:
 
 **1. Create `tools/your_tool.py`:**
 ```python

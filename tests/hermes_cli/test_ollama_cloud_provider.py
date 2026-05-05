@@ -401,6 +401,103 @@ class TestOllamaCloudProvidersNew:
         assert pdef.transport == "openai_chat"
 
 
+# ── Cloud Suffix Stripping ──
+
+class TestOllamaCloudSuffixStripping:
+    """models.dev appends :cloud / -cloud suffixes that the live API omits.
+
+    fetch_ollama_cloud_models() must normalise these before the dedup merge so
+    users never see broken IDs like 'kimi-k2.6:cloud' in the model picker.
+    """
+
+    def test_strips_colon_cloud_suffix(self, tmp_path, monkeypatch):
+        """:cloud suffix from models.dev is stripped before merge."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {"kimi-k2.6:cloud": {"tool_call": True}}
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert "kimi-k2.6" in result
+        assert "kimi-k2.6:cloud" not in result
+
+    def test_strips_dash_cloud_suffix(self, tmp_path, monkeypatch):
+        """-cloud suffix from models.dev is stripped before merge."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {"qwen3-coder:480b-cloud": {"tool_call": True}}
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert "qwen3-coder:480b" in result
+        assert "qwen3-coder:480b-cloud" not in result
+
+    def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
+        """Live API returns clean ID; mdev has :cloud variant — result has exactly one entry."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "kimi-k2.6:cloud": {"tool_call": True},
+                    "glm-5.1:cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.1"]), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result.count("kimi-k2.6") == 1
+        assert result.count("glm-5.1") == 1
+        assert "kimi-k2.6:cloud" not in result
+        assert "glm-5.1:cloud" not in result
+
+    def test_unsuffixed_model_id_unchanged(self, tmp_path, monkeypatch):
+        """Model IDs without :cloud / -cloud suffix are passed through unchanged."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {"nemotron-3-nano:30b": {"tool_call": True}}
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert "nemotron-3-nano:30b" in result
+
+    def test_strip_suffix_helper(self):
+        """Unit test for the _strip_ollama_cloud_suffix helper."""
+        from hermes_cli.models import _strip_ollama_cloud_suffix
+
+        assert _strip_ollama_cloud_suffix("kimi-k2.6:cloud") == "kimi-k2.6"
+        assert _strip_ollama_cloud_suffix("glm-5.1:cloud") == "glm-5.1"
+        assert _strip_ollama_cloud_suffix("qwen3-coder:480b-cloud") == "qwen3-coder:480b"
+        assert _strip_ollama_cloud_suffix("nemotron-3-nano:30b") == "nemotron-3-nano:30b"
+        assert _strip_ollama_cloud_suffix("") == ""
+
+
 # ── Auxiliary Model ──
 
 class TestOllamaCloudAuxiliary:

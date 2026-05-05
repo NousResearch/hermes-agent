@@ -26,6 +26,33 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _win_path_to_wsl(path: str) -> str | None:
+    """Convert a Windows drive path to its WSL /mnt/<drive>/... equivalent."""
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
+    if not match:
+        return None
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    return f"/mnt/{drive}/{tail}"
+
+
+def _translate_acp_cwd(cwd: str) -> str:
+    """Translate Windows ACP cwd values when Hermes itself is running in WSL.
+
+    Windows ACP clients can launch ``hermes acp`` inside WSL while still sending
+    editor workspaces as Windows drive paths such as ``E:\\Projects``. Store
+    and execute against the WSL mount path so agents, tools, and persisted ACP
+    sessions all agree on the usable workspace. Native Linux/macOS keeps the
+    original cwd unchanged.
+    """
+    from hermes_constants import is_wsl
+
+    if not is_wsl():
+        return cwd
+    translated = _win_path_to_wsl(str(cwd))
+    return translated if translated is not None else cwd
+
+
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
     raw = str(cwd or ".").strip()
     if not raw:
@@ -34,11 +61,9 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
 
     # Normalize Windows drive paths into the equivalent WSL mount form so
     # ACP history filters match the same workspace across Windows and WSL.
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", expanded)
-    if match:
-        drive = match.group(1).lower()
-        tail = match.group(2).replace("\\", "/")
-        expanded = f"/mnt/{drive}/{tail}"
+    translated = _win_path_to_wsl(expanded)
+    if translated is not None:
+        expanded = translated
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
         expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
@@ -96,12 +121,18 @@ def _acp_stderr_print(*args, **kwargs) -> None:
 
 
 def _register_task_cwd(task_id: str, cwd: str) -> None:
-    """Bind a task/session id to the editor's working directory for tools."""
+    """Bind a task/session id to the editor's working directory for tools.
+
+    Zed can launch Hermes from a Windows workspace while the ACP process runs
+    inside WSL. In that case ACP sends cwd as e.g. ``E:\\Projects\\POTI``;
+    local tools need the WSL mount equivalent or subprocess creation fails
+    before the command can run.
+    """
     if not task_id:
         return
     try:
         from tools.terminal_tool import register_task_env_overrides
-        register_task_env_overrides(task_id, {"cwd": cwd})
+        register_task_env_overrides(task_id, {"cwd": _translate_acp_cwd(cwd)})
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
@@ -145,6 +176,11 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    is_running: bool = False
+    queued_prompts: List[str] = field(default_factory=list)
+    runtime_lock: Any = field(default_factory=Lock)
+    current_prompt_text: str = ""
+    interrupted_prompt_text: str = ""
 
 
 class SessionManager:
@@ -175,6 +211,7 @@ class SessionManager:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
+        cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
         state = SessionState(
@@ -217,6 +254,7 @@ class SessionManager:
         """Deep-copy a session's history into a new session."""
         import threading
 
+        cwd = _translate_acp_cwd(cwd)
         original = self.get_session(session_id)  # checks DB too
         if original is None:
             return None
@@ -318,6 +356,7 @@ class SessionManager:
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
+        cwd = _translate_acp_cwd(cwd)
         state = self.get_session(session_id)  # checks DB too
         if state is None:
             return None

@@ -354,6 +354,7 @@ class TestOwnerPidCrossProcess:
         monkeypatch.setattr(
             bt, "_requires_real_termux_browser_install", lambda *a: False
         )
+        monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
         monkeypatch.setattr(
             bt, "_get_session_info",
             lambda task_id: {"session_name": session_name},

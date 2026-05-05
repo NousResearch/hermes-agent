@@ -1,9 +1,31 @@
 import { Box, Text, useStdout } from '@hermes/ink'
+import { useEffect, useState } from 'react'
+import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
+
+const LOADER_TICK_MS = 120
+
+function InlineLoader({ label, t }: { label: string; t: Theme }) {
+  const [tick, setTick] = useState(0)
+  const spinner = unicodeSpinners.braille
+  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(n => n + 1), Math.max(LOADER_TICK_MS, spinner.interval))
+
+    return () => clearInterval(id)
+  }, [spinner.interval])
+
+  return (
+    <Text color={t.color.muted} wrap="truncate">
+      <Text color={t.color.accent}>{frame}</Text> {label}
+    </Text>
+  )
+}
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
   return (
@@ -26,12 +48,12 @@ export function Banner({ t }: { t: Theme }) {
       {cols >= (t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH) ? (
         <ArtLines lines={logoLines} />
       ) : (
-        <Text bold color={t.color.gold}>
+        <Text bold color={t.color.primary}>
           {t.brand.icon} NOUS HERMES
         </Text>
       )}
 
-      <Text color={t.color.dim}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
+      <Text color={t.color.muted}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
     </Box>
   )
 }
@@ -67,22 +89,27 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
     const entries = Object.entries(data).sort()
     const shown = entries.slice(0, max)
     const overflow = entries.length - max
+    const skeleton = info.lazy && entries.length === 0
 
     return (
       <Box flexDirection="column" marginTop={1}>
-        <Text bold color={t.color.amber}>
+        <Text bold color={t.color.accent}>
           Available {title}
         </Text>
 
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.dim}>{strip(k)}: </Text>
-            <Text color={t.color.cornsilk}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
+        {skeleton ? (
+          <InlineLoader label={title === 'Tools' ? 'discovering tools' : 'scanning skills'} t={t} />
+        ) : (
+          shown.map(([k, vs]) => (
+            <Text key={k} wrap="truncate">
+              <Text color={t.color.muted}>{strip(k)}: </Text>
+              <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            </Text>
+          ))
+        )}
 
         {overflow > 0 && (
-          <Text color={t.color.dim}>
+          <Text color={t.color.muted}>
             (and {overflow} {overflowLabel})
           </Text>
         )}
@@ -91,18 +118,18 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   }
 
   return (
-    <Box borderColor={t.color.bronze} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
+    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
       {wide && (
         <Box flexDirection="column" marginRight={2} width={leftW}>
           <ArtLines lines={heroLines} />
           <Text />
 
-          <Text color={t.color.amber}>
+          <Text color={t.color.accent}>
             {info.model.split('/').pop()}
-            <Text color={t.color.dim}> · Nous Research</Text>
+            <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
 
-          <Text color={t.color.dim} wrap="truncate-end">
+          <Text color={t.color.muted} wrap="truncate-end">
             {info.cwd || process.cwd()}
           </Text>
 
@@ -117,7 +144,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
       <Box flexDirection="column" width={w}>
         <Box justifyContent="center" marginBottom={1}>
-          <Text bold color={t.color.gold}>
+          <Text bold color={t.color.primary}>
             {t.brand.name}
             {info.version ? ` v${info.version}` : ''}
             {info.release_date ? ` (${info.release_date})` : ''}
@@ -129,17 +156,17 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
         {info.mcp_servers && info.mcp_servers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold color={t.color.amber}>
+            <Text bold color={t.color.accent}>
               MCP Servers
             </Text>
 
             {info.mcp_servers.map(s => (
               <Text key={s.name} wrap="truncate">
-                <Text color={t.color.dim}>{`  ${s.name} `}</Text>
-                <Text color={t.color.dim}>{`[${s.transport}]`}</Text>
-                <Text color={t.color.dim}>: </Text>
+                <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+                <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
+                <Text color={t.color.muted}>: </Text>
                 {s.connected ? (
-                  <Text color={t.color.cornsilk}>
+                  <Text color={t.color.text}>
                     {s.tools} tool{s.tools === 1 ? '' : 's'}
                   </Text>
                 ) : (
@@ -152,12 +179,12 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
         <Text />
 
-        <Text color={t.color.cornsilk}>
+        <Text color={t.color.text}>
           {flat(info.tools).length} tools{' · '}
           {flat(info.skills).length} skills
           {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
           {' · '}
-          <Text color={t.color.dim}>/help for commands</Text>
+          <Text color={t.color.muted}>/help for commands</Text>
         </Text>
 
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
@@ -183,9 +210,9 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
 export function Panel({ sections, t, title }: PanelProps) {
   return (
-    <Box borderColor={t.color.bronze} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
+    <Box borderColor={t.color.border} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
       <Box justifyContent="center" marginBottom={1}>
-        <Text bold color={t.color.gold}>
+        <Text bold color={t.color.primary}>
           {title}
         </Text>
       </Box>
@@ -193,25 +220,25 @@ export function Panel({ sections, t, title }: PanelProps) {
       {sections.map((sec, si) => (
         <Box flexDirection="column" key={si} marginTop={si > 0 ? 1 : 0}>
           {sec.title && (
-            <Text bold color={t.color.amber}>
+            <Text bold color={t.color.accent}>
               {sec.title}
             </Text>
           )}
 
           {sec.rows?.map(([k, v], ri) => (
             <Text key={ri} wrap="truncate">
-              <Text color={t.color.dim}>{k.padEnd(20)}</Text>
-              <Text color={t.color.cornsilk}>{v}</Text>
+              <Text color={t.color.muted}>{k.padEnd(20)}</Text>
+              <Text color={t.color.text}>{v}</Text>
             </Text>
           ))}
 
           {sec.items?.map((item, ii) => (
-            <Text color={t.color.cornsilk} key={ii} wrap="truncate">
+            <Text color={t.color.text} key={ii} wrap="truncate">
               {item}
             </Text>
           ))}
 
-          {sec.text && <Text color={t.color.dim}>{sec.text}</Text>}
+          {sec.text && <Text color={t.color.muted}>{sec.text}</Text>}
         </Box>
       ))}
     </Box>

@@ -54,10 +54,12 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout",
-            "context_overflow", "payload_too_large",
+            "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "provider_policy_blocked",
-            "thinking_signature", "long_context_tier", "unknown",
+            "thinking_signature", "long_context_tier",
+            "oauth_long_context_beta_forbidden",
+            "unknown",
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
@@ -408,6 +410,24 @@ class TestClassifyApiError:
         result = classify_api_error(e, approx_tokens=1000, context_length=200000)
         assert result.reason == FailoverReason.format_error
 
+    def test_400_generic_many_messages_below_large_context_pressure_is_format_error(self):
+        """Large-context sessions should not overflow solely due to message count."""
+        e = MockAPIError(
+            "Error",
+            status_code=400,
+            body={"error": {"message": "Error"}},
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=74320,
+            context_length=1_000_000,
+            num_messages=432,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.should_compress is False
+
     # ── Server disconnect + large session ──
 
     def test_disconnect_large_session_context_overflow(self):
@@ -422,6 +442,20 @@ class TestClassifyApiError:
         e = Exception("server disconnected without sending complete message")
         result = classify_api_error(e, approx_tokens=5000, context_length=200000)
         assert result.reason == FailoverReason.timeout
+
+    def test_disconnect_many_messages_below_large_context_pressure_is_timeout(self):
+        """Large-context disconnects should not overflow solely due to message count."""
+        e = Exception("server disconnected without sending complete message")
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=74320,
+            context_length=1_000_000,
+            num_messages=432,
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.should_compress is False
 
     # ── Provider-specific: Anthropic thinking signature ──
 
@@ -457,6 +491,40 @@ class TestClassifyApiError:
         e = MockAPIError("Too Many Requests", status_code=429)
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.rate_limit
+
+    # ── Provider-specific: Anthropic OAuth 1M-context beta forbidden ──
+
+    def test_anthropic_oauth_1m_beta_forbidden(self):
+        """400 + 'long context beta is not yet available for this subscription'
+        → oauth_long_context_beta_forbidden (retryable, no compression)."""
+        e = MockAPIError(
+            "The long context beta is not yet available for this subscription.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-sonnet-4.6")
+        assert result.reason == FailoverReason.oauth_long_context_beta_forbidden
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_anthropic_oauth_1m_beta_forbidden_does_not_collide_with_tier_gate(self):
+        """The 429 'extra usage' + 'long context' tier gate keeps its own
+        classification even though its message mentions 'long context'."""
+        e = MockAPIError(
+            "Extra usage is required for long context requests over 200k tokens",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-sonnet-4.6")
+        assert result.reason == FailoverReason.long_context_tier
+
+    def test_400_without_beta_phrase_is_not_1m_beta_forbidden(self):
+        """A generic 400 that happens to mention 'long context' but not the
+        exact beta-availability phrase should not be misclassified."""
+        e = MockAPIError(
+            "long context window exceeded",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason != FailoverReason.oauth_long_context_beta_forbidden
 
     # ── Transport errors ──
 

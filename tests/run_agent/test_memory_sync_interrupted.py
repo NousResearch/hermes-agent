@@ -31,6 +31,10 @@ def _bare_agent():
 
     agent = AIAgent.__new__(AIAgent)
     agent._memory_manager = MagicMock()
+    # session_id is now propagated into sync_all / queue_prefetch_all so
+    # providers that cache per-session state can update it mid-process
+    # (see #6672).
+    agent.session_id = "test_session_001"
     return agent
 
 
@@ -80,9 +84,11 @@ class TestSyncExternalMemoryForTurn:
         )
         agent._memory_manager.sync_all.assert_called_once_with(
             "What's the weather in Paris?", "It's sunny and 22°C.",
+            session_id="test_session_001",
         )
         agent._memory_manager.queue_prefetch_all.assert_called_once_with(
             "What's the weather in Paris?",
+            session_id="test_session_001",
         )
 
     # --- Edge cases (pre-existing behaviour preserved) ------------------

@@ -224,22 +224,21 @@ class TestArgparseFlagsRegistered:
         assert args.ignore_rules is True
 
     def test_main_py_registers_both_flags(self):
-        """E2E: the real hermes_cli/main.py parser accepts both flags.
+        """E2E: the real hermes parser accepts both flags."""
+        from hermes_cli._parser import build_top_level_parser
 
-        We invoke the real argparse tree builder from hermes_cli.main.
-        """
-        import hermes_cli.main as hm
+        parser, _subparsers, chat_parser = build_top_level_parser()
 
-        # hm has a helper that builds the argparse tree inside main().
-        # We can extract it by catching the SystemExit on --help.
-        # Simpler: just grep the source for the flag strings. Both approaches
-        # are brittle; we use a combined test.
-        import inspect
-        src = inspect.getsource(hm)
-        assert '"--ignore-user-config"' in src, \
-            "chat subparser must register --ignore-user-config"
-        assert '"--ignore-rules"' in src, \
-            "chat subparser must register --ignore-rules"
+        top_dests = {a.dest for a in parser._actions}
+        chat_dests = {a.dest for a in chat_parser._actions}
+        assert "ignore_user_config" in top_dests
+        assert "ignore_rules" in top_dests
+        assert "ignore_user_config" in chat_dests
+        assert "ignore_rules" in chat_dests
+
         # And the cmd_chat env-var wiring must be present
+        import inspect
+        import hermes_cli.main as hm
+        src = inspect.getsource(hm)
         assert "HERMES_IGNORE_USER_CONFIG" in src
         assert "HERMES_IGNORE_RULES" in src

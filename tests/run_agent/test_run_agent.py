@@ -862,6 +862,26 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
+    def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.load_soul_md", return_value="SOUL IDENTITY"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "SOUL IDENTITY" in prompt
+        assert DEFAULT_AGENT_IDENTITY not in prompt
+
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt
@@ -1397,6 +1417,62 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == ""
 
+    def test_streaming_only_reasoning_promoted_to_reasoning_content(self, agent):
+        """Refs #16844 / #16884. Streaming-only providers (glm, MiniMax,
+        gpt-5.x via aigw, Anthropic via openai-compat shims) accumulate
+        reasoning through delta chunks but never expose
+        ``reasoning_content`` as a top-level attribute on the finalized
+        message — only ``reasoning`` (or the internal accumulator).
+
+        Without write-side promotion, the persisted message stores the
+        chain-of-thought under the internal ``reasoning`` key and omits
+        ``reasoning_content``. When the user later replays that history
+        through a DeepSeek-v4 / Kimi thinking model, the missing field
+        causes HTTP 400 ("The reasoning_content in the thinking mode
+        must be passed back to the API.").
+
+        Fix: when ``reasoning_content`` wasn't written by an earlier
+        branch AND we captured reasoning text from streaming deltas,
+        promote it to ``reasoning_content`` at write time.
+        """
+        # SDK-style object that exposes ``reasoning`` but NOT
+        # ``reasoning_content`` — the streaming-only provider shape.
+        msg = _mock_assistant_msg(content="answer", reasoning="hidden thinking")
+        assert not hasattr(msg, "reasoning_content")
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["reasoning"] == "hidden thinking"
+        assert result["reasoning_content"] == "hidden thinking"
+
+    def test_sdk_reasoning_content_still_wins_over_fallback(self, agent):
+        """Additive fallback must not override SDK-supplied reasoning_content.
+
+        When both ``reasoning`` and ``reasoning_content`` are present, the
+        SDK's own ``reasoning_content`` is authoritative (may carry
+        structured data the accumulator doesn't have).
+        """
+        msg = _mock_assistant_msg(
+            content="answer",
+            reasoning="summary only",
+            reasoning_content="structured provider scratchpad",
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert result["reasoning_content"] == "structured provider scratchpad"
+
+    def test_no_reasoning_text_leaves_field_absent(self, agent):
+        """Non-thinking turns with no reasoning leave reasoning_content absent.
+
+        This preserves ``_copy_reasoning_content_for_api``'s downstream
+        tiers at replay time — cross-provider leak guard (#15748),
+        promote-from-``reasoning``, and DeepSeek/Kimi " "-pad — which
+        would all be bypassed if we eagerly wrote ``reasoning_content=" "``
+        on every assistant turn regardless of provider.
+        """
+        msg = _mock_assistant_msg(content="plain answer")
+        result = agent._build_assistant_message(msg, "stop")
+        assert "reasoning_content" not in result
+
     def test_tool_call_extra_content_preserved(self, agent):
         """Gemini thinking models attach extra_content with thought_signature
         to tool calls. This must be preserved so subsequent API calls include it."""
@@ -1440,6 +1516,24 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content="No thinking here.")
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == "No thinking here."
+
+    def test_memory_context_in_stored_content_is_preserved(self, agent):
+        """`_build_assistant_message` must not silently mutate model output
+        containing literal <memory-context> markers — that's legitimate text
+        (e.g. documentation, code) that the model may emit.  Streaming-path
+        leak prevention is handled by StreamingContextScrubber upstream."""
+        original = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+            "## Honcho Context\n"
+            "stale memory\n"
+            "</memory-context>\n\n"
+            "Visible answer"
+        )
+        msg = _mock_assistant_msg(content=original)
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<memory-context>" in result["content"]
+        assert "Visible answer" in result["content"]
 
     def test_unterminated_think_block_stripped(self, agent):
         """Unterminated <think> block (MiniMax / NIM dropped close tag) is
@@ -2086,6 +2180,150 @@ class TestHandleMaxIterations:
         assert result == "Summary"
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_summary_request_removes_orphan_tool_result(self, agent):
+        """Regression: max-iterations summary request must NOT contain
+        orphan tool results (tool_call_id with no matching assistant tool_call)."""
+        resp = _mock_response(content="Summary of work done.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "Analyze finance-data-router"},
+            {"role": "assistant", "content": "[Session Arc Summary] ..."},
+            {"role": "tool", "tool_call_id": "call_cfedFhJjGmu1RvRc1OUC38j8", "content": "file content here"},
+            {"role": "assistant", "tool_calls": [{"id": "call_8fXBXsT592Vpvm7wnW4obPEu", "function": {"name": "patch", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_8fXBXsT592Vpvm7wnW4obPEu", "content": "patch result"},
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        result = agent._handle_max_iterations(messages, 120)
+
+        assert result == "Summary of work done."
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        orphan_ids = [
+            m.get("tool_call_id") for m in sent_msgs
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_cfedFhJjGmu1RvRc1OUC38j8"
+        ]
+        assert len(orphan_ids) == 0, f"Orphan tool result still present: {orphan_ids}"
+
+    def test_summary_request_inserts_stub_for_missing_tool_result(self, agent):
+        """If an assistant tool_call has no matching tool result in the
+        summary request, a stub must be inserted to satisfy the API contract."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {"role": "assistant", "tool_calls": [{"id": "call_no_result", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "assistant", "content": "Continuing..."},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        stub_ids = [
+            m.get("tool_call_id") for m in sent_msgs
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
+        ]
+        assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openai"
+        agent.providers_allowed = ["Anthropic"]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "provider" not in kwargs.get("extra_body", {})
+
+    def test_summary_keeps_provider_preferences_for_openrouter(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.providers_allowed = ["Anthropic"]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
+
+    def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._cached_system_prompt = "You are helpful."
+        captured = {}
+
+        def fake_run_codex_stream(kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text="Summary")],
+                    )
+                ],
+            )
+
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_orphan",
+                "content": "orphaned result from compressed history",
+            },
+        ]
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations(messages, 90)
+
+        assert result == "Summary"
+        input_items = captured["input"]
+        assert not any(
+            item.get("type") == "function_call_output"
+            and item.get("call_id") == "call_orphan"
+            for item in input_items
+        )
+
+    def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "result"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
+            "call_123"
+        ]
 
 
 class TestRunConversation:
@@ -4456,7 +4694,7 @@ class TestReasoningReplayForStrictProviders:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_kimi_tool_replay_includes_empty_reasoning_content(self, agent):
+    def test_kimi_tool_replay_includes_space_reasoning_content(self, agent):
         self._setup_agent(agent)
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -4493,7 +4731,7 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["role"] == "assistant"
         assert replayed_assistant["tool_calls"][0]["function"]["name"] == "terminal"
         assert "reasoning_content" in replayed_assistant
-        assert replayed_assistant["reasoning_content"] == ""
+        assert replayed_assistant["reasoning_content"] == " "
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)
@@ -4753,21 +4991,21 @@ class TestDeadRetryCode:
 
 
 class TestMemoryContextSanitization:
-    """run_conversation() must strip leaked <memory-context> blocks from user input."""
+    """sanitize_context() helper correctness — used at provider boundaries."""
 
-    def test_memory_context_stripped_from_user_message(self):
-        """Verify that <memory-context> blocks are removed before the message
-        enters the conversation loop — prevents stale Honcho injection from
-        leaking into user text."""
+    def test_user_message_is_not_mutated_by_run_conversation(self):
+        """User input must reach run_conversation untouched — if a user types
+        a literal <memory-context> tag we don't silently delete their text.
+        The streaming scrubber + plugin-side scrub cover real leak paths."""
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
-        # The sanitize_context call must appear in run_conversation's preamble
-        assert "sanitize_context(user_message)" in src
-        assert "sanitize_context(persist_user_message)" in src
+        assert "sanitize_context(user_message)" not in src
+        assert "sanitize_context(persist_user_message)" not in src
 
     def test_sanitize_context_strips_full_block(self):
-        """End-to-end: a user message with an embedded memory-context block
-        is cleaned to just the actual user text."""
+        """Helper-level: a string with an embedded memory-context block is
+        cleaned to just the surrounding text.  Used by build_memory_context_block
+        (input-validation) and by plugins on their own backend boundary."""
         from agent.memory_manager import sanitize_context
         user_text = "how is the honcho working"
         injected = (

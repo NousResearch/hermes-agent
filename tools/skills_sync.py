@@ -28,6 +28,7 @@ import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ def _write_manifest(entries: Dict[str, str]):
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, MANIFEST_FILE)
+            atomic_replace(tmp_path, MANIFEST_FILE)
         except BaseException:
             try:
                 os.unlink(tmp_path)

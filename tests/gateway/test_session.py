@@ -12,8 +12,12 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -85,8 +89,13 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
@@ -1233,3 +1242,45 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "atomic-rewrite-test"
+        db.create_session(session_id=session_id, source="cli")
+        db.append_message(session_id=session_id, role="user", content="before user")
+        db.append_message(session_id=session_id, role="assistant", content="before assistant")
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        # Force the second insert inside replace_messages to fail, simulating
+        # any storage-layer error that might abort a multi-row rewrite.
+        real_encode = SessionDB._encode_content
+        calls = {"n": 0}
+
+        def flaky_encode(cls, content):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated storage failure")
+            return real_encode.__func__(cls, content)
+
+        monkeypatch.setattr(SessionDB, "_encode_content", classmethod(flaky_encode))
+
+        replacement = [
+            {"role": "user", "content": "after user"},
+            {"role": "assistant", "content": "after assistant"},
+        ]
+
+        store.rewrite_transcript(session_id, replacement)
+
+        # The rewrite must roll back atomically — original messages preserved.
+        after = db.get_messages_as_conversation(session_id)
+        assert [msg["content"] for msg in after] == [
+            "before user",
+            "before assistant",
+        ]

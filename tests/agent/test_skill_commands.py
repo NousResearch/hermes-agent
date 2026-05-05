@@ -125,6 +125,58 @@ class TestScanSkillCommands:
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
 
+    def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
+        """Platform-specific disabled-skill caches must not leak across platforms.
+
+        Regression test for #14536: a gateway process serving Telegram
+        and Discord concurrently would seed the process-global cache
+        with whichever platform scanned first, and subsequent
+        ``get_skill_commands()`` calls from the other platform silently
+        inherited that filter.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        def _disabled_skills():
+            platform = os.getenv("HERMES_PLATFORM")
+            if platform == "telegram":
+                return {"telegram-only"}
+            if platform == "discord":
+                return {"discord-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "discord-only")
+
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
+                telegram_commands = dict(get_skill_commands())
+
+            assert "/shared" in telegram_commands
+            assert "/discord-only" in telegram_commands
+            assert "/telegram-only" not in telegram_commands
+
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "discord"}):
+                discord_commands = dict(get_skill_commands())
+
+            assert "/shared" in discord_commands
+            assert "/telegram-only" in discord_commands
+            assert "/discord-only" not in discord_commands
+
+            # Switching back to telegram must also rescan — not re-serve
+            # the discord view that was just cached.
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
+                telegram_again = dict(get_skill_commands())
+
+            assert "/telegram-only" not in telegram_again
+            assert "/discord-only" in telegram_again
+
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
         """Skill names with +, /, or other special chars produce clean cmd keys."""

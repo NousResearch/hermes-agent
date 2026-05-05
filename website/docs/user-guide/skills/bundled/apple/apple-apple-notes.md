@@ -1,14 +1,14 @@
 ---
-title: "Apple Notes — Manage Apple Notes via the memo CLI on macOS (create, view, search, edit)"
+title: "Apple Notes — Manage Apple Notes via memo CLI: create, search, edit"
 sidebar_label: "Apple Notes"
-description: "Manage Apple Notes via the memo CLI on macOS (create, view, search, edit)"
+description: "Manage Apple Notes via memo CLI: create, search, edit"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Apple Notes
 
-Manage Apple Notes via the memo CLI on macOS (create, view, search, edit).
+Manage Apple Notes via memo CLI: create, search, edit.
 
 ## Skill metadata
 

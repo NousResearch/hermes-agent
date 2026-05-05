@@ -568,6 +568,163 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
 
+class TestSubagentCostRollup(unittest.TestCase):
+    """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
+    must include subagent spend, not just the parent's own API calls."""
+
+    def _make_parent_with_cost_counters(self, depth=0, starting_cost=0.0):
+        parent = _make_mock_parent(depth=depth)
+        # The fields AIAgent exposes and the footer reads from.  Set real
+        # floats/strings so the rollup can add to them rather than tripping
+        # on MagicMock auto-attrs.
+        parent.session_estimated_cost_usd = starting_cost
+        parent.session_cost_status = "unknown"
+        parent.session_cost_source = "none"
+        return parent
+
+    def test_single_child_cost_folded_into_parent(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 1000
+            mock_child.session_completion_tokens = 200
+            mock_child.session_estimated_cost_usd = 0.42
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="do stuff", parent_agent=parent))
+
+        # Parent footer must reflect parent_cost + child_cost.
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.52, places=6)
+        # Rollup must strip the internal field before serialising to the model.
+        self.assertNotIn("_child_cost_usd", result["results"][0])
+        self.assertNotIn("_child_role", result["results"][0])
+
+    def test_batch_children_costs_sum_into_parent(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "A",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.15,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "B",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.27,
+                },
+                {
+                    "task_index": 2,
+                    "status": "failed",
+                    "summary": "",
+                    "error": "boom",
+                    "api_calls": 0,
+                    "duration_seconds": 0.1,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.03,
+                },
+            ]
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "A"}, {"goal": "B"}, {"goal": "C"}],
+                    parent_agent=parent,
+                )
+            )
+
+        # 0.15 + 0.27 + 0.03 even though one child failed — the API calls it
+        # made before failing still cost money.
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.45, places=6)
+        # cost_source promoted from "none" since the parent had no direct spend.
+        self.assertEqual(parent.session_cost_source, "subagent")
+        self.assertEqual(parent.session_cost_status, "estimated")
+        # All internal fields stripped from results.
+        for entry in result["results"]:
+            self.assertNotIn("_child_cost_usd", entry)
+            self.assertNotIn("_child_role", entry)
+
+    def test_zero_cost_children_leave_parent_source_untouched(self):
+        """If every child reports 0 cost (e.g. free local model), we should
+        not invent a fake 'subagent' source — the parent's 'none' stays."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.0,
+            }
+            delegate_task(goal="free local run", parent_agent=parent)
+
+        self.assertEqual(parent.session_estimated_cost_usd, 0.0)
+        self.assertEqual(parent.session_cost_source, "none")
+
+    def test_parent_with_real_source_not_overwritten(self):
+        """If the parent already has its own cost billed (cost_source != 'none'),
+        adding subagent cost must not clobber the existing source label."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.20)
+        parent.session_cost_status = "exact"
+        parent.session_cost_source = "openrouter"
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.30,
+            }
+            delegate_task(goal="billed run", parent_agent=parent)
+
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.50, places=6)
+        # Real source label preserved.
+        self.assertEqual(parent.session_cost_source, "openrouter")
+        self.assertEqual(parent.session_cost_status, "exact")
+
+    def test_rollup_tolerates_missing_cost_fields(self):
+        """Older fixtures / fabricated error entries may not carry
+        _child_cost_usd.  Rollup must degrade to zero-add silently."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                # no _child_role, no _child_cost_usd
+            }
+            result = json.loads(delegate_task(goal="legacy", parent_agent=parent))
+
+        # Parent cost unchanged.
+        self.assertEqual(parent.session_estimated_cost_usd, 0.10)
+        self.assertEqual(len(result["results"]), 1)
+
+
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
@@ -629,6 +786,26 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_mode"], "chat_completions")
         mock_resolve.assert_called_once_with(requested="openrouter")
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
+        """Named providers should propagate their runtime default model to children."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://my-server.example/v1",
+            "api_key": "sk-test-key",
+            "api_mode": "chat_completions",
+            "model": "server-default-model",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "custom:my-server", "model": ""}
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["model"], "server-default-model")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://my-server.example/v1")
+        mock_resolve.assert_called_once_with(requested="custom:my-server")
+
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
@@ -644,7 +821,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_falls_back_to_openai_api_key_env(self):
+    def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
+        # When base_url is set without api_key, api_key should be None so
+        # _build_child_agent inherits the parent's key (effective_api_key = override or parent).
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -652,10 +831,11 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         }
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
             creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_key"], "env-openai-key")
+        self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
-    def test_direct_endpoint_does_not_fall_back_to_openrouter_api_key_env(self):
+    def test_direct_endpoint_no_raise_when_only_provider_env_key_present(self):
+        # Even if OPENAI_API_KEY is absent, no ValueError — _build_child_agent uses parent key.
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -669,9 +849,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             },
             clear=False,
         ):
-            with self.assertRaises(ValueError) as ctx:
-                _resolve_delegation_credentials(cfg, parent)
-        self.assertIn("OPENAI_API_KEY", str(ctx.exception))
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["api_key"])
+        self.assertEqual(creds["provider"], "custom")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
@@ -799,6 +979,48 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], "sk-or-key")
             self.assertNotEqual(kwargs["base_url"], parent.base_url)
             self.assertNotEqual(kwargs["api_key"], parent.api_key)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_override_clears_parent_openrouter_filters(
+        self, mock_creds, mock_cfg
+    ):
+        """Delegated provider should not inherit parent provider-preference filters."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+        }
+        mock_creds.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.providers_allowed = ["anthropic/claude-3.5-sonnet"]
+        parent.providers_ignored = ["openai/gpt-4o-mini"]
+        parent.providers_order = ["google/gemini-2.5-pro"]
+        parent.provider_sort = "price"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Cross-provider test", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertIsNone(kwargs["providers_allowed"])
+            self.assertIsNone(kwargs["providers_ignored"])
+            self.assertIsNone(kwargs["providers_order"])
+            self.assertIsNone(kwargs["provider_sort"])
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -2224,6 +2446,53 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         self.assertEqual(seen, [_subagent_auto_deny])
         # Parent's callback slot is still empty (TLS isolates threads).
         self.assertIsNone(_get_approval_callback())
+
+
+class TestFallbackModelInheritance(unittest.TestCase):
+    """Subagents must inherit the parent's fallback provider chain."""
+
+    def test_child_inherits_fallback_chain(self):
+        """_build_child_agent passes parent._fallback_chain as fallback_model."""
+        parent = _make_mock_parent(depth=0)
+        fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
+        parent._fallback_chain = [fallback_entry]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test fallback inheritance",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
+    def test_child_gets_no_fallback_when_parent_chain_empty(self):
+        """When parent._fallback_chain is empty, fallback_model is None."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = []
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test no fallback",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
 
 
 if __name__ == "__main__":

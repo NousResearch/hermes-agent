@@ -215,6 +215,23 @@ def test_free_response_channels_env_var_fallback(monkeypatch):
     assert OTHER_CHANNEL_ID in result
 
 
+def test_free_response_channels_bare_int():
+    # YAML `free_response_channels: 1491973769726791812` (single bare integer)
+    # is loaded as an int and would previously fall through the isinstance(str)
+    # branch to return an empty set.  Coerce scalar → str so single-channel
+    # config without quoting works as users expect.
+    adapter = _make_adapter(free_response_channels=1491973769726791812)
+    result = adapter._slack_free_response_channels()
+    assert result == {"1491973769726791812"}
+
+
+def test_free_response_channels_int_list():
+    # YAML list form with bare numeric entries — each element should be coerced.
+    adapter = _make_adapter(free_response_channels=[1491973769726791812, 99999])
+    result = adapter._slack_free_response_channels()
+    assert result == {"1491973769726791812", "99999"}
+
+
 # ---------------------------------------------------------------------------
 # Tests: mention gating integration (simulating _handle_slack_message logic)
 # ---------------------------------------------------------------------------
@@ -354,6 +371,81 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+
+
+def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  require_mention: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.enabled is True
+    assert slack_config.token == "xoxb-test"
+    assert slack_config.extra.get("require_mention") is False
+    assert "_enabled_explicit" not in slack_config.extra
+
+
+def test_explicit_top_level_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  enabled: false\n"
+        "  require_mention: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.enabled is False
+    assert slack_config.token == "xoxb-test"
+    assert slack_config.extra.get("require_mention") is False
+    assert "_enabled_explicit" not in slack_config.extra
+
+
+def test_explicit_platforms_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  slack:\n"
+        "    enabled: false\n"
+        "    extra:\n"
+        "      reply_in_thread: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.enabled is False
+    assert slack_config.token == "xoxb-test"
+    assert slack_config.extra.get("reply_in_thread") is False
+    assert "_enabled_explicit" not in slack_config.extra
 
 
 def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):

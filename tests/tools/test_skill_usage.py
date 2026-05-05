@@ -226,7 +226,11 @@ def test_agent_created_excludes_hub_installed(skills_home):
 
 
 def test_agent_created_excludes_hub_installed_frontmatter_name(skills_home):
-    from tools.skill_usage import is_agent_created, list_agent_created_skill_names
+    from tools.skill_usage import (
+        is_agent_created,
+        list_agent_created_skill_names,
+        mark_agent_created,
+    )
 
     skills_dir = skills_home / "skills"
     hub_skill = skills_dir / "productivity" / "getnote"
@@ -242,6 +246,7 @@ description: test skill
         encoding="utf-8",
     )
     _write_skill(skills_dir, "my-skill")
+    mark_agent_created("my-skill")
     hub_dir = skills_dir / ".hub"
     hub_dir.mkdir()
     (hub_dir / "lock.json").write_text(

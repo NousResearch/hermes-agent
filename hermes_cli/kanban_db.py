@@ -1917,6 +1917,73 @@ def complete_task(
     return True
 
 
+def edit_completed_task_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: str,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Backfill the user-visible result for an already completed task."""
+    handoff_summary = summary if summary is not None else result
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "done":
+            return False
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
+        run = conn.execute(
+            """
+            SELECT id FROM task_runs
+             WHERE task_id = ?
+               AND outcome = 'completed'
+             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        run_id = int(run["id"]) if run else None
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=handoff_summary,
+                metadata=metadata,
+            )
+        else:
+            conn.execute(
+                "UPDATE task_runs SET summary = ? WHERE id = ?",
+                (handoff_summary, run_id),
+            )
+            if metadata is not None:
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), run_id),
+                )
+        ev_summary = (
+            handoff_summary.strip().splitlines()[0][:400]
+            if handoff_summary else ""
+        )
+        _append_event(
+            conn, task_id, "edited",
+            {
+                "fields": (
+                    ["result", "summary"]
+                    + (["metadata"] if metadata is not None else [])
+                ),
+                "result_len": len(result) if result else 0,
+                "summary": ev_summary or None,
+            },
+            run_id=run_id,
+        )
+    return True
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,

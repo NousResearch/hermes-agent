@@ -10,6 +10,15 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
+def test_context_overflow_guidance_uses_registered_compress_command():
+    from gateway.run import _context_overflow_recovery_message
+
+    message = _context_overflow_recovery_message()
+
+    assert "/compress" in message
+    assert "/compact" not in message
+
+
 def _make_source() -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,

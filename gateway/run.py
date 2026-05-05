@@ -72,6 +72,14 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+def _context_overflow_recovery_message() -> str:
+    return (
+        "⚠️ Session too large for the model's context window.\n"
+        "Use /compress to compress the conversation, or "
+        "/reset to start fresh."
+    )
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -6740,11 +6748,7 @@ class GatewayRunner:
                 )
 
                 if _is_ctx_fail:
-                    response = (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
+                    response = _context_overflow_recovery_message()
                 else:
                     response = (
                         f"The request failed: {str(error_detail)[:300]}\n"
@@ -7068,11 +7072,7 @@ class GatewayRunner:
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
+                    return _context_overflow_recovery_message()
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (

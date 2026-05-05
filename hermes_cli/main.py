@@ -2138,6 +2138,7 @@ def _aux_select_for_task(task: str) -> None:
             current_provider=current_provider,
             current_model=current_model,
             current_base_url=current_base_url,
+            configured_only=True,  # aux picker: only explicitly configured
         )
     except Exception as exc:
         print(f"Could not detect authenticated providers: {exc}")

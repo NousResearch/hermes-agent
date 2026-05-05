@@ -40,6 +40,16 @@ model:
   #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
+
+  # Model picker scope — controls which providers appear in `hermes model` picker.
+  #   "all"         — show all providers Hermes can detect via env vars, auth store,
+  #                    or credential pool (default). Discovery-oriented: shows providers
+  #                    you could switch to even if not yet explicitly configured.
+  #   "configured"  — only show providers that are explicitly configured (added via
+  #                    `hermes auth add` or present in auth.json credential pool).
+  #                    Use this to keep the picker focused on only the providers
+  #                    you have intentionally set up, hiding ambient detections.
+  # picker_mode: "all"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env

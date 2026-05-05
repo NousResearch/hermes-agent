@@ -5719,6 +5719,12 @@ class HermesCLI:
             provider_display = get_label(self.provider) if self.provider else "unknown"
 
             try:
+                # Respect picker_mode: "configured" means only show providers that
+                # are explicitly configured (in auth.json / credential pool), not
+                # ambient env-var detections. "all" (default) shows everything.
+                model_cfg = cfg.get("model", {}) if cfg else {}
+                picker_mode = str(model_cfg.get("picker_mode", "all")).strip().lower()
+                configured_only = picker_mode == "configured"
                 providers = list_authenticated_providers(
                     current_provider=self.provider or "",
                     current_base_url=self.base_url or "",
@@ -5726,6 +5732,7 @@ class HermesCLI:
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=50,
+                    configured_only=configured_only,
                 )
             except Exception:
                 providers = []

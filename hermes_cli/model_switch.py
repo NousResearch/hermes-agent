@@ -1043,6 +1043,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    configured_only: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1060,6 +1061,12 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+
+    When *configured_only* is True, providers are only included if they have
+    credentials stored in the auth store / credential pool.  Environment-variable
+    detection (``os.environ.get``) is skipped so that ambient detections of
+    potentially invalid keys do not pollute the picker.  User-defined providers
+    (from ``providers:`` and ``custom_providers:`` in config) are always shown.
     """
     import os
     from agent.models_dev import (
@@ -1214,8 +1221,12 @@ def list_authenticated_providers(
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Check if any env var is set (skip when configured_only — env vars
+        # may be leftover / invalid; we only want explicit auth-store creds).
+        if configured_only:
+            has_creds = False
+        else:
+            has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -1276,16 +1287,19 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
-        elif overlay.extra_env_vars:
+        elif not configured_only and overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
-            for _key in (pid, hermes_slug):
-                pcfg = _auth_registry.get(_key)
-                if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
-                        has_creds = True
-                        break
+            if configured_only:
+                pass  # skip env-var check in configured_only mode
+            else:
+                for _key in (pid, hermes_slug):
+                    pcfg = _auth_registry.get(_key)
+                    if pcfg and pcfg.api_key_env_vars:
+                        if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                            has_creds = True
+                            break
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -1384,7 +1398,10 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            if configured_only:
+                _cp_has_creds = False
+            else:
+                _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

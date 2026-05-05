@@ -7631,6 +7631,8 @@ class GatewayRunner:
 
             if has_picker:
                 try:
+                    picker_mode = str(model_cfg.get("picker_mode", "all")).strip().lower()
+                    configured_only = picker_mode == "configured"
                     providers = list_authenticated_providers(
                         current_provider=current_provider,
                         current_base_url=current_base_url,
@@ -7638,6 +7640,7 @@ class GatewayRunner:
                         user_providers=user_provs,
                         custom_providers=custom_provs,
                         max_models=50,
+                        configured_only=configured_only,
                     )
                 except Exception:
                     providers = []
@@ -7764,6 +7767,8 @@ class GatewayRunner:
             lines = [f"Current: `{current_model or 'unknown'}` on {provider_label}", ""]
 
             try:
+                picker_mode = str(model_cfg.get("picker_mode", "all")).strip().lower()
+                configured_only = picker_mode == "configured"
                 providers = list_authenticated_providers(
                     current_provider=current_provider,
                     current_base_url=current_base_url,
@@ -7771,6 +7776,7 @@ class GatewayRunner:
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=5,
+                    configured_only=configured_only,
                 )
                 for p in providers:
                     tag = " (current)" if p["is_current"] else ""

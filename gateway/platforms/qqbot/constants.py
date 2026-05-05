@@ -61,8 +61,17 @@ DEDUP_MAX_SIZE = 1000
 
 MSG_TYPE_TEXT = 0
 MSG_TYPE_MARKDOWN = 2
+MSG_TYPE_KEYBOARD = 2  # Keyboard uses markdown msg_type with keyboard field
 MSG_TYPE_MEDIA = 7
 MSG_TYPE_INPUT_NOTIFY = 6
+
+# QQ Bot InlineKeyboard button render types
+KEYBOARD_BUTTON_PRIMARY = 0   # Blue / primary style
+KEYBOARD_BUTTON_DEFAULT = 1   # Gray / secondary style
+KEYBOARD_BUTTON_DANGER = 2    # Red / danger style
+
+# QQ Bot InlineKeyboard action types
+KEYBOARD_ACTION_TYPE = 2      # Callback data (bot receives INTERACTION_CREATE)
 
 # ---------------------------------------------------------------------------
 # QQ Bot file media types

@@ -3974,6 +3974,85 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
+def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
+    """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
+
+    Handles both first-time entry and the already-configured case.  When a key
+    is already present, offers [K]eep / [R]eplace / [C]lear so the user can
+    recover from a malformed paste without editing ``~/.hermes/.env`` by hand.
+
+    Returns ``(resolved_key, abort)``.  ``abort=True`` means the caller should
+    ``return`` immediately — the user cancelled entry, declined to replace, or
+    cleared the key and is now unconfigured.
+    """
+    import getpass
+
+    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from hermes_cli.config import save_env_value
+
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+
+    def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
+        if provider_id == "lmstudio" and allow_lmstudio_default:
+            prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
+        else:
+            prompt = f"{key_env} (or Enter to cancel): "
+        try:
+            entered = getpass.getpass(prompt).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return ""
+        if not entered and provider_id == "lmstudio" and allow_lmstudio_default:
+            return LMSTUDIO_NOAUTH_PLACEHOLDER
+        return entered
+
+    # First-time entry ────────────────────────────────────────────────────
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if not key_env:
+            return "", True
+        new_key = _prompt_new_key(allow_lmstudio_default=True)
+        if not new_key:
+            print("Cancelled.")
+            return "", True
+        save_env_value(key_env, new_key)
+        print("API key saved.")
+        print()
+        return new_key, False
+
+    # Already configured — offer K / R / C ────────────────────────────────
+    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+    if not key_env:
+        # Nothing we can rewrite; just acknowledge and move on.
+        print()
+        return existing_key, False
+    try:
+        choice = input("  [K]eep / [R]eplace / [C]lear (default K): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        choice = "k"
+
+    if choice.startswith("r"):
+        new_key = _prompt_new_key(allow_lmstudio_default=False)
+        if not new_key:
+            print("  No change.")
+            print()
+            return existing_key, False
+        save_env_value(key_env, new_key)
+        print("  API key updated.")
+        print()
+        return new_key, False
+
+    if choice.startswith("c"):
+        save_env_value(key_env, "")
+        print(f"  API key cleared.  Re-run `hermes setup` to configure {pconfig.name} again.")
+        return "", True
+
+    # Keep (default, or any other input)
+    print()
+    return existing_key, False
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 
@@ -4008,26 +4087,9 @@ def _model_flow_kimi(config, current_model=""):
         if existing_key:
             break
 
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if key_env:
-            try:
-                import getpass
-
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-            if not new_key:
-                print("Cancelled.")
-                return
-            save_env_value(key_env, new_key)
-            existing_key = new_key
-            print("API key saved.")
-            print()
-    else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
-        print()
+    existing_key, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
 
     # Step 2: Auto-detect endpoint from key prefix
     is_coding_plan = existing_key.startswith("sk-kimi-")
@@ -4128,25 +4190,9 @@ def _model_flow_stepfun(config, current_model=""):
         if existing_key:
             break
 
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if key_env:
-            try:
-                import getpass
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-            if not new_key:
-                print("Cancelled.")
-                return
-            save_env_value(key_env, new_key)
-            existing_key = new_key
-            print("API key saved.")
-            print()
-    else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
-        print()
+    existing_key, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
 
     current_base = ""
     if base_url_env:
@@ -4522,33 +4568,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if existing_key:
             break
 
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if key_env:
-            try:
-                import getpass
-
-                if provider_id == "lmstudio":
-                    prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
-                else:
-                    prompt = f"{key_env} (or Enter to cancel): "
-                new_key = getpass.getpass(prompt).strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-            if not new_key:
-                if provider_id == "lmstudio":
-                    new_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-                else:
-                    print("Cancelled.")
-                    return
-            save_env_value(key_env, new_key)
-            existing_key = new_key
-            print("API key saved.")
-            print()
-    else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
-        print()
+    existing_key, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the

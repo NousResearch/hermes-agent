@@ -128,6 +128,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -1297,6 +1298,13 @@ class AIAgent:
         # deltas (#5719).  sanitize_context() alone can't survive chunk
         # boundaries because the block regex needs both tags in one string.
         self._stream_context_scrubber = StreamingContextScrubber()
+        # Stateful scrubber for reasoning/thinking tags in streamed deltas
+        # (#17924).  Replaces the per-delta _strip_think_blocks regex that
+        # destroyed downstream state (e.g. MiniMax-M2.7 streaming
+        # '<think>' as delta1 and 'Let me check' as delta2 — the regex
+        # erased delta1, so downstream state machines never learned a
+        # block was open and leaked delta2 as content).
+        self._stream_think_scrubber = StreamingThinkScrubber()
         # Visible assistant text already delivered through live token callbacks
         # during the current model response. Used to avoid re-sending the same
         # commentary when the provider later returns it as a completed interim
@@ -6543,6 +6551,29 @@ class AIAgent:
 
     def _reset_stream_delivery_tracking(self) -> None:
         """Reset tracking for text delivered during the current model response."""
+        # Flush any benign partial-tag tail held by the think scrubber
+        # first (#17924): an innocent '<' at the end of the stream that
+        # turned out not to be a tag prefix should reach the UI.  Then
+        # flush the context scrubber.  Order matters — the think
+        # scrubber's output feeds into the context scrubber's state.
+        think_scrubber = getattr(self, "_stream_think_scrubber", None)
+        if think_scrubber is not None:
+            think_tail = think_scrubber.flush()
+            if think_tail:
+                # Route the tail through the context scrubber too so a
+                # memory-context span straddling the final boundary is
+                # still caught.
+                ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+                if ctx_scrubber is not None:
+                    think_tail = ctx_scrubber.feed(think_tail)
+                if think_tail:
+                    callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+                    for cb in callbacks:
+                        try:
+                            cb(think_tail)
+                        except Exception:
+                            pass
+                    self._record_streamed_assistant_text(think_tail)
         # Flush any benign partial-tag tail held by the context scrubber so it
         # reaches the UI before we clear state for the next model call.  If
         # the scrubber is mid-span, flush() drops the orphaned content.
@@ -6611,11 +6642,22 @@ class AIAgent:
         else:
             prepended_break = False
         if isinstance(text, str):
-            # Strip <think> blocks first (per-delta is safe for closed pairs; the
-            # unterminated-tag path is handled downstream by stream_consumer).
+            # Suppress reasoning/thinking blocks via the stateful
+            # scrubber (#17924).  Earlier versions ran _strip_think_blocks
+            # per-delta here, which destroyed downstream state machines
+            # when a tag was split across deltas (e.g. MiniMax-M2.7
+            # sends '<think>' and its content as separate deltas —
+            # regex case 2 erased the first delta, so the CLI/gateway
+            # state machine never saw the open tag and leaked the
+            # reasoning content as regular response text).
+            think_scrubber = getattr(self, "_stream_think_scrubber", None)
+            if think_scrubber is not None:
+                text = think_scrubber.feed(text or "")
+            else:
+                # Defensive: legacy callers without the scrubber attribute.
+                text = self._strip_think_blocks(text or "")
             # Then feed through the stateful context scrubber so memory-context
             # spans split across chunks cannot leak to the UI (#5719).
-            text = self._strip_think_blocks(text or "")
             scrubber = getattr(self, "_stream_context_scrubber", None)
             if scrubber is not None:
                 text = scrubber.feed(text)
@@ -10576,6 +10618,11 @@ class AIAgent:
         scrubber = getattr(self, "_stream_context_scrubber", None)
         if scrubber is not None:
             scrubber.reset()
+        # Reset the think scrubber for the same reason — an interrupted
+        # prior stream may have left us inside an unterminated block.
+        think_scrubber = getattr(self, "_stream_think_scrubber", None)
+        if think_scrubber is not None:
+            think_scrubber.reset()
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message

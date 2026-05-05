@@ -241,6 +241,25 @@ class TestMemoryManager:
         assert len(mgr.providers) == 1
         assert mgr.providers[0] is ext2
 
+    def test_remove_provider_shutdown_exception_still_removes(self):
+        """If shutdown() raises, the provider is still removed and tools cleaned up."""
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "Recall", "parameters": {}},
+            {"name": "ext_retain", "description": "Retain", "parameters": {}},
+        ])
+        ext.shutdown = MagicMock(side_effect=RuntimeError("shutdown boom"))
+        mgr.add_provider(ext)
+        assert mgr.has_tool("ext_recall")
+        assert mgr.has_tool("ext_retain")
+
+        result = mgr.remove_provider("ext")
+        assert result is True
+        assert len(mgr.providers) == 0
+        assert not mgr.has_tool("ext_recall")
+        assert not mgr.has_tool("ext_retain")
+        ext.shutdown.assert_called_once()
+
     def test_schema_loading_failure_prevents_registration(self):
         """If get_tool_schemas() raises, the provider is NOT registered."""
         mgr = MemoryManager()

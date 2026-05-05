@@ -100,6 +100,7 @@ AUTHOR_MAP = {
     "haidaoe@proton.me": "haidao1919",
     "50561768+zhanggttry@users.noreply.github.com": "zhanggttry",
     "formulahendry@gmail.com": "formulahendry",
+    "93757150+bogerman1@users.noreply.github.com": "bogerman1",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

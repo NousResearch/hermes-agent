@@ -1,6 +1,8 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
+import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -37,6 +39,57 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
 @pytest.fixture
 def mock_args():
     return SimpleNamespace()
+
+
+def _enable_direct_update_guard() -> None:
+    home = Path(os.environ["HERMES_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "updates:\n"
+        "  require_direct_update_bypass: true\n",
+        encoding="utf-8",
+    )
+
+
+class TestCmdUpdateDirectGuard:
+    """Local installs can require an explicit bypass for mutating updates."""
+
+    def test_guard_blocks_mutating_update_without_bypass(self, monkeypatch, capsys):
+        _enable_direct_update_guard()
+        monkeypatch.delenv("HERMES_ALLOW_DIRECT_UPDATE", raising=False)
+
+        with patch("subprocess.run") as mock_run, pytest.raises(SystemExit) as exc_info:
+            cmd_update(SimpleNamespace())
+
+        assert exc_info.value.code == 2
+        mock_run.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Direct Hermes updates are disabled" in out
+        assert "HERMES_ALLOW_DIRECT_UPDATE=1 hermes update --backup" in out
+        assert "hermes update --check" in out
+
+    def test_guard_allows_mutating_update_with_bypass(self, monkeypatch, capsys):
+        _enable_direct_update_guard()
+        monkeypatch.setenv("HERMES_ALLOW_DIRECT_UPDATE", "safe-updater")
+
+        with patch("shutil.which", return_value=None), patch("subprocess.run") as mock_run:
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="0"
+            )
+            cmd_update(SimpleNamespace())
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("rev-list" in command for command in commands)
+        assert "Already up to date!" in capsys.readouterr().out
+
+    def test_guard_does_not_block_read_only_update_check(self, monkeypatch):
+        _enable_direct_update_guard()
+        monkeypatch.delenv("HERMES_ALLOW_DIRECT_UPDATE", raising=False)
+
+        with patch("hermes_cli.main._cmd_update_check") as mock_check:
+            cmd_update(SimpleNamespace(check=True))
+
+        mock_check.assert_called_once_with()
 
 
 class TestCmdUpdateBranchFallback:
@@ -107,9 +160,10 @@ class TestCmdUpdateBranchFallback:
         assert len(pull_cmds) == 0
 
     @patch("shutil.which")
+    @patch("hermes_cli.main._web_ui_build_needed", return_value=True)
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(
-        self, mock_run, mock_which, mock_args
+        self, mock_run, _mock_web_build_needed, mock_which, mock_args
     ):
         mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
         mock_run.side_effect = _make_run_side_effect(

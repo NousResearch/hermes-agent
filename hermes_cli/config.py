@@ -1286,6 +1286,11 @@ DEFAULT_CONFIG = {
         # update.  Set to true to re-enable, or pass ``--backup`` to opt in
         # for a single update run.
         "pre_update_backup": False,
+        # When true, plain mutating ``hermes update`` refuses unless the
+        # caller explicitly sets HERMES_ALLOW_DIRECT_UPDATE=1. This is for
+        # installs with local review/update orchestration that should still
+        # allow ``hermes update --check`` but prevent accidental direct pulls.
+        "require_direct_update_bypass": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are
         # floored to 1 — the backup just created is always preserved.  To

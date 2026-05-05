@@ -6484,6 +6484,40 @@ def _finalize_update_output(state):
             pass
 
 
+_DIRECT_UPDATE_BYPASS_ENV = "HERMES_ALLOW_DIRECT_UPDATE"
+_DIRECT_UPDATE_BYPASS_VALUES = {"1", "true", "yes", "y", "safe-updater", "reviewed", "agent-reviewed"}
+
+
+def _direct_update_bypass_enabled() -> bool:
+    """Return True when the caller deliberately bypassed the direct-update brake."""
+    return os.getenv(_DIRECT_UPDATE_BYPASS_ENV, "").strip().lower() in _DIRECT_UPDATE_BYPASS_VALUES
+
+
+def _direct_update_guard_required() -> bool:
+    """Return whether mutating ``hermes update`` requires the bypass env var."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
+        return bool(updates_cfg.get("require_direct_update_bypass", False))
+    except Exception:
+        return False
+
+
+def _enforce_direct_update_guard() -> None:
+    """Block accidental mutating updates on installs that use a reviewed path."""
+    if not _direct_update_guard_required() or _direct_update_bypass_enabled():
+        return
+
+    print("✗ Direct Hermes updates are disabled for this install.")
+    print("  This checkout is protected by updates.require_direct_update_bypass.")
+    print("  Use the reviewed safe-updater/coordinator path, or intentionally bypass with:")
+    print(f"    {_DIRECT_UPDATE_BYPASS_ENV}=1 hermes update --backup")
+    print("  Read-only status checks are still allowed: hermes update --check")
+    sys.exit(2)
+
+
 def _cmd_update_check():
     """Implement ``hermes update --check``: fetch and report without installing."""
     git_dir = PROJECT_ROOT / ".git"
@@ -6736,6 +6770,8 @@ def cmd_update(args):
     if getattr(args, "check", False):
         _cmd_update_check()
         return
+
+    _enforce_direct_update_guard()
 
     gateway_mode = getattr(args, "gateway", False)
 

@@ -1201,6 +1201,80 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
+# ---------------------------------------------------------------------------
+# Routing skill writes to the host backend (#20369)
+# ---------------------------------------------------------------------------
+# When ``terminal.backend`` is set to a remote backend (ssh, docker, modal,
+# etc.), ``_get_file_ops(task_id)`` returns a ``ShellFileOperations`` bound
+# to that remote environment, so any ``write_file_tool`` / ``patch_tool``
+# call routes shell commands through the remote shell. That's the right
+# behavior for arbitrary file writes — the LLM is operating inside the
+# sandbox.
+#
+# But the Hermes skills tree is a *host* control-plane resource: it lives at
+# ``<hermes_home>/skills/`` on the gateway machine, and ``hermes skills
+# list`` only enumerates the local copy. When the agent calls
+# ``write_file_tool`` to create or edit a skill (instead of the dedicated
+# ``skill_manage`` tool, which already writes locally), the write currently
+# lands on the SSH target's filesystem and never reaches the gateway. The
+# remote skills-tree push/pull in ``SSHEnvironment`` only fires on sandbox
+# teardown, so a long-lived gateway session may never sync the new skill
+# back to the host. Reported by 2-5 in #20369.
+#
+# Fix: detect when the resolved write target is under the host's
+# ``<hermes_home>/skills`` and route to a local-backed
+# ``ShellFileOperations`` regardless of the configured terminal backend.
+# Out of scope: arbitrary ``terminal()`` ``mkdir``/``tee`` invocations that
+# write a skill to the SSH target — those are explicitly remote and can't
+# be transparently rerouted; that's a prompt-side guidance concern.
+# ---------------------------------------------------------------------------
+_local_file_ops_singleton: ShellFileOperations | None = None
+_local_file_ops_lock = threading.Lock()
+
+
+def _get_local_file_ops() -> ShellFileOperations:
+    """Return a process-wide ``ShellFileOperations`` bound to the host."""
+    global _local_file_ops_singleton
+    with _local_file_ops_lock:
+        if _local_file_ops_singleton is None:
+            from tools.environments.local import LocalEnvironment
+            _local_file_ops_singleton = ShellFileOperations(LocalEnvironment())
+        return _local_file_ops_singleton
+
+
+def _resolves_to_local_skills_path(path: str | None) -> bool:
+    """True iff ``path`` resolves under the host's ``<hermes_home>/skills``.
+
+    Uses non-strict ``Path.resolve`` so the check works even when the target
+    file does not exist yet — the common case for skill creation.
+    """
+    if not path:
+        return False
+    try:
+        from hermes_constants import get_hermes_home
+        skills_root = (get_hermes_home() / "skills").expanduser().resolve()
+        expanded = os.path.expandvars(os.path.expanduser(str(path)))
+        candidate = Path(expanded)
+        candidate = candidate.resolve(strict=False)
+        try:
+            candidate.relative_to(skills_root)
+            return True
+        except ValueError:
+            return False
+    except Exception:
+        return False
+
+
+def _get_file_ops_for_path(path: str | None, task_id: str = "default") -> ShellFileOperations:
+    """Like ``_get_file_ops`` but routes host-skills writes to the host.
+
+    See the routing-skill-writes block above for rationale (#20369).
+    """
+    if _resolves_to_local_skills_path(path):
+        return _get_local_file_ops()
+    return _get_file_ops(task_id)
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -1699,7 +1773,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
-            file_ops = _get_file_ops(task_id)
+            file_ops = _get_file_ops_for_path(path, task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
             if stale_warning:
@@ -1720,7 +1794,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
-            file_ops = _get_file_ops(task_id)
+            file_ops = _get_file_ops_for_path(path, task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
@@ -1853,7 +1927,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if _sw:
                     stale_warnings.append(_sw)
 
-            file_ops = _get_file_ops(task_id)
+            # Route writes whose target is the host's skills tree to the
+            # host backend, regardless of terminal.backend setting (#20369).
+            # If ANY V4A target resolves under <hermes_home>/skills the
+            # whole patch goes through the host backend — mixed
+            # skills/non-skills V4A patches are not a real-world workload.
+            if any(_resolves_to_local_skills_path(_p) for _p in _paths_to_check):
+                file_ops = _get_local_file_ops()
+            else:
+                file_ops = _get_file_ops(task_id)
 
             if mode == "replace":
                 if not path:

@@ -585,6 +585,118 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+class TestSkillsWriteRoutesToHostBackend:
+    """Skill writes must land on the host even when terminal.backend is remote.
+
+    Regression for #20369: with ``terminal.backend = ssh`` the agent's
+    ``write_file_tool`` / ``patch_tool`` calls were routing through the SSH
+    environment, so a freshly-created skill landed on the SSH target's
+    filesystem and ``hermes skills list`` (which only enumerates the host's
+    ``<hermes_home>/skills`` tree) never saw it.
+    """
+
+    def _make_ops(self):
+        ops = MagicMock(name="file_ops")
+        ops.write_file.return_value.to_dict.return_value = {"status": "ok"}
+        ops.patch_replace.return_value.to_dict.return_value = {"status": "ok"}
+        return ops
+
+    def _patch_stack(self, mock_local, mock_remote, fake_home):
+        local_ops = self._make_ops()
+        remote_ops = self._make_ops()
+        mock_local.return_value = local_ops
+        mock_remote.return_value = remote_ops
+        # Bypass sensitive-path guard (macOS /var/folders tmpdir is rejected
+        # by ``_check_sensitive_path``; the routing logic under test runs
+        # later in the call chain).
+        sensitive_patch = patch(
+            "tools.file_tools._check_sensitive_path",
+            return_value=None,
+        )
+        home_patch = patch(
+            "hermes_constants.get_hermes_home",
+            return_value=fake_home,
+        )
+        return local_ops, remote_ops, sensitive_patch, home_patch
+
+    @patch("tools.file_tools._get_local_file_ops")
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_under_hermes_skills_goes_to_local_backend(
+        self, mock_remote, mock_local, tmp_path,
+    ):
+        local_ops, remote_ops, sp, hp = self._patch_stack(
+            mock_local, mock_remote, tmp_path,
+        )
+        with sp, hp:
+            from tools.file_tools import write_file_tool
+            target = str(tmp_path / "skills" / "new_skill" / "SKILL.md")
+            json.loads(write_file_tool(target, "skill content"))
+
+        local_ops.write_file.assert_called_once_with(target, "skill content")
+        remote_ops.write_file.assert_not_called()
+
+    @patch("tools.file_tools._get_local_file_ops")
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_outside_hermes_skills_goes_to_configured_backend(
+        self, mock_remote, mock_local, tmp_path,
+    ):
+        local_ops, remote_ops, sp, hp = self._patch_stack(
+            mock_local, mock_remote, tmp_path,
+        )
+        with sp, hp:
+            from tools.file_tools import write_file_tool
+            target = str(tmp_path / "workspace" / "data.txt")
+            json.loads(write_file_tool(target, "data"))
+
+        remote_ops.write_file.assert_called_once_with(target, "data")
+        local_ops.write_file.assert_not_called()
+
+    @patch("tools.file_tools._get_local_file_ops")
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_under_hermes_skills_goes_to_local_backend(
+        self, mock_remote, mock_local, tmp_path,
+    ):
+        local_ops, remote_ops, sp, hp = self._patch_stack(
+            mock_local, mock_remote, tmp_path,
+        )
+        with sp, hp:
+            from tools.file_tools import patch_tool
+            target = str(tmp_path / "skills" / "tweak" / "SKILL.md")
+            patch_tool(mode="replace", path=target, old_string="old", new_string="new")
+
+        local_ops.patch_replace.assert_called_once()
+        remote_ops.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_local_file_ops")
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_outside_hermes_skills_goes_to_configured_backend(
+        self, mock_remote, mock_local, tmp_path,
+    ):
+        local_ops, remote_ops, sp, hp = self._patch_stack(
+            mock_local, mock_remote, tmp_path,
+        )
+        with sp, hp:
+            from tools.file_tools import patch_tool
+            target = str(tmp_path / "workspace" / "main.py")
+            patch_tool(mode="replace", path=target, old_string="old", new_string="new")
+
+        remote_ops.patch_replace.assert_called_once()
+        local_ops.patch_replace.assert_not_called()
+
+    def test_resolves_to_local_skills_path_handles_user_and_env_expansion(self, tmp_path, monkeypatch):
+        """``~`` / ``$HOME`` skill paths must resolve to the host root."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path / ".hermes"):
+            from tools.file_tools import _resolves_to_local_skills_path
+            assert _resolves_to_local_skills_path("~/.hermes/skills/foo/SKILL.md") is True
+            assert _resolves_to_local_skills_path("$HOME/.hermes/skills/foo/SKILL.md") is True
+            assert _resolves_to_local_skills_path("${HOME}/.hermes/skills/foo/SKILL.md") is True
+            assert _resolves_to_local_skills_path("~/.hermes/sessions/x.json") is False
+            assert _resolves_to_local_skills_path("$HOME/.hermes/sessions/x.json") is False
+            assert _resolves_to_local_skills_path(None) is False
+            assert _resolves_to_local_skills_path("") is False
+
+
 # ---------------------------------------------------------------------------
 # PATCH_SCHEMA shape tests (issue #15524)
 # ---------------------------------------------------------------------------

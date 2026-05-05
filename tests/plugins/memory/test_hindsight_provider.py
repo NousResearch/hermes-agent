@@ -125,7 +125,7 @@ def provider_with_config(tmp_path, monkeypatch):
     def _make(**overrides):
         config = {
             "mode": "cloud",
-            "apiKey": "***",
+            "apiKey": "test-key",
             "api_url": "http://localhost:9999",
             "bank_id": "test-bank",
             "budget": "mid",

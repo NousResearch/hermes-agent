@@ -49,8 +49,8 @@ def test_linux_asset_manifest_normalizes_windows_link_targets():
     )
 
     assert manifest["links"] == [
-        {"path": "lib/libreadline.so.8", "target": "lib/libreadline.so.8.3"},
         {"path": "bin/sh", "target": "bin/busybox"},
+        {"path": "lib/libreadline.so.8", "target": "lib/libreadline.so.8.3"},
     ]
 
 

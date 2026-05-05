@@ -628,15 +628,18 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
+        # Resolve the active UI language once per prompt so we don't re-read
+        # config/YAML inside the retry loop below.
+        from agent.i18n import t
         while True:
             print()
-            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+            print(f"  {t('approval.dangerous_header', description=description)}")
             print(f"      {command}")
             print()
             if allow_permanent:
-                print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
+                print(t("approval.choose_long"))
             else:
-                print("      [o]nce  |  [s]ession  |  [d]eny")
+                print(t("approval.choose_short"))
             print()
             sys.stdout.flush()
 
@@ -644,7 +647,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
+                    prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -654,28 +657,28 @@ def prompt_dangerous_approval(command: str, description: str,
             thread.join(timeout=timeout_seconds)
 
             if thread.is_alive():
-                print("\n      ⏱ Timeout - denying command")
+                print("\n" + t("approval.timeout"))
                 return "deny"
 
             choice = result["choice"]
             if choice in ('o', 'once'):
-                print("      ✓ Allowed once")
+                print(t("approval.allowed_once"))
                 return "once"
             elif choice in ('s', 'session'):
-                print("      ✓ Allowed for this session")
+                print(t("approval.allowed_session"))
                 return "session"
             elif choice in ('a', 'always'):
                 if not allow_permanent:
-                    print("      ✓ Allowed for this session")
+                    print(t("approval.allowed_session"))
                     return "session"
-                print("      ✓ Added to permanent allowlist")
+                print(t("approval.allowed_always"))
                 return "always"
             else:
-                print("      ✗ Denied")
+                print(t("approval.denied"))
                 return "deny"
 
     except (EOFError, KeyboardInterrupt):
-        print("\n      ✗ Cancelled")
+        print("\n" + t("approval.cancelled"))
         return "deny"
     finally:
         if "HERMES_SPINNER_PAUSE" in os.environ:

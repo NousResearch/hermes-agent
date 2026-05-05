@@ -1,0 +1,24 @@
+# Hermes-Katalog für statische Meldungen -- Deutsch
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
+  choose_long:     "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"
+  choose_short:    "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
+  prompt_long:     "      Auswahl [o/s/a/D]: "
+  prompt_short:    "      Auswahl [o/s/D]: "
+  timeout:         "      ⏱ Zeitüberschreitung – Befehl wird abgelehnt"
+  allowed_once:    "      ✓ Einmalig erlaubt"
+  allowed_session: "      ✓ Für diese Sitzung erlaubt"
+  allowed_always:  "      ✓ Zur dauerhaften Erlaubnisliste hinzugefügt"
+  denied:          "      ✗ Abgelehnt"
+  cancelled:       "      ✗ Abgebrochen"
+  blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
+
+gateway:
+  approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
+  draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
+  goal_cleared:     "✓ Ziel gelöscht."
+  no_active_goal:   "Kein aktives Ziel."
+  config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
+  config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"

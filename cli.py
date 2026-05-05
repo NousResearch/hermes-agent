@@ -2589,9 +2589,12 @@ class HermesCLI:
             elapsed = time.monotonic() - t0
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
-                elapsed_str = f"{_m}m {_s}s"
+                # Fixed-width timer to avoid status-line wrap jitter while
+                # scrolling/repainting (e.g. 01m05s, 12m09s).
+                elapsed_str = f"{_m:02d}m{_s:02d}s"
             else:
-                elapsed_str = f"{elapsed:.1f}s"
+                # Keep width stable before the 60s rollover as well.
+                elapsed_str = f"{elapsed:5.1f}s"
             return f"  {txt}  ({elapsed_str})"
         return f"  {txt}"
 

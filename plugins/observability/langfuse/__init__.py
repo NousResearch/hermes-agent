@@ -105,15 +105,23 @@ def _get_langfuse() -> Optional[Langfuse]:
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
-    public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
-    secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
+    # SECURITY: Only honor HERMES_-prefixed env vars. The unprefixed
+    # LANGFUSE_* names are widely set in CI/CD and shared dev environments
+    # (Docker Compose stacks, GitHub Actions secrets, team .envrc files),
+    # which means activating this plugin can silently inherit credentials
+    # — and a base_url — that the operator never intended to ship telemetry
+    # to. Requiring the HERMES_-prefix makes plugin activation an explicit
+    # opt-in rather than an ambient pickup of whatever Langfuse vars happen
+    # to be in scope.
+    public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY")
+    secret_key = _env("HERMES_LANGFUSE_SECRET_KEY")
     if not (public_key and secret_key):
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
-    base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
-    environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
-    release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
+    base_url = _env("HERMES_LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+    environment = _env("HERMES_LANGFUSE_ENV")
+    release = _env("HERMES_LANGFUSE_RELEASE")
     sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
 
     kwargs: Dict[str, Any] = {
@@ -831,6 +839,23 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
         )
 
 
+# SECURITY: Tools that return file or terminal contents can leak credentials,
+# private keys, environment variables, and other secrets to the Langfuse
+# server. We redact the full output for these tools and only ship metadata
+# (tool name, output size) so the trace remains useful for debugging shape
+# without exfiltrating the body. To opt back into full content (e.g. for a
+# self-hosted Langfuse deployment in a trusted network), set
+# HERMES_LANGFUSE_TRACE_SENSITIVE_TOOL_OUTPUT=true.
+_SENSITIVE_TOOLS = frozenset({
+    "read_file",
+    "terminal",
+    "bash",
+    "shell",
+    "execute_code",
+    "execute",
+})
+
+
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
     task_key = _trace_key(task_id, session_id)
@@ -849,11 +874,21 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     if observation is None:
         return
 
-    if isinstance(result, str):
-        result_value = _maybe_parse_json_string(result)
+    # Redact full output from sensitive tools by default.
+    if tool_name in _SENSITIVE_TOOLS and not _env_bool("HERMES_LANGFUSE_TRACE_SENSITIVE_TOOL_OUTPUT"):
+        result_value = {
+            "redacted": True,
+            "tool": tool_name,
+            "result_chars": len(str(result)) if result is not None else 0,
+            "note": "Output redacted by Langfuse plugin. Set "
+                    "HERMES_LANGFUSE_TRACE_SENSITIVE_TOOL_OUTPUT=true to opt in.",
+        }
     else:
-        result_value = result
-    result_value = _normalize_payload(result_value, tool_name=tool_name, args=args)
+        if isinstance(result, str):
+            result_value = _maybe_parse_json_string(result)
+        else:
+            result_value = result
+        result_value = _normalize_payload(result_value, tool_name=tool_name, args=args)
 
     _end_observation(
         observation,

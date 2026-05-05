@@ -56,6 +56,7 @@ AUTHOR_MAP = {
     "657290301@qq.com": "IMHaoyan",
     "revar@users.noreply.github.com": "revaraver",
     "dengtaoyuan@dengtaoyuandeMac-mini.local": "dengtaoyuan450-a11y",
+    "ysfalweshcan@gmail.com": "Junass1",
     "beardthelion@users.noreply.github.com": "beardthelion",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",

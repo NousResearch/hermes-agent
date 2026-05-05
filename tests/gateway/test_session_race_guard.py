@@ -9,7 +9,7 @@ duplicate agent.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -26,9 +26,10 @@ class _FakeAdapter:
         self._pending_messages = {}
         self._active_sessions = {}
         self.interrupted_sessions = []
+        self.sent = []
 
     async def send(self, chat_id, text, **kwargs):
-        pass
+        self.sent.append((chat_id, text, kwargs))
 
     async def interrupt_session_activity(self, session_key, chat_id):
         self.interrupted_sessions.append((session_key, chat_id))
@@ -56,6 +57,9 @@ def _make_runner():
     runner._restart_detached = False
     runner._restart_via_service = False
     runner._restart_drain_timeout = 0.0
+    runner._running = True
+    runner._busy_input_mode = "queue"
+    runner._busy_ack_ts = {}
     runner._stop_task = None
     runner._exit_code = None
     runner._update_runtime_status = MagicMock()
@@ -477,6 +481,43 @@ async def test_stop_clears_pending_messages():
     adapter.get_pending_message.assert_called_once_with(session_key)
 
 
+@pytest.mark.asyncio
+async def test_running_agent_status_refreshes_when_session_is_claimed_and_released():
+    """Runtime status must not stay stale while gateway turns start and finish."""
+    runner = _make_runner()
+    event = _make_event()
+    runner._update_runtime_status.reset_mock()
+
+    async def mock_inner(self_inner, ev, src, qk, generation):
+        assert runner._running_agents.get(qk) is _AGENT_PENDING_SENTINEL
+        return "ok"
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
+        await runner._handle_message(event)
+
+    assert runner._update_runtime_status.call_args_list == [
+        call("running"),
+        call("running"),
+    ]
+
+
+def test_release_running_agent_state_refreshes_runtime_status():
+    """Direct running-state cleanup must refresh active_agents immediately."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_event().source)
+    runner._running_agents[session_key] = MagicMock()
+    runner._running_agents_ts[session_key] = 123.0
+    runner._busy_ack_ts[session_key] = 456.0
+    runner._update_runtime_status.reset_mock()
+
+    assert runner._release_running_agent_state(session_key) is True
+
+    assert session_key not in runner._running_agents
+    assert session_key not in runner._running_agents_ts
+    assert session_key not in runner._busy_ack_ts
+    runner._update_runtime_status.assert_called_once_with("running")
+
+
 # ------------------------------------------------------------------
 # Test 7: Shutdown skips sentinel entries
 # ------------------------------------------------------------------
@@ -507,3 +548,31 @@ async def test_shutdown_skips_sentinel():
     # Real agent should have been interrupted
     real_agent.interrupt.assert_called_once()
     # Should not have raised on the sentinel
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_skips_linear_issue_threads():
+    """Linear issue threads are task records; gateway restarts must not pollute them."""
+    runner = _make_runner()
+    linear_adapter = _FakeAdapter()
+    runner.adapters[Platform.LINEAR] = linear_adapter
+    runner.session_store = None
+    runner._running_agents["agent:main:linear:thread:issue-id:DEC-13"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert linear_adapter.sent == []
+
+
+def test_home_channel_prompt_skips_linear_issue_threads():
+    """Linear is a control plane, not a chat home channel target."""
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.LINEAR,
+        chat_id="issue-id",
+        chat_type="thread",
+        user_id="user-id",
+        thread_id="DEC-13",
+    )
+
+    assert runner._should_prompt_home_channel(source) is False

@@ -18,6 +18,7 @@ from gateway.config import (
     PlatformConfig,
     SessionResetPolicy,
 )
+from gateway.run import _should_notify_session_reset
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -205,3 +206,26 @@ class TestResetPolicyNotify:
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
         assert restored.mode == original.mode
+
+
+class TestResetNoticeRouting:
+    def test_linear_reset_notices_are_suppressed(self):
+        """Linear issue threads are conversational records, not daemon stdout."""
+        policy = SessionResetPolicy(notify=True)
+
+        assert _should_notify_session_reset(
+            platform_name="linear",
+            reset_reason="suspended",
+            policy=policy,
+            had_activity=True,
+        ) is False
+
+    def test_telegram_suspended_reset_still_notifies(self):
+        policy = SessionResetPolicy(notify=False)
+
+        assert _should_notify_session_reset(
+            platform_name="telegram",
+            reset_reason="suspended",
+            policy=policy,
+            had_activity=False,
+        ) is True

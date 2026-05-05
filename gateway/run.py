@@ -4898,6 +4898,11 @@ class GatewayRunner:
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
+        # observe_only: save the message to session transcript for context
+        # but do NOT trigger the agent to respond.  Used by Signal adapter's
+        # require_mention mode for group messages without @-mention.
+        is_observe_only = bool(getattr(event, "observe_only", False))
+
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
@@ -5818,6 +5823,17 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            # observe_only: save message to session transcript for context,
+            # but skip the agent entirely.  The message is already part of
+            # the session history (appended above), so future agent turns
+            # will see it as context.
+            if is_observe_only:
+                logger.debug("observe_only: saving message to transcript, skipping agent")
+                # Release the agent slot so future messages can proceed
+                self._running_agents.pop(_quick_key, None)
+                self._running_agents_ts.pop(_quick_key, None)
+                return None
+
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will

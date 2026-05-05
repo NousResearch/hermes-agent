@@ -914,6 +914,12 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # When True, save message to session transcript but do NOT trigger the
+    # agent.  Used by Signal adapter's require_mention: group messages that
+    # don't @-mention the bot are observed (context preserved) without
+    # generating a response.
+    observe_only: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -2701,6 +2707,11 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
+        # observe_only: skip typing indicator entirely — the message is saved
+        # to the session transcript by the runner but no agent response is
+        # generated, so a typing bubble would mislead the user.
+        _is_observe_only = bool(getattr(event, "observe_only", False))
+
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
         _keep_typing_kwargs = {"metadata": _thread_metadata}
@@ -2710,14 +2721,18 @@ class BasePlatformAdapter(ABC):
             _keep_typing_sig = None
         if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
             _keep_typing_kwargs["stop_event"] = interrupt_event
-        typing_task = asyncio.create_task(
-            self._keep_typing(
-                event.source.chat_id,
-                **_keep_typing_kwargs,
+        typing_task = None
+        if not _is_observe_only:
+            typing_task = asyncio.create_task(
+                self._keep_typing(
+                    event.source.chat_id,
+                    **_keep_typing_kwargs,
+                )
             )
-        )
 
         async def _stop_typing_task() -> None:
+            if typing_task is None:
+                return
             typing_task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)

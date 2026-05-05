@@ -223,6 +223,11 @@ class SignalAdapter(BasePlatformAdapter):
         # Normalize account for self-message filtering
         self._account_normalized = self.account.strip()
 
+        # require_mention support — when True, group messages that don't
+        # @-mention the bot are saved as observe_only (context preserved,
+        # no agent response).  DMs are always processed.
+        self._require_mention = self._signal_require_mention()
+
         # Track recently sent message timestamps to prevent echo-back loops
         # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
         self._recent_sent_timestamps: set = set()
@@ -237,6 +242,34 @@ class SignalAdapter(BasePlatformAdapter):
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
+
+    # ------------------------------------------------------------------
+    # require_mention helpers
+    # ------------------------------------------------------------------
+
+    def _signal_require_mention(self) -> bool:
+        """Return whether group chats should require an explicit bot @mention."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
+    def _message_mentions_bot(self, mentions: list) -> bool:
+        """Check if any mention in the message refers to the bot's account."""
+        if not mentions:
+            return False
+        for m in mentions:
+            # Signal mentions contain uuid and/or number
+            mentioned_number = m.get("number", "")
+            mentioned_uuid = m.get("uuid", "")
+            if mentioned_number and mentioned_number.strip() == self._account_normalized:
+                return True
+            # Also check against our own UUID if we know it
+            if mentioned_uuid and hasattr(self, "_own_uuid") and mentioned_uuid == self._own_uuid:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -603,6 +636,15 @@ class SignalAdapter(BasePlatformAdapter):
 
         logger.debug("Signal: message from %s in %s: %s",
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
+
+        # require_mention: in group chats, if the bot is not @-mentioned,
+        # mark as observe_only so the message is saved for context but
+        # the agent does not respond.
+        if is_group and self._require_mention:
+            mentions = data_message.get("mentions", [])
+            if not self._message_mentions_bot(mentions):
+                event.observe_only = True
+                logger.debug("Signal: group message without mention -> observe_only")
 
         await self.handle_message(event)
 

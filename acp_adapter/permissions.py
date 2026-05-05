@@ -28,10 +28,23 @@ def make_approval_callback(
     loop: asyncio.AbstractEventLoop,
     session_id: str,
     timeout: float = 60.0,
-) -> Callable[[str, str], str]:
+) -> Callable[..., str]:
     """
-    Return a hermes-compatible ``approval_callback(command, description) -> str``
-    that bridges to the ACP client's ``request_permission`` call.
+    Return a hermes-compatible approval callback that bridges to the ACP
+    client's ``request_permission`` call.
+
+    Hermes' core ``tools/approval.py:prompt_dangerous_approval`` invokes the
+    callback with the signature documented in its own docstring:
+    ``approval_callback(command, description, *, allow_permanent=True) -> str``.
+    The previous implementation only accepted ``(command, description)``,
+    causing every approval request to fail with a TypeError, which Hermes
+    then logged and treated as auto-deny — silently blocking legitimate
+    tool use whenever a dangerous-approval gate fired.
+
+    This implementation accepts ``allow_permanent`` and surfaces it as a
+    UI gate (suppress the "Allow always" option when False, per Hermes'
+    tirith-warning contract). It also accepts ``**_kwargs`` to absorb any
+    future kwargs Hermes core may add without crashing.
 
     Args:
         request_permission_fn: The ACP connection's ``request_permission`` coroutine.
@@ -40,12 +53,20 @@ def make_approval_callback(
         timeout: Seconds to wait for a response before auto-denying.
     """
 
-    def _callback(command: str, description: str) -> str:
+    def _callback(command: str, description: str, *, allow_permanent: bool = True, **_kwargs) -> str:
+        # When allow_permanent is False (e.g. tirith warnings present per
+        # Hermes' contract), suppress the "Allow always" option so the user
+        # can't broadly allowlist a content-level-flagged command.
         options = [
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once"),
-            PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"),
-            PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
         ]
+        if allow_permanent:
+            options.append(
+                PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"),
+            )
+        options.append(
+            PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
+        )
         import acp as _acp
 
         tool_call = _acp.start_tool_call("perm-check", command, kind="execute")

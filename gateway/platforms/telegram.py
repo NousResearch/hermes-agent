@@ -688,6 +688,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    async def rename_dm_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+    ) -> None:
+        """Rename a forum topic in a private (DM) chat."""
+        if not self._bot:
+            return
+        try:
+            chat_id_arg = int(chat_id)
+        except (TypeError, ValueError):
+            chat_id_arg = chat_id
+        await self._bot.edit_forum_topic(
+            chat_id=chat_id_arg,
+            message_thread_id=int(thread_id),
+            name=name,
+        )
+        logger.info(
+            "[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'",
+            self.name, chat_id, thread_id, name,
+        )
+
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:
@@ -2267,13 +2290,54 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.error(
-                "[%s] Failed to send Telegram local image, falling back to base adapter: %s",
-                self.name,
-                e,
-                exc_info=True,
+            error_str = str(e)
+            # Dimension-related errors are the expected case for valid image
+            # files that Telegram just refuses as photos (screenshots, extreme
+            # aspect ratios). Log at INFO because the document fallback is
+            # the correct path. Any other send_photo failure also falls back
+            # to document (rate limits, corrupt file markers, format edge
+            # cases), but at WARNING because it's unexpected and worth
+            # surfacing in logs.
+            is_dim_error = (
+                "Photo_invalid_dimensions" in error_str
+                or "PHOTO_INVALID_DIMENSIONS" in error_str
             )
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            if is_dim_error:
+                logger.info(
+                    "[%s] Image dimensions exceed Telegram photo limits, "
+                    "sending as document: %s",
+                    self.name,
+                    image_path,
+                )
+            else:
+                logger.warning(
+                    "[%s] Failed to send Telegram local image as photo, "
+                    "trying document fallback: %s",
+                    self.name,
+                    e,
+                    exc_info=True,
+                )
+            # Fallback to sending as document (file) — no dimension limit,
+            # only 50MB size limit. If even that fails, fall back to the
+            # base adapter's text-only "Image: /path" rendering.
+            try:
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=image_path,
+                    caption=caption,
+                    file_name=os.path.basename(image_path),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            except Exception as doc_err:
+                logger.error(
+                    "[%s] Failed to send Telegram local image as document, "
+                    "falling back to base adapter: %s",
+                    self.name,
+                    doc_err,
+                    exc_info=True,
+                )
+                return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
     async def send_document(
         self,

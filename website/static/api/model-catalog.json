@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-30T03:06:09Z",
+  "updated_at": "2026-05-04T09:41:25Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -232,7 +232,7 @@
           "id": "z-ai/glm-5-turbo"
         },
         {
-          "id": "x-ai/grok-4.20-beta"
+          "id": "x-ai/grok-4.20"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"

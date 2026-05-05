@@ -2181,6 +2181,83 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_request_removes_orphan_tool_result(self, agent):
+        """Regression: max-iterations summary request must NOT contain
+        orphan tool results (tool_call_id with no matching assistant tool_call)."""
+        resp = _mock_response(content="Summary of work done.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "Analyze finance-data-router"},
+            {"role": "assistant", "content": "[Session Arc Summary] ..."},
+            {"role": "tool", "tool_call_id": "call_cfedFhJjGmu1RvRc1OUC38j8", "content": "file content here"},
+            {"role": "assistant", "tool_calls": [{"id": "call_8fXBXsT592Vpvm7wnW4obPEu", "function": {"name": "patch", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_8fXBXsT592Vpvm7wnW4obPEu", "content": "patch result"},
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        result = agent._handle_max_iterations(messages, 120)
+
+        assert result == "Summary of work done."
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        orphan_ids = [
+            m.get("tool_call_id") for m in sent_msgs
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_cfedFhJjGmu1RvRc1OUC38j8"
+        ]
+        assert len(orphan_ids) == 0, f"Orphan tool result still present: {orphan_ids}"
+
+    def test_summary_request_inserts_stub_for_missing_tool_result(self, agent):
+        """If an assistant tool_call has no matching tool result in the
+        summary request, a stub must be inserted to satisfy the API contract."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {"role": "assistant", "tool_calls": [{"id": "call_no_result", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "assistant", "content": "Continuing..."},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        stub_ids = [
+            m.get("tool_call_id") for m in sent_msgs
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
+        ]
+        assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openai"
+        agent.providers_allowed = ["Anthropic"]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "provider" not in kwargs.get("extra_body", {})
+
+    def test_summary_keeps_provider_preferences_for_openrouter(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.providers_allowed = ["Anthropic"]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
+
     def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"

@@ -1893,3 +1893,53 @@ class TestOpenRouterExplicitApiKey:
             assert call_kwargs["api_key"] == "env-fallback-key", (
                 f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
             )
+
+
+class TestAnthropicExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_anthropic().
+
+    Parity with the OpenRouter fix in #18768: resolve_provider_client() passes
+    explicit_api_key to _try_openrouter(), but the anthropic branch was not
+    updated — _try_anthropic() always fell back to resolve_anthropic_token()
+    even when an explicit key was supplied (e.g. from a fallback_model entry).
+    """
+
+    def test_try_anthropic_uses_explicit_api_key_over_env(self):
+        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic("explicit-pool-key")
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-pool-key", (
+            f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"
+        )
+        assert mock_build.call_args.args[0] != "env-fallback-key"
+
+    def test_try_anthropic_without_explicit_key_falls_back_to_resolve(self):
+        """Without explicit_api_key, _try_anthropic falls back to resolve_anthropic_token."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic()
+        assert client is not None
+        assert mock_build.call_args.args[0] == "env-fallback-key"
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
+        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                provider="anthropic",
+                explicit_api_key="explicit-fallback-key",
+            )
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-fallback-key", (
+            "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
+        )

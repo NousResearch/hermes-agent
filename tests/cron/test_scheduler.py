@@ -46,6 +46,29 @@ class TestResolveOrigin:
         job = {"origin": {}}
         assert _resolve_origin(job) is None
 
+    @pytest.mark.parametrize(
+        "non_dict_origin",
+        [
+            "combined-digest-replaces-x-and-y-20260503",
+            123,
+            ["telegram", "12345"],
+            ("platform", "chat_id"),
+            42.0,
+        ],
+    )
+    def test_non_dict_origin_returns_none_instead_of_crashing(self, non_dict_origin):
+        """Non-dict origins (provenance strings from hand-edited or migrated
+        jobs.json) must be treated as missing instead of crashing the
+        scheduler tick on ``origin.get('platform')`` with
+        ``'str' object has no attribute 'get'`` (#18722).
+
+        Before this guard a job in this state crashed every fire attempt
+        forever; ``mark_job_run`` recorded the error but the next tick
+        re-loaded the poisoned origin and crashed identically.
+        """
+        job = {"origin": non_dict_origin}
+        assert _resolve_origin(job) is None
+
 
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):
@@ -116,6 +139,16 @@ class TestResolveDeliveryTarget:
             "platform": "matrix",
             "chat_id": "!room123:example.org",
             "thread_id": None,
+        }
+
+    def test_bare_platform_delivery_preserves_home_thread_id(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL_THREAD_ID", "topic-7")
+
+        assert _resolve_delivery_target({"deliver": "discord"}) == {
+            "platform": "discord",
+            "chat_id": "parent-42",
+            "thread_id": "topic-7",
         }
 
     def test_explicit_telegram_topic_target_with_thread_id(self):
@@ -1274,6 +1307,103 @@ class TestRunJobConfigLogging:
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
 
 
+class TestRunJobConfigEnvVarExpansion:
+    """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
+
+        job = {"id": "env-job", "name": "env test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["model"] == "gpt-4o-mini-cron-test", (
+            f"Expected model='gpt-4o-mini-cron-test', got {kwargs['model']!r}. "
+            "config.yaml ${VAR} was not expanded in the cron execution path."
+        )
+
+    def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in config.yaml fallback_providers model: is expanded."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
+        )
+        monkeypatch.setenv("_HERMES_TEST_CRON_FALLBACK", "gpt-4o-fallback-test")
+
+        job = {"id": "fb-job", "name": "fallback test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        fb = kwargs.get("fallback_model") or []
+        fb_list = fb if isinstance(fb, list) else [fb]
+        expanded = [e.get("model") for e in fb_list if isinstance(e, dict)]
+        assert "gpt-4o-fallback-test" in expanded, (
+            f"Expected expanded fallback model in {expanded!r}. "
+            "config.yaml ${VAR} in fallback_providers was not expanded."
+        )
+
+    def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
+        """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
+        monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
+
+        job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        kwargs = mock_agent_cls.call_args.kwargs
+        # Unresolved refs are kept verbatim — _expand_env_vars contract
+        assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
+
+
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {
@@ -1822,6 +1952,54 @@ class TestBuildJobPromptMissingSkill:
             result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
         assert "Real skill content." in result
         assert "go" in result
+
+
+class TestBuildJobPromptBumpUse:
+    """Verify that cron jobs bump skill usage counters so the curator sees them as active."""
+
+    def test_bump_use_called_for_loaded_skill(self):
+        """bump_use is called for each successfully loaded skill."""
+
+        def _skill_view(name: str) -> str:
+            return json.dumps({"success": True, "content": f"Content for {name}."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("tools.skill_usage.bump_use") as mock_bump:
+            _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
+
+        assert mock_bump.call_count == 2
+        calls = [c[0][0] for c in mock_bump.call_args_list]
+        assert "alpha" in calls
+        assert "beta" in calls
+
+    def test_bump_use_not_called_for_missing_skill(self):
+        """bump_use is NOT called when a skill fails to load."""
+
+        def _missing_view(name: str) -> str:
+            return json.dumps({"success": False, "error": "not found"})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_missing_view), \
+             patch("tools.skill_usage.bump_use") as mock_bump:
+            _build_job_prompt({"skills": ["ghost"], "prompt": "go"})
+
+        assert mock_bump.call_count == 0
+
+    def test_bump_failure_does_not_break_prompt(self, caplog):
+        """If bump_use raises, the prompt still builds — error is logged at DEBUG."""
+
+        def _skill_view(name: str) -> str:
+            return json.dumps({"success": True, "content": "Works."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("tools.skill_usage.bump_use", side_effect=RuntimeError("boom")), \
+             caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            result = _build_job_prompt({"skills": ["good-skill"], "prompt": "go"})
+
+        # Prompt should still contain the skill content and original instruction
+        assert "Works." in result
+        assert "go" in result
+        # The error should be logged at DEBUG level, not crash
+        assert any("failed to bump" in r.message for r in caplog.records)
 
 
 class TestSendMediaViaAdapter:

@@ -27,7 +27,11 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
   }
 
   if (t === 'send' && typeof o.message === 'string') {
-    return { type: 'send', message: o.message }
+    return {
+      type: 'send',
+      message: o.message,
+      notice: typeof o.notice === 'string' ? o.notice : undefined,
+    }
   }
 
   return null

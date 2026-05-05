@@ -664,6 +664,44 @@ class TestCompressWithClient:
             "call_123"
         ]
 
+    def test_user_role_summary_carries_end_marker(self):
+        """When the summary lands as standalone role='user' (e.g. head ends
+        with assistant/tool), the message body must include the explicit
+        '--- END OF CONTEXT SUMMARY ---' marker. Without it, weak models
+        read the verbatim past user request quoted in '## Active Task' as
+        fresh input (#11475, #14521).
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        # head_last=assistant, tail_first=assistant (same shape as the
+        # existing consecutive-user test) → role resolves to "user".
+        msgs = [
+            {"role": "user", "content": "msg 0"},
+            {"role": "assistant", "content": "msg 1"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "assistant", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        summary_msg = next(
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        )
+        assert summary_msg["role"] == "user"
+        assert "END OF CONTEXT SUMMARY" in summary_msg["content"]
+        assert summary_msg["content"].rstrip().endswith(
+            "respond to the message below, not the summary above ---"
+        )
+
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
         mock_client = MagicMock()
@@ -1280,6 +1318,47 @@ class TestTokenBudgetTailProtection:
         cut = c._find_tail_cut_by_tokens(messages, head_end)
         assert isinstance(cut, int)
         assert 0 <= cut <= len(messages)
+
+    def test_generous_budget_protects_everything_floor_does_not_override(
+        self, budget_compressor
+    ):
+        """A budget that covers the whole transcript must prune nothing —
+        ``protect_tail_count`` is a minimum floor, not a ceiling."""
+        c = budget_compressor
+
+        # 100 alternating assistant/tool messages.  Each tool result has
+        # *unique* content so the dedup pass (Pass 1, which is independent
+        # of prune_boundary) is a no-op and we isolate the boundary logic.
+        messages = []
+        for i in range(50):
+            messages.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{
+                    "id": f"c{i}",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }],
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": f"c{i}",
+                "content": f"unique-tool-output-{i:03d}-" + ("x" * 250),
+            })
+
+        # Budget large enough to cover the whole transcript many times over,
+        # so the budget walk completes without hitting its break condition
+        # and the boundary lands at 0 ("protect everything").
+        _, pruned = c._prune_old_tool_results(
+            messages,
+            protect_tail_count=20,
+            protect_tail_tokens=10_000_000,
+        )
+
+        assert pruned == 0, (
+            "budget said protect everything, but the floor still pruned "
+            f"{pruned} messages — protect_tail_count is acting as a ceiling, "
+            "not a minimum floor"
+        )
 
 
 class TestUpdateModelBudgets:

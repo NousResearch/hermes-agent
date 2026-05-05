@@ -2757,9 +2757,11 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
+        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
@@ -2791,7 +2793,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
@@ -4227,6 +4229,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
+                        if (metadata or {}).get("thread_id"):
+                            logger.warning(
+                                "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
+                                "skipping top-level fallback to avoid creating a new topic",
+                                active_reply_to,
+                                (metadata or {}).get("thread_id"),
+                                code,
+                            )
+                            return response
                         logger.warning(
                             "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
                             "falling back to new message in chat %s",

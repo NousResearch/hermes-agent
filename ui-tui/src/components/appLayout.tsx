@@ -1,10 +1,11 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useMemo, useRef } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
@@ -60,6 +61,46 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
+  const streaming = useTurnSelector(state => state.streaming)
+  const pendingTailRepinsRef = useRef(0)
+  const wasStreamingRef = useRef(false)
+
+  useEffect(() => {
+    const isStreaming = Boolean(streaming)
+
+    if (wasStreamingRef.current && !isStreaming) {
+      // Streaming teardown can move the live assistant node into virtualized
+      // history over several measurement passes. Re-pin a sticky transcript for
+      // a few tail/layout updates, without disturbing users who scrolled away.
+      pendingTailRepinsRef.current = 3
+    }
+
+    wasStreamingRef.current = isStreaming
+
+    if (isStreaming || pendingTailRepinsRef.current <= 0) {
+      return
+    }
+
+    const scroll = transcript.scrollRef.current
+
+    if (!scroll?.isSticky()) {
+      pendingTailRepinsRef.current = 0
+
+      return
+    }
+
+    pendingTailRepinsRef.current -= 1
+
+    const timer = setTimeout(() => {
+      const latest = transcript.scrollRef.current
+
+      if (latest?.isSticky()) {
+        latest.scrollToBottom()
+      }
+    }, 0)
+
+    return () => clearTimeout(timer)
+  }, [streaming, transcript.historyItems.length, transcript.scrollRef, transcript.virtualHistory.bottomSpacer])
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
   // visually belongs to the prompt and follows it during scroll. -1 when
@@ -90,7 +131,7 @@ const TranscriptPane = memo(function TranscriptPane({
         ref={transcript.scrollRef}
         stickyScroll
       >
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" paddingBottom={1} paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (

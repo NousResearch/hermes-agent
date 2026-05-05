@@ -338,6 +338,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
+    # CrofAI — OpenAI-compatible aggregator at https://crof.ai/v1.
+    # The /v1/models endpoint is preferred at runtime via provider_model_ids();
+    # this static list is the offline / pre-auth fallback shown in `hermes model`.
+    "crofai": [
+        "kimi-k2.6-precision",
+        "kimi-k2.5",
+        "kimi-k2.5-lightning",
+        "glm-5.1",
+        "glm-5.1-precision",
+        "glm-5",
+        "glm-4.7",
+        "glm-4.7-flash",
+        "gemma-4-31b-it",
+        "minimax-m2.5",
+        "qwen3.5-397b-a17b",
+        "deepseek-v3.2",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",
@@ -798,6 +815,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (multi-model direct API)"),
+    ProviderEntry("crofai",         "CrofAI",                   "CrofAI (Kimi, GLM, Gemma, MiniMax, Qwen, DeepSeek — OpenAI-compatible aggregator at crof.ai)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
@@ -835,6 +853,9 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "crof": "crofai",
+    "crof-ai": "crofai",
+    "crof.ai": "crofai",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -1991,6 +2012,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
             creds = resolve_api_key_provider_credentials("gmi")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "crofai":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("crofai")
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

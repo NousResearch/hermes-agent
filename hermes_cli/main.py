@@ -1881,6 +1881,7 @@ def select_provider_and_model(args=None):
         "xiaomi",
         "arcee",
         "gmi",
+        "crofai",
         "nvidia",
         "ollama-cloud",
         "tencent-tokenhub",

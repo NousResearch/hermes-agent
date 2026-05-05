@@ -3365,6 +3365,23 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
+def _is_empty_after_terminal_noise_strip(text: object, has_attachments: bool) -> bool:
+    """Return True when a queued submission is effectively empty.
+
+    Used after the bracketed-paste / CPR / mouse-report stripping pass to
+    decide whether to drop a submission that originated entirely from
+    leaked terminal control bytes (e.g. a SIGWINCH-driven CPR storm on
+    WSL2 + Windows Terminal — see issue #19767).  When ``has_attachments``
+    is True the message is preserved even if the textual portion is
+    blank, because the user explicitly attached an image.
+    """
+    if has_attachments:
+        return False
+    if not isinstance(text, str):
+        return not text
+    return not text.strip()
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -15211,7 +15228,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
                         if _had_mouse_reports:
                             self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
-                    
+
+                    # Drop submissions that collapse to empty after stripping leaked
+                    # terminal control sequences (CPR responses, SGR mouse reports,
+                    # bracketed-paste wrappers).  On WSL2 + Windows Terminal, dragging
+                    # the window to resize triggers a SIGWINCH storm: prompt_toolkit
+                    # queries cursor position via DSR and the terminal floods responses
+                    # back into the input buffer; SGR mouse reports ending in ``M``
+                    # can also be parsed as Ctrl+M (= Enter), submitting a buffer
+                    # whose only content was the leaked bytes.  Without this guard
+                    # the empty payload reaches _print_user_message_preview and
+                    # renders a divider + bullet with no text — a stream of which
+                    # is what users perceive as "TUI auto-generates empty conversation
+                    # records on resize" (issue #19767).
+                    if _is_empty_after_terminal_noise_strip(user_input, bool(submit_images)):
+                        continue
+
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
                     _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None

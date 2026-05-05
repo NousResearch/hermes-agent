@@ -12,7 +12,10 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/stop    — interrupt a running agent
-- GET  /health                     — health check
+- GET  /api/sessions              — list all sessions
+- GET  /api/sessions/search       — search sessions by query parameter (q parameter)
+- GET  /api/sessions/{id}/messages — get messages for a session
+- GET  /health                    — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
@@ -569,6 +572,10 @@ except ImportError:
     _cron_trigger = None
 
 
+# Global reference to the adapter for standalone handlers
+_adapter = None
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -578,7 +585,9 @@ class APIServerAdapter(BasePlatformAdapter):
     """
 
     def __init__(self, config: PlatformConfig):
+        global _adapter
         super().__init__(config, Platform.API_SERVER)
+        _adapter = self
         extra = config.extra or {}
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         raw_port = extra.get("port")
@@ -897,6 +906,81 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             ],
         })
+
+    async def _handle_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — return a list of sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_db = self._ensure_session_db()
+        if session_db is None:
+            return web.json_response(
+                _openai_error("Session DB not initialized", code="internal_error"),
+                status=500,
+            )
+
+        sessions = session_db.list_sessions_rich()
+        return web.json_response(sessions)
+
+    async def _handle_sessions_search(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search — search sessions by query parameter.
+
+        Requires authentication. Takes a 'q' query parameter for the search term
+        and returns matching sessions as a JSON array.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        # Get search query parameter
+        search_query = request.rel_url.query.get('q', '').strip()
+
+        # Get the session database
+        session_db = self._ensure_session_db()
+        if session_db is None:
+            return web.json_response(
+                _openai_error("Session DB not initialized", code="internal_error"),
+                status=500,
+            )
+
+        # Search sessions
+        if search_query:
+            sessions = session_db.search_sessions(search_query)
+        else:
+            # Return all sessions if no query
+            sessions = session_db.search_sessions()
+
+        return web.json_response(sessions)
+
+    async def _handle_get_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages — get messages for a session.
+
+        Returns message transcript as a JSON array, filtering to user and
+        assistant messages that have content.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+        session_db = self._ensure_session_db()
+        if session_db is None:
+            return web.json_response(
+                _openai_error("Session DB not initialized", code="internal_error"),
+                status=500,
+            )
+
+        rows = session_db.get_messages(session_id)
+        return web.json_response([
+            {
+                "id": r["id"],
+                "role": r["role"],
+                "content": r.get("content") or "",
+                "timestamp": r.get("timestamp"),
+            }
+            for r in rows if r.get("role") in ("user", "assistant") and r.get("content")
+        ])
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
@@ -2942,6 +3026,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/api/sessions/search", self._handle_sessions_search)
+            self._app.router.add_get("/api/sessions", self._handle_sessions)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_get_session_messages)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

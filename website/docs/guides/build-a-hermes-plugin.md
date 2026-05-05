@@ -628,6 +628,45 @@ def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
 ```
 
+### Dispatch tools from slash commands
+
+Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
+
+```python
+def register(ctx):
+    def _handle_deliver(raw_args: str):
+        result = ctx.dispatch_tool(
+            "delegate_task",
+            {
+                "goal": raw_args,
+                "toolsets": ["terminal", "file", "web"],
+            },
+        )
+        return result
+
+    ctx.register_command(
+        "deliver",
+        handler=_handle_deliver,
+        description="Delegate a goal to a subagent",
+    )
+```
+
+**Signature:** `ctx.dispatch_tool(name: str, args: dict, *, parent_agent=None) -> str`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Tool name as registered in the tool registry (e.g. `"delegate_task"`, `"file_edit"`) |
+| `args` | `dict` | Tool arguments, same shape the model would send |
+| `parent_agent` | `Agent \| None` | Optional override. When omitted, resolves from the current CLI agent (or degrades gracefully in gateway mode) |
+
+**Runtime behavior:**
+
+- **CLI mode:** `parent_agent` is resolved from the active CLI agent so workspace hints, spinner, and model selection inherit as expected.
+- **Gateway mode:** There is no CLI agent, so tools degrade gracefully — workspace is read from `TERMINAL_CWD` and no spinner is shown.
+- **Explicit override:** If the caller passes `parent_agent=` explicitly, it is respected and not overwritten.
+
+This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). For specialized plugin types, see:
 - [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends

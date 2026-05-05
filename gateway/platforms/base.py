@@ -416,7 +416,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import Dict, List, Optional, Any, Literal, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -1426,7 +1426,8 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["silent", "normal", "urgent"] = "normal"
     ) -> SendResult:
         """
         Send a message to a chat.
@@ -1436,6 +1437,7 @@ class BasePlatformAdapter(ABC):
             content: Message content (may be markdown)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
+            priority: Message priority - "silent" (no notification), "normal" (standard notification), "urgent" (high priority)
         
         Returns:
             SendResult with success status and message ID

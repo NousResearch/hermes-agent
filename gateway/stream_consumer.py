@@ -21,9 +21,65 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 
 logger = logging.getLogger("gateway.stream_consumer")
+
+# Priority levels for message delivery
+MessagePriority = Literal["silent", "normal", "urgent"]
+
+
+def _classify_priority(
+    text: str,
+    is_final: bool = False,
+    is_segment_break: bool = False,
+    metadata: Optional[dict] = None
+) -> MessagePriority:
+    """
+    Classify message priority based on content and context.
+    
+    Rules:
+    - is_final=True: always "normal" (task complete, user attention needed)
+    - is_segment_break=True (tool boundary): usually "normal" but can be "silent" for routine tools
+    - Error indicators in text: "urgent"
+    - Progress/iteration indicators: "silent"
+    - Metadata can override: metadata.get("priority") takes precedence
+    """
+    # Allow metadata to override
+    if metadata and metadata.get("priority"):
+        return metadata["priority"]
+    
+    # Final response always gets normal priority (user attention)
+    if is_final:
+        return "normal"
+    
+    # Check for urgent indicators in the text
+    text_lower = text.lower() if text else ""
+    urgent_keywords = [
+        "error", "failed", "exception", "crashed", "blocked",
+        "abort", "critical", "urgent", "requires approval",
+        "api key", "authentication", "unauthorized", "forbidden",
+    ]
+    for keyword in urgent_keywords:
+        if keyword in text_lower:
+            return "urgent"
+    
+    # Check for routine/silent indicators
+    silent_keywords = [
+        "still working", "iterating", "iteration", "checking",
+        "analyzing", "processing", "searching", "running",
+        "waiting for", "provider:", "retrying",
+    ]
+    for keyword in silent_keywords:
+        if keyword in text_lower:
+            return "silent"
+    
+    # Segment breaks after tool calls are usually informational
+    if is_segment_break:
+        return "silent"
+    
+    # Default to normal for any other content that needs attention
+    return "normal"
 
 # Sentinel to signal the stream is complete
 _DONE = object()
@@ -362,8 +418,14 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit
                         )
-                        for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                        for i, chunk in enumerate(chunks):
+                            # Last chunk of overflow gets final/segment_break flags
+                            is_last = (i == len(chunks) - 1)
+                            await self._send_new_chunk(
+                                chunk, self._message_id,
+                                is_final=is_last and got_done,
+                                is_segment_break=is_last and got_segment_break,
+                            )
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
@@ -387,7 +449,14 @@ class GatewayStreamConsumer:
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
-                        ok = await self._send_or_edit(chunk)
+                        # In overflow, determine if we're at the last chunk
+                        remaining_after = self._accumulated[split_at:].lstrip("\n")
+                        is_last_chunk = not remaining_after
+                        ok = await self._send_or_edit(
+                            chunk,
+                            is_final=is_last_chunk and got_done,
+                            is_segment_break=is_last_chunk and got_segment_break,
+                        )
                         if self._fallback_final_send or not ok:
                             # Edit failed (or backed off due to flood control)
                             # while attempting to split an oversized message.
@@ -412,6 +481,8 @@ class GatewayStreamConsumer:
                     current_update_visible = await self._send_or_edit(
                         display_text,
                         finalize=got_segment_break,
+                        is_final=got_done,
+                        is_segment_break=got_segment_break,
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -437,10 +508,15 @@ class GatewayStreamConsumer:
                             # visible update this tick) OR the adapter needs
                             # explicit finalize=True to close the stream.
                             self._final_response_sent = await self._send_or_edit(
-                                self._accumulated, finalize=True,
+                                self._accumulated, 
+                                finalize=True,
+                                is_final=True,
                             )
                         elif not self._already_sent:
-                            self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated,
+                                is_final=True,
+                            )
                     return
 
                 if commentary_text is not None:
@@ -488,7 +564,10 @@ class GatewayStreamConsumer:
             _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
+                    _best_effort_ok = bool(await self._send_or_edit(
+                        self._accumulated, 
+                        is_final=True,
+                    ))
                 except Exception:
                     pass
             # Only confirm final delivery if the best-effort send above
@@ -528,7 +607,13 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
-    async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
+    async def _send_new_chunk(
+        self, 
+        text: str, 
+        reply_to_id: Optional[str],
+        is_final: bool = False,
+        is_segment_break: bool = False,
+    ) -> Optional[str]:
         """Send a new message chunk, optionally threaded to a previous message.
 
         Returns the message_id so callers can thread subsequent chunks.
@@ -538,11 +623,19 @@ class GatewayStreamConsumer:
             return reply_to_id
         try:
             meta = dict(self.metadata) if self.metadata else {}
+            # Classify priority based on message context
+            priority = _classify_priority(
+                text, 
+                is_final=is_final, 
+                is_segment_break=is_segment_break,
+                metadata=meta,
+            )
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
                 reply_to=reply_to_id,
                 metadata=meta,
+                priority=priority,
             )
             if result.success and result.message_id:
                 self._message_id = str(result.message_id)
@@ -643,14 +736,22 @@ class GatewayStreamConsumer:
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
-        for chunk in chunks:
+        # This is a final response, so always use normal priority
+        meta = dict(self.metadata) if self.metadata else {}
+        priority = _classify_priority(continuation, is_final=True, metadata=meta)
+        
+        for i, chunk in enumerate(chunks):
+            # Last chunk gets is_final=True
+            is_last = (i == len(chunks) - 1)
+            chunk_priority = priority if is_last else "silent"
             # Try sending with one retry on flood-control errors.
             result = None
             for attempt in range(2):
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
-                    metadata=self.metadata,
+                    metadata=meta,
+                    priority=chunk_priority,
                 )
                 if result.success:
                     break
@@ -759,10 +860,14 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
+            meta = dict(self.metadata) if self.metadata else {}
+            # Commentary is an interim message between tool calls - usually silent
+            priority = _classify_priority(text, is_final=False, is_segment_break=True, metadata=meta)
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=meta,
+                priority=priority,
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser
@@ -854,7 +959,14 @@ class GatewayStreamConsumer:
         self._final_response_sent = True
         return True
 
-    async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
+    async def _send_or_edit(
+        self, 
+        text: str, 
+        *, 
+        finalize: bool = False,
+        is_final: bool = False,
+        is_segment_break: bool = False,
+    ) -> bool:
         """Send or edit the streaming message.
 
         Returns True if the text was successfully delivered (sent or edited),
@@ -863,6 +975,8 @@ class GatewayStreamConsumer:
 
         ``finalize`` is True when this is the last edit in a streaming
         sequence.
+        ``is_final`` is True when this is the final response.
+        ``is_segment_break`` is True when this is a new segment after tool call.
         """
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
@@ -980,10 +1094,19 @@ class GatewayStreamConsumer:
                     return False
             else:
                 # First message — send new
+                meta = dict(self.metadata) if self.metadata else {}
+                # Classify priority based on message context
+                priority = _classify_priority(
+                    text, 
+                    is_final=is_final, 
+                    is_segment_break=is_segment_break,
+                    metadata=meta,
+                )
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
-                    metadata=self.metadata,
+                    metadata=meta,
+                    priority=priority,
                 )
                 if result.success:
                     if result.message_id:

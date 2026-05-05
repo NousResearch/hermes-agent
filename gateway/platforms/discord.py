@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -1097,7 +1097,8 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["silent", "normal", "urgent"] = "normal"
     ) -> SendResult:
         """Send a message to a Discord channel or thread.
 
@@ -1109,6 +1110,14 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        
+        # Support priority via parameter or metadata (metadata takes precedence for backward compat)
+        effective_priority = priority
+        if metadata and "priority" in metadata:
+            effective_priority = metadata["priority"]
+        
+        # Discord: flags=4096 suppresses notifications (EMBED_LINKS)
+        suppress_notification = effective_priority == "silent"
 
         try:
             # Determine target channel: thread_id in metadata takes precedence.
@@ -1158,10 +1167,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    # Build send kwargs
+                    send_kwargs: Dict[str, Any] = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    # Add suppress_notification flag for silent priority
+                    if suppress_notification:
+                        # Import here to avoid top-level issues if discord isn't available
+                        import discord
+                        send_kwargs["flags"] = discord.MessageFlags(4096)  # SUPPRESS_EMBEDS
+                    
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1180,10 +1197,15 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        # Build send kwargs for fallback
+                        send_kwargs: Dict[str, Any] = {
+                            "content": chunk,
+                            "reference": None,
+                        }
+                        if suppress_notification:
+                            import discord
+                            send_kwargs["flags"] = discord.MessageFlags(4096)
+                        msg = await channel.send(**send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))

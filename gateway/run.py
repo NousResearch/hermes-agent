@@ -3906,7 +3906,17 @@ class GatewayRunner:
             return out
 
         def _ready_nonempty() -> bool:
-            """Cheap probe: is there a ready+assigned+unclaimed task on ANY board?"""
+            """Cheap probe: is there at least one ready+assigned+unclaimed
+            task on ANY board whose assignee maps to a real Hermes profile
+            (i.e. one the dispatcher would actually spawn for)?
+
+            Tasks assigned to control-plane lanes (e.g. ``orion-cc``,
+            ``orion-research``) are pulled by terminals via
+            ``claim_task`` directly and never spawnable, so a queue full
+            of those is "correctly idle", not "stuck". Filtering them out
+            here keeps the stuck-warn fire only on real failures (broken
+            PATH, missing venv, credential loss for a real Hermes profile).
+            """
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
@@ -3916,12 +3926,7 @@ class GatewayRunner:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    row = conn.execute(
-                        "SELECT 1 FROM tasks "
-                        "WHERE status = 'ready' AND assignee IS NOT NULL "
-                        "    AND claim_lock IS NULL LIMIT 1"
-                    ).fetchone()
-                    if row is not None:
+                    if _kb.has_spawnable_ready(conn):
                         return True
                 except Exception:
                     continue

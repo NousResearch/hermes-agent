@@ -64,7 +64,17 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
-from utils import atomic_replace
+try:
+    from utils import atomic_replace
+except ImportError:
+    # Long-lived embedding processes can keep an older top-level ``utils``
+    # module in sys.modules across Hermes updates. Keep gateway startup alive
+    # when that stale module lacks the newer helper.
+    def atomic_replace(tmp_path, target):
+        target_str = str(target)
+        real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+        os.replace(str(tmp_path), real_path)
+        return real_path
 
 
 @dataclass

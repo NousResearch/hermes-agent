@@ -1412,6 +1412,22 @@ class TestBuildAssistantMessage:
         assert "reasoning_details" in result
         assert result["reasoning_details"][0]["text"] == "step1"
 
+    def test_reasoning_details_model_dump_failure_preserved(self, agent):
+        """Reasoning metadata with a broken model_dump should not abort storage."""
+
+        class BrokenDump:
+            __slots__ = ()
+
+            def model_dump(self):
+                raise AttributeError("'dict' object has no attribute 'model_dump'")
+
+        detail = BrokenDump()
+        msg = _mock_assistant_msg(content="ans", reasoning_details=[detail])
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["reasoning_details"][0] is detail
+
     def test_empty_content(self, agent):
         msg = _mock_assistant_msg(content=None)
         result = agent._build_assistant_message(msg, "stop")
@@ -1485,6 +1501,24 @@ class TestBuildAssistantMessage:
         assert result["tool_calls"][0]["extra_content"] == {
             "google": {"thought_signature": "abc123"}
         }
+
+    def test_tool_call_extra_content_model_dump_failure_preserved(self, agent):
+        """MiniMax-like provider metadata should survive a broken model_dump."""
+
+        class BrokenDump:
+            def model_dump(self):
+                raise AttributeError("'dict' object has no attribute 'model_dump'")
+
+        extra_content = BrokenDump()
+        tc = _mock_tool_call(
+            name="get_weather", arguments='{"city":"NYC"}', call_id="c2"
+        )
+        tc.extra_content = extra_content
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+
+        result = agent._build_assistant_message(msg, "tool_calls")
+
+        assert result["tool_calls"][0]["extra_content"] is extra_content
 
     def test_tool_call_without_extra_content(self, agent):
         """Standard tool calls (no thinking model) should not have extra_content."""

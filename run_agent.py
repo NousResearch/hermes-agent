@@ -89,6 +89,18 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()
 
+
+def _safe_model_dump(value: Any) -> Any:
+    """Best-effort Pydantic dump for provider metadata; keep original on failure."""
+    model_dump = getattr(value, "model_dump", None)
+    if not callable(model_dump):
+        return value
+    try:
+        return model_dump()
+    except Exception:
+        return value
+
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -6958,8 +6970,7 @@ class AIAgent:
                         if extra is None and hasattr(tc_delta, "model_extra"):
                             extra = (tc_delta.model_extra or {}).get("extra_content")
                         if extra is not None:
-                            if hasattr(extra, "model_dump"):
-                                extra = extra.model_dump()
+                            extra = _safe_model_dump(extra)
                             entry["extra_content"] = extra
                         # Fire once per tool when the full name is available
                         name = entry["function"]["name"]
@@ -8747,7 +8758,7 @@ class AIAgent:
                 elif hasattr(d, "__dict__"):
                     preserved.append(d.__dict__)
                 elif hasattr(d, "model_dump"):
-                    preserved.append(d.model_dump())
+                    preserved.append(_safe_model_dump(d))
             if preserved:
                 msg["reasoning_details"] = preserved
 
@@ -8807,8 +8818,7 @@ class AIAgent:
                 # thinking models reject the request with a 400 error.
                 extra = getattr(tool_call, "extra_content", None)
                 if extra is not None:
-                    if hasattr(extra, "model_dump"):
-                        extra = extra.model_dump()
+                    extra = _safe_model_dump(extra)
                     tc_dict["extra_content"] = extra
                 tool_calls.append(tc_dict)
             msg["tool_calls"] = tool_calls

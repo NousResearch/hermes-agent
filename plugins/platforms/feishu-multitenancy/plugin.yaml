@@ -1,0 +1,8 @@
+manifest_version: 1
+name: platforms/feishu-multitenancy
+version: 0.1.0
+description: "Route one Feishu bot to many isolated Hermes profiles by sender open_id."
+author: NousResearch / Hermes contributors
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch

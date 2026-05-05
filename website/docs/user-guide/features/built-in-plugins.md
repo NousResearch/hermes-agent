@@ -59,6 +59,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
+| `platforms/feishu-multitenancy` | gateway hook | Route one Feishu bot to many isolated Hermes profiles by sender `open_id` |
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
@@ -208,6 +209,31 @@ The agent kicks off the meeting join, streams the transcription back into its co
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
 **Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
+
+### platforms/feishu-multitenancy
+
+Routes a single Feishu bot to multiple Hermes profiles. It is useful for
+company or team deployments where one Feishu app should serve many users, but
+each user needs an isolated `SOUL.md`, session history, model configuration,
+and tool policy.
+
+**Enable:**
+
+```bash
+hermes plugins enable platforms/feishu-multitenancy
+hermes gateway restart
+```
+
+Routes are stored in `~/.hermes/multitenancy.db`. Apply route rows with the
+plugin's sync helper:
+
+```bash
+python plugins/platforms/feishu-multitenancy/sync.py apply users.json
+```
+
+Each route should key new users by Feishu `open_id` (`ou_*`). See
+`plugins/platforms/feishu-multitenancy/README.md` for route file format,
+auto-provisioning, and shared Feishu app guidance.
 
 ### hermes-achievements
 

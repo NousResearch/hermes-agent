@@ -5,11 +5,15 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import re
 from typing import Any, Dict
 
 _DATA_IMAGE_URL_RE = re.compile(
     r"^data:(image/[a-zA-Z0-9.+-]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)$"
+)
+_DATA_IMAGE_URL_ANY_RE = re.compile(
+    r"data:(image/[a-zA-Z0-9.+-]+);base64,[A-Za-z0-9+/=]+"
 )
 
 
@@ -48,8 +52,11 @@ def sanitize_for_persistence(value: Any) -> Any:
     add tens of megabytes to resume context, FTS, and downstream memory sync.
     """
     if isinstance(value, str):
-        if value.startswith("data:image/"):
-            return _image_persistence_placeholder(value)
+        if "data:image/" in value:
+            return _DATA_IMAGE_URL_ANY_RE.sub(
+                lambda match: _image_persistence_placeholder(match.group(0)),
+                value,
+            )
         return value
 
     if isinstance(value, list):
@@ -89,3 +96,19 @@ def sanitize_message_for_persistence(message: Dict[str, Any]) -> Dict[str, Any]:
         if key in sanitized:
             sanitized[key] = sanitize_for_persistence(sanitized[key])
     return sanitized
+
+
+def summarize_for_log(value: Any, *, limit: int = 160) -> str:
+    """Return a compact one-line preview that never includes inline image bytes."""
+    sanitized = sanitize_for_persistence(value)
+    if isinstance(sanitized, str):
+        preview = sanitized
+    else:
+        try:
+            preview = json.dumps(sanitized, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            preview = str(sanitized)
+    preview = " ".join(preview.split())
+    if len(preview) > limit:
+        return f"{preview[: max(0, limit - 1)]}…"
+    return preview

@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from hermes_state import SessionDB
+from persistence_sanitizer import summarize_for_log
 
 
 @pytest.fixture()
@@ -317,6 +318,22 @@ class TestMessageStorage:
         assert "Image omitted from persistent transcript" in msg["content"]
         assert "image/jpeg" in msg["content"]
         assert data_url not in msg["content"]
+
+    def test_embedded_image_data_url_is_not_persisted_or_logged(self, db):
+        """Text containing an inline data URL must not keep raw image bytes."""
+        db.create_session(session_id="s1", source="cli")
+        data_url = "data:image/png;base64,SGVsbG8="
+        content = f"Screenshot payload: {data_url}"
+
+        db.append_message("s1", role="user", content=content)
+
+        msg = db.get_messages("s1")[0]
+        assert data_url not in msg["content"]
+        assert "Image omitted from persistent transcript" in msg["content"]
+
+        preview = summarize_for_log(content)
+        assert data_url not in preview
+        assert "Image omitted from persistent transcript" in preview
 
     def test_get_messages_as_conversation(self, db):
         db.create_session(session_id="s1", source="cli")

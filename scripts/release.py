@@ -98,6 +98,7 @@ AUTHOR_MAP = {
     "johnny@Jons-MBA-M4.local": "acesjohnny",
     "1581133593@qq.com": "liu-collab",
     "haidaoe@proton.me": "haidao1919",
+    "50561768+zhanggttry@users.noreply.github.com": "zhanggttry",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

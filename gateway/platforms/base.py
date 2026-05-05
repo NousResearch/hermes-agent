@@ -19,7 +19,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1264,6 +1264,15 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Chat platforms can render extracted MEDIA:/image/file outputs as native
+        # attachments. Durable audit-log control planes like Linear cannot: their
+        # base fallback is another comment, so examples such as MEDIA:/tmp/a.png
+        # would pollute the work thread. Allow config override for future adapters.
+        default_response_media_delivery = platform not in {Platform.LINEAR}
+        self.response_media_delivery_enabled: bool = is_truthy_value(
+            self.config.extra.get("response_media_delivery_enabled"),
+            default_response_media_delivery,
+        )
 
     @property
     def has_fatal_error(self) -> bool:
@@ -2772,22 +2781,30 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
-                # Extract MEDIA:<path> tags (from TTS tool) before other processing
-                media_files, response = self.extract_media(response)
-                
-                # Extract image URLs and send them as native platform attachments
-                images, text_content = self.extract_images(response)
-                # Strip any remaining internal directives from message body (fixes #1561)
-                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
-                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
-                if images:
-                    logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
+                media_files = []
+                images = []
+                local_files = []
+                if self.response_media_delivery_enabled:
+                    # Extract MEDIA:<path> tags (from TTS/image tools) before other processing.
+                    media_files, response = self.extract_media(response)
 
-                # Auto-detect bare local file paths for native media delivery
-                # (helps small models that don't use MEDIA: syntax)
-                local_files, text_content = self.extract_local_files(text_content)
-                if local_files:
-                    logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+                    # Extract image URLs and send them as native platform attachments.
+                    images, text_content = self.extract_images(response)
+                    # Strip any remaining internal directives from message body (fixes #1561).
+                    text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                    text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                    if images:
+                        logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
+
+                    # Auto-detect bare local file paths for native media delivery
+                    # (helps small models that don't use MEDIA: syntax).
+                    local_files, text_content = self.extract_local_files(text_content)
+                    if local_files:
+                        logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+                else:
+                    # Preserve response text verbatim on platforms where the fallback
+                    # "attachment" behavior would create extra visible messages.
+                    text_content = response.strip()
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has

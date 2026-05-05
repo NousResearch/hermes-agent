@@ -206,13 +206,65 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         role = msg.get("role")
         if not role or role in ("session_meta", "system"):
             continue
-        ts = msg.get("timestamp")
-        if ts is not None:
-            return ts
-        # First non-meta row without a timestamp — legacy transcript row.
-        # Returning None lets the caller fall through to the legacy-fresh path.
-        return None
+        return msg.get("timestamp")
     return None
+
+
+_MEDIA_TAG_PATTERN = re.compile(
+    r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+)
+
+
+def _normalize_media_tag_path(path: str) -> str:
+    """Normalize a raw MEDIA tag path extracted from model/tool text."""
+    path = (path or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+        path = path[1:-1].strip()
+    path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    return os.path.expanduser(path.strip())
+
+
+def _collect_new_media_tags_from_tool_messages(
+    messages: Optional[List[Dict[str, Any]]],
+    history_media_paths: set[str],
+) -> tuple[list[str], bool]:
+    """Collect real, newly-created MEDIA tags from tool/function messages.
+
+    Tool outputs often contain inspected source code, tool schemas, docs, or
+    tests with literal ``MEDIA:/path`` examples.  Those must not be appended to
+    the final response as attachments.  Treat a tag as deliverable only when it
+    resolves to an existing local file and is not already present in history.
+    """
+    normalized_history = {
+        _normalize_media_tag_path(str(path))
+        for path in (history_media_paths or set())
+        if str(path).strip()
+    }
+    media_tags: list[str] = []
+    seen: set[str] = set()
+    has_voice_directive = False
+
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") not in ("tool", "function"):
+            continue
+        content = str(msg.get("content") or "")
+        if "MEDIA:" not in content:
+            continue
+        content_has_voice = "[[audio_as_voice]]" in content
+        for match in _MEDIA_TAG_PATTERN.finditer(content):
+            path = _normalize_media_tag_path(match.group("path"))
+            if not path or path in normalized_history or path in seen:
+                continue
+            # Critical guard: tool output may include source code/docs/tests with
+            # MEDIA examples. Only real generated files should be auto-delivered.
+            if not os.path.isfile(path):
+                continue
+            seen.add(path)
+            media_tags.append(f"MEDIA:{path}")
+            if content_has_voice:
+                has_voice_directive = True
+
+    return media_tags, has_voice_directive
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +856,27 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _should_notify_session_reset(
+    *,
+    platform_name: str,
+    reset_reason: str,
+    policy,
+    had_activity: bool,
+) -> bool:
+    """Return whether a user-visible session reset notice should be sent.
+
+    Linear issue threads are durable collaboration records. They can receive
+    human interim comments, but gateway/session bookkeeping should stay hidden.
+    """
+    platform_key = (platform_name or "").strip().lower()
+    if platform_key == Platform.LINEAR.value:
+        return False
+    if reset_reason == "suspended":
+        return True
+    excluded = set(getattr(policy, "notify_exclude_platforms", ()) or ())
+    return bool(getattr(policy, "notify", False) and had_activity and platform_key not in excluded)
 
 
 def _load_gateway_config() -> dict:
@@ -1780,6 +1853,26 @@ class GatewayRunner:
             depth += 1
         return depth
 
+    def _runtime_gateway_state_for_agent_change(self) -> Optional[str]:
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
+            return "draining"
+        if getattr(self, "_running", False):
+            return "running"
+        return None
+
+    def _refresh_runtime_status_after_agent_change(self) -> None:
+        self._update_runtime_status(self._runtime_gateway_state_for_agent_change())
+
+    @staticmethod
+    def _system_notice_metadata(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+        merged = dict(metadata or {})
+        merged["hermes_system_notice"] = True
+        return merged
+
+    @staticmethod
+    def _should_suppress_gateway_system_notice(source: Optional[SessionSource]) -> bool:
+        return bool(source and source.platform == Platform.LINEAR)
+
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -2151,17 +2244,21 @@ class GatewayRunner:
                 return True
 
             thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            system_thread_meta = self._system_notice_metadata(thread_meta)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
+            if self._should_suppress_gateway_system_notice(event.source):
+                return True
+
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=event.message_id,
-                metadata=thread_meta,
+                metadata=system_thread_meta,
             )
             return True
 
@@ -2298,12 +2395,15 @@ class GatewayRunner:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        system_thread_meta = self._system_notice_metadata(thread_meta)
+        if self._should_suppress_gateway_system_notice(event.source):
+            return True
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=event.message_id,
-                metadata=thread_meta,
+                metadata=system_thread_meta,
             )
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
@@ -2396,6 +2496,12 @@ class GatewayRunner:
                 platform_str = _parsed["platform"]
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
+
+            # Linear issue threads are durable task records. Restart/shutdown
+            # notices pollute the issue history and can trigger unnecessary
+            # state transitions, so skip them.
+            if platform_str == Platform.LINEAR.value:
+                continue
 
             # Deduplicate only identical delivery targets. Thread/topic-aware
             # platforms can share a parent chat while still routing to distinct
@@ -3429,7 +3535,12 @@ class GatewayRunner:
                             )
                         else:
                             continue
-                        metadata: dict[str, Any] = {}
+                        metadata: dict[str, Any] = {
+                            "kanban_event_kind": kind,
+                            "kanban_task_id": sub["task_id"],
+                        }
+                        if board_slug:
+                            metadata["kanban_board"] = board_slug
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         sub_key = (
@@ -4266,6 +4377,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.LINEAR:
+            from gateway.platforms.linear import LinearAdapter, check_linear_requirements
+            if not check_linear_requirements():
+                logger.warning("Linear: aiohttp not installed")
+                return None
+            return LinearAdapter(config)
+
         elif platform == Platform.BLUEBUBBLES:
             from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
             if not check_bluebubbles_requirements():
@@ -4300,11 +4418,11 @@ class GatewayRunner:
         5. Default: deny
         """
         # Home Assistant events are system-generated (state changes), not
-        # user-initiated messages.  The HASS_TOKEN already authenticates the
+        # user-initiated messages. The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
-        # Webhook events are authenticated via HMAC signature validation in
-        # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        # Webhook and Linear events are authenticated/filtered by their
+        # adapters before they become MessageEvent objects.
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.LINEAR):
             return True
 
         user_id = source.user_id
@@ -5133,6 +5251,8 @@ class GatewayRunner:
             if self._draining:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
+                if self._should_suppress_gateway_system_notice(source):
+                    return None
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
@@ -5385,6 +5505,8 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
+            if self._should_suppress_gateway_system_notice(source):
+                return None
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -5530,6 +5652,7 @@ class GatewayRunner:
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
+        self._refresh_runtime_status_after_agent_change()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
@@ -5572,10 +5695,9 @@ class GatewayRunner:
                 self._release_running_agent_state(_quick_key)
             else:
                 # Agent path already cleaned _running_agents; make sure
-                # the paired metadata dicts are gone too.
-                self._running_agents_ts.pop(_quick_key, None)
-                if hasattr(self, "_busy_ack_ts"):
-                    self._busy_ack_ts.pop(_quick_key, None)
+                # the paired metadata dicts are gone too.  Use the same
+                # release helper so runtime active_agents does not stay stale.
+                self._release_running_agent_state(_quick_key, run_generation=_run_generation)
 
     async def _prepare_inbound_message_text(
         self,
@@ -5891,10 +6013,11 @@ class GatewayRunner:
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
                 # Suspended sessions always notify (they were explicitly stopped
                 # or crashed mid-operation) — skip the policy check.
-                should_notify = reset_reason == "suspended" or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
+                should_notify = _should_notify_session_reset(
+                    platform_name=platform_name,
+                    reset_reason=reset_reason,
+                    policy=policy,
+                    had_activity=had_activity,
                 )
                 if should_notify:
                     adapter = self.adapters.get(source.platform)
@@ -6286,8 +6409,9 @@ class GatewayRunner:
             )
         
         # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        # Skip for control-plane/webhook surfaces that deliver directly into
+        # durable external records rather than user chat homes.
+        if not history and self._should_prompt_home_channel(source):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
@@ -8255,6 +8379,15 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
+
+    def _should_prompt_home_channel(self, source) -> bool:
+        """Whether to prompt this platform/chat to become a home channel."""
+        platform = getattr(source, "platform", None)
+        if not platform:
+            return False
+        if platform in {Platform.LOCAL, Platform.WEBHOOK, Platform.LINEAR}:
+            return False
+        return True
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
@@ -12059,10 +12192,13 @@ class GatewayRunner:
             session_key, run_generation
         ):
             return False
-        self._running_agents.pop(session_key, None)
-        self._running_agents_ts.pop(session_key, None)
+        removed_agent = self._running_agents.pop(session_key, None) is not None
+        removed_ts = self._running_agents_ts.pop(session_key, None) is not None
+        removed_busy_ack = False
         if hasattr(self, "_busy_ack_ts"):
-            self._busy_ack_ts.pop(session_key, None)
+            removed_busy_ack = self._busy_ack_ts.pop(session_key, None) is not None
+        if removed_agent or removed_ts or removed_busy_ack:
+            self._refresh_runtime_status_after_agent_change()
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -13118,16 +13254,21 @@ class GatewayRunner:
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _system_status_thread_metadata = self._system_notice_metadata(_status_thread_metadata)
 
         def _status_callback_sync(event_type: str, message: str) -> None:
-            if not _status_adapter or not _run_still_current():
+            if (
+                not _status_adapter
+                or not _run_still_current()
+                or self._should_suppress_gateway_system_notice(source)
+            ):
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
                         message,
-                        metadata=_status_thread_metadata,
+                        metadata=_system_status_thread_metadata,
                     ),
                     _loop_for_step,
                 )
@@ -13384,14 +13525,18 @@ class GatewayRunner:
             _bg_review_pending_lock = threading.Lock()
 
             def _deliver_bg_review_message(message: str) -> None:
-                if not _status_adapter or not _run_still_current():
+                if (
+                    not _status_adapter
+                    or not _run_still_current()
+                    or self._should_suppress_gateway_system_notice(source)
+                ):
                     return
                 try:
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
                             message,
-                            metadata=_status_thread_metadata,
+                            metadata=_system_status_thread_metadata,
                         ),
                         _loop_for_step,
                     )
@@ -13759,30 +13904,15 @@ class GatewayRunner:
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
             if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
+                unique_tags, has_voice_directive = _collect_new_media_tags_from_tool_messages(
+                    result.get("messages", []),
+                    _history_media_paths,
+                )
+                if unique_tags:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
             # If so, update the session store entry so the NEXT message loads
@@ -13905,6 +14035,7 @@ class GatewayRunner:
                 )
                 return
             self._running_agents[session_key] = agent_holder[0]
+            self._refresh_runtime_status_after_agent_change()
             if self._draining:
                 self._update_runtime_status("draining")
         
@@ -13970,6 +14101,8 @@ class GatewayRunner:
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
                 return  # Notifications disabled (gateway_notify_interval: 0)
+            if self._should_suppress_gateway_system_notice(source):
+                return
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
@@ -13994,7 +14127,7 @@ class GatewayRunner:
                     await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
+                        metadata=_system_status_thread_metadata,
                     )
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
@@ -14078,7 +14211,7 @@ class GatewayRunner:
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
                         _warn_adapter = self.adapters.get(source.platform)
-                        if _warn_adapter:
+                        if _warn_adapter and not self._should_suppress_gateway_system_notice(source):
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                             try:
@@ -14088,7 +14221,7 @@ class GatewayRunner:
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
-                                    metadata=_status_thread_metadata,
+                                    metadata=_system_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
                                 logger.debug("Inactivity warning send error: %s", _warn_err)

@@ -101,6 +101,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    LINEAR = "linear"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -1347,6 +1348,83 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Linear platform
+    linear_enabled = os.getenv("LINEAR_ENABLED", "").lower() in ("true", "1", "yes")
+    linear_api_key = os.getenv("SYMPHONY_LINEAR_API_KEY") or os.getenv("HERMES_LINEAR_API_KEY")
+    if linear_enabled or linear_api_key:
+        if Platform.LINEAR not in config.platforms:
+            config.platforms[Platform.LINEAR] = PlatformConfig()
+        linear_cfg = config.platforms[Platform.LINEAR]
+        linear_cfg.enabled = bool(linear_enabled or linear_cfg.enabled)
+        if linear_api_key:
+            linear_cfg.api_key = linear_api_key
+        linear_team_key = os.getenv("LINEAR_TEAM_KEY")
+        if linear_team_key:
+            linear_cfg.extra["team_key"] = linear_team_key
+        linear_project_id = os.getenv("LINEAR_PROJECT_ID")
+        if linear_project_id:
+            linear_cfg.extra["project_id"] = linear_project_id
+        linear_project_slug = os.getenv("LINEAR_PROJECT_SLUG")
+        if linear_project_slug:
+            linear_cfg.extra["project_slug"] = linear_project_slug
+        linear_project_name = os.getenv("LINEAR_PROJECT_NAME")
+        if linear_project_name:
+            linear_cfg.extra["project_name"] = linear_project_name
+        linear_start_states = os.getenv("LINEAR_START_STATES") or os.getenv("LINEAR_ACTIVE_STATES")
+        if linear_start_states:
+            linear_cfg.extra["start_states"] = [s.strip() for s in linear_start_states.split(",") if s.strip()]
+        linear_waiting_states = os.getenv("LINEAR_WAITING_STATES")
+        if linear_waiting_states:
+            linear_cfg.extra["waiting_states"] = [s.strip() for s in linear_waiting_states.split(",") if s.strip()]
+        linear_working_state = os.getenv("LINEAR_WORKING_STATE")
+        if linear_working_state:
+            linear_cfg.extra["working_state"] = linear_working_state
+        linear_blocked_state = os.getenv("LINEAR_BLOCKED_STATE")
+        if linear_blocked_state:
+            linear_cfg.extra["blocked_state"] = linear_blocked_state
+        linear_terminal_states = os.getenv("LINEAR_TERMINAL_STATES")
+        if linear_terminal_states:
+            linear_cfg.extra["terminal_states"] = [s.strip() for s in linear_terminal_states.split(",") if s.strip()]
+        linear_review_state = os.getenv("LINEAR_REVIEW_STATE")
+        if linear_review_state:
+            linear_cfg.extra["review_state"] = linear_review_state
+        linear_allowed_emails = os.getenv("LINEAR_ALLOWED_USER_EMAILS")
+        if linear_allowed_emails:
+            linear_cfg.extra["allowed_user_emails"] = [s.strip() for s in linear_allowed_emails.split(",") if s.strip()]
+        linear_bot_emails = os.getenv("LINEAR_BOT_USER_EMAILS")
+        if linear_bot_emails:
+            linear_cfg.extra["bot_user_emails"] = [s.strip() for s in linear_bot_emails.split(",") if s.strip()]
+        linear_poll_interval = os.getenv("LINEAR_POLL_INTERVAL_SECONDS")
+        if linear_poll_interval:
+            try:
+                linear_cfg.extra["poll_interval_seconds"] = int(linear_poll_interval)
+            except ValueError:
+                pass
+        linear_execution_mode = os.getenv("LINEAR_EXECUTION_MODE")
+        if linear_execution_mode:
+            linear_cfg.extra["execution_mode"] = linear_execution_mode
+        linear_kanban_board = os.getenv("LINEAR_KANBAN_BOARD")
+        if linear_kanban_board:
+            linear_cfg.extra["kanban_board"] = linear_kanban_board
+        linear_kanban_assignee = os.getenv("LINEAR_KANBAN_DEFAULT_ASSIGNEE") or os.getenv("LINEAR_DEFAULT_ASSIGNEE")
+        if linear_kanban_assignee:
+            linear_cfg.extra["kanban_default_assignee"] = linear_kanban_assignee
+        linear_kanban_workspace_kind = os.getenv("LINEAR_KANBAN_WORKSPACE_KIND")
+        if linear_kanban_workspace_kind:
+            linear_cfg.extra["kanban_workspace_kind"] = linear_kanban_workspace_kind
+        linear_kanban_workspace_path = os.getenv("LINEAR_KANBAN_WORKSPACE_PATH")
+        if linear_kanban_workspace_path:
+            linear_cfg.extra["kanban_workspace_path"] = linear_kanban_workspace_path
+        linear_kanban_skills = os.getenv("LINEAR_KANBAN_SKILLS")
+        if linear_kanban_skills:
+            linear_cfg.extra["kanban_skills"] = [s.strip() for s in linear_kanban_skills.split(",") if s.strip()]
+        linear_status_issue_id = os.getenv("LINEAR_STATUS_ISSUE_ID")
+        if linear_status_issue_id:
+            linear_cfg.extra["status_issue_id"] = linear_status_issue_id
+        linear_status_issue_identifier = os.getenv("LINEAR_STATUS_ISSUE_IDENTIFIER")
+        if linear_status_issue_identifier:
+            linear_cfg.extra["status_issue_identifier"] = linear_status_issue_identifier
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

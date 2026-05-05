@@ -206,11 +206,17 @@ class TestPlatformDefaults:
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
     def test_minimal_tier_platforms(self):
-        """Email, SMS, webhook default to 'off' tool progress."""
+        """Email, SMS, webhook, and durable issue-trackers default to quiet output."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("email", "sms", "webhook", "homeassistant"):
+        for plat in ("email", "sms", "webhook", "homeassistant", "linear"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
+
+    def test_linear_streaming_defaults_to_false(self):
+        """Linear comments are durable issue records, not editable progress surfaces."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "linear", "streaming") is False
 
     def test_low_tier_streaming_defaults_to_false(self):
         """Low-tier platforms default streaming to False."""

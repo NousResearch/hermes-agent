@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
@@ -277,6 +279,35 @@ class TestWeixinStatePersistence:
             raise AssertionError("expected _save_sync_buf to propagate replace failure")
 
         assert json.loads(sync_path.read_text(encoding="utf-8")) == {"get_updates_buf": "old-sync"}
+
+
+class TestWeixinQrLogin:
+    @pytest.mark.asyncio
+    async def test_qr_login_timeout_uses_monotonic_clock(self, tmp_path):
+        first_qr = {
+            "qrcode": "qr-1",
+            "qrcode_img_content": "https://example.com/qr-1",
+        }
+        pending = {"status": "wait"}
+
+        with patch("gateway.platforms.weixin._api_get", new_callable=AsyncMock) as api_get_mock, \
+             patch("gateway.platforms.weixin.time") as mock_time, \
+             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("builtins.print"):
+            api_get_mock.side_effect = [first_qr, pending]
+            mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
+            mock_time.time.side_effect = [1000, 900, 901, 902]
+
+            session = AsyncMock()
+            session.__aenter__.return_value = session
+            session.__aexit__.return_value = False
+            session_cls.return_value = session
+
+            result = await weixin.qr_login(str(tmp_path), timeout_seconds=1)
+
+        assert result is None
+        assert api_get_mock.await_count == 2
 
 
 class TestWeixinSendMessageIntegration:

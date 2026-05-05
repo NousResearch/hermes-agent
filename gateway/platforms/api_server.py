@@ -2488,7 +2488,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
             # triggered session rotations. (#16938)
-            result["session_id"] = getattr(agent, "session_id", session_id)
+            _eff_sid = getattr(agent, "session_id", session_id)
+            if isinstance(_eff_sid, str) and _eff_sid:
+                result["session_id"] = _eff_sid
             return result, usage
 
         return await loop.run_in_executor(None, _run)

@@ -1037,11 +1037,11 @@ async def qr_login(
         except Exception as _qr_exc:
             print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
-        deadline = time.time() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         current_base_url = ILINK_BASE_URL
         refresh_count = 0
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
                 status_resp = await _api_get(
                     session,

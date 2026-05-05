@@ -127,7 +127,7 @@ class TestPollRegistration:
     def test_poll_returns_credentials_on_success(self, mock_urlopen_fn, mock_time):
         from gateway.platforms.feishu import _poll_registration
 
-        mock_time.time.side_effect = [0, 1]
+        mock_time.monotonic.side_effect = [0, 1]
         mock_time.sleep = MagicMock()
 
         mock_urlopen_fn.return_value = _mock_urlopen({
@@ -149,7 +149,7 @@ class TestPollRegistration:
     def test_poll_switches_domain_on_lark_tenant_brand(self, mock_urlopen_fn, mock_time):
         from gateway.platforms.feishu import _poll_registration
 
-        mock_time.time.side_effect = [0, 1, 2]
+        mock_time.monotonic.side_effect = [0, 1, 2]
         mock_time.sleep = MagicMock()
 
         pending_resp = _mock_urlopen({
@@ -175,7 +175,7 @@ class TestPollRegistration:
         """Credentials and lark tenant_brand in one response must not be discarded."""
         from gateway.platforms.feishu import _poll_registration
 
-        mock_time.time.side_effect = [0, 1]
+        mock_time.monotonic.side_effect = [0, 1]
         mock_time.sleep = MagicMock()
 
         mock_urlopen_fn.return_value = _mock_urlopen({
@@ -196,7 +196,7 @@ class TestPollRegistration:
     def test_poll_returns_none_on_access_denied(self, mock_urlopen_fn, mock_time):
         from gateway.platforms.feishu import _poll_registration
 
-        mock_time.time.side_effect = [0, 1]
+        mock_time.monotonic.side_effect = [0, 1]
         mock_time.sleep = MagicMock()
 
         mock_urlopen_fn.return_value = _mock_urlopen({
@@ -212,7 +212,7 @@ class TestPollRegistration:
     def test_poll_returns_none_on_timeout(self, mock_urlopen_fn, mock_time):
         from gateway.platforms.feishu import _poll_registration
 
-        mock_time.time.side_effect = [0, 999]
+        mock_time.monotonic.side_effect = [0, 999]
         mock_time.sleep = MagicMock()
 
         mock_urlopen_fn.return_value = _mock_urlopen({
@@ -222,6 +222,25 @@ class TestPollRegistration:
             device_code="dc_123", interval=1, expire_in=1, domain="feishu"
         )
         assert result is None
+
+    @patch("gateway.platforms.feishu.time")
+    @patch("gateway.platforms.feishu.urlopen")
+    def test_poll_timeout_uses_monotonic_clock(self, mock_urlopen_fn, mock_time):
+        from gateway.platforms.feishu import _poll_registration
+
+        mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
+        mock_time.time.side_effect = [1000, 900, 901, 902]
+        mock_time.sleep = MagicMock()
+
+        mock_urlopen_fn.return_value = _mock_urlopen({
+            "error": "authorization_pending",
+        })
+        result = _poll_registration(
+            device_code="dc_123", interval=1, expire_in=1, domain="feishu"
+        )
+
+        assert result is None
+        mock_urlopen_fn.assert_called_once()
 
 
 class TestRenderQr:

@@ -66,6 +66,107 @@ class _NoTrigramConnection(sqlite3.Connection):
         return super().cursor(factory or _NoTrigramCursor)
 
 
+class _NoTrigramExistingTableCursor(_NoTrigramCursor):
+    """Simulate an existing trigram table that cannot be opened or dropped."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if probe in (
+            "DROP TABLE IF EXISTS messages_fts_trigram",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().execute(sql, parameters)
+
+
+class _NoTrigramExistingTableConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramExistingTableCursor)
+
+
+def _replace_fts_with_v20_inline_schema(db_path):
+    """Replace current FTS objects with the inline schema used by v20."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            DROP TRIGGER IF EXISTS messages_fts_insert;
+            DROP TRIGGER IF EXISTS messages_fts_delete;
+            DROP TRIGGER IF EXISTS messages_fts_update;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_insert;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_delete;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_update;
+            DROP TABLE IF EXISTS messages_fts;
+            DROP TABLE IF EXISTS messages_fts_trigram;
+
+            CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+                content,
+                tokenize='trigram'
+            );
+
+            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' ||
+                    COALESCE(new.tool_name, '') || ' ' ||
+                    COALESCE(new.tool_calls, '')
+                );
+            END;
+            CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.id;
+            END;
+            CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.id;
+                INSERT INTO messages_fts(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' ||
+                    COALESCE(new.tool_name, '') || ' ' ||
+                    COALESCE(new.tool_calls, '')
+                );
+            END;
+
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' ||
+                    COALESCE(new.tool_name, '') || ' ' ||
+                    COALESCE(new.tool_calls, '')
+                );
+            END;
+            CREATE TRIGGER messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
+                DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+            END;
+            CREATE TRIGGER messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+                DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+                INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                    new.id,
+                    COALESCE(new.content, '') || ' ' ||
+                    COALESCE(new.tool_name, '') || ' ' ||
+                    COALESCE(new.tool_calls, '')
+                );
+            END;
+
+            INSERT INTO messages_fts(rowid, content)
+            SELECT id,
+                   COALESCE(content, '') || ' ' ||
+                   COALESCE(tool_name, '') || ' ' ||
+                   COALESCE(tool_calls, '')
+            FROM messages;
+            INSERT INTO messages_fts_trigram(rowid, content)
+            SELECT id,
+                   COALESCE(content, '') || ' ' ||
+                   COALESCE(tool_name, '') || ' ' ||
+                   COALESCE(tool_calls, '')
+            FROM messages;
+            UPDATE schema_version SET version = 20;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -789,6 +890,67 @@ class TestSessionLifecycle:
         finally:
             db.close()
 
+    def test_v21_migration_retries_inline_trigram_when_tokenizer_returns(
+        self, tmp_path, monkeypatch
+    ):
+        """Do not finalize v21 while an existing inline trigram table remains."""
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        seeded.create_session(session_id="s1", source="cli")
+        seeded.append_message(
+            "s1",
+            role="user",
+            content="legacy trigram migration 大别山项目",
+            tool_name="read_file",
+        )
+        seeded.close()
+        _replace_fts_with_v20_inline_schema(db_path)
+
+        real_connect = sqlite3.connect
+
+        def connect_without_existing_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramExistingTableConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_state.sqlite3.connect", connect_without_existing_trigram
+        )
+        without_trigram = SessionDB(db_path=db_path)
+        try:
+            version = without_trigram._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert version == 20
+            assert without_trigram._fts_enabled is True
+            assert without_trigram._trigram_available is False
+            assert len(without_trigram.search_messages("legacy")) == 1
+        finally:
+            without_trigram.close()
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", real_connect)
+        restored = SessionDB(db_path=db_path)
+        try:
+            version = restored._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert version == 21
+            trigram_sql = restored._conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE name = 'messages_fts_trigram'"
+            ).fetchone()[0]
+            assert "content='messages'" in trigram_sql
+
+            restored.append_message(
+                "s1",
+                role="assistant",
+                content="post migration write",
+                tool_name="write_file",
+            )
+            assert len(restored.search_messages("write_file")) == 1
+            assert len(restored.search_messages("大别山项目")) == 1
+        finally:
+            restored.close()
+
     def test_v11_migration_backfills_base_fts_when_trigram_unavailable(
         self, tmp_path, monkeypatch
     ):
@@ -1511,6 +1673,54 @@ class TestFTS5Search:
         # At least one result should mention docker
         snippets = [r.get("snippet", "") for r in results]
         assert any("docker" in s.lower() or "Docker" in s for s in snippets)
+
+    def test_external_content_fts_tracks_tool_fields_and_message_lifecycle(self, db):
+        """FTS triggers keep external-content indexes in sync for all indexed columns."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="initial searchable payload",
+            tool_name="alphatool",
+            tool_calls='{"name":"alphacall"}',
+        )
+
+        assert len(db.search_messages("initial")) == 1
+        alpha_tool_results = db.search_messages("alphatool")
+        assert len(alpha_tool_results) == 1
+        assert "alphatool" in alpha_tool_results[0]["snippet"]
+        alpha_call_results = db.search_messages("alphacall")
+        assert len(alpha_call_results) == 1
+        assert "alphacall" in alpha_call_results[0]["snippet"]
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT id FROM messages WHERE session_id = ?", ("s1",)
+            ).fetchone()
+            message_id = row["id"] if hasattr(row, "keys") else row[0]
+            db._conn.execute(
+                "UPDATE messages SET content = ?, tool_name = ?, tool_calls = ? WHERE id = ?",
+                (
+                    "updated searchable payload",
+                    "betatool",
+                    '{"name":"betacall"}',
+                    message_id,
+                ),
+            )
+
+        assert db.search_messages("initial") == []
+        assert db.search_messages("alphatool") == []
+        assert db.search_messages("alphacall") == []
+        assert len(db.search_messages("updated")) == 1
+        assert len(db.search_messages("betatool")) == 1
+        assert len(db.search_messages("betacall")) == 1
+
+        with db._lock:
+            db._conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+
+        assert db.search_messages("updated") == []
+        assert db.search_messages("betatool") == []
+        assert db.search_messages("betacall") == []
 
     def test_search_empty_query(self, db):
         assert db.search_messages("") == []
@@ -3022,6 +3232,195 @@ class TestSchemaInit:
         version = cursor.fetchone()[0]
         assert version == SCHEMA_VERSION
 
+    def test_v12_inline_fts_migrates_to_v21_external_content(self, tmp_path):
+        """Upgrade inline FTS indexes to the v21 external-content schema."""
+        import sqlite3
+
+        old_db = tmp_path / "v12.db"
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (12);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content, tokenize='trigram');
+            INSERT INTO sessions (id, source, model, started_at, message_count)
+            VALUES ('s1', 'cli', 'test-model', 1700000000, 1);
+            INSERT INTO messages (session_id, role, content, tool_calls, tool_name, timestamp)
+            VALUES ('s1', 'user', 'needle 大别山项目', '[{"name":"read_file"}]', 'read_file', 1700000001);
+            INSERT INTO messages_fts(rowid, content)
+            SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '')
+            FROM messages;
+            INSERT INTO messages_fts_trigram(rowid, content)
+            SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '')
+            FROM messages;
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+
+        from hermes_state import SCHEMA_VERSION
+
+        version = db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert version == SCHEMA_VERSION
+        fts_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='messages_fts'"
+        ).fetchone()[0]
+        trigram_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='messages_fts_trigram'"
+        ).fetchone()[0]
+        assert "content='messages'" in fts_sql
+        assert "content_rowid='id'" in fts_sql
+        assert "tool_name" in fts_sql and "tool_calls" in fts_sql
+        assert "content='messages'" in trigram_sql
+        assert "tokenize='trigram'" in trigram_sql
+
+        assert db.search_messages("needle", limit=5)[0]["session_id"] == "s1"
+        assert db.search_messages("read_file", limit=5)[0]["tool_name"] == "read_file"
+        assert db.search_messages("大别山项目", limit=5)[0]["session_id"] == "s1"
+
+        db.append_message("s1", "assistant", "new indexed message", tool_name="write_file")
+        assert db.search_messages("write_file", limit=5)[0]["tool_name"] == "write_file"
+        db.close()
+
+    def test_v20_inline_fts_migrates_to_v21_external_content(self, tmp_path):
+        """Upgrade the immediately preceding inline schema to v21."""
+        db_path = tmp_path / "v20.db"
+        seeded = SessionDB(db_path=db_path)
+        seeded.create_session(session_id="s1", source="cli")
+        seeded.append_message(
+            "s1",
+            role="user",
+            content="v20 migration needle 大别山项目",
+            tool_name="read_file",
+            tool_calls='[{"name":"read_file"}]',
+        )
+        seeded.close()
+        _replace_fts_with_v20_inline_schema(db_path)
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            version = migrated._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert version == 21
+
+            for table_name in ("messages_fts", "messages_fts_trigram"):
+                table_sql = migrated._conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = ?",
+                    (table_name,),
+                ).fetchone()[0]
+                assert "content='messages'" in table_sql
+                assert "content_rowid='id'" in table_sql
+                assert "tool_name" in table_sql
+                assert "tool_calls" in table_sql
+
+            shadow_tables = migrated._conn.execute(
+                "SELECT name FROM sqlite_master WHERE name IN "
+                "('messages_fts_content', 'messages_fts_trigram_content')"
+            ).fetchall()
+            assert shadow_tables == []
+
+            assert len(migrated.search_messages("needle")) == 1
+            assert len(migrated.search_messages("read_file")) == 1
+            assert len(migrated.search_messages("大别山项目")) == 1
+            migrated.append_message(
+                "s1",
+                role="assistant",
+                content="post migration message",
+                tool_name="write_file",
+            )
+            assert len(migrated.search_messages("write_file")) == 1
+        finally:
+            migrated.close()
+
+    def test_v21_skips_rebuild_when_fts_is_already_external(
+        self, tmp_path, monkeypatch
+    ):
+        """An already-current FTS layout should only need the version bump."""
+        db_path = tmp_path / "already_external.db"
+        seeded = SessionDB(db_path=db_path)
+        seeded.create_session(session_id="s1", source="cli")
+        seeded.append_message("s1", role="user", content="already external")
+        seeded.close()
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE schema_version SET version = 20")
+        conn.commit()
+        conn.close()
+
+        rebuild_calls = 0
+        original_rebuild = SessionDB._rebuild_fts_indexes
+
+        def track_rebuild(cursor, *, include_trigram=True):
+            nonlocal rebuild_calls
+            rebuild_calls += 1
+            return original_rebuild(cursor, include_trigram=include_trigram)
+
+        monkeypatch.setattr(
+            SessionDB,
+            "_rebuild_fts_indexes",
+            staticmethod(track_rebuild),
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            version = reopened._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert version == 21
+            assert rebuild_calls == 0
+            assert len(reopened.search_messages("external")) == 1
+        finally:
+            reopened.close()
+
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
@@ -3312,7 +3711,7 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate through the latest schema.
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
@@ -4797,7 +5196,7 @@ class TestFTS5ToolCallMigration:
                 "v11 migration must backfill tool_name into FTS"
             assert len(session_db.search_messages("LEGACYARG")) == 1, \
                 "v11 migration must backfill tool_calls JSON into FTS"
-            # schema_version bumped
+            # schema_version bumped through the latest schema.
             from hermes_state import SCHEMA_VERSION
             row = session_db._conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"

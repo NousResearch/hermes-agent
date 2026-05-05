@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -243,6 +244,24 @@ class TestCLIStatusBar:
         cli_obj._tool_start_time = 0
 
         assert cli_obj._spinner_widget_height(width=64) == 2
+
+    def test_spinner_elapsed_format_is_fixed_width_to_reduce_wrap_jitter(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "running tool"
+
+        # <60s path
+        cli_obj._tool_start_time = time.monotonic() - 9.2
+        short = cli_obj._render_spinner_text()
+
+        # >=60s path
+        cli_obj._tool_start_time = time.monotonic() - 65.2
+        long = cli_obj._render_spinner_text()
+
+        short_elapsed = short.split("(", 1)[1].rstrip(")")
+        long_elapsed = long.split("(", 1)[1].rstrip(")")
+
+        assert len(short_elapsed) == len(long_elapsed)
+        assert "m" in long_elapsed and "s" in long_elapsed
 
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()

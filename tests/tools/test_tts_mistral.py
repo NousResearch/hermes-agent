@@ -88,6 +88,73 @@ class TestGenerateMistralTts:
         call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
         assert call_kwargs["voice_id"] == "my-voice-uuid"
 
+    def test_ref_audio_path_passed_when_configured(
+        self, tmp_path, mock_mistral_module, monkeypatch
+    ):
+        from tools.tts_tool import _generate_mistral_tts
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
+            audio_data=base64.b64encode(b"data").decode()
+        )
+        ref_audio = tmp_path / "reference.mp3"
+        ref_audio.write_bytes(b"reference-audio")
+
+        config = {"mistral": {"ref_audio": str(ref_audio)}}
+        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
+
+        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
+        assert call_kwargs["ref_audio"] == base64.b64encode(b"reference-audio").decode()
+        assert "voice_id" not in call_kwargs
+
+    def test_ref_audio_takes_precedence_over_voice_id(
+        self, tmp_path, mock_mistral_module, monkeypatch
+    ):
+        from tools.tts_tool import _generate_mistral_tts
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
+            audio_data=base64.b64encode(b"data").decode()
+        )
+        ref_audio = tmp_path / "reference.mp3"
+        ref_audio.write_bytes(b"reference-audio")
+
+        config = {
+            "mistral": {
+                "voice_id": "my-voice-uuid",
+                "ref_audio": str(ref_audio),
+            }
+        }
+        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
+
+        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
+        assert call_kwargs["ref_audio"] == base64.b64encode(b"reference-audio").decode()
+        assert "voice_id" not in call_kwargs
+
+    def test_ref_audio_missing_path_raises_value_error(
+        self, tmp_path, mock_mistral_module, monkeypatch
+    ):
+        from tools.tts_tool import _generate_mistral_tts
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        config = {"mistral": {"ref_audio": str(tmp_path / "missing.mp3")}}
+
+        with pytest.raises(ValueError, match="Mistral ref_audio file not found"):
+            _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
+
+    def test_ref_audio_empty_file_raises_value_error(
+        self, tmp_path, mock_mistral_module, monkeypatch
+    ):
+        from tools.tts_tool import _generate_mistral_tts
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        ref_audio = tmp_path / "empty-reference.mp3"
+        ref_audio.write_bytes(b"")
+        config = {"mistral": {"ref_audio": str(ref_audio)}}
+
+        with pytest.raises(ValueError, match="Mistral ref_audio file is empty"):
+            _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
+
     def test_default_voice_id_when_absent(
         self, tmp_path, mock_mistral_module, monkeypatch
     ):

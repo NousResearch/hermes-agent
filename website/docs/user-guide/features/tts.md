@@ -64,7 +64,8 @@ tts:
     pitch: 0                    # -12 - 12
   mistral:
     model: "voxtral-mini-tts-2603"
-    voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
+    voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default); used when ref_audio is not set
+    # ref_audio: "/absolute/path/to/reference.mp3"  # Optional: existing non-empty local file; overrides voice_id
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
@@ -96,6 +97,23 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### Mistral reference audio
+
+Mistral can synthesize against a local reference clip instead of one of the preset `voice_id` voices.
+
+```yaml
+tts:
+  provider: mistral
+  mistral:
+    model: "voxtral-mini-tts-2603"
+    ref_audio: "/absolute/path/to/reference.mp3"
+```
+
+Rules:
+- `tts.mistral.ref_audio` must point to an existing, non-empty local audio file.
+- When `ref_audio` is set, Hermes sends it to Mistral and ignores `tts.mistral.voice_id`.
+- When `ref_audio` is omitted, Hermes uses `voice_id` exactly as before.
 
 ### Telegram Voice Bubbles & ffmpeg
 

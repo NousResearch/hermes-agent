@@ -1018,6 +1018,16 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     mi_config = tts_config.get("mistral", {})
     model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
     voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
+    ref_audio_path = str(mi_config.get("ref_audio") or "").strip()
+    ref_audio_b64 = None
+    if ref_audio_path:
+        ref_path = Path(ref_audio_path).expanduser()
+        if not ref_path.is_file():
+            raise ValueError(f"Mistral ref_audio file not found: {ref_path}")
+        ref_audio_bytes = ref_path.read_bytes()
+        if not ref_audio_bytes:
+            raise ValueError(f"Mistral ref_audio file is empty: {ref_path}")
+        ref_audio_b64 = base64.b64encode(ref_audio_bytes).decode("ascii")
 
     if output_path.endswith(".ogg"):
         response_format = "opus"
@@ -1031,12 +1041,16 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     Mistral = _import_mistral_client()
     try:
         with Mistral(api_key=api_key) as client:
-            response = client.audio.speech.complete(
-                model=model,
-                input=text,
-                voice_id=voice_id,
-                response_format=response_format,
-            )
+            speech_kwargs = {
+                "model": model,
+                "input": text,
+                "response_format": response_format,
+            }
+            if ref_audio_b64:
+                speech_kwargs["ref_audio"] = ref_audio_b64
+            else:
+                speech_kwargs["voice_id"] = voice_id
+            response = client.audio.speech.complete(**speech_kwargs)
             audio_bytes = base64.b64decode(response.audio_data)
     except ValueError:
         raise

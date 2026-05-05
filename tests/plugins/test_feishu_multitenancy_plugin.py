@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -255,6 +256,94 @@ def test_aiagent_session_id_is_stable_and_user_isolated(tmp_path):
             profile_home,
             "ou_other",
         )
+
+
+def test_bundled_command_parser_uses_hermes_registry():
+    with _bundled_plugin_path():
+        from hermes_multitenancy.commands import parse_command
+
+        assert parse_command("/model gpt-5") == ("model", "gpt-5")
+        assert parse_command("/provider gpt-5") == ("model", "gpt-5")
+        assert parse_command("/reload_mcp") == ("reload-mcp", "")
+        assert parse_command("/definitely_unknown") == ("definitely_unknown", "")
+        assert parse_command("/some/path") is None
+
+
+def test_bundled_router_delegates_known_gateway_command(tmp_path):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        profile_home = tmp_path / "coder"
+        profile_home.mkdir()
+        add_in_memory_route("ou_model", profile_home)
+        sends: list[str] = []
+
+        class Adapter:
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        class Gateway:
+            adapters = {"feishu": Adapter()}
+
+            def _session_key_for_source(self, _source):
+                return "native-session"
+
+            async def _handle_model_command(self, event):
+                return self._session_key_for_source(event.source)
+
+        event = SimpleNamespace(
+            text="/model gpt-5",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_model",
+                user_name="model-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(router_mod.handle_async(event=event, gateway=Gateway()))
+
+        assert sends == ["multitenancy:feishu:coder:oc_test:ou_model"]
+        clear_in_memory_routes()
+
+
+def test_bundled_router_rejects_unknown_slash_without_agent(tmp_path):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import clear_in_memory_routes
+
+        clear_in_memory_routes()
+        sends: list[str] = []
+
+        class Adapter:
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        event = SimpleNamespace(
+            text="/unknown_control",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_unknown",
+                user_name="unknown-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(
+            router_mod.handle_async(
+                event=event,
+                gateway=SimpleNamespace(adapters={"feishu": Adapter()}),
+            )
+        )
+
+        assert sends == [
+            "Unknown command `/unknown_control`. Type /commands to see what's available, "
+            "or resend without the leading slash to send as a regular message."
+        ]
 
 
 def test_processing_outcome_fallback_without_gateway_package(monkeypatch):

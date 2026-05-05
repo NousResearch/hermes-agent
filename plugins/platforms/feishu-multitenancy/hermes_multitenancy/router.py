@@ -1,7 +1,8 @@
-"""Pre-gateway-dispatch hook callback and async dispatch entry point.
+"""Pre-gateway-dispatch hook callback (sync) + async dispatch entry point.
 
-Wires together the SQLite routing table, optional in-memory route fallback,
-LRU runtime pool, slash commands, and Feishu streaming replies.
+Wires together: SQLite RoutingTable (production) + in-memory _SPIKE_ROUTING
+(fallback) + LRU RuntimePool (cached profile runtimes) + Hermes-derived slash
+command dispatch.
 """
 from __future__ import annotations
 
@@ -367,10 +368,19 @@ async def handle_async(*, event: Any, gateway: Any) -> None:
         if cmd_pair is not None:
             cmd_profile_name, cmd_profile_home = _resolve_route(sender, alt_id=sender_alt)
             cmd_profile = cmd_profile_name if cmd_profile_home is not None else None
-            await _handle_command(cmd_pair, sender, sender_alt, cmd_profile, chat_id, gateway)
+            await _handle_command(
+                cmd_pair,
+                sender,
+                sender_alt,
+                cmd_profile,
+                cmd_profile_home,
+                chat_id,
+                gateway,
+                event,
+            )
             return
 
-        # Routing: SQLite table first, then in-memory fallback.
+        # Routing: SQLite table first, then in-memory spike fallback.
         profile_name, profile_home = _resolve_or_auto_provision_route(sender, alt_id=sender_alt)
         if profile_home is None:
             logger.info("multitenancy: no route for sender=%s, ignoring", sender)
@@ -485,8 +495,10 @@ async def _handle_command(
     sender: str,
     sender_alt: Optional[str],
     profile_name: Optional[str],
+    profile_home: Optional[Path],
     chat_id: str,
     gateway: Any,
+    event: Any,
 ) -> None:
     """Execute a parsed slash command and reply via the shared adapter."""
     cmd, _args = pair
@@ -522,19 +534,205 @@ async def _handle_command(
         else:
             reply = "(未路由的用户) 没有历史可重置"
     elif cmd == "help":
-        reply = (
-            "📖 可用命令\n"
-            "/help    — 显示这条帮助\n"
-            "/status  — 查看当前 profile + 历史长度\n"
-            "/new     — 重置会话历史 (开始新对话)\n"
-            "/reset   — /new 的别名\n"
-            "/stop    — 取消正在运行的任务\n"
-        )
+        reply = _gateway_help_text()
     else:
-        return
+        dispatched = await _dispatch_gateway_command(
+            cmd,
+            event,
+            gateway,
+            sender=sender,
+            sender_alt=sender_alt,
+            profile_name=profile_name,
+            profile_home=profile_home,
+            chat_id=chat_id,
+        )
+        if dispatched is not None:
+            reply = dispatched
+        else:
+            from .commands import is_known_command, unknown_command_message
+
+            reply = (
+                f"Command `/{cmd}` is recognized by Hermes, but this gateway does not "
+                "expose a reusable command dispatcher yet."
+                if is_known_command(cmd)
+                else unknown_command_message(cmd)
+            )
 
     if adapter is not None:
         await _safe_call(adapter.send, chat_id, reply)
+
+
+async def _dispatch_gateway_command(
+    cmd: str,
+    event: Any,
+    gateway: Any,
+    *,
+    sender: str,
+    sender_alt: Optional[str],
+    profile_name: Optional[str],
+    profile_home: Optional[Path],
+    chat_id: str,
+) -> Optional[str]:
+    """Delegate a Hermes-known slash command to the gateway when possible."""
+    _ensure_command_event_methods(event, cmd)
+
+    dispatcher = getattr(gateway, "_dispatch_slash_command", None)
+    if callable(dispatcher):
+        with _profile_gateway_context(
+            gateway,
+            event,
+            sender=sender,
+            sender_alt=sender_alt,
+            profile_name=profile_name,
+            profile_home=profile_home,
+            chat_id=chat_id,
+        ):
+            try:
+                result = dispatcher(event, multitenancy_context={
+                    "profile_name": profile_name,
+                    "profile_home": str(profile_home) if profile_home else "",
+                    "sender_open_id": sender,
+                    "session_key_override": _multitenant_gateway_session_key(
+                        event,
+                        profile_name=profile_name,
+                        sender=sender,
+                        sender_alt=sender_alt,
+                        chat_id=chat_id,
+                    ),
+                })
+            except TypeError:
+                result = dispatcher(event)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return str(result) if result is not None else None
+
+    handler = _gateway_handler_for_command(gateway, cmd)
+    if handler is None:
+        return None
+    with _profile_gateway_context(
+        gateway,
+        event,
+        sender=sender,
+        sender_alt=sender_alt,
+        profile_name=profile_name,
+        profile_home=profile_home,
+        chat_id=chat_id,
+    ):
+        result = handler(event)
+        if asyncio.iscoroutine(result):
+            result = await result
+    return str(result) if result is not None else None
+
+
+def _gateway_handler_for_command(gateway: Any, cmd: str) -> Any:
+    """Return Hermes' handler method using naming conventions, not a command table."""
+    normalized = cmd.replace("-", "_")
+    candidates = [f"_handle_{normalized}_command"]
+    if normalized == "sethome":
+        candidates.append("_handle_set_home_command")
+    for name in candidates:
+        handler = getattr(gateway, name, None)
+        if callable(handler):
+            return handler
+    return None
+
+
+def _ensure_command_event_methods(event: Any, cmd: str) -> None:
+    """Add minimal MessageEvent command helpers for tests/fallback objects."""
+    text = getattr(event, "text", "") or ""
+    args = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+    if not callable(getattr(event, "get_command", None)):
+        setattr(event, "get_command", lambda: cmd)
+    if not callable(getattr(event, "get_command_args", None)):
+        setattr(event, "get_command_args", lambda: args)
+
+
+def _profile_gateway_context(
+    gateway: Any,
+    event: Any,
+    *,
+    sender: str,
+    sender_alt: Optional[str],
+    profile_name: Optional[str],
+    profile_home: Optional[Path],
+    chat_id: str,
+):
+    """Temporarily scope Hermes gateway helpers to the routed profile."""
+    class _Context:
+        def __enter__(self):
+            self._old_home = os.environ.get("HERMES_HOME")
+            self._had_home = "HERMES_HOME" in os.environ
+            self._old_session_key_for_source = getattr(gateway, "_session_key_for_source", None)
+            if profile_home is not None:
+                os.environ["HERMES_HOME"] = str(profile_home)
+            session_key = _multitenant_gateway_session_key(
+                event,
+                profile_name=profile_name,
+                sender=sender,
+                sender_alt=sender_alt,
+                chat_id=chat_id,
+            )
+            if session_key:
+                def _scoped_session_key_for_source(source):
+                    return session_key
+
+                setattr(gateway, "_session_key_for_source", _scoped_session_key_for_source)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if self._old_session_key_for_source is not None:
+                setattr(gateway, "_session_key_for_source", self._old_session_key_for_source)
+            elif hasattr(gateway, "_session_key_for_source"):
+                try:
+                    delattr(gateway, "_session_key_for_source")
+                except Exception:
+                    pass
+            if self._had_home:
+                os.environ["HERMES_HOME"] = self._old_home or ""
+            else:
+                os.environ.pop("HERMES_HOME", None)
+            return False
+
+    return _Context()
+
+
+def _multitenant_gateway_session_key(
+    event: Any,
+    *,
+    profile_name: Optional[str],
+    sender: str,
+    sender_alt: Optional[str],
+    chat_id: str,
+) -> Optional[str]:
+    if not profile_name:
+        return None
+    source = getattr(event, "source", None)
+    platform = getattr(getattr(source, "platform", None), "value", None) or "feishu"
+    user_key = sender_alt or sender
+    return f"multitenancy:{platform}:{profile_name}:{chat_id}:{user_key}"
+
+
+def _gateway_help_text() -> str:
+    """Render help from Hermes' central command registry when available."""
+    try:
+        from hermes_cli.commands import gateway_help_lines  # type: ignore
+
+        lines = gateway_help_lines()
+        if lines:
+            return "📖 可用命令\n" + "\n".join(lines[:30])
+    except Exception:
+        pass
+    return (
+        "📖 可用命令\n"
+        "/help    — 显示这条帮助\n"
+        "/status  — 查看当前 profile + 历史长度\n"
+        "/new     — 重置会话历史 (开始新对话)\n"
+        "/reset   — /new 的别名\n"
+        "/stop    — 取消正在运行的任务\n"
+        "/model   — 切换当前会话模型\n"
+        "/reasoning — 管理推理强度\n"
+        "/voice   — 切换语音回复模式\n"
+    )
 
 
 # -- Routing resolution ------------------------------------------------------
@@ -550,11 +748,11 @@ def _resolve_route(sender: str, *, alt_id: Optional[str] = None) -> tuple[str, O
     Lookup order:
       1. SQLite RoutingTable WHERE open_id = sender (typical: real Feishu ou_* open_id)
       2. SQLite RoutingTable WHERE open_id = alt_id (legacy: source.user_id_alt = union_id)
-      3. In-memory route fallback for tests and local demos
+      3. In-memory ``_SPIKE_ROUTING`` dict (Phase 1 compat / unit tests)
 
     Returns (sender, None) when no route hits.
     """
-    from .runtime import resolve_profile_home as _resolve_in_memory_route
+    from .runtime import resolve_profile_home as _spike_resolve
 
     table = _get_routing_table()
     candidates: list[str] = [sender]
@@ -571,11 +769,11 @@ def _resolve_route(sender: str, *, alt_id: Optional[str] = None) -> tuple[str, O
             if row is not None:
                 return (row.profile_name, _profile_name_to_home(row.profile_name))
 
-    # Fallback: in-memory route map.
+    # Fallback: in-memory spike routing dict
     for candidate in candidates:
-        in_memory_home = _resolve_in_memory_route(candidate)
-        if in_memory_home is not None:
-            return (in_memory_home.name, in_memory_home)
+        spike_home = _spike_resolve(candidate)
+        if spike_home is not None:
+            return (spike_home.name, spike_home)
     return (sender, None)
 
 
@@ -742,9 +940,7 @@ def _profile_config_from_shared_home(shared_home: Path) -> dict[str, Any]:
 
 def _normalize_profile_config(config: dict[str, Any]) -> dict[str, Any]:
     model = config.get("model")
-    if not isinstance(model, dict) or not model.get("default"):
-        return config
-    else:
+    if isinstance(model, dict) and model.get("default"):
         default_model = str(model.get("default") or "").strip()
         provider = str(model.get("provider") or "").strip()
         if default_model and provider and "/" not in default_model:

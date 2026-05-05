@@ -395,7 +395,12 @@ class TestAgentExecution:
                 session_id="session-123",
             )
 
-        assert result == {"final_response": "ok"}
+        # _run_agent annotates result with the effective agent.session_id
+        # when it's a real string, so the response-header writer can track
+        # compression-triggered session rotations (#16938). The mock agent
+        # here doesn't set an explicit session_id string so the guard skips
+        # the annotation — header will fall back to the provided session_id.
+        assert result["final_response"] == "ok"
         assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
         mock_agent.run_conversation.assert_called_once_with(
             user_message="hello",

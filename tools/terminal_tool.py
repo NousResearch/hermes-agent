@@ -2061,7 +2061,15 @@ def terminal_tool(
                         break
             except Exception:
                 pass
-            
+
+            # Compression layer — runs after plugins, before truncation.
+            # compress_tool_output is fail-open (returns original on any error).
+            try:
+                from tools.compression_pipeline import compress_tool_output
+                output = compress_tool_output(command, output, "", returncode)
+            except Exception:
+                pass
+
             # Truncate output if too long, keeping both head and tail
             from tools.tool_output_limits import get_max_bytes
             MAX_OUTPUT_CHARS = get_max_bytes()

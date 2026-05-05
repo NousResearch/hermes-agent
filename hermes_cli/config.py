@@ -722,6 +722,39 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Trustworthy anticipation — low-noise proactive loops. Disabled by
+    # default; V0 provides config/policy/audit primitives only, with no
+    # automatic delivery unless the user explicitly enables loops later.
+    "anticipation": {
+        "enabled": False,
+        "default_permission": "suggest",
+        "quiet_hours": {
+            "enabled": False,
+            "start": "22:00",
+            "end": "08:00",
+        },
+        "notification_budget": {
+            "max_per_day": 3,
+            "min_minutes_between": 120,
+        },
+        "loops": {
+            "stale_task_resurfacer": {
+                "enabled": False,
+                "schedule": "0 9 * * *",
+                "permission": "suggest",
+                "min_confidence": 0.70,
+                "lookback_days": 14,
+            },
+            "router_monitor": {
+                "enabled": False,
+                "schedule": "manual",
+                "permission": "ask_to_execute",
+                "min_confidence": 0.70,
+                "lookback_days": 1,
+            },
+        },
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

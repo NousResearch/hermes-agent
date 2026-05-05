@@ -6531,6 +6531,12 @@ class HermesCLI:
             self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "effort":
+            # Alias for /reasoning — mirrors Claude Code's /effort command.
+            # Translate "/effort high" to "/reasoning high" before dispatch
+            # so the existing handler's parser sees the expected form.
+            translated = cmd_original.replace("/effort", "/reasoning", 1)
+            self._handle_reasoning_command(translated)
         elif canonical == "delegation":
             self._handle_delegation_command(cmd_original)
         elif canonical == "interleaved":

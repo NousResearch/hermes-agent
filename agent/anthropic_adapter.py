@@ -179,15 +179,23 @@ _NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Match Claude Code 2.1.119 main chat path (verified by disassembly:
+    # `max_tokens: 16000` appears 7× in the binary; 64000 once for streaming
+    # paths). Since hermes already spoofs Claude Code identity (user-agent,
+    # system prefix, beta headers) to use the OAuth token, matching its
+    # max_tokens too keeps backend scheduling/priority signals consistent
+    # with what real Claude Code sends — even though the model itself isn't
+    # supposed to see this value, we don't know what other API-side decisions
+    # are keyed on it. Override per-call via max_tokens kwarg when needed.
     # Claude 4.7
-    "claude-opus-4-7":   128_000,
+    "claude-opus-4-7":    16_000,
     # Claude 4.6
-    "claude-opus-4-6":   128_000,
-    "claude-sonnet-4-6":  64_000,
+    "claude-opus-4-6":    16_000,
+    "claude-sonnet-4-6":  16_000,
     # Claude 4.5
-    "claude-opus-4-5":    64_000,
-    "claude-sonnet-4-5":  64_000,
-    "claude-haiku-4-5":   64_000,
+    "claude-opus-4-5":    16_000,
+    "claude-sonnet-4-5":  16_000,
+    "claude-haiku-4-5":   16_000,
     # Claude 4
     "claude-opus-4":      32_000,
     "claude-sonnet-4":    64_000,
@@ -2116,10 +2124,14 @@ def build_anthropic_kwargs(
                     "display": "summarized",
                 }
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-                # Downgrade xhigh→max on models that don't list xhigh as a
-                # supported level (Opus/Sonnet 4.6). Opus 4.7+ keeps xhigh.
+                # Downgrade xhigh on models that don't support it. Claude Code
+                # falls back to "high" for non-4.7 models (verified by
+                # disassembling its 2.1.119 binary: `return"xhigh";return"high"`).
+                # Don't fall back to "max" — Sonnet 4.6 and Haiku 4.5 don't
+                # support max either (Opus-tier only), so the previous
+                # "downgrade to max" path 400'd on Sonnet/Haiku requests.
                 if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
-                    adaptive_effort = "max"
+                    adaptive_effort = "high"
                 kwargs["output_config"] = {
                     "effort": adaptive_effort,
                 }

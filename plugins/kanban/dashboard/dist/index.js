@@ -2416,11 +2416,10 @@
         ),
       ),
       h("div", { className: "hermes-kanban-deps-row" },
-        h(Select, {
+        h(Select, Object.assign({
           value: newParent,
-          onChange: function (e) { setNewParent(e.target.value); },
           className: "h-7 text-xs flex-1",
-        },
+        }, selectChangeHandler(setNewParent)),
           h(SelectOption, { value: "" }, "— add parent —"),
           candidatesFor(parentExclude).map(function (t) {
             return h(SelectOption, { key: t.id, value: t.id },
@@ -2455,11 +2454,10 @@
         ),
       ),
       h("div", { className: "hermes-kanban-deps-row" },
-        h(Select, {
+        h(Select, Object.assign({
           value: newChild,
-          onChange: function (e) { setNewChild(e.target.value); },
           className: "h-7 text-xs flex-1",
-        },
+        }, selectChangeHandler(setNewChild)),
           h(SelectOption, { value: "" }, "— add child —"),
           candidatesFor(childExclude).map(function (t) {
             return h(SelectOption, { key: t.id, value: t.id },

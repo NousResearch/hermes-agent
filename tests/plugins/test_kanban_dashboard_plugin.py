@@ -622,6 +622,32 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     assert "body: JSON.stringify(finalPatch)" in bundle
 
 
+def test_dashboard_dependency_selects_use_value_change_handler():
+    """Regression for the dependency selects in the task drawer: the
+    add-parent / add-child dropdowns must wire through the shared
+    selectChangeHandler helper so their value actually lands on the
+    underlying React state. Salvaged from #20019 @LeonSGP43.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    parent_select = (
+        'value: newParent,\n'
+        '          className: "h-7 text-xs flex-1",\n'
+        '        }, selectChangeHandler(setNewParent))'
+    )
+    child_select = (
+        'value: newChild,\n'
+        '          className: "h-7 text-xs flex-1",\n'
+        '        }, selectChangeHandler(setNewChild))'
+    )
+
+    assert parent_select in bundle
+    assert child_select in bundle
+
+
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]

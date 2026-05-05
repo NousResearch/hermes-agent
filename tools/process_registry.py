@@ -495,7 +495,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lic", f"set +m; {shlex.quote(command)}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),

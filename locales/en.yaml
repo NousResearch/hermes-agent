@@ -7,7 +7,7 @@
 #
 # Keys are dotted paths; nesting below is purely for readability.  Values may
 # contain {placeholder} tokens for str.format substitution.  When adding a
-# new key, add it to EVERY locale file (en/zh/ja/de/es/fr) in the same commit --
+# new key, add it to EVERY locale file (en/zh/ja/de/es/fr/uk) in the same commit --
 # tests/agent/test_i18n.py asserts catalog parity.
 
 approval:

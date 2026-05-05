@@ -28,7 +28,6 @@ import logging
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
-from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -304,21 +303,6 @@ class _ProviderCollector:
 
     def register_cli_command(self, *args, **kwargs):
         pass  # CLI registration happens via discover_plugin_cli_commands()
-
-
-def _get_active_memory_provider() -> Optional[str]:
-    """Read the active memory provider name from config.yaml.
-
-    Returns the provider name (e.g. ``"honcho"``) or None if no
-    external provider is configured.  Lightweight — only reads config,
-    no plugin loading.
-    """
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        return cfg_get(config, "memory", "provider") or None
-    except Exception:
-        return None
 
 
 def get_active_memory_providers() -> list:

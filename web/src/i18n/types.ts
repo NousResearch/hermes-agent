@@ -280,7 +280,10 @@ export interface Translations {
     invalidName: string;
     cloneFromDefault: string;
     allProfiles: string;
+    relatedProfiles: string;
     noProfiles: string;
+    showAll: string;
+    showRelatedOnly: string;
     defaultBadge: string;
     hasEnv: string;
     model: string;

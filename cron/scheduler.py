@@ -2628,11 +2628,18 @@ def run_job(
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
     # the script is only executed once.
+    # Track whether the pre-run script failed so we can propagate the
+    # failure status to the job result.  Previously, a failed script would
+    # inject its error into the agent prompt but the job would still be
+    # reported as "ok" — hiding silent data-collection failures.
+    _script_failed = False
     prerun_script = None
     script_path = job.get("script")
     if script_path:
         prerun_script = _run_job_script(script_path)
         _ran_ok, _script_output = prerun_script
+        if not _ran_ok:
+            _script_failed = True
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
@@ -3290,7 +3297,10 @@ def run_job(
 """
         
         logger.info("Job '%s' completed successfully", job_name)
-        return True, output, final_response, None
+        # If the pre-run script failed, mark the job as failed even though
+        # the agent ran successfully.  The script failure means the agent
+        # may have been working with stale or missing data.
+        return not _script_failed, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"

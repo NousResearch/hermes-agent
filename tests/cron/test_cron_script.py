@@ -579,3 +579,135 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+class TestRunJobScriptFailureStatus:
+    """Regression tests for script failure propagation to job status.
+
+    When a cron job's pre-run script fails (non-zero exit code), the job
+    should be marked as failed even though the agent runs successfully.
+    Previously, the job was always reported as "ok" regardless of script
+    failure — hiding silent data-collection failures.
+    """
+
+    def test_script_failure_marks_job_as_failed(self, cron_env, monkeypatch):
+        """Job status must be False when pre-run script exits non-zero."""
+        from cron.scheduler import run_job
+
+        # Create a failing script
+        script = cron_env / "scripts" / "fail.py"
+        script.write_text(textwrap.dedent("""\            import sys
+            print("error: data source unavailable", file=sys.stderr)
+            sys.exit(1)
+        """))
+
+        # Build a job with the failing script
+        job = {
+            "id": "test-script-fail",
+            "name": "script-fail-test",
+            "prompt": "Report status.",
+            "schedule_display": "every 1h",
+            "script": str(script),
+        }
+
+        # Mock the agent and runtime provider to avoid actual API calls
+        from unittest.mock import MagicMock, patch
+
+        mock_agent = MagicMock()
+        mock_result = {
+            "final_response": "The data-collection script failed. Here is the error...",
+            "messages": [],
+        }
+        mock_agent.run_conversation.return_value = mock_result
+
+        mock_runtime = {
+            "provider": "openai",
+            "api_key": "test-key",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions",
+        }
+
+        with patch("run_agent.AIAgent", return_value=mock_agent),              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=mock_runtime):
+            success, output, response, error = run_job(job)
+
+        # The job should be marked as failed because the script failed
+        assert success is False
+        assert "Script Error" in output or "script failed" in output.lower()
+        # The agent should have run (we get a response)
+        assert response is not None
+
+    def test_script_success_marks_job_as_ok(self, cron_env, monkeypatch):
+        """Job status must be True when pre-run script succeeds."""
+        from cron.scheduler import run_job
+
+        # Create a successful script
+        script = cron_env / "scripts" / "ok.py"
+        script.write_text('print("data collected successfully")\n')
+
+        # Build a job with the successful script
+        job = {
+            "id": "test-script-ok",
+            "name": "script-ok-test",
+            "prompt": "Report status.",
+            "schedule_display": "every 1h",
+            "script": str(script),
+        }
+
+        # Mock the agent and runtime provider to avoid actual API calls
+        from unittest.mock import MagicMock, patch
+
+        mock_agent = MagicMock()
+        mock_result = {
+            "final_response": "Data collected successfully.",
+            "messages": [],
+        }
+        mock_agent.run_conversation.return_value = mock_result
+
+        mock_runtime = {
+            "provider": "openai",
+            "api_key": "test-key",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions",
+        }
+
+        with patch("run_agent.AIAgent", return_value=mock_agent),              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=mock_runtime):
+            success, output, response, error = run_job(job)
+
+        # The job should be marked as successful
+        assert success is True
+        assert error is None
+
+    def test_no_script_marks_job_as_ok(self, cron_env, monkeypatch):
+        """Job status must be True when no script is configured."""
+        from cron.scheduler import run_job
+
+        # Build a job without a script
+        job = {
+            "id": "test-no-script",
+            "name": "no-script-test",
+            "prompt": "Hello.",
+            "schedule_display": "every 1h",
+        }
+
+        # Mock the agent and runtime provider to avoid actual API calls
+        from unittest.mock import MagicMock, patch
+
+        mock_agent = MagicMock()
+        mock_result = {
+            "final_response": "Hello!",
+            "messages": [],
+        }
+        mock_agent.run_conversation.return_value = mock_result
+
+        mock_runtime = {
+            "provider": "openai",
+            "api_key": "test-key",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions",
+        }
+
+        with patch("run_agent.AIAgent", return_value=mock_agent),              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=mock_runtime):
+            success, output, response, error = run_job(job)
+
+        # The job should be marked as successful
+        assert success is True
+        assert error is None

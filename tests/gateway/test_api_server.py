@@ -910,8 +910,15 @@ class TestChatCompletionsEndpoint:
                 assert " about it..." in body
 
     @pytest.mark.asyncio
-    async def test_stream_includes_tool_progress(self, adapter):
-        """tool_start_callback fires → progress appears as custom SSE event, not in delta.content."""
+    async def test_stream_drops_tool_progress_for_openai_compat(self, adapter):
+        """tool_start_callback fires → progress is silently dropped from SSE stream.
+
+        OpenAI-compatible frontends (Jan, Open WebUI via Vercel AI SDK)
+        parse all ``data:`` lines as chat.completion.chunk objects regardless
+        of the ``event:`` field, causing Type validation errors.  Tool progress
+        events are purely cosmetic and must not appear on the Chat Completions
+        SSE stream.
+        """
         import asyncio
 
         app = _create_app(adapter)
@@ -942,35 +949,22 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # Tool progress must appear as a custom SSE event, not in
-                # delta.content — prevents model from learning to imitate
-                # markers instead of calling tools (#6972).
-                assert "event: hermes.tool.progress" in body
-                assert '"tool": "terminal"' in body
-                # ``label`` is now derived by ``build_tool_preview`` from the
-                # tool args rather than passed by the caller, so we assert
-                # only that *some* label exists rather than a literal value.
-                assert '"label":' in body
-                # The progress marker must NOT appear inside any
-                # chat.completion.chunk delta.content field.
+                # Tool progress must NOT appear in the SSE stream — it
+                # breaks strict OpenAI-compatible clients.
+                assert "event: hermes.tool.progress" not in body
+                assert '"tool": "terminal"' not in body
+                # Every data: line must be valid chat.completion.chunk or [DONE]
                 import json as _json
                 for line in body.splitlines():
                     if line.startswith("data: ") and line.strip() != "data: [DONE]":
-                        try:
-                            chunk = _json.loads(line[len("data: "):])
-                        except _json.JSONDecodeError:
-                            continue
-                        if chunk.get("object") == "chat.completion.chunk":
-                            for choice in chunk.get("choices", []):
-                                content = choice.get("delta", {}).get("content", "")
-                                # Tool emoji markers must never leak into content
-                                assert "ls -la" not in content or content == "Here are the files."
-                # Final content must also be present
+                        chunk = _json.loads(line[len("data: "):])
+                        assert "choices" in chunk, f"Non-chunk data line: {chunk}"
+                # Final content must still arrive
                 assert "Here are the files." in body
 
     @pytest.mark.asyncio
-    async def test_stream_tool_progress_skips_internal_events(self, adapter):
-        """Internal tool calls (name starting with ``_``) are not streamed."""
+    async def test_stream_tool_progress_skips_all_events(self, adapter):
+        """All tool progress events (internal and external) are dropped from SSE stream."""
         import asyncio
 
         app = _create_app(adapter)
@@ -1000,33 +994,20 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
                 body = await resp.text()
-                # Internal _thinking event should NOT appear anywhere
+                # No tool progress of any kind should appear
+                assert "event: hermes.tool.progress" not in body
                 assert "some internal state" not in body
                 assert "call_internal_1" not in body
-                # Real tool progress should appear as custom SSE event
-                assert "event: hermes.tool.progress" in body
-                assert '"tool": "web_search"' in body
-                # Label is derived from the args dict by build_tool_preview;
-                # asserting on the structural fact (label exists, call id
-                # is correlated) rather than a literal preview string keeps
-                # the test robust against preview-formatter tweaks.
-                assert '"label":' in body
-                assert '"toolCallId": "call_search_1"' in body
+                assert '"tool": "web_search"' not in body
+                assert "call_search_1" not in body
 
     @pytest.mark.asyncio
-    async def test_stream_emits_tool_lifecycle_with_call_id(self, adapter):
-        """Regression for #16588.
+    async def test_stream_tool_lifecycle_dropped_on_chat_completions(self, adapter):
+        """Regression: tool lifecycle events are dropped on Chat Completions SSE.
 
-        ``/v1/chat/completions`` streaming previously emitted only a
-        ``tool.started``-style ``hermes.tool.progress`` event; clients
-        rendering tool lifecycle UI had no way to mark a tool as finished
-        because no matching ``status: completed`` event was emitted, and
-        no ``toolCallId`` was carried for correlation.
-
-        The fix adds ``tool_start_callback`` / ``tool_complete_callback``
-        to the chat completions agent invocation and writes both halves
-        of the lifecycle pair on the same ``event: hermes.tool.progress``
-        SSE line, with stable ``toolCallId`` and ``status``.
+        Previously (#16588) these were emitted as ``hermes.tool.progress``
+        events with ``status: running/completed``.  Now they are silently
+        dropped to maintain strict OpenAI compatibility.
         """
         import asyncio
         import json as _json
@@ -1064,31 +1045,12 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
 
-            # Walk the SSE body and collect *(status, toolCallId)* pairs
-            # per event so the assertions verify per-event correlation —
-            # an event missing ``toolCallId`` would not pass even if a
-            # different event happens to carry the right id.
-            pairs: list[tuple[str | None, str | None]] = []
-            lines = body.splitlines()
-            for i, line in enumerate(lines):
-                if line.strip() != "event: hermes.tool.progress":
-                    continue
-                for follow in lines[i + 1: i + 4]:
-                    if follow.startswith("data: "):
-                        try:
-                            payload = _json.loads(follow[len("data: "):])
-                        except _json.JSONDecodeError:
-                            break
-                        pairs.append((payload.get("status"), payload.get("toolCallId")))
-                        break
-
-            # Each tool start must emit exactly one event (no duplicate
-            # legacy + new emit), and each lifecycle pair must carry the
-            # same toolCallId on every event — not just somewhere in the
-            # aggregate.
-            assert len(pairs) == 2, f"expected 2 events (running+completed), got {pairs}"
-            assert pairs[0] == ("running", "call_terminal_1"), pairs
-            assert pairs[1] == ("completed", "call_terminal_1"), pairs
+            # No tool progress events should appear at all
+            assert "event: hermes.tool.progress" not in body
+            assert '"status": "running"' not in body
+            assert '"status": "completed"' not in body
+            # Content still arrives
+            assert "done." in body
 
     @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):

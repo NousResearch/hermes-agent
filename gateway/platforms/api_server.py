@@ -1417,17 +1417,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples ``("__tool_progress__", payload)`` are
+                silently dropped.  Previously they were emitted as custom
+                ``event: hermes.tool.progress`` SSE events, but many
+                OpenAI-compatible frontends (Jan, Open WebUI via Vercel
+                AI SDK) parse *all* ``data:`` lines as chat completion
+                chunks regardless of the ``event:`` field, causing
+                ``Type validation failed`` errors.  See #6972, #16588.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
+                    # Skip — cosmetic tool progress breaks strict
+                    # OpenAI-compatible clients (Jan, Open WebUI, etc.).
+                    # See #4804 for discussion of configurable alternatives.
+                    logger.debug("Dropping tool progress event: %s", item[1].get("tool", "unknown"))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",

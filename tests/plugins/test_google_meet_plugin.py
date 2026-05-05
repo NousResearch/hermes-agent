@@ -73,6 +73,36 @@ def test_meeting_id_extraction():
     assert fallback.startswith("meet-")
 
 
+def test_caption_language_policy_defaults_to_korean():
+    from plugins.google_meet.meet_bot import _resolve_caption_language
+
+    lang, evidence = _resolve_caption_language("Korean", {"title": "Finance OS sync"})
+    assert lang == "Korean"
+    assert evidence["source"] == "default"
+
+
+def test_caption_language_policy_detects_data_hyspire_english_meeting():
+    from plugins.google_meet.meet_bot import _resolve_caption_language
+
+    surface = {
+        "title": "Meet - Data & Hyspire Weekly Sync",
+        "peopleText": "Jeremy Kang Phuong Luong Joohyun Kim",
+    }
+    lang, evidence = _resolve_caption_language("Korean", surface)
+    assert lang == "English"
+    assert evidence["source"] == "english_hint"
+    assert "Data & Hyspire Weekly Sync" in evidence["matches"]
+
+
+def test_caption_language_policy_respects_explicit_non_korean_choice():
+    from plugins.google_meet.meet_bot import _resolve_caption_language
+
+    surface = {"title": "Meet - Data & Hyspire Weekly Sync"}
+    lang, evidence = _resolve_caption_language("Japanese", surface)
+    assert lang == "Japanese"
+    assert evidence["source"] == "explicit"
+
+
 # ---------------------------------------------------------------------------
 # _BotState — transcript + status file round-trip
 # ---------------------------------------------------------------------------

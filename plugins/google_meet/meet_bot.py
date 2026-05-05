@@ -53,6 +53,58 @@ MEET_URL_RE = re.compile(
 SAY_QUEUE_FILENAME = "say_queue.jsonl"
 SAY_PCM_FILENAME = "speaker.pcm"
 
+# Local-first default: most of Joohyun's meetings are Korean, but a small
+# number of fixed recurring meetings are predictably English. Keep this as a
+# transparent heuristic instead of guessing per caption line. Override with
+# HERMES_MEET_ENGLISH_HINTS as a JSON/string list separated by |, comma, or
+# newlines.
+DEFAULT_ENGLISH_CAPTION_HINTS = (
+    "Data & Hyspire Weekly Sync",
+    "Jeremy Kang",
+    "Phuong Luong",
+)
+
+
+def _language_hint_terms() -> list[str]:
+    raw = os.environ.get("HERMES_MEET_ENGLISH_HINTS", "").strip()
+    if not raw:
+        return list(DEFAULT_ENGLISH_CAPTION_HINTS)
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    except Exception:
+        pass
+    return [part.strip() for part in re.split(r"[|,\n]", raw) if part.strip()]
+
+
+def _surface_text_for_language(surface: Optional[dict]) -> str:
+    if not isinstance(surface, dict):
+        return ""
+    chunks = [
+        str(surface.get("title") or ""),
+        str(surface.get("textSample") or ""),
+        str(surface.get("peopleText") or ""),
+    ]
+    for button in surface.get("buttons") or []:
+        if isinstance(button, dict):
+            chunks.append(str(button.get("aria") or ""))
+            chunks.append(str(button.get("text") or ""))
+    return " ".join(chunks)
+
+
+def _resolve_caption_language(requested: str, surface: Optional[dict]) -> tuple[str, dict]:
+    requested_norm = _normalize_caption_language(requested or "Korean")
+    # Explicit non-Korean choices always win. The English-hint policy only
+    # overrides Mina's Korean default.
+    if requested_norm.lower() not in ("", "auto", "default", "korean"):
+        return requested_norm, {"source": "explicit"}
+    text = _surface_text_for_language(surface)
+    matches = [hint for hint in _language_hint_terms() if hint.lower() in text.lower()]
+    if matches:
+        return "English", {"source": "english_hint", "matches": matches[:8]}
+    return "Korean", {"source": "default"}
+
 
 def _is_safe_meet_url(url: str) -> bool:
     """Return True if *url* is a Google Meet URL we're willing to navigate to."""
@@ -983,8 +1035,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # Install caption observer and attempt to enable captions. We do
             # not report captioning=true until the Meet caption region exists
             # and the MutationObserver is actually attached. Korean is the
-            # default because most of Joohyun's meetings are Korean; callers
-            # can override with HERMES_MEET_CAPTION_LANGUAGE / CLI option.
+            # default because most of Joohyun's meetings are Korean; recurring
+            # English meetings can be recognized by title/participant hints.
+            initial_surface = _probe_meet_surface(page)
+            state.set_meet_surface(initial_surface)
+            caption_language, language_policy = _resolve_caption_language(caption_language, initial_surface)
+            state.set_caption_language(caption_language, f"policy:{language_policy.get('source', 'unknown')}", language_policy)
             _set_caption_language(page, state, caption_language)
             _enable_and_probe_captions(page, state, out_dir)
 
@@ -1085,6 +1141,11 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                         last_surface_refresh = now
                         surface = _probe_meet_surface(page)
                         state.set_meet_surface(surface)
+                        resolved_language, language_policy = _resolve_caption_language(caption_language, surface)
+                        if resolved_language != caption_language:
+                            caption_language = resolved_language
+                            state.set_caption_language(caption_language, f"policy:{language_policy.get('source', 'unknown')}", language_policy)
+                            _set_caption_language(page, state, caption_language)
                         surface_labels = " ".join(
                             f"{button.get('aria', '')} {button.get('text', '')}"
                             for button in (surface.get("buttons") or [])

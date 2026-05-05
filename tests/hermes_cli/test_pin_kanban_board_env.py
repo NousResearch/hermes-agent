@@ -8,10 +8,32 @@ can flip the global current-board file mid-turn and silently divert the
 shell calls to a different DB.
 """
 import importlib
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kanban_board_env():
+    """Snapshot `HERMES_KANBAN_BOARD` and restore it after the test.
+
+    `_pin_kanban_board_env()` writes to ``os.environ`` directly, bypassing
+    any ``monkeypatch.setenv`` tracking. Without this fixture the mutation
+    leaks into subsequent tests and breaks anything that resolves a kanban
+    path from the env (e.g. ``TestSharedBoardPaths`` in test_kanban_db.py).
+    """
+    prev = os.environ.get("HERMES_KANBAN_BOARD")
+    os.environ.pop("HERMES_KANBAN_BOARD", None)
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev
 
 
 def test_pin_writes_resolved_board_when_env_unset(monkeypatch):
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     main_mod = importlib.import_module("hermes_cli.main")
 
     import hermes_cli.kanban_db as kdb
@@ -39,7 +61,6 @@ def test_pin_does_not_overwrite_existing_env(monkeypatch):
 
 
 def test_pin_swallows_resolution_failures(monkeypatch):
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     main_mod = importlib.import_module("hermes_cli.main")
 
     import hermes_cli.kanban_db as kdb

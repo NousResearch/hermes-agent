@@ -27,6 +27,7 @@ import tempfile
 import time
 import uuid
 import textwrap
+from collections import deque
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -335,6 +336,8 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            "persistent_output": True,
+            "persistent_output_max_lines": 200,
 
             "skin": "default",
         },
@@ -1276,6 +1279,87 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     return Markdown(plain)
 
 
+_OUTPUT_HISTORY_ENABLED = True
+_OUTPUT_HISTORY_REPLAYING = False
+_OUTPUT_HISTORY_SUPPRESSED = False
+_OUTPUT_HISTORY_MAX_LINES = 200
+_OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
+_ANSI_CONTROL_RE = re.compile(
+    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
+
+
+def _coerce_output_history_limit(value) -> int:
+    try:
+        return max(10, int(value))
+    except (TypeError, ValueError):
+        return 200
+
+
+def _configure_output_history(enabled: bool, max_lines=200) -> None:
+    """Configure recent CLI output replayed after terminal redraws."""
+    global _OUTPUT_HISTORY_ENABLED, _OUTPUT_HISTORY_MAX_LINES, _OUTPUT_HISTORY
+    _OUTPUT_HISTORY_ENABLED = bool(enabled)
+    _OUTPUT_HISTORY_MAX_LINES = _coerce_output_history_limit(max_lines)
+    _OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
+
+
+def _clear_output_history() -> None:
+    _OUTPUT_HISTORY.clear()
+
+
+@contextmanager
+def _suspend_output_history():
+    global _OUTPUT_HISTORY_SUPPRESSED
+    old_value = _OUTPUT_HISTORY_SUPPRESSED
+    _OUTPUT_HISTORY_SUPPRESSED = True
+    try:
+        yield
+    finally:
+        _OUTPUT_HISTORY_SUPPRESSED = old_value
+
+
+def _record_output_history_entry(entry) -> None:
+    if not _OUTPUT_HISTORY_ENABLED or _OUTPUT_HISTORY_REPLAYING or _OUTPUT_HISTORY_SUPPRESSED:
+        return
+    _OUTPUT_HISTORY.append(entry)
+
+
+def _record_output_history(text: str) -> None:
+    if not _OUTPUT_HISTORY_ENABLED or _OUTPUT_HISTORY_REPLAYING or _OUTPUT_HISTORY_SUPPRESSED:
+        return
+    clean = _ANSI_CONTROL_RE.sub("", str(text)).replace("\r", "").rstrip("\n")
+    if not clean:
+        return
+    for line in clean.splitlines():
+        _record_output_history_entry(line)
+
+
+def _replay_output_history() -> None:
+    """Repaint recent output above the prompt after a full screen clear."""
+    global _OUTPUT_HISTORY_REPLAYING
+    if not _OUTPUT_HISTORY_ENABLED or not _OUTPUT_HISTORY:
+        return
+    _OUTPUT_HISTORY_REPLAYING = True
+    try:
+        for entry in tuple(_OUTPUT_HISTORY):
+            if callable(entry):
+                try:
+                    lines = entry()
+                except Exception:
+                    continue
+                if isinstance(lines, str):
+                    lines = lines.splitlines()
+            else:
+                lines = [entry]
+            for line in lines:
+                _pt_print(_PT_ANSI(str(line)))
+    except Exception:
+        pass
+    finally:
+        _OUTPUT_HISTORY_REPLAYING = False
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1292,6 +1376,8 @@ def _cprint(text: str):
     ``loop.call_soon_threadsafe``, which pauses the input area, prints
     the line above it, and redraws the prompt cleanly.
     """
+    _record_output_history(text)
+
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
@@ -2048,6 +2134,10 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        _configure_output_history(
+            enabled=CLI_CONFIG["display"].get("persistent_output", True),
+            max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
+        )
         # busy_input_mode: "interrupt" (Enter interrupts current run),
         # "queue" (Enter queues for next turn), or "steer" (Enter injects
         # mid-run via /steer, arriving after the next tool call).
@@ -2325,6 +2415,9 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        self._resize_recovery_lock = threading.Lock()
+        self._resize_recovery_timer = None
+        self._resize_recovery_pending = False
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -2332,6 +2425,8 @@ class HermesCLI:
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
+        if getattr(self, "_resize_recovery_pending", False):
+            return
         now = time.monotonic()
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
@@ -2355,11 +2450,25 @@ class HermesCLI:
         app = getattr(self, "_app", None)
         if not app:
             return
+        self._clear_prompt_toolkit_screen(app)
+        _replay_output_history()
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
+        """Clear the terminal and reset prompt_toolkit renderer state."""
         try:
             renderer = app.renderer
             out = renderer.output
             out.reset_attributes()
             out.erase_screen()
+            if rebuild_scrollback:
+                try:
+                    out.write_raw("\x1b[3J")
+                except Exception:
+                    pass
             out.cursor_goto(0, 0)
             out.flush()
             # Drop prompt_toolkit's cached screen + cursor state so the
@@ -2368,10 +2477,57 @@ class HermesCLI:
             renderer.reset(leave_alternate_screen=False)
         except Exception:
             pass
+
+    def _recover_after_resize(self, app, original_on_resize) -> None:
+        """Recover a resized classic CLI without desynchronizing cursor state."""
+        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
+        _replay_output_history()
+        original_on_resize()
+
+    def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
+        """Debounce resize redraws so footer chrome is not stamped into scrollback."""
         try:
-            app.invalidate()
+            old_timer = getattr(self, "_resize_recovery_timer", None)
+            lock = getattr(self, "_resize_recovery_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._resize_recovery_lock = lock
+
+            def _timer_fired(timer_ref):
+                def _run_recovery():
+                    with lock:
+                        if getattr(self, "_resize_recovery_timer", None) is not timer_ref:
+                            return
+                        self._resize_recovery_timer = None
+                        self._resize_recovery_pending = False
+                    self._recover_after_resize(app, original_on_resize)
+
+                try:
+                    loop = app.loop  # type: ignore[attr-defined]
+                except Exception:
+                    loop = None
+                if loop is not None:
+                    try:
+                        loop.call_soon_threadsafe(_run_recovery)
+                        return
+                    except Exception:
+                        pass
+                _run_recovery()
+
+            with lock:
+                if old_timer is not None:
+                    try:
+                        old_timer.cancel()
+                    except Exception:
+                        pass
+                self._resize_recovery_pending = True
+                timer = threading.Timer(delay, lambda: _timer_fired(timer))
+                timer.daemon = True
+                self._resize_recovery_timer = timer
+                timer.start()
         except Exception:
-            pass
+            self._resize_recovery_pending = False
+            self._recover_after_resize(app, original_on_resize)
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -4046,7 +4202,26 @@ class HermesCLI:
             padding=(0, 1),
             style=_history_text_c,
         )
-        self._console_print(panel)
+        _record_output_history_entry(lambda: self._render_resume_history_panel_lines(panel))
+        with _suspend_output_history():
+            self._console_print(panel)
+
+    def _render_resume_history_panel_lines(self, panel) -> list[str]:
+        """Render the resume panel at the current terminal width for resize replay."""
+        from io import StringIO
+
+        buf = StringIO()
+        width = shutil.get_terminal_size((80, 24)).columns
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            width=width,
+        )
+        with _suspend_output_history():
+            console.print(panel)
+        return buf.getvalue().rstrip("\n").splitlines()
 
     def _try_attach_clipboard_image(self) -> bool:
         """Check clipboard for an image and attach it if found.
@@ -6405,6 +6580,7 @@ class HermesCLI:
             _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
             self.new_session(silent=True)
+            _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
             # goes through patch_stdout's StdoutProxy which swallows the
             # screen-clear escape sequences.  Use prompt_toolkit's output
@@ -11672,23 +11848,7 @@ class HermesCLI:
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
-            renderer = app.renderer
-            try:
-                out = renderer.output
-                # Reset attributes, erase the entire screen, and home the
-                # cursor. This overwrites any reflowed status-bar rows or
-                # stale content the terminal kept from the prior layout.
-                out.reset_attributes()
-                out.erase_screen()
-                out.cursor_goto(0, 0)
-                out.flush()
-                # Tell the renderer its tracked position is fresh so its
-                # own erase() inside _on_resize doesn't cursor_up() past
-                # the top of the screen.
-                renderer.reset(leave_alternate_screen=False)
-            except Exception:
-                pass  # never break resize handling
-            _original_on_resize()
+            self._schedule_resize_recovery(app, _original_on_resize)
 
         app._on_resize = _resize_clear_ghosts
 

@@ -176,6 +176,10 @@ export interface SessionUsageResponse {
   total?: number
 }
 
+export interface SessionStatusResponse {
+  output?: string
+}
+
 export interface SessionCompressResponse {
   after_messages?: number
   after_tokens?: number

@@ -470,9 +470,22 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+# DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
+# Cross-container / cross-host gateway liveness detection will be folded into a
+# first-class dashboard config key so it's no longer Docker-adjacent lore buried
+# in env vars.  The env vars still work for now so existing Compose deployments
+# don't break.  Do not add new callers — wire new uses through the planned
+# config surface.
+
 
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway via its HTTP health endpoint (cross-container).
+
+    .. deprecated::
+        Driven by the deprecated ``GATEWAY_HEALTH_URL`` /
+        ``GATEWAY_HEALTH_TIMEOUT`` env vars.  Scheduled for removal alongside
+        a move to a first-class dashboard config key.  See
+        :data:`_GATEWAY_HEALTH_URL` for context.
 
     Uses ``/health/detailed`` first (returns full state), falling back to
     the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
@@ -2882,6 +2895,25 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
+
+def _is_public_bind() -> bool:
+    """True when bound to all-interfaces (operator used --insecure)."""
+    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+
+
+def _ws_client_is_allowed(ws: "WebSocket") -> bool:
+    """Check if the WebSocket client IP is acceptable.
+
+    Allows loopback always; allows any IP when bound to all-interfaces
+    (--insecure mode, guarded by session token auth).
+    """
+    if _is_public_bind():
+        return True
+    client_host = ws.client.host if ws.client else ""
+    if not client_host:
+        return True
+    return client_host in _LOOPBACK_HOSTS
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -2972,8 +3004,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3080,8 +3111,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3113,8 +3143,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3143,8 +3172,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 

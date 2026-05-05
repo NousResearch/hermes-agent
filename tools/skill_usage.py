@@ -11,8 +11,9 @@ Design notes:
   - Atomic writes via tempfile + os.replace (same pattern as .bundled_manifest).
   - All counter bumps are best-effort: failures log at DEBUG and return silently.
     A broken sidecar never breaks the underlying tool call.
-  - Provenance filter: "agent-created" == not in .bundled_manifest AND not in
-    .hub/lock.json. The curator only ever mutates agent-created skills.
+  - Provenance filter: curator-managed skills are explicitly marked when
+    created through skill_manage. Bundled / hub-installed skills stay
+    off-limits, and manually authored skills are not inferred from location.
 
 Lifecycle states:
     active    -> default
@@ -142,18 +143,39 @@ def _read_hub_installed_names() -> Set[str]:
         if isinstance(data, dict):
             installed = data.get("installed") or {}
             if isinstance(installed, dict):
-                return {str(k) for k in installed.keys()}
+                names = {str(k) for k in installed.keys()}
+                skills_dir = _skills_dir()
+                for entry in installed.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    install_path = entry.get("install_path")
+                    if not isinstance(install_path, str) or not install_path.strip():
+                        continue
+                    skill_dir = Path(install_path)
+                    if not skill_dir.is_absolute():
+                        skill_dir = skills_dir / skill_dir
+                    try:
+                        resolved = skill_dir.resolve()
+                        resolved.relative_to(skills_dir.resolve())
+                    except (OSError, ValueError):
+                        continue
+                    skill_md = resolved / "SKILL.md"
+                    if skill_md.exists():
+                        names.add(_read_skill_name(skill_md, fallback=resolved.name))
+                return names
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
     return set()
 
 
 def list_agent_created_skill_names() -> List[str]:
-    """Enumerate skills that were authored by the agent (or user), NOT by a
-    bundled or hub-installed source.
+    """Enumerate skills explicitly authored by the agent.
 
-    The curator operates exclusively on this set. Bundled / hub skills are
-    maintained by their upstream sources and must never be pruned here.
+    The curator operates exclusively on this set. Skills are only eligible
+    after ``skill_manage(action="create")`` marks them in ``.usage.json``;
+    manually authored skills must not be inferred from filesystem location.
+    Bundled / hub skills are maintained by their upstream sources and must
+    never be pruned here.
     """
     base = _skills_dir()
     if not base.exists():
@@ -161,6 +183,7 @@ def list_agent_created_skill_names() -> List[str]:
     bundled = _read_bundled_manifest_names()
     hub = _read_hub_installed_names()
     off_limits = bundled | hub
+    usage = load_usage()
 
     names: List[str] = []
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
@@ -175,6 +198,8 @@ def list_agent_created_skill_names() -> List[str]:
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         if name in off_limits:
+            continue
+        if not _is_curator_managed_record(usage.get(name)):
             continue
         names.append(name)
     return sorted(set(names))
@@ -207,12 +232,20 @@ def is_agent_created(skill_name: str) -> bool:
     return skill_name not in off_limits
 
 
+def _is_curator_managed_record(record: Any) -> bool:
+    """Return True when a usage record opts a skill into curator management."""
+    if not isinstance(record, dict):
+        return False
+    return record.get("created_by") == "agent" or record.get("agent_created") is True
+
+
 # ---------------------------------------------------------------------------
 # Sidecar I/O
 # ---------------------------------------------------------------------------
 
 def _empty_record() -> Dict[str, Any]:
     return {
+        "created_by": None,
         "use_count": 0,
         "view_count": 0,
         "last_used_at": None,
@@ -287,9 +320,8 @@ def _mutate(skill_name: str, mutator) -> None:
     """Load, apply *mutator(record)* in place, save. Best-effort.
 
     Bundled and hub-installed skills are NEVER recorded in the sidecar.
-    This keeps .usage.json focused on agent-created skills (the only ones
-    the curator considers) and prevents stale counters from hanging around
-    for upstream-managed skills.
+    Local manual skills may still accrue usage telemetry, but they only
+    become curator-managed when ``created_by`` is explicitly marked.
     """
     if not skill_name:
         return
@@ -333,6 +365,17 @@ def bump_patch(skill_name: str) -> None:
     def _apply(rec: Dict[str, Any]) -> None:
         rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
         rec["last_patched_at"] = _now_iso()
+    _mutate(skill_name, _apply)
+
+
+def mark_agent_created(skill_name: str) -> None:
+    """Opt a skill created by skill_manage into curator management.
+
+    Viewing or invoking a manually authored skill may still create telemetry,
+    but only this explicit marker makes it eligible for automatic curation.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["created_by"] = "agent"
     _mutate(skill_name, _apply)
 
 

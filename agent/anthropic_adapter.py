@@ -76,6 +76,7 @@ _ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
 _NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
+_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
 # Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
@@ -105,6 +106,9 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-3-haiku":      4_096,
     # Third-party Anthropic-compatible providers
     "minimax":            131_072,
+    # Qwen models via DashScope Anthropic-compatible endpoint
+    # DashScope enforces max_tokens ∈ [1, 65536]
+    "qwen3":               65_536,
 }
 
 # For any model not in the table, assume the highest current limit.
@@ -214,6 +218,17 @@ def _forbids_sampling_params(model: str) -> bool:
     than passing zero/default values (the API rejects anything non-null).
     """
     return any(v in model for v in _NO_SAMPLING_PARAMS_SUBSTRINGS)
+
+
+def _supports_fast_mode(model: str) -> bool:
+    """Return True for models that support Anthropic Fast Mode (speed=fast).
+
+    Per Anthropic docs, fast mode is currently supported on Opus 4.6 only.
+    Sending ``speed: "fast"`` to any other Claude model (including Opus 4.7)
+    returns HTTP 400. This guard prevents silently 400'ing when stale config
+    or older callers leave fast mode enabled across a model upgrade.
+    """
+    return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
 
 # Beta headers for enhanced features (sent with ALL auth types).
@@ -1222,6 +1237,14 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     ``keep_nullable_hint=False`` because the Anthropic validator does not
     recognize the OpenAPI-style ``nullable: true`` extension and strict
     schema-to-grammar converters may reject unknown keywords.
+
+    Top-level ``oneOf``/``allOf``/``anyOf`` are also stripped here: the
+    Anthropic API rejects union keywords at the schema root with a generic
+    HTTP 400. Several upstream and plugin tools ship schemas with one of
+    these keywords at the top level (commonly for Pydantic discriminated
+    unions). If we land here with those keywords still present after
+    nullable-union stripping, drop them and fall back to a plain object
+    schema so the tool still validates at the Anthropic boundary.
     """
     if not schema:
         return {"type": "object", "properties": {}}
@@ -1231,6 +1254,12 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
     if not isinstance(normalized, dict):
         return {"type": "object", "properties": {}}
+    # Strip top-level union keywords that Anthropic's validator rejects.
+    banned = {"oneOf", "allOf", "anyOf"}
+    if banned & normalized.keys():
+        normalized = {k: v for k, v in normalized.items() if k not in banned}
+        if "type" not in normalized:
+            normalized["type"] = "object"
     if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
         normalized = {**normalized, "properties": {}}
     return normalized
@@ -1241,10 +1270,24 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     if not tools:
         return []
     result = []
+    seen_names: set = set()
     for t in tools:
         fn = t.get("function", {})
+        name = fn.get("name", "")
+        # Defensive dedup: Anthropic rejects requests with duplicate tool
+        # names.  Upstream injection paths already dedup, but this guard
+        # converts a hard API failure into a warning.  See: #18478
+        if name and name in seen_names:
+            logger.warning(
+                "convert_tools_to_anthropic: duplicate tool name '%s' "
+                "— dropping second occurrence",
+                name,
+            )
+            continue
+        if name:
+            seen_names.add(name)
         result.append({
-            "name": fn.get("name", ""),
+            "name": name,
             "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
                 fn.get("parameters", {"type": "object", "properties": {}})
@@ -1901,9 +1944,15 @@ def build_anthropic_kwargs(
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
-    # output speed. Only for native Anthropic endpoints — third-party
-    # providers would reject the unknown beta header and speed parameter.
-    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
+    # output speed. Per Anthropic docs, fast mode is only supported on
+    # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
+    # Only for native Anthropic endpoints — third-party providers would
+    # reject the unknown beta header and speed parameter.
+    if (
+        fast_mode
+        and not _is_third_party_anthropic_endpoint(base_url)
+        and _supports_fast_mode(model)
+    ):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).

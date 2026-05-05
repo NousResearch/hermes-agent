@@ -416,6 +416,18 @@ class EmailAdapter(BasePlatformAdapter):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
             return
 
+        # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
+        # from creating a MessageEvent (and thus thread context) for senders
+        # that the gateway will never authorize.  Without this early guard,
+        # a race between dispatch and authorization can result in the adapter
+        # sending a reply even though the handler returned None.
+        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+        if allowed_raw:
+            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
+            if sender_addr.lower() not in allowed:
+                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+                return
+
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
         attachments = msg_data["attachments"]

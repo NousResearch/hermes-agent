@@ -7,7 +7,7 @@
  * 4. Waits for plugins to call register() and resolves them
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "@/lib/api";
 import type { PluginManifest, RegisteredPlugin } from "./types";
 import {
@@ -19,6 +19,8 @@ import {
 
 export function usePlugins() {
   const [manifests, setManifests] = useState<PluginManifest[]>([]);
+  // Monotonically increasing counter — bump to trigger a manifest re-fetch.
+  const [fetchGen, setFetchGen] = useState(0);
   const [plugins, setPlugins] = useState<RegisteredPlugin[]>([]);
   const [loading, setLoading] = useState(true);
   const loadedScripts = useRef<Set<string>>(new Set());
@@ -32,7 +34,19 @@ export function usePlugins() {
         if (list.length === 0) setLoading(false);
       })
       .catch(() => setLoading(false));
+  }, [fetchGen]);
+
+  // Expose a stable callback so callers (or event listeners) can trigger a
+  // manifest re-fetch — e.g. after toggling plugin visibility.
+  const refetchManifests = useCallback(() => {
+    setFetchGen((g) => g + 1);
   }, []);
+
+  // Re-fetch manifests whenever any code dispatches "hermes:plugins:changed".
+  useEffect(() => {
+    window.addEventListener("hermes:plugins:changed", refetchManifests);
+    return () => window.removeEventListener("hermes:plugins:changed", refetchManifests);
+  }, [refetchManifests]);
 
   // Load plugin assets when manifests arrive.
   useEffect(() => {
@@ -119,5 +133,5 @@ export function usePlugins() {
     return unsub;
   }, [manifests]);
 
-  return { plugins, manifests, loading };
+  return { plugins, manifests, loading, refetchManifests };
 }

@@ -92,6 +92,7 @@ export default function PluginsPage() {
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
       await loadHub();
+      window.dispatchEvent(new CustomEvent("hermes:plugins:changed"));
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Install failed", "error");
     } finally {
@@ -108,6 +109,7 @@ export default function PluginsPage() {
         "success",
       );
       await loadHub();
+      window.dispatchEvent(new CustomEvent("hermes:plugins:changed"));
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Rescan failed", "error");
     } finally {
@@ -137,6 +139,9 @@ export default function PluginsPage() {
     try {
       await fn();
       await loadHub();
+      // Notify the sidebar (usePlugins) to re-fetch manifests so visibility
+      // and enable/disable changes are reflected without a page reload.
+      window.dispatchEvent(new CustomEvent("hermes:plugins:changed"));
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Failed", "error");
     } finally {

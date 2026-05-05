@@ -829,7 +829,7 @@ class ShellFileOperations(FileOperations):
         from tools.fuzzy_match import fuzzy_find_and_replace
         
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all
+            content, old_string, new_string, replace_all, timeout=5
         )
         
         if error or match_count == 0:

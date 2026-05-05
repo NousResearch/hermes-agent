@@ -159,6 +159,207 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+
+# Markdown table detection / conversion (mirrors OpenClaw behaviour for Feishu)
+# Feishu's `md` tag does NOT support table syntax — tables render as raw text.
+# We convert them to code blocks (pipe-aligned) before wrapping in post payload.
+_MARKDOWN_TABLE_LINE_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_MARKDOWN_TABLE_DIVIDER_RE = re.compile(r"^\s*\|(?:[-:]+\|)+\s*$")
+
+
+def _parse_markdown_table(text: str) -> List[Dict[str, Any]]:
+    """Parse markdown text and extract tables as Feishu CardKit v2 table components.
+
+    Returns a list of dicts: each dict is either {"type": "text", "content": str}
+    or {"type": "table", "headers": [...], "rows": [[...], ...]}.
+    """
+    if not text or "|" not in text:
+        return [{"type": "text", "content": text}]
+
+    lines = text.splitlines(keepends=True)
+    segments: List[Dict[str, Any]] = []
+    non_table_parts: List[str] = []
+    table_lines: List[str] = []
+    in_table = False
+
+    def _flush_non_table() -> None:
+        if non_table_parts:
+            joined = "".join(non_table_parts)
+            if joined:
+                segments.append({"type": "text", "content": joined})
+            non_table_parts.clear()
+
+    def _flush_table() -> None:
+        nonlocal table_lines
+        if not table_lines:
+            return
+        header_line = table_lines[0].rstrip("\n")
+        row_lines = table_lines[2:] if len(table_lines) > 1 and _MARKDOWN_TABLE_DIVIDER_RE.match(table_lines[1]) else table_lines[1:]
+
+        def _parse_cells(line: str) -> List[str]:
+            stripped = line.strip()
+            if stripped.startswith("|"):
+                stripped = stripped[1:]
+            if stripped.endswith("|"):
+                stripped = stripped[:-1]
+            return [cell.strip() for cell in stripped.split("|")]
+
+        headers = _parse_cells(header_line)
+        rows = [_parse_cells(r) for r in row_lines]
+        # Normalize row length to match headers
+        for row in rows:
+            while len(row) < len(headers):
+                row.append("")
+            if len(row) > len(headers):
+                row[:] = row[:len(headers)]
+
+        segments.append({"type": "table", "headers": headers, "rows": rows})
+        table_lines = []
+
+    for line in lines:
+        if _MARKDOWN_TABLE_LINE_RE.match(line):
+            if not in_table:
+                _flush_non_table()
+                in_table = True
+            table_lines.append(line)
+            continue
+
+        if in_table:
+            if line.strip() == "":
+                _flush_table()
+                in_table = False
+                non_table_parts.append(line)
+                continue
+            if _MARKDOWN_TABLE_DIVIDER_RE.match(line):
+                table_lines.append(line)
+                continue
+            if _MARKDOWN_TABLE_LINE_RE.match(line):
+                table_lines.append(line)
+                continue
+            _flush_table()
+            in_table = False
+            non_table_parts.append(line)
+            continue
+
+        non_table_parts.append(line)
+
+    if in_table:
+        _flush_table()
+    _flush_non_table()
+
+    return segments
+
+
+def _build_table_card(headers: List[str], rows: List[List[str]]) -> Dict[str, Any]:
+    """Build a Feishu CardKit v2 table component from headers and rows.
+
+    Ref: https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/table
+
+    CardKit v2 table structure:
+    {
+      "tag": "table",
+      "columns": [
+        {"name": "col1", "display_name": "Header1", "data_type": "text"},
+        ...
+      ],
+      "rows": [
+        {"col1": "data1", "col2": "data2"},
+        ...
+      ]
+    }
+    """
+    import re
+
+    def _strip_md_bold(text: str) -> str:
+        """Strip markdown bold markers ** and __ from text."""
+        if not text:
+            return text
+        # Remove all ** and __ markers
+        text = re.sub(r'\*\*', '', text)
+        text = re.sub(r'__', '', text)
+        return text.strip()
+
+    # Build columns definition
+    columns = []
+    for i, h in enumerate(headers):
+        col_name = f"col_{i}"
+        columns.append({
+            "name": col_name,
+            "display_name": _strip_md_bold(h) or " ",
+            "data_type": "text",
+            "width": "auto",
+        })
+
+    # Build rows as objects mapping col_name -> cell_value
+    data_rows = []
+    for row in rows:
+        row_obj = {}
+        for i, cell in enumerate(row):
+            if i < len(headers):
+                col_name = f"col_{i}"
+                row_obj[col_name] = _strip_md_bold(cell) or " "
+        data_rows.append(row_obj)
+
+    return {
+        "tag": "table",
+        "columns": columns,
+        "rows": data_rows,
+        "header_style": {
+            "bold": True,
+            "text_align": "left",
+            "text_size": "normal",
+            "background_style": "none",
+            "text_color": "default",
+            "lines": 1
+        },
+    }
+
+
+def _build_interactive_card_with_tables(text: str) -> Optional[Dict[str, Any]]:
+    """Build a CardKit v2 interactive card if the text contains markdown tables.
+
+    Returns None if no tables are found (caller should fall back to post message).
+    """
+    segments = _parse_markdown_table(text)
+    has_table = any(s["type"] == "table" for s in segments)
+    if not has_table:
+        return None
+
+    elements: List[Dict[str, Any]] = []
+    for seg in segments:
+        if seg["type"] == "text":
+            content = seg["content"].strip()
+            if content:
+                elements.append({
+                    "tag": "markdown",
+                    "content": content,
+                })
+        elif seg["type"] == "table":
+            elements.append(_build_table_card(seg["headers"], seg["rows"]))
+
+    if not elements:
+        return None
+
+    return {
+        "schema": "2.0",
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "body": {
+            "elements": elements,
+        },
+    }
+
+
+def _convert_markdown_tables_to_code(text: str) -> str:
+    """DEPRECATED: Kept for backward compatibility.
+
+    Previously converted markdown tables to code blocks for Feishu post messages.
+    Now tables are rendered as real CardKit v2 table components via
+    _build_interactive_card_with_tables(). This function is kept as a fallback
+    for any callers that still expect string output.
+    """
+    return text
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -544,6 +745,9 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
+    # Feishu's `md` tag does not support table syntax — convert tables to
+    # code blocks before wrapping in post payload (matches OpenClaw behaviour).
+    content = _convert_markdown_tables_to_code(content)
     rows = _build_markdown_post_rows(content)
     return json.dumps(
         {
@@ -3992,6 +4196,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Check for markdown tables first — if found, send as CardKit v2 interactive card
+        # for real table rendering instead of code blocks.
+        card = _build_interactive_card_with_tables(content)
+        if card is not None:
+            return "interactive", json.dumps(card, ensure_ascii=False)
+
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

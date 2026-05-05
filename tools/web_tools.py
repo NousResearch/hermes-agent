@@ -45,6 +45,8 @@ import logging
 import os
 import re
 import asyncio
+import subprocess
+from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx
 # NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
@@ -126,6 +128,8 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
+    if configured in ("duckduckgo", "ddg"):
+        return "duckduckgo"
     if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
 
@@ -155,6 +159,9 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "duckduckgo":
+        ddgs_python = os.getenv("DUCKDUCKGO_PYTHON_BIN", str(Path.home() / ".venvs" / "hermes-search" / "bin" / "python"))
+        return Path(ddgs_python).exists()
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -1071,6 +1078,54 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def _duckduckgo_search(query: str, limit: int = 10) -> dict:
+    """Search via local ddgs package from a dedicated venv (no API key required)."""
+    ddgs_python = os.getenv("DUCKDUCKGO_PYTHON_BIN", str(Path.home() / ".venvs" / "hermes-search" / "bin" / "python"))
+    if not Path(ddgs_python).exists():
+        raise ValueError(
+            "DuckDuckGo backend selected but venv python was not found. "
+            f"Expected: {ddgs_python}. "
+            "Install with: python3 -m venv ~/.venvs/hermes-search && "
+            "~/.venvs/hermes-search/bin/pip install -U pip ddgs"
+        )
+
+    capped_limit = max(1, min(int(limit), 20))
+    script = (
+        "import json,sys; "
+        "from ddgs import DDGS; "
+        "q=sys.argv[1]; n=int(sys.argv[2]); "
+        "rows=list(DDGS().text(q, max_results=n)); "
+        "print(json.dumps(rows, ensure_ascii=False))"
+    )
+    cmd = [ddgs_python, "-c", script, query, str(capped_limit)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        raise ValueError(f"ddgs execution failed (exit {proc.returncode}): {stderr or stdout or 'no output'}")
+
+    raw = (proc.stdout or "").strip()
+    rows = json.loads(raw) if raw else []
+    if not isinstance(rows, list):
+        rows = []
+
+    web_results = []
+    for i, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        url = row.get("href") or row.get("url") or ""
+        title = row.get("title") or ""
+        description = row.get("body") or row.get("description") or ""
+        web_results.append({
+            "url": url,
+            "title": title,
+            "description": description,
+            "position": i,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -1156,6 +1211,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "duckduckgo":
+            response_data = _duckduckgo_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1967,9 +2031,10 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
-        return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "duckduckgo", "ddg"):
+        normalized = "duckduckgo" if configured == "ddg" else configured
+        return _is_backend_available(normalized)
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "duckduckgo"))
 
 
 def check_auxiliary_model() -> bool:
@@ -2004,6 +2069,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "duckduckgo":
+            print("   Using DuckDuckGo via local ddgs package")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")

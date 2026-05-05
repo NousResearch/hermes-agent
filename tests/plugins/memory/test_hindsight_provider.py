@@ -8,6 +8,7 @@ turn counting, tags), and schema completeness.
 import json
 import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -273,6 +274,24 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_resolves_copilot_credentials(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            lambda provider: {
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.githubcopilot.com",
+            },
+        )
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "copilot",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "copilot"
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "copilot-api-token"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://api.githubcopilot.com"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 
@@ -299,6 +318,37 @@ class TestConfig:
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
 
+    def test_get_client_resolves_copilot_runtime_credentials(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            lambda provider: {
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.githubcopilot.com",
+            },
+        )
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "copilot",
+            "llm_model": "gpt-4o-mini",
+        }
+
+        p._get_client()
+
+        assert captured["llm_provider"] == "copilot"
+        assert captured["llm_api_key"] == "copilot-api-token"
+        assert captured["llm_base_url"] == "https://api.githubcopilot.com"
+
 
 class TestPostSetup:
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
@@ -306,6 +356,7 @@ class TestPostSetup:
         user_home = tmp_path / "user-home"
         user_home.mkdir()
         monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr(Path, "home", lambda: user_home)
 
         selections = iter([1, 0])  # local_embedded, openai
         monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
@@ -340,6 +391,7 @@ class TestPostSetup:
         user_home = tmp_path / "user-home"
         user_home.mkdir()
         monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr(Path, "home", lambda: user_home)
 
         selections = iter([1, 0])  # local_embedded, openai
         monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
@@ -358,11 +410,48 @@ class TestPostSetup:
         assert coder_env.exists()
         assert not hermes_env.exists()
 
+    def test_local_embedded_setup_materializes_copilot_profile_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+
+        selections = iter([1, 1])  # local_embedded, copilot
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            lambda provider: {
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.githubcopilot.com",
+            },
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {}})
+
+        profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
+        assert profile_env.exists()
+        assert profile_env.read_text() == (
+            "HINDSIGHT_API_LLM_PROVIDER=copilot\n"
+            "HINDSIGHT_API_LLM_API_KEY=copilot-api-token\n"
+            "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"
+            "HINDSIGHT_API_LOG_LEVEL=info\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://api.githubcopilot.com\n"
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n"
+        )
+
     def test_local_embedded_setup_preserves_existing_key_when_input_left_blank(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"
         user_home.mkdir()
         monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr(Path, "home", lambda: user_home)
 
         selections = iter([1, 0])  # local_embedded, openai
         monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
@@ -390,6 +479,7 @@ class TestPostSetup:
         user_home = tmp_path / "user-home"
         user_home.mkdir()
         monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr(Path, "home", lambda: user_home)
         monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
 
         existing_config = {
@@ -1119,6 +1209,11 @@ class TestConfigSchema:
             "recall_prompt_preamble",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
+
+    def test_local_embedded_llm_provider_choices_include_copilot(self, provider):
+        schema = provider.get_config_schema()
+        llm_provider = next(f for f in schema if f["key"] == "llm_provider")
+        assert "copilot" in llm_provider["choices"]
 
 
 # ---------------------------------------------------------------------------

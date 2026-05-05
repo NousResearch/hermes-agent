@@ -55,6 +55,7 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
+    "copilot": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
     "gemini": "gemini-2.5-flash",
     "groq": "openai/gpt-oss-120b",
@@ -303,25 +304,56 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
-def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
-    """Build the profile-scoped env file that standalone hindsight-embed consumes."""
-    current_key = llm_api_key
-    if current_key is None:
-        current_key = (
+def _resolve_embedded_llm_runtime(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    llm_base_url: str | None = None,
+) -> tuple[str, str, str]:
+    """Resolve provider/api-key/base-url for Hindsight embedded local mode."""
+    provider = str(config.get("llm_provider", "") or "").strip()
+    api_key = llm_api_key
+    if api_key is None:
+        api_key = (
             config.get("llmApiKey")
             or config.get("llm_api_key")
             or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
         )
+    base_url = llm_base_url
+    if base_url is None:
+        base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
 
-    current_provider = config.get("llm_provider", "")
-    current_model = config.get("llm_model", "")
-    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    api_key = str(api_key or "").strip()
+    base_url = str(base_url or "").strip()
 
-    # The embedded daemon expects OpenAI wire format for these providers.
-    daemon_provider = "openai" if current_provider in ("openai_compatible", "openrouter") else current_provider
+    if provider == "openrouter" and not base_url:
+        base_url = "https://openrouter.ai/api/v1"
+    elif provider == "copilot":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("copilot")
+        except Exception:
+            creds = {}
+        if not api_key:
+            api_key = str(creds.get("api_key") or "").strip()
+        if not base_url:
+            base_url = str(creds.get("base_url") or "").strip()
+
+    daemon_provider = "openai" if provider in ("openai_compatible", "openrouter") else provider
+    return daemon_provider, api_key, base_url
+
+
+def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+    """Build the profile-scoped env file that standalone hindsight-embed consumes."""
+    current_model = str(config.get("llm_model", "") or "")
+    current_provider, current_key, current_base_url = _resolve_embedded_llm_runtime(
+        config,
+        llm_api_key=llm_api_key,
+    )
 
     env_values = {
-        "HINDSIGHT_API_LLM_PROVIDER": str(daemon_provider),
+        "HINDSIGHT_API_LLM_PROVIDER": str(current_provider),
         "HINDSIGHT_API_LLM_API_KEY": str(current_key or ""),
         "HINDSIGHT_API_LLM_MODEL": str(current_model),
         "HINDSIGHT_API_LOG_LEVEL": "info",
@@ -642,8 +674,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 val = input(prompt).strip()
                 if val:
                     provider_config["llm_base_url"] = val
+            elif llm_provider == "copilot":
+                provider_config["llm_base_url"] = "https://api.githubcopilot.com"
             elif llm_provider == "openrouter":
                 provider_config["llm_base_url"] = "https://openrouter.ai/api/v1"
+            else:
+                provider_config.pop("llm_base_url", None)
 
             provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
             current_model = provider_config.get("llm_model") or provider_default_model
@@ -741,7 +777,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
             # Local embedded mode
-            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
+            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "copilot", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
@@ -782,19 +818,17 @@ class HindsightMemoryProvider(MemoryProvider):
                     )
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
-                if llm_provider in ("openai_compatible", "openrouter"):
-                    llm_provider = "openai"
+                llm_provider, llm_api_key, llm_base_url = _resolve_embedded_llm_runtime(self._config)
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
                              self._config.get("profile", "hermes"), llm_provider)
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=llm_api_key,
                     llm_model=self._config.get("llm_model", ""),
                 )
-                if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
+                if llm_base_url:
+                    kwargs["llm_base_url"] = llm_base_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None

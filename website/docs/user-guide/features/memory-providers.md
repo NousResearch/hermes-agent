@@ -330,7 +330,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 | | |
 |---|---|
 | **Best for** | Knowledge graph-based recall with entity relationships |
-| **Requires** | Cloud: API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io). Local: LLM API key (OpenAI, Groq, OpenRouter, etc.) |
+| **Requires** | Cloud: API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io). Local: LLM credentials (OpenAI, GitHub Copilot, Groq, OpenRouter, etc.) |
 | **Data storage** | Hindsight Cloud or local embedded PostgreSQL |
 | **Cost** | Hindsight pricing (cloud) or free (local) |
 

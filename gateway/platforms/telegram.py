@@ -856,6 +856,48 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.name, topic_name, seed_err,
                         )
 
+    async def _register_command_menu(self) -> None:
+        """Register Telegram slash commands and show the commands menu button."""
+        # Register bot commands so Telegram shows a hint menu when users type /
+        # List is derived from the central COMMAND_REGISTRY — adding a new
+        # gateway command there automatically adds it to the Telegram menu.
+        try:
+            from telegram import BotCommand
+            from hermes_cli.commands import telegram_menu_commands
+
+            # Telegram allows up to 100 commands but has an undocumented
+            # payload size limit. Skill descriptions are truncated to 40 chars
+            # in telegram_menu_commands() to fit 100 commands safely.
+            menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+            await self._bot.set_my_commands([
+                BotCommand(name, desc) for name, desc in menu_commands
+            ])
+            try:
+                from telegram import MenuButtonCommands
+                from telegram.error import TelegramError
+
+                await self._bot.set_chat_menu_button(
+                    menu_button=MenuButtonCommands()
+                )
+            except (ImportError, AttributeError, TelegramError):
+                logger.debug(
+                    "[%s] Could not force Telegram menu button to commands mode",
+                    self.name,
+                    exc_info=True,
+                )
+            if hidden_count:
+                logger.info(
+                    "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
+                    self.name, len(menu_commands), hidden_count,
+                )
+        except Exception as e:
+            logger.warning(
+                "[%s] Could not register Telegram command menu: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
+
     async def connect(self) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -1082,31 +1124,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=_polling_error_callback,
                 )
             
-            # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
-            try:
-                from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[%s] Could not register Telegram command menu: %s",
-                    self.name,
-                    e,
-                    exc_info=True,
-                )
+            await self._register_command_menu()
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"

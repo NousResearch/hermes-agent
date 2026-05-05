@@ -5316,6 +5316,16 @@ class GatewayRunner:
                 return self._telegram_topic_root_new_message()
             return await self._handle_reset_command(event)
 
+        if canonical == "start":
+            return (
+                "Jarvis is online.\n\n"
+                "Quick commands:\n"
+                "/new — start a fresh session\n"
+                "/model — switch model for this session\n"
+                "/commands — browse everything available\n"
+                "/help — show the compact help list"
+            )
+
         if canonical == "topic":
             return await self._handle_topic_command(event)
         

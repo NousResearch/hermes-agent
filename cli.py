@@ -8775,6 +8775,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _drain_interrupt_queue_to_pending_input(self) -> None:
+        """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
+
+        While the agent is running, user input is routed into
+        ``_interrupt_queue`` (see the architecture comment near
+        ``_route_user_input_when_busy``). The explicit-interrupt path at the
+        top of ``process_loop`` only drains that queue when
+        ``busy_input_mode == "interrupt"`` AND a ``pending_message`` was
+        acknowledged. If the agent's turn finishes naturally (no interrupt),
+        any messages typed during the turn stay stuck in ``_interrupt_queue``
+        forever. Subsequent ``Enter`` presses re-route to the same blocked
+        queue and the CLI appears to hang.
+
+        Called once at the end of every turn from ``process_loop``'s ``finally``
+        block. Catches and swallows ``Exception`` because the drain must never
+        break the main loop. (#20271)
+        """
+        try:
+            while not self._interrupt_queue.empty():
+                stray = self._interrupt_queue.get_nowait()
+                if stray:
+                    self._pending_input.put(stray)
+        except Exception:
+            pass  # Non-fatal — never break the main loop
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
 
@@ -14800,6 +14825,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # input buffer and force a clean renderer redraw.
                         if self._last_turn_interrupted:
                             self._recover_terminal_after_interrupt()
+
+                        # Re-queue any messages that arrived in _interrupt_queue
+                        # while the agent was running and were never claimed by
+                        # the explicit interrupt path. See
+                        # _drain_interrupt_queue_to_pending_input for the full
+                        # rationale. Regression of #17666 / #18760 — the drain
+                        # block from the original PR #17939 was deferred as
+                        # "worth its own review" and never re-landed (#20271).
+                        self._drain_interrupt_queue_to_pending_input()
 
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and

@@ -6,6 +6,22 @@ This bundled plugin is opt-in. It uses the `pre_gateway_dispatch` hook to
 intercept Feishu messages before the default gateway dispatch, resolve the real
 sender `open_id`, and run the message against a per-user Hermes profile.
 
+## How it works
+
+1. `register(ctx)` installs a `pre_gateway_dispatch` hook. Feishu messages are
+   skipped from normal dispatch and handled by the plugin router.
+2. The router resolves a canonical Feishu sender `open_id` (`ou_*`) from
+   context, event fields, or raw Feishu payloads. Alternate IDs are legacy route
+   lookup helpers only.
+3. `multitenancy_routing.open_id -> profile_name` selects a Hermes profile under
+   `~/.hermes/profiles/<profile>/`; route misses may auto-provision
+   `feishu_<open_id>` when enabled.
+4. Normal turns run through the AIAgent subprocess with the routed profile's
+   `HERMES_HOME` and sender open_id scope.
+5. Slash commands are handled by Hermes gateway/plugin/skill control paths and
+   unknown slash commands return an unknown-command reply instead of entering the
+   LLM prompt.
+
 ## Enable
 
 ```bash

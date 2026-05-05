@@ -126,7 +126,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -155,6 +155,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searxng":
+        return bool(_get_searxng_url())
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -359,6 +361,41 @@ def _normalize_tavily_search_results(response: dict) -> dict:
             "position": i + 1,
         })
     return {"success": True, "data": {"web": web_results}}
+
+
+# ─── SearXNG Client ──────────────────────────────────────────────────────────
+
+def _get_searxng_url() -> str:
+    """Return configured SearXNG base URL without trailing slash."""
+    url = (_load_web_config().get("searxng_url") or os.getenv("SEARXNG_URL", "")).strip()
+    return url.rstrip("/")
+
+
+def _normalize_searxng_search_results(response: dict, limit: int) -> dict:
+    """Normalize SearXNG JSON results to the standard web search format."""
+    web_results = []
+    for i, result in enumerate(response.get("results", [])[:limit]):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _searxng_search(query: str, limit: int) -> dict:
+    """Search a configured SearXNG instance."""
+    base_url = _get_searxng_url()
+    if not base_url:
+        raise ValueError("SearXNG backend selected but web.searxng_url is not configured")
+    response = httpx.get(
+        f"{base_url}/search",
+        params={"q": query, "format": "json"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return _normalize_searxng_search_results(response.json(), limit)
 
 
 def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[Dict[str, Any]]:
@@ -1156,6 +1193,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "searxng":
+            logger.info("SearXNG search: '%s' (limit: %d)", query, limit)
+            response_data = _searxng_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1967,7 +2014,7 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng"):
         return _is_backend_available(configured)
     return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
 

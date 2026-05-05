@@ -324,6 +324,25 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_searxng(self):
+        """web.backend=searxng in config → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            assert _get_backend() == "searxng"
+
+    def test_config_searxng_case_insensitive(self):
+        """web.backend=SearXNG (mixed case) → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "SearXNG"}):
+            assert _get_backend() == "searxng"
+
+    def test_config_searxng_overrides_env_keys(self):
+        """web.backend=searxng in config → 'searxng' even if Firecrawl key set."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "searxng"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -619,6 +638,19 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
+
+    def test_searxng_without_url_returns_false(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_searxng_with_url_returns_true(self):
+        with patch("tools.web_tools._load_web_config", return_value={
+            "backend": "searxng",
+            "searxng_url": "http://127.0.0.1:8888",
+        }):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
 
 
 def test_web_requires_env_includes_exa_key():

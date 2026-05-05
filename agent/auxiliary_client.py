@@ -357,6 +357,16 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
+def groq_default_headers() -> Dict[str, str]:
+    """Headers used for api.groq.com OpenAI-compatible requests.
+
+    Some VPS egress paths get Cloudflare 403/1010 from Groq when the request
+    carries the openai-python default user agent.  A normal app User-Agent is
+    enough to pass the real completions and vision endpoints.
+    """
+    return {"User-Agent": f"HermesAgent/{_HERMES_VERSION}"}
+
+
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
 
@@ -1166,6 +1176,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            elif base_url_host_matches(base_url, "api.groq.com"):
+                extra["default_headers"] = groq_default_headers()
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
@@ -1193,6 +1205,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        elif base_url_host_matches(base_url, "api.groq.com"):
+            extra["default_headers"] = groq_default_headers()
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
@@ -1975,6 +1989,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+    elif base_url_host_matches(sync_base_url, "api.groq.com"):
+        async_kwargs["default_headers"] = groq_default_headers()
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -2202,6 +2218,8 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            elif base_url_host_matches(custom_base, "api.groq.com"):
+                extra["default_headers"] = groq_default_headers()
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -2267,6 +2285,8 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                if base_url_host_matches(openai_base, "api.groq.com"):
+                    _extra2["default_headers"] = groq_default_headers()
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -2289,6 +2309,8 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        if base_url_host_matches(_fallback_base, "api.groq.com"):
+                            _fb_extra["default_headers"] = groq_default_headers()
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
@@ -2390,6 +2412,8 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
+        elif base_url_host_matches(base_url, "api.groq.com"):
+            headers.update(groq_default_headers())
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 

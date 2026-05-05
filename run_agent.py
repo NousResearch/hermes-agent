@@ -1434,6 +1434,9 @@ class AIAgent:
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
+                elif base_url_host_matches(effective_base, "api.groq.com"):
+                    from agent.auxiliary_client import groq_default_headers
+                    client_kwargs["default_headers"] = groq_default_headers()
                 elif base_url_host_matches(effective_base, "api.kimi.com"):
                     client_kwargs["default_headers"] = {
                         "User-Agent": "claude-code/0.1.0",
@@ -6230,6 +6233,9 @@ class AIAgent:
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
+        elif base_url_host_matches(base_url, "api.groq.com"):
+            from agent.auxiliary_client import groq_default_headers
+            self._client_kwargs["default_headers"] = groq_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
             self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):

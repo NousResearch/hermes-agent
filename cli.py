@@ -4152,6 +4152,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # that wants its output run as the next agent turn. Consumed and cleared
         # by the interactive loop immediately after process_command() returns.
         self._pending_agent_seed = None
+        self._reasoning_picker_state = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -5213,7 +5214,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
-        if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
+        if not self._status_bar_visible or getattr(self, '_model_picker_state', None) or getattr(self, '_reasoning_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -7929,6 +7930,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         }
         self._invalidate(min_interval=0.0)
 
+
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
         if not getattr(result, "success", False):
@@ -7970,8 +7972,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
 
+    def _open_reasoning_picker(self) -> None:
+        """Open prompt_toolkit-native /reasoning picker modal."""
+        self._capture_modal_input_snapshot()
+
+        # Define reasoning effort levels (including 'max' for display but keeping 'xhigh' internally)
+        effort_levels = ["none", "minimal", "low", "medium", "high", "max"]
+        cancel_idx = len(effort_levels)
+
+        # Get current effort level to highlight it
+        current_effort = "medium"  # default
+        rc = self.reasoning_config
+        if rc is not None:
+            if rc.get("enabled") is False:
+                current_effort = "none"
+            else:
+                current_effort = rc.get("effort", "medium")
+
+        # Find index of current effort
+        try:
+            selected_idx = effort_levels.index(current_effort)
+        except ValueError:
+            selected_idx = 3  # default to 'medium' if not found
+
+        self._reasoning_picker_state = {
+            "effort_levels": effort_levels,
+            "selected": selected_idx,
+            "cancel_idx": cancel_idx,
+        }
+        self._invalidate(min_interval=0.0)
+
+
     def _close_model_picker(self) -> None:
         self._model_picker_state = None
+        self._reasoning_picker_state = None
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
 
@@ -8266,6 +8300,49 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._confirm_and_apply_model_switch_result(result, persist_global)
                 return
             self._close_model_picker()
+
+    def _handle_reasoning_picker_selection(self) -> None:
+        state = self._reasoning_picker_state
+        if not state:
+            return
+
+        selected = state.get("selected", 0)
+        effort_levels = state.get("effort_levels", [])
+        cancel_idx = state.get("cancel_idx", len(effort_levels))
+
+        # If user selected "Cancel" (last option)
+        if selected >= cancel_idx:
+            self._close_reasoning_picker()
+            return
+
+        # If user selected a valid effort level
+        if selected < len(effort_levels):
+            effort = effort_levels[selected]
+
+            # Map 'max' to 'xhigh' for internal compatibility
+            if effort == "max":
+                effort = "xhigh"
+
+            parsed = _parse_reasoning_config(effort)
+            if parsed is not None:
+                self.reasoning_config = parsed
+                self.agent = None  # Force agent re-init with new reasoning config
+
+                # Save to config if successful
+                if save_config_value("agent.reasoning_effort", effort):
+                    _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{effort}' (saved to config){_RST}")
+                else:
+                    _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{effort}' (session only){_RST}")
+
+            self._close_reasoning_picker()
+            return
+
+        self._close_reasoning_picker()
+
+    def _close_reasoning_picker(self) -> None:
+        self._reasoning_picker_state = None
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
 
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.
@@ -9750,6 +9827,145 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
 
 
+    def _handle_reasoning_command(self, cmd: str):
+        """Handle /reasoning — manage effort level and display toggle.
+
+        Usage:
+            /reasoning              Show current effort level and display state (opens picker)
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning show|on      Show model thinking/reasoning in output
+            /reasoning hide|off     Hide model thinking/reasoning from output
+        """
+        parts = cmd.strip().split(maxsplit=1)
+
+        if len(parts) < 2:
+            # Open picker when no arguments provided
+            self._open_reasoning_picker()
+            return
+
+        arg = parts[1].strip().lower()
+
+        # Friendly display alias; internal compatibility still uses xhigh.
+        if arg == "max":
+            arg = "xhigh"
+
+        # Display toggle
+        if arg in {"show", "on"}:
+            self.show_reasoning = True
+            if self.agent:
+                self.agent.reasoning_callback = self._current_reasoning_callback()
+            save_config_value("display.show_reasoning", True)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: ON (saved){_RST}")
+            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
+            return
+        if arg in {"hide", "off"}:
+            self.show_reasoning = False
+            if self.agent:
+                self.agent.reasoning_callback = self._current_reasoning_callback()
+            save_config_value("display.show_reasoning", False)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            return
+
+        # Effort level change
+        parsed = _parse_reasoning_config(arg)
+        if parsed is None:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
+            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
+            return
+
+        self.reasoning_config = parsed
+        self.agent = None  # Force agent re-init with new reasoning config
+
+        if save_config_value("agent.reasoning_effort", arg):
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_busy_command(self, cmd: str):
+        """Handle /busy — control what Enter does while Hermes is working.
+
+        Usage:
+            /busy               Show current busy input mode
+            /busy status        Show current busy input mode
+            /busy queue         Queue input for the next turn instead of interrupting
+            /busy steer         Inject Enter mid-run via /steer (after next tool call)
+            /busy interrupt     Interrupt the current run on Enter (default)
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}Busy input mode: {self.busy_input_mode}{_RST}")
+            if self.busy_input_mode == "queue":
+                _behavior = "queues for next turn"
+            elif self.busy_input_mode == "steer":
+                _behavior = "steers into current run (after next tool call)"
+            else:
+                _behavior = "interrupts current run"
+            _cprint(f"  {_DIM}Enter while busy: {_behavior}{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg not in {"queue", "interrupt", "steer"}:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
+            return
+
+        self.busy_input_mode = arg
+        if save_config_value("display.busy_input_mode", arg):
+            if arg == "queue":
+                behavior = "Enter will queue follow-up input while Hermes is busy."
+            elif arg == "steer":
+                behavior = "Enter will steer your message into the current run (after the next tool call)."
+            else:
+                behavior = "Enter will interrupt the current run while Hermes is busy."
+            _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_DIM}{behavior}{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_fast_command(self, cmd: str):
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
+        if not self._fast_command_available():
+            _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
+            return
+
+        # Determine the branding for the current model
+        try:
+            from hermes_cli.models import _is_anthropic_fast_model
+            agent = getattr(self, "agent", None)
+            model = getattr(agent, "model", None) or getattr(self, "model", None)
+            feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+        except Exception:
+            feature_name = "Fast mode"
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            status = "fast" if self.service_tier == "priority" else "normal"
+            _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+
+        if arg in {"fast", "on"}:
+            self.service_tier = "priority"
+            saved_value = "fast"
+            label = "FAST"
+        elif arg in {"normal", "off"}:
+            self.service_tier = None
+            saved_value = "normal"
+            label = "NORMAL"
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            return
+
+        self.agent = None  # Force agent re-init with new service-tier config
+        if save_config_value("agent.service_tier", saved_value):
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -13564,6 +13780,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # --- /reasoning picker: arrow-key navigation ---
+        @kb.add('up', filter=Condition(lambda: bool(self._reasoning_picker_state)))
+        def reasoning_picker_up(event):
+            if self._reasoning_picker_state:
+                self._reasoning_picker_state["selected"] = max(0, self._reasoning_picker_state.get("selected", 0) - 1)
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._reasoning_picker_state)))
+        def reasoning_picker_down(event):
+            state = self._reasoning_picker_state
+            if not state:
+                return
+            effort_levels = state.get("effort_levels", [])
+            cancel_idx = state.get("cancel_idx", len(effort_levels))
+            max_idx = cancel_idx  # Allow selecting "Cancel" at the end
+            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._reasoning_picker_state)), eager=True)
+        def reasoning_picker_escape(event):
+            """ESC closes the /reasoning picker."""
+            self._close_reasoning_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
+        @kb.add('enter', filter=Condition(lambda: bool(self._reasoning_picker_state)))
+        def reasoning_picker_enter(event):
+            """Enter selects the current effort level."""
+            self._handle_reasoning_picker_selection()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -13597,7 +13844,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._reasoning_picker_state
         )
 
         def _recall_without_recollapse(buf, move):

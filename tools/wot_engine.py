@@ -143,6 +143,12 @@ class AgentSpec:
     max_tokens: int = DEFAULT_MAX_TOKENS_PER_TURN
     temperature: float = 0.7
     turn_timeout: float = DEFAULT_AGENT_TURN_TIMEOUT     # per-turn cap
+    # Per-agent backend override. When set, this agent calls the override
+    # base_url + api_key instead of the WoTEngine's defaults. Lets one WoT
+    # session mix backends (e.g. one agent on Ollama localhost, another on
+    # OpenRouter). Backend probe results are cached per-base_url.
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
 
     def __post_init__(self):
         # Auto-sanitize: collapse whitespace runs to underscores, drop other
@@ -323,22 +329,44 @@ class _LLMClient:
             headers={"Authorization": f"Bearer {api_key}"},
         )
         self.backend: BackendInfo = BackendInfo(base_url=self.base_url)
+        # Cache backend probes per-base_url so multi-backend mix (per-agent
+        # base_url override) doesn't re-probe each call.
+        self._probe_cache: Dict[str, BackendInfo] = {}
         self._probed = False
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def ensure_probed(self) -> BackendInfo:
-        if not self._probed:
-            self.backend = await _probe_backend(self.base_url, self.api_key, self._client)
+    @staticmethod
+    def _normalize_base(base_url: str) -> str:
+        """Strip trailing `/` and `/v1` so chat-endpoint URL composes cleanly."""
+        b = base_url.rstrip("/")
+        if b.endswith("/v1"):
+            b = b[:-3].rstrip("/")
+        return b
+
+    async def ensure_probed(self, base_url_override: Optional[str] = None) -> BackendInfo:
+        """Probe the backend once per unique base_url; cached thereafter."""
+        target = self._normalize_base(base_url_override) if base_url_override else self.base_url
+        if target not in self._probe_cache:
+            info = await _probe_backend(target,
+                                         self.api_key, self._client)
+            self._probe_cache[target] = info
+            logger.info("WoT backend probe: %s at %s", info.kind, info.base_url)
+        if not base_url_override:
+            # Default-path callers want self.backend to reflect the canonical probe
+            self.backend = self._probe_cache[target]
             self._probed = True
-            logger.info("WoT backend probe: %s at %s", self.backend.kind, self.backend.base_url)
-        return self.backend
+        return self._probe_cache[target]
 
     # ───────── payload builders ─────────
-    def _openai_payload(self, model: str, messages: List[Dict[str, Any]],
-                        max_tokens: int, temperature: float, stream: bool,
-                        slot_id: Optional[int], stop: Optional[List[str]]) -> Dict[str, Any]:
+    def _openai_payload_for(self, backend: BackendInfo, model: str,
+                             messages: List[Dict[str, Any]],
+                             max_tokens: int, temperature: float, stream: bool,
+                             slot_id: Optional[int], stop: Optional[List[str]]) -> Dict[str, Any]:
+        """Backend-aware payload builder. Takes BackendInfo explicitly so per-agent
+        base_url overrides land on the right backend's knobs (e.g. id_slot only
+        makes sense if THIS request is going to llama-server)."""
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -347,16 +375,20 @@ class _LLMClient:
             "stream": stream,
         }
         if _is_qwen35_or_36(model):
-            # Qwen3.5/3.6 default to thinking and ignore /think /no_think.
-            # Per official model card, only chat_template_kwargs disables it.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         if stop:
             payload["stop"] = stop
-        # llama-server-only knobs: pin slot + reuse prompt prefix across turns.
-        if self.backend.kind == "llama-server" and slot_id is not None:
+        if backend.kind == "llama-server" and slot_id is not None:
             payload["id_slot"] = slot_id
             payload["cache_prompt"] = True
         return payload
+
+    # Kept for unit-test backward compatibility — delegates to _openai_payload_for.
+    def _openai_payload(self, model: str, messages: List[Dict[str, Any]],
+                        max_tokens: int, temperature: float, stream: bool,
+                        slot_id: Optional[int], stop: Optional[List[str]]) -> Dict[str, Any]:
+        return self._openai_payload_for(self.backend, model, messages, max_tokens,
+                                         temperature, stream, slot_id, stop)
 
     def _ollama_native_payload(self, model: str, messages: List[Dict[str, Any]],
                                max_tokens: int, temperature: float, stream: bool,
@@ -373,19 +405,33 @@ class _LLMClient:
             },
         }
 
+    def _resolve_target(self, base_url_override: Optional[str],
+                        api_key_override: Optional[str]) -> Tuple[str, Dict[str, str]]:
+        """Return (normalized_base_url, headers) for a single request, honoring overrides."""
+        if base_url_override:
+            base = self._normalize_base(base_url_override)
+            api_key = api_key_override or self.api_key
+        else:
+            base = self.base_url
+            api_key = self.api_key
+        return base, {"Authorization": f"Bearer {api_key}"}
+
     # ───────── non-streaming complete ─────────
     async def complete(self, model: str, messages: List[Dict[str, Any]],
                        max_tokens: int = DEFAULT_MAX_TOKENS_PER_TURN,
                        temperature: float = 0.7,
                        slot_id: Optional[int] = None,
-                       stop: Optional[List[str]] = None) -> LLMResponse:
-        await self.ensure_probed()
+                       stop: Optional[List[str]] = None,
+                       base_url_override: Optional[str] = None,
+                       api_key_override: Optional[str] = None) -> LLMResponse:
+        backend = await self.ensure_probed(base_url_override)
+        base, headers = self._resolve_target(base_url_override, api_key_override)
         thinking_model = _is_thinking_model(model)
         # Ollama path for thinking models: /v1/ drops thinking, /api/chat keeps it.
-        if self.backend.kind == "ollama" and thinking_model:
+        if backend.kind == "ollama" and thinking_model:
             payload = self._ollama_native_payload(model, messages, max_tokens,
                                                   temperature, stream=False, think=True)
-            r = await self._client.post(f"{self.base_url}/api/chat", json=payload)
+            r = await self._client.post(f"{base}/api/chat", json=payload, headers=headers)
             r.raise_for_status()
             data = r.json()
             msg = data.get("message", {}) if isinstance(data, dict) else {}
@@ -394,9 +440,10 @@ class _LLMClient:
                 reasoning=(msg.get("thinking") or "").strip(),
             )
         # OpenAI-compat path
-        payload = self._openai_payload(model, messages, max_tokens, temperature,
-                                        stream=False, slot_id=slot_id, stop=stop)
-        r = await self._client.post(f"{self.base_url}/v1/chat/completions", json=payload)
+        payload = self._openai_payload_for(backend, model, messages, max_tokens,
+                                            temperature, stream=False,
+                                            slot_id=slot_id, stop=stop)
+        r = await self._client.post(f"{base}/v1/chat/completions", json=payload, headers=headers)
         r.raise_for_status()
         data = r.json()
         msg = data["choices"][0]["message"]
@@ -416,28 +463,34 @@ class _LLMClient:
                      max_tokens: int = DEFAULT_MAX_TOKENS_PER_TURN,
                      temperature: float = 0.7,
                      slot_id: Optional[int] = None,
-                     stop: Optional[List[str]] = None
+                     stop: Optional[List[str]] = None,
+                     base_url_override: Optional[str] = None,
+                     api_key_override: Optional[str] = None
                      ) -> AsyncIterator[Tuple[str, str]]:
         """Yields (kind, delta) where kind ∈ {"content", "reasoning"}."""
-        await self.ensure_probed()
+        backend = await self.ensure_probed(base_url_override)
+        base, headers = self._resolve_target(base_url_override, api_key_override)
         thinking_model = _is_thinking_model(model)
-        if self.backend.kind == "ollama" and thinking_model:
-            async for kv in self._stream_ollama_native(model, messages, max_tokens,
-                                                        temperature, think=True):
+        if backend.kind == "ollama" and thinking_model:
+            async for kv in self._stream_ollama_native(base, headers, model, messages,
+                                                        max_tokens, temperature, think=True):
                 yield kv
             return
-        async for kv in self._stream_openai(model, messages, max_tokens, temperature,
-                                             slot_id, stop):
+        async for kv in self._stream_openai(backend, base, headers, model, messages,
+                                             max_tokens, temperature, slot_id, stop):
             yield kv
 
-    async def _stream_openai(self, model: str, messages: List[Dict[str, Any]],
+    async def _stream_openai(self, backend: BackendInfo, base: str,
+                             headers: Dict[str, str], model: str,
+                             messages: List[Dict[str, Any]],
                              max_tokens: int, temperature: float,
                              slot_id: Optional[int], stop: Optional[List[str]]
                              ) -> AsyncIterator[Tuple[str, str]]:
-        payload = self._openai_payload(model, messages, max_tokens, temperature,
-                                        stream=True, slot_id=slot_id, stop=stop)
+        payload = self._openai_payload_for(backend, model, messages, max_tokens,
+                                            temperature, stream=True,
+                                            slot_id=slot_id, stop=stop)
         async with self._client.stream(
-            "POST", f"{self.base_url}/v1/chat/completions", json=payload,
+            "POST", f"{base}/v1/chat/completions", json=payload, headers=headers,
         ) as r:
             r.raise_for_status()
             async for raw in r.aiter_lines():
@@ -461,14 +514,15 @@ class _LLMClient:
                 if c:
                     yield ("content", c)
 
-    async def _stream_ollama_native(self, model: str, messages: List[Dict[str, Any]],
+    async def _stream_ollama_native(self, base: str, headers: Dict[str, str],
+                                     model: str, messages: List[Dict[str, Any]],
                                      max_tokens: int, temperature: float, think: bool
                                      ) -> AsyncIterator[Tuple[str, str]]:
         """Ollama native /api/chat streams NDJSON, not SSE."""
         payload = self._ollama_native_payload(model, messages, max_tokens, temperature,
                                                stream=True, think=think)
         async with self._client.stream(
-            "POST", f"{self.base_url}/api/chat", json=payload,
+            "POST", f"{base}/api/chat", json=payload, headers=headers,
         ) as r:
             r.raise_for_status()
             async for raw in r.aiter_lines():
@@ -571,6 +625,8 @@ class Agent:
                     max_tokens=self.spec.max_tokens,
                     temperature=self.spec.temperature,
                     slot_id=self.slot_id,
+                    base_url_override=self.spec.base_url,
+                    api_key_override=self.spec.api_key,
                 ),
                 timeout=self.spec.turn_timeout,
             )
@@ -635,6 +691,8 @@ class Agent:
                     max_tokens=self.spec.max_tokens,
                     temperature=self.spec.temperature,
                     slot_id=self.slot_id,
+                    base_url_override=self.spec.base_url,
+                    api_key_override=self.spec.api_key,
                 ):
                     if kind == "reasoning":
                         reasoning_buf.append(delta)
@@ -857,15 +915,17 @@ def wot_chat_tool(
         propagate_reasoning: "strip" (cross-family-safe default) | "raw" (same-family
                              debate) | "summary" (currently same as strip).
     """
-    # Outer Hermes models tend to hallucinate inner-agent model names like
-    # "gpt-4o" when constructing the wot_chat tool call. We strip caller-
-    # supplied `model` fields and force every inner agent to use
-    # LLM_DEFAULT_MODEL (env-driven), so the WoT engine remains in control of
-    # its own backend rather than chasing whatever the outer model dreamed up.
+    # Outer Hermes models hallucinate inner-agent backend config (model names
+    # like "gpt-4o", random base_urls, fake api_keys). At the tool boundary we
+    # strip all backend-control fields so the WoT engine controls its own
+    # backend. Per-agent backend overrides are still available to direct Python
+    # callers via AgentSpec(base_url=..., api_key=...) — the field exists on
+    # the dataclass but is not exposed through the tool schema.
     sanitized: List[Dict[str, Any]] = []
     for a in agents:
         spec = dict(a)
-        spec.pop("model", None)
+        for k in ("model", "base_url", "api_key"):
+            spec.pop(k, None)
         sanitized.append(spec)
     specs = [AgentSpec(**a) for a in sanitized]
 

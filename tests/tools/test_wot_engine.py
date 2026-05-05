@@ -86,25 +86,29 @@ class MockLLMClient:
                                reasoning=item.get("reasoning", ""))
         raise ValueError(f"unsupported script item: {item!r}")
 
-    async def ensure_probed(self) -> BackendInfo:
+    async def ensure_probed(self, base_url_override=None) -> BackendInfo:
         return self.backend
 
     async def complete(self, model, messages, max_tokens=800, temperature=0.7,
-                       slot_id=None, stop=None) -> LLMResponse:
+                       slot_id=None, stop=None,
+                       base_url_override=None, api_key_override=None) -> LLMResponse:
         agent = self._agent_from_messages(messages)
         payload = self._payload(model, messages, max_tokens, temperature,
                                  stream=False, slot_id=slot_id, stop=stop)
         self.payloads.append(payload)
-        self.calls.append({"agent": agent, "mode": "complete", "slot_id": slot_id})
+        self.calls.append({"agent": agent, "mode": "complete", "slot_id": slot_id,
+                           "base_url_override": base_url_override})
         return self._resolve_response(agent)
 
     async def stream(self, model, messages, max_tokens=800, temperature=0.7,
-                     slot_id=None, stop=None) -> AsyncIterator[Tuple[str, str]]:
+                     slot_id=None, stop=None,
+                     base_url_override=None, api_key_override=None) -> AsyncIterator[Tuple[str, str]]:
         agent = self._agent_from_messages(messages)
         payload = self._payload(model, messages, max_tokens, temperature,
                                  stream=True, slot_id=slot_id, stop=stop)
         self.payloads.append(payload)
-        self.calls.append({"agent": agent, "mode": "stream", "slot_id": slot_id})
+        self.calls.append({"agent": agent, "mode": "stream", "slot_id": slot_id,
+                           "base_url_override": base_url_override})
         resp = self._resolve_response(agent)
         # Yield reasoning chunks first, then content chunks (mimics a real thinking-mode stream)
         for kind, text in (("reasoning", resp.reasoning), ("content", resp.content)):
@@ -389,6 +393,85 @@ class TokenBudgetTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["stop_reason"], "budget")
         self.assertLess(result["rounds_run"], 10)
+
+
+class MultiBackendMixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_per_agent_base_url_override_threads_to_client(self):
+        # Two agents with different base_url overrides — verify each call
+        # to the client carries the right per-agent target.
+        client = MockLLMClient({"a": ["A says hi.\nDONE"], "b": ["B says hi.\nDONE"]})
+        engine = WoTEngine()
+        engine.client = client
+        await engine.run(
+            [AgentSpec(name="a", system_prompt="...",
+                       base_url="http://127.0.0.1:11434", api_key="ollama"),
+             AgentSpec(name="b", system_prompt="...",
+                       base_url="https://openrouter.ai/api/v1", api_key="sk-or-test")],
+            task="x", mode="parallel", max_rounds=1,
+        )
+        targets = {c["agent"]: c["base_url_override"] for c in client.calls}
+        self.assertEqual(targets["a"], "http://127.0.0.1:11434")
+        self.assertEqual(targets["b"], "https://openrouter.ai/api/v1")
+
+    async def test_default_base_url_is_None_when_not_set(self):
+        # When AgentSpec has no override, base_url_override should be None
+        client = MockLLMClient({"a": ["ok\nDONE"]})
+        engine = WoTEngine()
+        engine.client = client
+        await engine.run(
+            [AgentSpec(name="a", system_prompt="...")],
+            task="x", mode="parallel", max_rounds=1,
+        )
+        self.assertIsNone(client.calls[0]["base_url_override"])
+
+
+class WotChatToolStripsCallerControlFields(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_boundary_strips_model_base_url_api_key(self):
+        # wot_chat_tool boundary should strip outer-Hermes-supplied backend
+        # control fields (Hermes hallucinates them). Direct Python callers
+        # using AgentSpec(base_url=..., api_key=...) still work.
+        from tools.wot_engine import wot_chat_tool, _LLMClient
+
+        captured_specs = []
+        from unittest.mock import patch
+
+        # Stub asyncio.run path: just inspect specs after sanitize
+        original_async_run = None
+
+        # Easier: capture by patching AgentSpec __init__ to save args
+        from tools import wot_engine as we
+        original_init = we.AgentSpec.__post_init__
+        seen = []
+
+        def capture_init(self):
+            original_init(self)
+            seen.append({"name": self.name, "model": self.model,
+                         "base_url": self.base_url, "api_key": self.api_key})
+
+        we.AgentSpec.__post_init__ = capture_init
+        try:
+            # Call should ignore the caller's model/base_url/api_key
+            try:
+                wot_chat_tool(
+                    agents=[{"name": "alpha", "system_prompt": "hi",
+                             "model": "gpt-4o-hallucinated",
+                             "base_url": "https://evil.example.com",
+                             "api_key": "sk-stolen"}],
+                    task="x", mode="parallel", max_rounds=1,
+                )
+            except Exception:
+                pass  # We don't care if the network call fails — we just want the spec inspection
+        finally:
+            we.AgentSpec.__post_init__ = original_init
+
+        self.assertGreaterEqual(len(seen), 1)
+        spec = seen[0]
+        # base_url + api_key stripped → both None
+        self.assertIsNone(spec["base_url"], "base_url should have been stripped at tool boundary")
+        self.assertIsNone(spec["api_key"], "api_key should have been stripped at tool boundary")
+        # model stripped → falls back to LLM_DEFAULT_MODEL (env-driven), NOT 'gpt-4o-hallucinated'
+        self.assertNotEqual(spec["model"], "gpt-4o-hallucinated",
+                              "model should have been stripped at tool boundary")
 
 
 class SlotPinningTests(unittest.IsolatedAsyncioTestCase):

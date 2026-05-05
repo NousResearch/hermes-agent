@@ -649,6 +649,59 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
   })
+
+  it('/undo replaces visible transcript from gateway history', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() =>
+          Promise.resolve({
+            removed: 2,
+            messages: [{ role: 'user', text: 'kept' }]
+          })
+        )
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/undo')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.undo', { session_id: 'sid-abc' })
+      expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith([{ role: 'user', text: 'kept' }])
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('undid'))
+    expect(getUiState().status).toBe('undid 2 messages')
+  })
+
+  it('/redo restores visible transcript from gateway history', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() =>
+          Promise.resolve({
+            restored: 2,
+            messages: [
+              { role: 'user', text: 'hi' },
+              { role: 'assistant', text: 'hello' }
+            ]
+          })
+        )
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/redo')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.redo', { session_id: 'sid-abc' })
+      expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith([
+        { role: 'user', text: 'hi' },
+        { role: 'assistant', text: 'hello' }
+      ])
+    })
+    expect(getUiState().status).toBe('redid 2 messages')
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({

@@ -2293,17 +2293,41 @@ def _(rid, params: dict) -> dict:
             rid, 4009, "session busy — /interrupt the current turn before /undo"
         )
     removed = 0
+    removed_messages: list[dict] = []
     with session["history_lock"]:
         history = session.get("history", [])
         while history and history[-1].get("role") in ("assistant", "tool"):
-            history.pop()
+            removed_messages.append(history.pop())
             removed += 1
         if history and history[-1].get("role") == "user":
-            history.pop()
+            removed_messages.append(history.pop())
             removed += 1
         if removed:
             session["history_version"] = int(session.get("history_version", 0)) + 1
-    return _ok(rid, {"removed": removed})
+            session["redo_stack"] = list(reversed(removed_messages))
+        messages = _history_to_messages(history)
+    return _ok(rid, {"removed": removed, "messages": messages})
+
+
+@method("session.redo")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if session.get("running"):
+        return _err(
+            rid, 4009, "session busy — /interrupt the current turn before /redo"
+        )
+    with session["history_lock"]:
+        redo_stack = list(session.get("redo_stack") or [])
+        history = session.get("history", [])
+        if not redo_stack:
+            return _ok(rid, {"restored": 0, "messages": _history_to_messages(history)})
+        history.extend(redo_stack)
+        session["redo_stack"] = []
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        messages = _history_to_messages(history)
+    return _ok(rid, {"restored": len(redo_stack), "messages": messages})
 
 
 @method("session.compress")
@@ -2822,6 +2846,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        session["redo_stack"] = []
     agent = session["agent"]
     _emit("message.start", sid)
 

@@ -2317,7 +2317,37 @@ def test_session_undo_allowed_when_idle():
         )
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert resp["result"]["removed"] == 2
+        assert resp["result"]["messages"] == []
         assert server._sessions["sid"]["history"] == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_redo_restores_last_undone_exchange():
+    server._sessions["sid"] = _session(
+        running=False,
+        history=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ],
+    )
+    try:
+        undo = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert undo["result"]["removed"] == 2
+
+        redo = server.handle_request(
+            {"id": "2", "method": "session.redo", "params": {"session_id": "sid"}}
+        )
+
+        assert redo.get("result"), f"got error: {redo.get('error')}"
+        assert redo["result"]["restored"] == 2
+        assert server._sessions["sid"]["history"] == [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert [m["role"] for m in redo["result"]["messages"]] == ["user", "assistant"]
     finally:
         server._sessions.pop("sid", None)
 

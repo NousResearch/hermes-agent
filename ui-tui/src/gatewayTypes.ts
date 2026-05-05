@@ -157,7 +157,9 @@ export interface SessionSaveResponse {
 }
 
 export interface SessionUndoResponse {
+  messages?: GatewayTranscriptMessage[]
   removed?: number
+  restored?: number
 }
 
 export interface SessionUsageResponse {

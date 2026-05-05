@@ -2,6 +2,7 @@ import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -545,10 +546,35 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) > 0) {
-            ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))
-            ctx.transcript.sys(`undid ${r.removed} messages`)
+            if (Array.isArray(r.messages)) {
+              ctx.transcript.setHistoryItems(toTranscriptMessages(r.messages))
+            } else {
+              ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))
+            }
+            patchUiState({ status: `undid ${r.removed} messages` })
           } else {
             ctx.transcript.sys('nothing to undo')
+          }
+        })
+      )
+    }
+  },
+
+  {
+    help: 'redo last undone exchange',
+    name: 'redo',
+    run: (_arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('nothing to redo')
+      }
+
+      ctx.gateway.rpc<SessionUndoResponse>('session.redo', { session_id: ctx.sid }).then(
+        ctx.guarded<SessionUndoResponse>(r => {
+          if ((r.restored ?? 0) > 0) {
+            ctx.transcript.setHistoryItems(toTranscriptMessages(r.messages))
+            patchUiState({ status: `redid ${r.restored} messages` })
+          } else {
+            ctx.transcript.sys('nothing to redo')
           }
         })
       )

@@ -2387,7 +2387,15 @@ def systemd_stop(system: bool = False):
             write_planned_stop_marker(pid)
     except Exception:
         pass
-    _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
+    try:
+        _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        label = _service_scope_label(system)
+        print(
+            f"Gateway {label} service is still stopping after 90s; "
+            "check `hermes gateway status` or logs for final shutdown state."
+        )
+        return
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 

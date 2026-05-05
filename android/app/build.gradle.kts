@@ -277,24 +277,38 @@ tasks.matching { it.name.endsWith("PythonRequirements") }.configureEach {
     }
 }
 
-tasks.matching { it.name.endsWith("PythonBuildAssets") }.configureEach {
-    doLast {
-        val variant = name.removePrefix("generate").removeSuffix("PythonBuildAssets")
-        if (variant.isBlank()) {
-            return@doLast
+fun normalizeChaquopyBuildJson(variant: String) {
+    if (variant.isBlank()) {
+        return
+    }
+    val buildJson = layout.buildDirectory.file(
+        "python/assets/build/${variant.lowercase()}/chaquopy/build.json"
+    ).get().asFile
+    if (!buildJson.isFile) {
+        return
+    }
+    exec {
+        commandLine(
+            resolvedBuildPython(),
+            repoRoot.resolve("scripts/normalize_chaquopy_build_json.py").absolutePath,
+            buildJson.absolutePath,
+        )
+    }
+}
+
+tasks.configureEach {
+    val taskName = name
+    if (taskName.endsWith("PythonBuildAssets")) {
+        doLast {
+            normalizeChaquopyBuildJson(
+                taskName.removePrefix("generate").removeSuffix("PythonBuildAssets")
+            )
         }
-        val buildJson = layout.buildDirectory.file(
-            "python/assets/build/${variant.lowercase()}/chaquopy/build.json"
-        ).get().asFile
-        if (!buildJson.isFile) {
-            return@doLast
-        }
-        exec {
-            commandLine(
-                resolvedBuildPython(),
-                "-c",
-                "import json, pathlib, sys; p=pathlib.Path(sys.argv[1]); data=json.loads(p.read_text()); p.write_text(json.dumps(data, indent=4, sort_keys=True) + '\\n')",
-                buildJson.absolutePath,
+    }
+    if (taskName.startsWith("merge") && taskName.endsWith("Assets")) {
+        doFirst {
+            normalizeChaquopyBuildJson(
+                taskName.removePrefix("merge").removeSuffix("Assets")
             )
         }
     }

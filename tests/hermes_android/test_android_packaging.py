@@ -9,11 +9,19 @@ def test_chaquopy_build_preinstalls_android_stubs():
     gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     assert 'prepareHermesAndroidWheel' in gradle
+    assert "normalize_chaquopy_build_json.py" in gradle
+    assert 'taskName.startsWith("merge") && taskName.endsWith("Assets")' in gradle
     assert 'options("--no-deps")' in gradle
     assert 'install("../../android/pip-stubs/anthropic-stub")' in gradle
     assert 'install("../../android/pip-stubs/fal-client-stub")' in gradle
     assert 'install("build/hermes-wheel/${hermesWheelName()}")' in gradle
     assert 'install("-r", "../../requirements-android-chaquopy.txt")' in gradle
+
+
+def test_android_release_workflow_uses_hash_based_python_bytecode():
+    workflow = (REPO_ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
+
+    assert 'SOURCE_DATE_EPOCH: "315532800"' in workflow
 
 
 def test_android_wheel_includes_iteration_limits_module():

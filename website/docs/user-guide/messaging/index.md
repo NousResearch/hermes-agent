@@ -60,9 +60,9 @@ flowchart TB
     bb[BlueBubbles]
     qq[QQ]
     yb[Yuanbao]
-            ms[Microsoft Teams]
-            api["API Server<br/>(OpenAI-compatible)"]
-            wh[Webhooks]
+    ms[Microsoft Teams]
+    api["API Server<br/>(OpenAI-compatible)"]
+    wh[Webhooks]
         end
 
         store["Session store<br/>per chat"]

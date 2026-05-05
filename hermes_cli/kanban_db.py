@@ -3277,30 +3277,38 @@ def read_worker_log(
 # ---------------------------------------------------------------------------
 
 def list_profiles_on_disk() -> list[str]:
-    """Return the set of named profiles discovered on disk.
+    """Return the set of assignee/profile names discovered on disk.
 
-    Reads ``~/.hermes/profiles/`` directly so this module has no import
-    dependency on ``hermes_cli.profiles`` (which pulls in a large chunk
-    of the CLI startup path). Only returns directories that contain a
-    ``config.yaml`` — a bare dir without config isn't a real profile.
+    Includes:
+    - named profiles under ``<default-root>/profiles/<name>/config.yaml``
+    - the implicit ``default`` profile when the default Hermes root exists
+
+    Reads profile paths directly so this module has no import dependency on
+    ``hermes_cli.profiles`` (which pulls in a large chunk of the CLI startup
+    path).
     """
     try:
         from hermes_constants import get_default_hermes_root
-        home = get_default_hermes_root() / "profiles"
+        default_root = get_default_hermes_root()
+        profiles_dir = default_root / "profiles"
     except Exception:
         return []
-    if not home.is_dir():
-        return []
-    names: list[str] = []
-    try:
-        for entry in sorted(home.iterdir()):
-            if not entry.is_dir():
-                continue
-            if (entry / "config.yaml").is_file():
-                names.append(entry.name)
-    except OSError:
-        return names
-    return names
+
+    names: set[str] = set()
+    if default_root.exists():
+        names.add("default")
+
+    if profiles_dir.is_dir():
+        try:
+            for entry in sorted(profiles_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if (entry / "config.yaml").is_file():
+                    names.add(entry.name)
+        except OSError:
+            pass
+
+    return sorted(names)
 
 
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:

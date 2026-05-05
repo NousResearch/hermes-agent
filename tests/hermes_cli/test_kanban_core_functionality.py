@@ -899,8 +899,8 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_list_profiles_on_disk(tmp_path, monkeypatch):
-    """list_profiles_on_disk returns directories under ~/.hermes/profiles/
-    that contain a config.yaml."""
+    """list_profiles_on_disk returns the implicit default profile plus
+    named profiles under ~/.hermes/profiles/ that contain a config.yaml."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_HOME", raising=False)
     profiles = tmp_path / ".hermes" / "profiles"
@@ -914,7 +914,7 @@ def test_list_profiles_on_disk(tmp_path, monkeypatch):
     (profiles / "stray.txt").write_text("noise")
 
     names = kb.list_profiles_on_disk()
-    assert names == ["researcher", "writer"]
+    assert names == ["default", "researcher", "writer"]
 
 
 def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
@@ -928,7 +928,7 @@ def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
         (d / "config.yaml").write_text("model: {}\n")
 
     names = kb.list_profiles_on_disk()
-    assert names == ["researcher", "writer"]
+    assert names == ["default", "researcher", "writer"]
 
 
 def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
@@ -955,6 +955,8 @@ def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
         conn.close()
 
     by_name = {d["name"]: d for d in data}
+    assert by_name["default"]["on_disk"] is True
+    assert by_name["default"]["counts"] == {}
     assert by_name["researcher"]["on_disk"] is True
     assert by_name["researcher"]["counts"] == {}
     assert by_name["writer"]["on_disk"] is True

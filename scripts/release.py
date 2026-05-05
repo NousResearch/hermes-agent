@@ -86,6 +86,7 @@ AUTHOR_MAP = {
     "emelyanenko.kirill@gmail.com": "EmelyanenkoK",
     "lazycat.manatee@gmail.com": "manateelazycat",
     "bzarnitz13@gmail.com": "Beandon13",
+    "tony@tonysimons.dev": "asimons81",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

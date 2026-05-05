@@ -731,7 +731,7 @@ def handle_function_call(
                     tool_call_id=tool_call_id or "",
                 )
             except Exception:
-                pass
+                logger.debug("pre_tool_call block check failed", exc_info=True)
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
@@ -783,7 +783,7 @@ def handle_function_call(
                 duration_ms=duration_ms,
             )
         except Exception:
-            pass
+            logger.debug("post_tool_call plugin hook failed", exc_info=True)
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -808,7 +808,7 @@ def handle_function_call(
                     result = hook_result
                     break
         except Exception:
-            pass
+            logger.debug("transform_tool_result plugin hook failed", exc_info=True)
 
         return result
 

@@ -21,6 +21,13 @@ from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
 
+_SIGNAL_NAMES = {
+    signum: name
+    for name in ("SIGPIPE", "SIGTERM", "SIGHUP")
+    if (signum := getattr(signal, name, None)) is not None
+}
+
+
 def _install_sidecar_publisher() -> None:
     """Mirror every dispatcher emit to the dashboard sidebar via WS.
 
@@ -81,11 +88,7 @@ def _log_signal(signum: int, frame) -> None:
     thread, and fall back to ``os._exit(0)`` so a wedged write/flush
     can never strand the process.
     """
-    name = {
-        signal.SIGPIPE: "SIGPIPE",
-        signal.SIGTERM: "SIGTERM",
-        signal.SIGHUP: "SIGHUP",
-    }.get(signum, f"signal {signum}")
+    name = _SIGNAL_NAMES.get(signum, f"signal {signum}")
     try:
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
@@ -131,6 +134,16 @@ def _log_signal(signum: int, frame) -> None:
         raise
 
 
+def _install_signal_handler(signal_name: str, handler) -> None:
+    signum = getattr(signal, signal_name, None)
+    if signum is None:
+        return
+    try:
+        signal.signal(signum, handler)
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        return
+
+
 # SIGPIPE: ignore, don't exit. The old SIG_DFL killed the process
 # silently whenever a *background* thread (TTS playback chain, voice
 # debug stderr emitter, beep thread) wrote to a pipe the TUI had gone
@@ -140,10 +153,13 @@ def _log_signal(signum: int, frame) -> None:
 # sys.exit(0) + _log_exit), which keeps the gateway alive as long as
 # the main command pipe is still readable.  Terminal signals still
 # route through _log_signal so kills and hangups are diagnosable.
-signal.signal(signal.SIGPIPE, signal.SIG_IGN)
-signal.signal(signal.SIGTERM, _log_signal)
-signal.signal(signal.SIGHUP, _log_signal)
-signal.signal(signal.SIGINT, signal.SIG_IGN)
+#
+# Windows Python does not expose POSIX-only signals such as SIGPIPE and
+# SIGHUP; install only the handlers this interpreter actually supports.
+_install_signal_handler("SIGPIPE", signal.SIG_IGN)
+_install_signal_handler("SIGTERM", _log_signal)
+_install_signal_handler("SIGHUP", _log_signal)
+_install_signal_handler("SIGINT", signal.SIG_IGN)
 
 
 def _log_exit(reason: str) -> None:

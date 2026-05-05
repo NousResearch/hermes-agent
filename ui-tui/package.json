@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",
     "start": "tsx src/entry.tsx",
-    "build": "npm run build --prefix packages/hermes-ink && tsc -p tsconfig.build.json && npm run build:compile && chmod +x dist/entry.js",
+    "build": "npm run build --prefix packages/hermes-ink && tsc -p tsconfig.build.json && npm run build:compile && node scripts/mark-executable.mjs dist/entry.js",
     "build:compile": "babel dist --out-dir dist --config-file ./babel.compiler.config.cjs --extensions .js --keep-file-extension",
     "type-check": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ packages/",

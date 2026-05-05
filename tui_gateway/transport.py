@@ -134,7 +134,7 @@ class StdioTransport:
         # block other threads emitting their own frames.  A non-JSON-safe
         # payload is a programming error: re-raise so the crash log
         # captures it instead of silently exiting via the False path.
-        line = json.dumps(obj, ensure_ascii=False) + "\n"
+        line = json.dumps(obj, ensure_ascii=True) + "\n"
 
         with self._lock:
             stream = self._stream_getter()

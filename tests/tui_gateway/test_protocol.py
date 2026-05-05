@@ -94,20 +94,21 @@ def test_write_json_closed_stream_returns_false(server):
     assert server.write_json({"x": 1}) is False
 
 
-def test_write_json_unicode_encode_error_re_raises(server):
-    """A non-UTF-8 stdout encoding raises UnicodeEncodeError (a ValueError
-    subclass).  It must NOT be swallowed as 'peer gone' — that would let
-    `entry.py` exit cleanly via the False path and hide the real config
-    bug.  We re-raise so the existing crash-log infrastructure records it."""
+def test_write_json_escapes_unicode_for_non_utf8_stdio(server):
+    """Native Windows stdio can be cp1252; JSON-RPC frames must stay ASCII-safe."""
+    written = []
 
     class _AsciiOnly:
         def write(self, line):
             line.encode("ascii")  # raises UnicodeEncodeError on non-ascii
+            written.append(line)
         def flush(self): pass
 
     server._real_stdout = _AsciiOnly()
-    with pytest.raises(UnicodeEncodeError):
-        server.write_json({"msg": "héllo"})
+
+    assert server.write_json({"msg": "héllo ⚕"}) is True
+    assert "\\u00e9" in written[0]
+    assert "\\u2695" in written[0]
 
 
 def test_write_json_unrelated_value_error_re_raises(server):

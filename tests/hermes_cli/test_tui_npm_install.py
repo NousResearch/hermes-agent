@@ -1,5 +1,6 @@
 """_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
 
+import json
 import os
 from pathlib import Path
 
@@ -136,3 +137,32 @@ def test_build_not_needed_when_entry_and_ink_bundle_present(tmp_path: Path, main
     _touch_ink_bundle(tmp_path)
 
     assert main_mod._tui_build_needed(tmp_path) is False
+
+
+def test_tui_build_script_uses_cross_platform_executable_helper() -> None:
+    root = Path(__file__).resolve().parents[2] / "ui-tui"
+    package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+
+    build = package["scripts"]["build"]
+
+    assert "chmod +x" not in build
+    assert "node scripts/mark-executable.mjs dist/entry.js" in build
+    assert (root / "scripts" / "mark-executable.mjs").is_file()
+
+
+def test_make_tui_argv_uses_cmd_shim_for_tsx_on_windows(tmp_path: Path, main_mod, monkeypatch) -> None:
+    _touch_ink(tmp_path)
+    _touch_ink_bundle(tmp_path)
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "tsx").write_text("#!/bin/sh\n")
+    (bin_dir / "tsx.cmd").write_text("@echo off\r\n")
+
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"C:\\nodejs\\{name}.cmd")
+    monkeypatch.setattr(main_mod.os, "name", "nt")
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=True)
+
+    assert cwd == tmp_path
+    assert argv == [str(bin_dir / "tsx.cmd"), "src/entry.tsx"]

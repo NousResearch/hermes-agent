@@ -1113,6 +1113,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                     print(preview)
                 sys.exit(1)
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
+        if os.name == "nt":
+            tsx_cmd = tsx.with_suffix(".cmd")
+            if tsx_cmd.exists():
+                return [str(tsx_cmd), "src/entry.tsx"], tui_dir
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir

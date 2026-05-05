@@ -6138,6 +6138,22 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        # Some plugin platforms enforce config-backed access control inside the
+        # adapter before events reach the gateway. Let those adapters satisfy the
+        # shared gateway gate without requiring a global/env user allowlist.
+        adapter = getattr(self, "adapters", {}).get(source.platform)
+        adapter_authorizes = getattr(adapter, "is_source_authorized", None)
+        if callable(adapter_authorizes):
+            try:
+                if adapter_authorizes(source):
+                    return True
+            except Exception:
+                logger.debug(
+                    "Adapter source authorization failed for %s",
+                    source.platform.value if source.platform else "unknown",
+                    exc_info=True,
+                )
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",

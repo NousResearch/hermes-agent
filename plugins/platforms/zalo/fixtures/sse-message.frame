@@ -1,0 +1,3 @@
+id: 42
+event: message
+data: {"type":"message","data":{"msgId":"m-1","cliMsgId":"c-1","threadId":"g-1","senderId":"u-1","senderName":"Anh Hào","content":"ping","isGroup":true,"type":"text","timestamp":1710000000000,"quote":{"msgId":"q-1","cliMsgId":"qc-1","senderId":"u-2"},"sensitive":"must-not-survive"}}

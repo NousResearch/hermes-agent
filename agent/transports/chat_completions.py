@@ -193,6 +193,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # Temperature
             fixed_temperature: Any — from _fixed_temperature_for_model()
             omit_temperature: bool
+            temperature: float | None — optional sampling override for is_custom_provider
             # Reasoning
             supports_reasoning: bool
             github_reasoning_extra: dict | None
@@ -249,6 +250,13 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs.pop("temperature", None)
         elif fixed_temp is not None:
             api_kwargs["temperature"] = fixed_temp
+        elif params.get("is_custom_provider", False):
+            # Local OpenAI-compatible stacks (llama.cpp, vLLM, ...) often assume
+            # temperature=1.0 when we omit the field altogether (#18470).
+            _user_temp = params.get("temperature")
+            api_kwargs["temperature"] = (
+                float(_user_temp) if _user_temp is not None else 0.2
+            )
 
         # Qwen metadata (caller precomputes {sessionId, promptId})
         qwen_meta = params.get("qwen_session_metadata")
@@ -263,6 +271,8 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            if params.get("is_custom_provider", False):
+                api_kwargs.setdefault("parallel_tool_calls", True)
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")

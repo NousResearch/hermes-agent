@@ -354,6 +354,74 @@ class TestChatCompletionsBuildKwargs:
         assert "temperature" not in kw
 
 
+class TestChatCompletionsCustomProvider:
+    """OpenAI-compat custom endpoints (llama.cpp/vLLM): issue #18470."""
+
+    _tool = {
+        "type": "function",
+        "function": {"name": "read", "parameters": {"type": "object", "properties": {}}},
+    }
+
+    def test_default_temperature_when_fixed_not_set(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="local-model",
+            messages=msgs,
+            is_custom_provider=True,
+        )
+        assert kw["temperature"] == 0.2
+
+    def test_explicit_temperature_override(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="local-model",
+            messages=msgs,
+            is_custom_provider=True,
+            temperature=0.35,
+        )
+        assert kw["temperature"] == pytest.approx(0.35)
+
+    def test_omit_temperature_skips_default(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="local-model",
+            messages=msgs,
+            is_custom_provider=True,
+            omit_temperature=True,
+        )
+        assert "temperature" not in kw
+
+    def test_fixed_temperature_beats_custom_default(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            is_custom_provider=True,
+            fixed_temperature=0.55,
+        )
+        assert kw["temperature"] == pytest.approx(0.55)
+
+    def test_parallel_tool_calls_when_tools_present(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="local-model",
+            messages=msgs,
+            tools=[self._tool],
+            is_custom_provider=True,
+        )
+        assert kw["parallel_tool_calls"] is True
+
+    def test_parallel_tool_calls_not_injected_for_standard_route(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            tools=[self._tool],
+            is_custom_provider=False,
+        )
+        assert "parallel_tool_calls" not in kw
+
+
 class TestChatCompletionsKimi:
     """Regression tests for the Kimi/Moonshot quirks migrated into the transport."""
 

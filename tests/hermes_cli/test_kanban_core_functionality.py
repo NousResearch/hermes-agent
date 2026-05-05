@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -181,6 +183,20 @@ def test_pid_alive_helper():
     assert not kb._pid_alive(None)
     # A clearly-dead pid (very large, extremely unlikely to exist).
     assert not kb._pid_alive(2 ** 30)
+
+
+def test_pid_alive_detects_darwin_zombie(monkeypatch):
+    monkeypatch.setattr(kb.sys, "platform", "darwin")
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: None)
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-o", "stat=", "-p", "123"]
+        assert kwargs["stdout"] is subprocess.PIPE
+        return SimpleNamespace(returncode=0, stdout="Z+\n")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._pid_alive(123) is False
 
 
 def test_detect_crashed_workers_reclaims(kanban_home):

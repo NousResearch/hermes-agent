@@ -76,6 +76,7 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -2141,16 +2142,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
     Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
     on Windows. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling (Linux):** ``os.kill(pid, 0)`` succeeds against
+    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
     zombie processes (post-exit, pre-reap) because the process table
     entry still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
     the window between exit and reap, we'd otherwise see stale "alive"
-    signals. On Linux we additionally peek at ``/proc/<pid>/status``
-    and treat ``State: Z`` as dead. On other POSIX or on Windows the
-    zombie check is a no-op.
+    signals. On Linux we peek at ``/proc/<pid>/status`` and treat
+    ``State: Z`` as dead. On macOS we ask ``ps`` for the BSD ``stat``
+    field and treat values containing ``Z`` as dead.
     """
     if not pid or pid <= 0:
         return False
@@ -2164,7 +2165,8 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return True
     except OSError:
         return False
-    # Still here → kill(0) succeeded. Check for zombie on Linux.
+    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
             with open(f"/proc/{int(pid)}/status", "r") as f:
@@ -2178,6 +2180,23 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # proc entry gone → already reaped; treat as dead.
             # PermissionError shouldn't happen for our own children but
             # be defensive.
+            pass
+    elif sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(int(pid))],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False
+            if "Z" in (proc.stdout or "").strip():
+                return False
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
 

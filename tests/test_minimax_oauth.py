@@ -148,6 +148,32 @@ def test_request_user_code_happy_path():
     assert "x-request-id" in headers
 
 
+def test_request_user_code_rewrites_stale_www_authorize_url():
+    state = "test-state-abc"
+    mock_response = _make_httpx_response(200, {
+        "user_code": "ABC-123",
+        "verification_uri": (
+            "https://www.minimax.io/oauth-authorize?client_id=abc&state=xyz"
+        ),
+        "expired_in": 600,
+        "state": state,
+    })
+    client = MagicMock()
+    client.post.return_value = mock_response
+
+    result = _minimax_request_user_code(
+        client,
+        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        code_challenge="test-challenge",
+        state=state,
+    )
+
+    assert result["verification_uri"] == (
+        "https://platform.minimax.io/oauth-authorize?client_id=abc&state=xyz"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. test_request_user_code_state_mismatch_raises
 # ---------------------------------------------------------------------------

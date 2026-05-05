@@ -7975,6 +7975,18 @@ def _minimax_pkce_pair() -> tuple:
     return verifier, challenge, state
 
 
+def _minimax_normalize_verification_uri(verification_uri: str) -> str:
+    """Return a browser-usable MiniMax OAuth authorization URL."""
+    stale_prefix = "https://www.minimax.io/oauth-authorize"
+    if verification_uri.startswith(stale_prefix):
+        return verification_uri.replace(
+            stale_prefix,
+            "https://platform.minimax.io/oauth-authorize",
+            1,
+        )
+    return verification_uri
+
+
 def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     code_challenge: str, state: str,
@@ -8012,6 +8024,9 @@ def _minimax_request_user_code(
             "MiniMax OAuth state mismatch (possible CSRF).",
             provider="minimax-oauth", code="state_mismatch",
         )
+    payload["verification_uri"] = _minimax_normalize_verification_uri(
+        str(payload["verification_uri"])
+    )
     return payload
 
 

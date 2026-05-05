@@ -395,6 +395,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Blocking clarify/ask-user-question waiters backed by DecisionCard callbacks.
         # Values are {"event": threading.Event, "result": str, "label": str}.
         self._decision_card_waiters: Dict[str, Dict[str, Any]] = {}
+        # Free-text DecisionCard replies armed by an "Other / 직접 입력" button.
+        # Keyed by user/chat/thread so the next text message resolves the card
+        # instead of being dispatched to the agent as a new prompt.
+        self._decision_card_text_waiters: Dict[str, str] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2195,6 +2199,16 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] Failed to remove active DecisionCard %s", self.name, decision_id, exc_info=True)
 
+    @staticmethod
+    def _decision_card_text_waiter_key(
+        *,
+        user_id: Any,
+        chat_id: Any,
+        thread_id: Any,
+    ) -> str:
+        """Return a stable key for routing the next free-text reply."""
+        return f"{str(user_id or '')}:{str(chat_id or '')}:{str(thread_id or '')}"
+
     def _format_decision_card_text(self, card: Dict[str, Any]) -> str:
         """Render a compact Telegram DecisionCard body."""
         title = str(card.get("title") or card.get("decision_id") or "Decision")
@@ -2248,7 +2262,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             buttons = []
-            for opt in (card.get("options") or [])[:4]:
+            for opt in (card.get("options") or [])[:8]:
                 if not isinstance(opt, dict):
                     continue
                 key = str(opt.get("key") or "").strip()
@@ -2293,6 +2307,7 @@ class TelegramAdapter(BasePlatformAdapter):
         user_name: str,
         chat_id: str,
         thread_id: str,
+        free_text_reason: Optional[str] = None,
     ) -> None:
         """Append a DecisionCard outcome to the local JSONL decision ledger."""
         from hermes_constants import get_hermes_home
@@ -2318,6 +2333,8 @@ class TelegramAdapter(BasePlatformAdapter):
             "taste_signal": str(card.get("taste_signal") or ""),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
+        if free_text_reason is not None:
+            record["free_text_reason"] = str(free_text_reason)
         out_dir = get_hermes_home() / "decision_queue"
         out_dir.mkdir(parents=True, exist_ok=True)
         with (out_dir / "decisions.jsonl").open("a", encoding="utf-8") as f:
@@ -2336,40 +2353,26 @@ class TelegramAdapter(BasePlatformAdapter):
         """Blocking platform callback for the clarify tool using a DecisionCard.
 
         The agent thread calls this synchronously.  We schedule the Telegram send
-        on the gateway event loop, then block this worker thread until the inline
-        button callback resolves the waiter.  Open-ended clarify questions fall
-        back to a simple text prompt because DecisionCard v0 only captures button
-        choices.
+        on the gateway event loop, then block this worker thread until either an
+        inline button callback or an armed free-text reply resolves the waiter.
         """
-        if not choices:
-            fut = asyncio.run_coroutine_threadsafe(
-                self.send(
-                    chat_id,
-                    f"❓ {question}\n\nReply in this thread with your answer.",
-                    metadata=metadata,
-                ),
-                loop,
-            )
-            try:
-                fut.result(timeout=10)
-            except Exception:
-                logger.debug("[%s] open-ended clarify prompt send failed", self.name, exc_info=True)
-            raise RuntimeError("Open-ended Telegram clarify is not supported yet; ask with choices or use a text reply.")
-
-        clean_choices = [str(c).strip() for c in choices if str(c).strip()][:4]
-        if not clean_choices:
-            raise RuntimeError("No choices available for Telegram clarify DecisionCard.")
+        clean_choices = [str(c).strip() for c in (choices or []) if str(c).strip()][:4]
 
         decision_id = f"clarify-{uuid.uuid4().hex[:12]}"
         keys = [chr(ord("A") + i) for i in range(len(clean_choices))]
+        options = [
+            {"key": key, "label": label}
+            for key, label in zip(keys, clean_choices)
+        ]
+        options.append({"key": "__other__", "label": "Other / 직접 입력"})
+        if clean_choices:
+            options.append({"key": "__defer__", "label": "Defer"})
+        options.append({"key": "__cancel__", "label": "Cancel"})
         card = {
             "decision_id": decision_id,
             "title": "Mina needs your decision",
             "why_now": question,
-            "options": [
-                {"key": key, "label": label}
-                for key, label in zip(keys, clean_choices)
-            ],
+            "options": options,
             "taste_signal": "Clarify/ask-user-question response in Telegram.",
             "kind": "clarify",
         }
@@ -2387,9 +2390,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
             if not event.wait(timeout_seconds):
                 self._decision_card_waiters.pop(decision_id, None)
+                self._remove_active_decision_card(decision_id)
+                for key, pending_id in list(self._decision_card_text_waiters.items()):
+                    if pending_id == decision_id:
+                        self._decision_card_text_waiters.pop(key, None)
                 raise TimeoutError("Timed out waiting for Telegram DecisionCard response.")
             waiter = self._decision_card_waiters.pop(decision_id, {})
-            return str(waiter.get("label") or waiter.get("result") or "").strip()
+            result = str(waiter.get("result") or "").strip()
+            if result == "__cancel__":
+                raise RuntimeError("Telegram DecisionCard was cancelled by the user.")
+            if result == "__defer__":
+                return "Defer"
+            return str(waiter.get("label") or result or "").strip()
         except Exception:
             self._decision_card_waiters.pop(decision_id, None)
             raise
@@ -2900,12 +2912,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             user_display = getattr(query.from_user, "first_name", "User")
+
+            if choice == "__other__":
+                text_key = self._decision_card_text_waiter_key(
+                    user_id=caller_id,
+                    chat_id=query_chat_id,
+                    thread_id=query_thread_id,
+                )
+                self._decision_card_text_waiters[text_key] = decision_id
+                await query.answer(text="✍️ Reply with your answer")
+                try:
+                    await query.edit_message_text(
+                        text=(
+                            f"{self._format_decision_card_text(card)}\n\n"
+                            f"✍️ Waiting for free-text reply from {user_display}."
+                        ),
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
             selected_label = ""
             for opt in (card.get("options") or []):
                 if isinstance(opt, dict) and str(opt.get("key") or "") == str(choice):
                     selected_label = str(opt.get("label") or "")
                     break
-            await query.answer(text=f"✅ {choice} recorded")
+            display_choice = selected_label if str(choice).startswith("__") else choice
+            await query.answer(text=f"✅ {display_choice} recorded")
             try:
                 self._record_decision_card_choice(
                     card=card,
@@ -2928,7 +2963,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             resolved_text = (
                 f"{self._format_decision_card_text(card)}\n\n"
-                f"✅ Decision recorded: *{choice}* by {user_display}"
+                f"✅ Decision recorded: *{display_choice}* by {user_display}"
             )
             try:
                 await query.edit_message_text(
@@ -4203,6 +4238,66 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    async def _maybe_handle_decision_card_free_text(self, update: Update) -> bool:
+        """Capture the next text message after a DecisionCard Other button."""
+        message = getattr(update, "message", None)
+        if not message or not getattr(message, "text", None):
+            return False
+        from_user = getattr(message, "from_user", None)
+        user_id = getattr(from_user, "id", "")
+        chat_id = getattr(message, "chat_id", "")
+        thread_id = getattr(message, "message_thread_id", None)
+        text_key = self._decision_card_text_waiter_key(
+            user_id=user_id,
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
+        decision_id = self._decision_card_text_waiters.pop(text_key, None)
+        if not decision_id:
+            return False
+
+        card = self._load_active_decision_card(decision_id)
+        if not card:
+            return False
+
+        answer = str(message.text or "").strip()
+        user_display = getattr(from_user, "first_name", "User")
+        try:
+            self._record_decision_card_choice(
+                card=card,
+                choice="__other__",
+                user_id=str(user_id or ""),
+                user_name=str(user_display),
+                chat_id=str(chat_id or ""),
+                thread_id=str(thread_id or ""),
+                free_text_reason=answer,
+            )
+            waiter = self._decision_card_waiters.get(decision_id)
+            if waiter:
+                waiter["result"] = "__other__"
+                waiter["label"] = answer
+                event = waiter.get("event")
+                if event is not None:
+                    event.set()
+            self._remove_active_decision_card(decision_id)
+        except Exception as exc:
+            logger.error("[%s] Failed to record DecisionCard free-text outcome: %s", self.name, exc, exc_info=True)
+            return False
+
+        if self._bot:
+            try:
+                kwargs: Dict[str, Any] = {
+                    "chat_id": int(chat_id),
+                    "text": f"✅ Free-text decision recorded by {user_display}: {answer}",
+                }
+                message_thread_id = self._message_thread_id_for_send(str(thread_id) if thread_id is not None else None)
+                if message_thread_id is not None:
+                    kwargs["message_thread_id"] = message_thread_id
+                await self._bot.send_message(**kwargs)
+            except Exception:
+                logger.debug("[%s] Failed to send DecisionCard free-text ack", self.name, exc_info=True)
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4213,6 +4308,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
         if not self._should_process_message(update.message):
+            return
+        if await self._maybe_handle_decision_card_free_text(update):
             return
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)

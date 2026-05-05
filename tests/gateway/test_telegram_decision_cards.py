@@ -231,3 +231,107 @@ class TestTelegramDecisionCardCallback:
         query.answer.assert_called_once_with(text="⛔ You are not authorized to answer this decision.")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / "decision_queue" / "decisions.jsonl").exists()
+
+    @pytest.mark.asyncio
+    async def test_other_button_arms_free_text_reply_without_resolving_yet(self, tmp_path):
+        adapter = _make_adapter()
+        card = _decision_card()
+        card["options"].append({"key": "__other__", "label": "Other / 직접 입력"})
+        adapter._decision_card_state["dq-20260505-001"] = card
+
+        query = MagicMock()
+        query.data = "dq:dq-20260505-001:__other__"
+        query.from_user.id = 111
+        query.from_user.first_name = "Joohyun"
+        query.message.chat_id = 12345
+        query.message.message_thread_id = 3220
+        query.message.chat.type = "supergroup"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once_with(text="✍️ Reply with your answer")
+        assert adapter._decision_card_text_waiters["111:12345:3220"] == "dq-20260505-001"
+        assert "dq-20260505-001" in adapter._decision_card_state
+        assert not (tmp_path / "decision_queue" / "decisions.jsonl").exists()
+
+    @pytest.mark.asyncio
+    async def test_free_text_reply_records_reason_and_resolves_waiter(self, tmp_path):
+        adapter = _make_adapter()
+        card = _decision_card()
+        card["options"].append({"key": "__other__", "label": "Other / 직접 입력"})
+        adapter._decision_card_state["dq-20260505-001"] = card
+        adapter._decision_card_text_waiters["111:12345:3220"] = "dq-20260505-001"
+
+        import threading
+        event = threading.Event()
+        adapter._decision_card_waiters["dq-20260505-001"] = {"event": event}
+
+        msg = MagicMock()
+        msg.text = "내가 원하는 답은 별도 운영 큐야"
+        msg.chat_id = 12345
+        msg.message_thread_id = 3220
+        msg.from_user.id = 111
+        msg.from_user.first_name = "Joohyun"
+
+        update = MagicMock()
+        update.message = msg
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            handled = await adapter._maybe_handle_decision_card_free_text(update)
+
+        assert handled is True
+        assert event.is_set()
+        waiter = adapter._decision_card_waiters["dq-20260505-001"]
+        assert waiter["result"] == "__other__"
+        assert waiter["label"] == "내가 원하는 답은 별도 운영 큐야"
+        assert "111:12345:3220" not in adapter._decision_card_text_waiters
+        assert "dq-20260505-001" not in adapter._decision_card_state
+
+        records_path = tmp_path / "decision_queue" / "decisions.jsonl"
+        records = [json.loads(line) for line in records_path.read_text().splitlines()]
+        assert len(records) == 1
+        assert records[0]["choice"] == "__other__"
+        assert records[0]["selected_label"] == "Other / 직접 입력"
+        assert records[0]["free_text_reason"] == "내가 원하는 답은 별도 운영 큐야"
+
+    @pytest.mark.asyncio
+    async def test_cancel_button_records_and_resolves_waiter(self, tmp_path):
+        adapter = _make_adapter()
+        card = _decision_card()
+        card["options"].append({"key": "__cancel__", "label": "Cancel"})
+        adapter._decision_card_state["dq-20260505-001"] = card
+
+        import threading
+        event = threading.Event()
+        adapter._decision_card_waiters["dq-20260505-001"] = {"event": event}
+
+        query = MagicMock()
+        query.data = "dq:dq-20260505-001:__cancel__"
+        query.from_user.id = 111
+        query.from_user.first_name = "Joohyun"
+        query.message.chat_id = 12345
+        query.message.message_thread_id = 3220
+        query.message.chat.type = "supergroup"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        assert event.is_set()
+        assert adapter._decision_card_waiters["dq-20260505-001"]["result"] == "__cancel__"
+        query.answer.assert_called_once_with(text="✅ Cancel recorded")
+        records = [json.loads(line) for line in (tmp_path / "decision_queue" / "decisions.jsonl").read_text().splitlines()]
+        assert records[0]["choice"] == "__cancel__"
+        assert records[0]["selected_label"] == "Cancel"

@@ -638,6 +638,10 @@ class InkboxTunnel:
         self._http_session: Optional[aiohttp.ClientSession] = None
         self._rest: Optional[_RestClient] = None
         self._supervisor_task: Optional[asyncio.Task[None]] = None
+        # Stamped each time /_system/hello succeeds; reset to None on
+        # disconnect.  The adapter watchdog reads ``connected_seconds``
+        # off this for its periodic heartbeat.
+        self._connected_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Public properties
@@ -658,6 +662,29 @@ class InkboxTunnel:
     @property
     def tunnel_name(self) -> str:
         return self._tunnel_name
+
+    @property
+    def connected_seconds(self) -> float:
+        """Seconds since the most-recent ``/_system/hello`` succeeded; 0 if never."""
+        if self._connected_at is None:
+            return 0.0
+        return max(0.0, time.time() - self._connected_at)
+
+    def is_alive(self) -> bool:
+        """True iff the supervisor task is still running.
+
+        Distinct from ``connected_seconds > 0``: the supervisor handles
+        normal disconnect → reconnect cycles itself, so a brief moment
+        with ``_connected_at is None`` (between sessions) is healthy.
+        Only when the supervisor task itself is gone is the tunnel
+        truly dead and in need of external revival.
+        """
+        if self._stop_evt.is_set():
+            return False
+        return (
+            self._supervisor_task is not None
+            and not self._supervisor_task.done()
+        )
 
     # ------------------------------------------------------------------
     # Setup
@@ -881,6 +908,7 @@ class InkboxTunnel:
         except json.JSONDecodeError as exc:
             raise TunnelControlPlaneError(f"Bad hello payload: {exc}")
         self._owner_token = payload["owner_token"]
+        self._connected_at = time.time()
         pool_size = int(payload.get("default_pool_size") or self._pool_size)
         logger.info(
             "[InkboxTunnel] Connected to %s — tunnel=%s owner=%s pool=%d",
@@ -904,6 +932,7 @@ class InkboxTunnel:
                 t.cancel()
         self._intake_tasks = []
         self._owner_token = None
+        self._connected_at = None
         if self._driver is driver:
             self._driver = None
 

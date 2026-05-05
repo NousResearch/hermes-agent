@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import suppress
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -361,6 +363,112 @@ class TestPlatformWiring:
         assert "inkbox" in PLATFORM_HINTS
 
     def test_inkbox_in_platform_registry(self):
+        # placeholder — see body below
+        pass
+
+    def _placeholder_satisfies_collector(self):  # pragma: no cover
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Tunnel watchdog
+# ---------------------------------------------------------------------------
+
+class _FakeTunnel:
+    """Stand-in for InkboxTunnel for watchdog unit tests."""
+
+    def __init__(self, *, alive: bool = True, connected_seconds: float = 0.0):
+        self._alive = alive
+        self._connected_seconds = connected_seconds
+        self.public_host = "fake.example.inkboxwire.com"
+        self.start_calls = 0
+        self.stop_calls = 0
+        self._next_start_returns = True
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    @property
+    def connected_seconds(self) -> float:
+        return self._connected_seconds
+
+    async def start(self) -> bool:
+        self.start_calls += 1
+        # Simulate revival: after start(), the tunnel is alive again.
+        self._alive = self._next_start_returns
+        self._connected_seconds = 0.0
+        return self._next_start_returns
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        self._alive = False
+
+
+class TestTunnelWatchdog:
+    """The watchdog should detect dead supervisors and rebuild."""
+
+    @pytest.mark.asyncio
+    async def test_healthy_tunnel_no_rebuild(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._tunnel = _FakeTunnel(alive=True, connected_seconds=10)
+        # Tight cadence so the test isn't slow.
+        monkeypatch.setattr(adapter, "_WATCHDOG_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(adapter, "_WATCHDOG_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+        task = asyncio.create_task(adapter._tunnel_watchdog())
+        try:
+            await asyncio.sleep(0.2)
+        finally:
+            task.cancel()
+            with suppress(BaseException):
+                await task
+        assert adapter._tunnel.start_calls == 0
+        assert adapter._tunnel.stop_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_dead_supervisor_triggers_rebuild(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._tunnel = _FakeTunnel(alive=False)
+        monkeypatch.setattr(adapter, "_WATCHDOG_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(adapter, "_WATCHDOG_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+        task = asyncio.create_task(adapter._tunnel_watchdog())
+        try:
+            await asyncio.sleep(0.2)
+        finally:
+            task.cancel()
+            with suppress(BaseException):
+                await task
+        assert adapter._tunnel.stop_calls >= 1
+        assert adapter._tunnel.start_calls >= 1
+
+    @pytest.mark.asyncio
+    async def test_rebuild_failure_backs_off(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        ft = _FakeTunnel(alive=False)
+        ft._next_start_returns = False  # every revival attempt fails
+        adapter._tunnel = ft
+        monkeypatch.setattr(adapter, "_WATCHDOG_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(adapter, "_WATCHDOG_HEARTBEAT_INTERVAL_SECONDS", 60)
+
+        task = asyncio.create_task(adapter._tunnel_watchdog())
+        try:
+            await asyncio.sleep(0.5)
+        finally:
+            task.cancel()
+            with suppress(BaseException):
+                await task
+        # Should have tried and failed multiple times — but not 50+
+        # (back-off keeps it sane during sustained failure).
+        assert 1 <= ft.start_calls <= 6, f"start called {ft.start_calls}x"
+
+    @pytest.mark.asyncio
+    async def test_skipped_when_no_tunnel(self, monkeypatch):
+        # INKBOX_PUBLIC_URL override path: adapter._tunnel is None.
+        adapter = _make_adapter(monkeypatch)
+        adapter._tunnel = None
+        monkeypatch.setattr(adapter, "_WATCHDOG_INTERVAL_SECONDS", 0.01)
+        await asyncio.wait_for(adapter._tunnel_watchdog(), timeout=0.2)
         from hermes_cli.platforms import PLATFORMS
         assert "inkbox" in PLATFORMS
         assert PLATFORMS["inkbox"].default_toolset == "hermes-inkbox"

@@ -324,3 +324,75 @@ class TestPublicURL:
         )
         assert t.public_host == "my-tunnel.beta.inkboxwire.com"
         assert t.public_url == "https://my-tunnel.beta.inkboxwire.com"
+
+
+# ---------------------------------------------------------------------------
+# is_alive() / connected_seconds (used by the adapter watchdog)
+# ---------------------------------------------------------------------------
+
+class TestIsAlive:
+    def test_fresh_tunnel_is_not_alive(self, tmp_path):
+        t = _make_tunnel(tmp_path)
+        # No supervisor task spawned yet → not alive.
+        assert t.is_alive() is False
+        assert t.connected_seconds == 0.0
+
+    @pytest.mark.asyncio
+    async def test_alive_when_supervisor_running(self, tmp_path):
+        t = _make_tunnel(tmp_path)
+
+        async def _forever() -> None:
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                return
+
+        t._supervisor_task = asyncio.create_task(_forever())
+        try:
+            assert t.is_alive() is True
+        finally:
+            t._supervisor_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t._supervisor_task
+
+    @pytest.mark.asyncio
+    async def test_not_alive_when_supervisor_done(self, tmp_path):
+        t = _make_tunnel(tmp_path)
+
+        async def _exit() -> None:
+            return
+
+        t._supervisor_task = asyncio.create_task(_exit())
+        await t._supervisor_task  # let it finish
+        assert t.is_alive() is False
+
+    @pytest.mark.asyncio
+    async def test_not_alive_after_stop(self, tmp_path):
+        t = _make_tunnel(tmp_path)
+
+        async def _forever() -> None:
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                return
+
+        t._supervisor_task = asyncio.create_task(_forever())
+        try:
+            assert t.is_alive() is True
+            t._stop_evt.set()
+            assert t.is_alive() is False
+        finally:
+            t._supervisor_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t._supervisor_task
+
+    def test_connected_seconds_increases_after_stamp(self, tmp_path):
+        import time as _time
+        t = _make_tunnel(tmp_path)
+        t._connected_at = _time.time() - 42.0
+        assert 41.0 <= t.connected_seconds <= 43.0
+
+    def test_connected_seconds_zero_when_unstamped(self, tmp_path):
+        t = _make_tunnel(tmp_path)
+        t._connected_at = None
+        assert t.connected_seconds == 0.0

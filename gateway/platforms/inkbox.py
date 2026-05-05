@@ -219,6 +219,7 @@ class InkboxAdapter(BasePlatformAdapter):
         self._runner: Optional[Any] = None
         self._site: Optional[Any] = None
         self._tunnel: Optional[Any] = None  # InkboxTunnel
+        self._tunnel_watchdog_task: Optional[asyncio.Task[None]] = None
         # contact_id → active call WebSocket. Used by send()/edit_message() to
         # push voice replies to the correct ongoing call.
         self._active_call_ws: Dict[str, Any] = {}
@@ -369,6 +370,19 @@ class InkboxAdapter(BasePlatformAdapter):
             "[Inkbox] Connected: identity=%s public=%s listen=%s:%d",
             self._identity_handle, self._public_url, self._host, self._port,
         )
+
+        # Belt-and-suspenders: the tunnel client's own ``_supervisor`` handles
+        # normal disconnect → reconnect cycles, but if the supervisor task
+        # itself dies (silent crash, deadlock, swallowed exception) the gateway
+        # process keeps running but no inbound traffic flows.  This watchdog
+        # detects that and rebuilds the tunnel from scratch.  Skipped when
+        # INKBOX_PUBLIC_URL is set (no tunnel client to watch).
+        if self._tunnel is not None:
+            self._tunnel_watchdog_task = asyncio.create_task(
+                self._tunnel_watchdog(),
+                name="inkbox-tunnel-watchdog",
+            )
+
         return True
 
     async def disconnect(self) -> None:
@@ -379,6 +393,17 @@ class InkboxAdapter(BasePlatformAdapter):
         logger.info("[Inkbox] Disconnected")
 
     async def _cleanup(self) -> None:
+        # Cancel the watchdog FIRST so it doesn't observe the half-torn-down
+        # tunnel mid-cleanup and try to "revive" it.
+        if (
+            self._tunnel_watchdog_task is not None
+            and not self._tunnel_watchdog_task.done()
+        ):
+            self._tunnel_watchdog_task.cancel()
+            with suppress(Exception):
+                await self._tunnel_watchdog_task
+        self._tunnel_watchdog_task = None
+
         # Close any live call WS so callers don't hang on a half-open socket.
         for ws in list(self._active_call_ws.values()):
             with suppress(Exception):
@@ -525,6 +550,99 @@ class InkboxAdapter(BasePlatformAdapter):
             state_path.write_text(json.dumps(state, indent=2) + "\n")
         except Exception as exc:
             logger.debug("[Inkbox] Failed to write identity state file: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Tunnel watchdog
+    # ------------------------------------------------------------------
+
+    # Watchdog cadence + heartbeat-log throttle (seconds).  60s is short
+    # enough that a silent failure rarely costs more than one missed
+    # webhook retry by Inkbox; the 5-min log throttle keeps the periodic
+    # "tunnel healthy" line from drowning the rest of the gateway log.
+    _WATCHDOG_INTERVAL_SECONDS = 60
+    _WATCHDOG_HEARTBEAT_INTERVAL_SECONDS = 300
+
+    async def _tunnel_watchdog(self) -> None:
+        """Catch silent supervisor death and rebuild the tunnel.
+
+        The InkboxTunnel client has its own internal supervisor that
+        reconnects on TCP/h2 disconnect.  But if THAT task dies (silent
+        crash, swallowed exception during backoff sleep), nobody is
+        watching the watcher and the gateway goes mute.  This loop
+        periodically asserts the supervisor is still alive and rebuilds
+        the tunnel from scratch if it isn't.
+
+        On every heartbeat-interval pass while healthy, logs an INFO
+        line with ``connected_for`` so external monitors can grep
+        for staleness.  Recovery attempts back off if start() keeps
+        failing so we don't hammer the control plane during an outage.
+        """
+        last_heartbeat = 0.0
+        recovery_attempts = 0
+        recovery_backoff = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)
+        try:
+            while True:
+                await asyncio.sleep(self._WATCHDOG_INTERVAL_SECONDS)
+                tunnel = self._tunnel
+                if tunnel is None:
+                    return  # adapter shutting down — _cleanup ran
+
+                if tunnel.is_alive():
+                    recovery_attempts = 0
+                    now = time.monotonic()
+                    if now - last_heartbeat >= self._WATCHDOG_HEARTBEAT_INTERVAL_SECONDS:
+                        last_heartbeat = now
+                        connected_for = int(tunnel.connected_seconds)
+                        logger.info(
+                            "[Inkbox] tunnel healthy: host=%s connected_for=%ds",
+                            tunnel.public_host, connected_for,
+                        )
+                    continue
+
+                # Supervisor is gone — rebuild.
+                logger.error(
+                    "[Inkbox] Tunnel watchdog: supervisor task is dead "
+                    "(host=%s); attempting rebuild (attempt %d).",
+                    tunnel.public_host, recovery_attempts + 1,
+                )
+                ok = False
+                try:
+                    with suppress(Exception):
+                        await tunnel.stop()
+                    ok = await tunnel.start()
+                except Exception:
+                    logger.exception(
+                        "[Inkbox] Tunnel watchdog: rebuild raised",
+                    )
+                if ok:
+                    logger.info(
+                        "[Inkbox] Tunnel watchdog: tunnel re-established "
+                        "(host=%s).",
+                        tunnel.public_host,
+                    )
+                    last_heartbeat = 0.0
+                    recovery_attempts = 0
+                    continue
+
+                backoff = recovery_backoff[
+                    min(recovery_attempts, len(recovery_backoff) - 1)
+                ]
+                recovery_attempts += 1
+                logger.warning(
+                    "[Inkbox] Tunnel watchdog: rebuild failed; "
+                    "retrying in %.0fs (attempt %d).",
+                    backoff, recovery_attempts,
+                )
+                await asyncio.sleep(backoff)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            # Don't let the watchdog itself crash silently — the whole
+            # point is that THIS task survives where ``_supervisor``
+            # might not.  Re-raise as a logged ERROR; if we somehow get
+            # here, the gateway should at least make it greppable.
+            logger.exception("[Inkbox] Tunnel watchdog crashed unexpectedly")
+            raise
 
     # ------------------------------------------------------------------
     # Outbound: send / edit / get_chat_info

@@ -14911,12 +14911,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except Exception:
                     pass
                 return False
+            old_gateway_exited = False
             # Wait up to 10 seconds for the old process to exit
             for _ in range(20):
                 try:
                     os.kill(existing_pid, 0)
                     time.sleep(0.5)
                 except (ProcessLookupError, PermissionError):
+                    old_gateway_exited = True
                     break  # Process is gone
             else:
                 # Still alive after 10s — force kill
@@ -14926,9 +14928,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 )
                 try:
                     terminate_pid(existing_pid, force=True)
-                    time.sleep(0.5)
-                except (ProcessLookupError, PermissionError, OSError):
+                except ProcessLookupError:
+                    old_gateway_exited = True
+                except (PermissionError, OSError):
                     pass
+                if not old_gateway_exited:
+                    for _ in range(20):
+                        try:
+                            os.kill(existing_pid, 0)
+                            time.sleep(0.25)
+                        except (ProcessLookupError, PermissionError):
+                            old_gateway_exited = True
+                            break
+                if not old_gateway_exited:
+                    logger.error(
+                        "Old gateway (PID %d) still appears alive after SIGKILL; "
+                        "aborting replacement to avoid a duplicate gateway.",
+                        existing_pid,
+                    )
+                    try:
+                        from gateway.status import clear_takeover_marker
+                        clear_takeover_marker()
+                    except Exception:
+                        pass
+                    return False
             remove_pid_file()
             # remove_pid_file() is a no-op when the PID doesn't match.
             # Force-unlink to cover the old-process-crashed case.

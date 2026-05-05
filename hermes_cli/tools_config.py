@@ -56,6 +56,7 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
+    ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
@@ -78,7 +79,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -1919,21 +1920,27 @@ def _reconfigure_provider(provider: dict, config: dict):
             return
 
     if provider.get("tts_provider"):
-        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = provider["tts_provider"]
+        tts_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
+        browser_cfg = config.setdefault("browser", {})
         if bp == "local":
-            config.setdefault("browser", {})["cloud_provider"] = "local"
+            browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
-            config.setdefault("browser", {})["cloud_provider"] = bp
+            browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
+        browser_cfg["use_gateway"] = bool(managed_feature)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        web_cfg = config.setdefault("web", {})
+        web_cfg["backend"] = provider["web_backend"]
+        web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if managed_feature and managed_feature not in ("web", "tts", "browser"):

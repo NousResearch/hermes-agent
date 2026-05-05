@@ -40,13 +40,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_kanban_mode() -> bool:
-    """Tools are available iff the current process has ``HERMES_KANBAN_TASK``
-    set in its env, which the dispatcher sets when spawning a worker.
+    """Tools are available when:
 
-    Humans running ``hermes chat`` see zero kanban tools. Workers spawned
-    by the kanban dispatcher (gateway-embedded by default) see all seven.
+    1. ``HERMES_KANBAN_TASK`` is set (dispatcher-spawned worker), OR
+    2. The current profile has ``kanban`` in its toolsets config
+       (orchestrator profiles like techlead that route work via Kanban).
+
+    Humans running ``hermes chat`` without the kanban toolset see zero
+    kanban tools. Workers spawned by the kanban dispatcher (gateway-
+    embedded by default) and orchestrator profiles with the kanban
+    toolset enabled see all seven.
     """
-    return bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+
+    # Check if the current profile has the kanban toolset enabled.
+    # Uses load_config() which has mtime-based caching, so this adds
+    # negligible overhead. The check_fn results are further TTL-cached
+    # (~30s) by the tool registry.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        toolsets = cfg.get("toolsets", [])
+        return "kanban" in toolsets
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +77,38 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         return arg
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     return env_tid or None
+
+
+def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
+    """Reject worker-driven destructive calls on foreign task IDs.
+
+    A process spawned by the dispatcher has ``HERMES_KANBAN_TASK`` set
+    to its own task id. Tools like ``kanban_complete`` / ``kanban_block``
+    / ``kanban_heartbeat`` mutate run-lifecycle state, so a buggy or
+    prompt-injected worker that passed an explicit ``task_id`` for some
+    other task could corrupt sibling or cross-tenant runs (see #19534).
+
+    Orchestrator profiles (kanban toolset enabled but **no**
+    ``HERMES_KANBAN_TASK`` in env) aren't subject to this check — their
+    job is routing, and they sometimes legitimately close out child
+    tasks or reopen blocked ones. Workers are narrowly scoped to their
+    one task.
+
+    Returns ``None`` when the call is allowed, or a tool-error string
+    when it must be rejected. Callers should ``return`` the error
+    verbatim.
+    """
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid:
+        # Orchestrator or CLI context — no task-scope restriction.
+        return None
+    if tid != env_tid:
+        return tool_error(
+            f"worker is scoped to task {env_tid}; refusing to mutate "
+            f"{tid}. Use kanban_comment to hand off information to other "
+            f"tasks, or kanban_create to spawn follow-up work."
+        )
+    return None
 
 
 def _connect():
@@ -154,6 +204,9 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
@@ -192,6 +245,9 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
@@ -220,6 +276,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
     note = args.get("note")
     try:
         kb, conn = _connect()

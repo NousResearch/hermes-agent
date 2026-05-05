@@ -53,6 +53,27 @@ WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
+_OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+
+
+def _strip_terminal_fence_leaks(text: str) -> str:
+    """Strip leaked terminal fence wrappers from file read output."""
+    if not text:
+        return text
+
+    cleaned_lines: List[str] = []
+    for line in text.splitlines(keepends=True):
+        had_terminal_wrapper = "__HERMES_FENCE_" in line or "\x1b]" in line
+        cleaned = _OSC_SEQUENCE_RE.sub("", line)
+        cleaned = _FENCE_MARKER_RE.sub("", cleaned)
+        cleaned = cleaned.replace("\x07", "")
+        if had_terminal_wrapper and cleaned.strip("'\r\n\t ") == "":
+            continue
+        cleaned_lines.append(cleaned)
+    return "".join(cleaned_lines)
+
+
 def _get_safe_write_root() -> Optional[str]:
     """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
 
@@ -192,6 +213,31 @@ class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
+
+
+def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
+    """Parse grep/rg context output in ``path-line-content`` format.
+
+    Context lines are ambiguous because filenames may legitimately contain
+    ``-<digits>-`` segments. Prefer the rightmost numeric separator so a path
+    like ``dir/file-12-name.py-8-context`` resolves to
+    ``dir/file-12-name.py`` line ``8`` instead of truncating at ``file``.
+    """
+    if not line or line == "--":
+        return None
+
+    match = None
+    for candidate in re.finditer(r'-(\d+)-', line):
+        match = candidate
+
+    if match is None:
+        return None
+
+    path = line[:match.start()]
+    if not path:
+        return None
+
+    return path, int(match.group(1)), line[match.end():]
 
 
 # =============================================================================
@@ -511,8 +557,9 @@ class ShellFileOperations(FileOperations):
             # File not found - try to suggest similar files
             return self._suggest_similar_files(path)
         
+        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
-            file_size = int(stat_result.stdout.strip())
+            file_size = int(stat_output.strip())
         except ValueError:
             file_size = 0
         
@@ -536,8 +583,9 @@ class ShellFileOperations(FileOperations):
         # Read a sample to check for binary content
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
+        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         
-        if self._is_likely_binary(path, sample_result.stdout):
+        if self._is_likely_binary(path, sample_output):
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,
@@ -551,12 +599,14 @@ class ShellFileOperations(FileOperations):
         
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
+        read_output = _strip_terminal_fence_leaks(read_result.stdout)
         
         # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
+        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
         try:
-            total_lines = int(wc_result.stdout.strip())
+            total_lines = int(wc_output.strip())
         except ValueError:
             total_lines = 0
         
@@ -567,7 +617,7 @@ class ShellFileOperations(FileOperations):
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
         
         return ReadResult(
-            content=self._add_line_numbers(read_result.stdout, offset),
+            content=self._add_line_numbers(read_output, offset),
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,
@@ -637,14 +687,16 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
             return self._suggest_similar_files(path)
+        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
-            file_size = int(stat_result.stdout.strip())
+            file_size = int(stat_output.strip())
         except ValueError:
             file_size = 0
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
-        if self._is_likely_binary(path, sample_result.stdout):
+        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+        if self._is_likely_binary(path, sample_output):
             return ReadResult(
                 is_binary=True, file_size=file_size,
                 error="Binary file — cannot display as text."
@@ -652,7 +704,10 @@ class ShellFileOperations(FileOperations):
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
-        return ReadResult(content=cat_result.stdout, file_size=file_size)
+        return ReadResult(
+            content=_strip_terminal_fence_leaks(cat_result.stdout),
+            file_size=file_size,
+        )
 
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file via rm."""
@@ -957,6 +1012,12 @@ class ShellFileOperations(FileOperations):
         else:
             search_pattern = pattern.split('/')[-1]
 
+        search_root = Path(path)
+        has_hidden_path_ancestor = any(
+            part not in (".", "..") and part.startswith(".")
+            for part in search_root.parts
+        )
+
         # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
         # default, and has parallel directory traversal (~200x faster than
         # find on wide trees).  Mirrors _search_content which already uses rg.
@@ -972,17 +1033,25 @@ class ShellFileOperations(FileOperations):
             )
 
         # Exclude hidden directories (matching ripgrep's default behavior).
-        hidden_exclude = "-not -path '*/.*'"
+        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
 
-        cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
+        # Use shell pagination for standard roots. For hidden roots, gather full
+        # output so we can re-apply hidden-descendant filtering while allowing
+        # explicit hidden-root searches.
+        pagination_expr = ""
+        if not has_hidden_path_ancestor:
+            pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
+
+        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
 
         if not result.stdout.strip():
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
+            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+                        f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
 
         files = []
@@ -994,6 +1063,23 @@ class ShellFileOperations(FileOperations):
                 files.append(parts[1])
             else:
                 files.append(line)
+
+        # For explicit hidden roots, find's path-based filtering excludes every
+        # file under the hidden path. Apply descendant filtering after command
+        # execution so only the explicit root ancestry is bypassed.
+        if has_hidden_path_ancestor:
+            normalized_root = search_root.resolve()
+            filtered_files = []
+            for file_path in files:
+                try:
+                    rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
+                except ValueError:
+                    rel_parts = Path(file_path).parts
+                if any(part not in (".", "..") and part.startswith(".") for part in rel_parts):
+                    continue
+                filtered_files.append(file_path)
+            files = filtered_files[offset:offset + limit]
+        # pagination for standard roots is already applied in shell
 
         return SearchResult(
             files=files,
@@ -1124,7 +1210,6 @@ class ShellFileOperations(FileOperations):
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -1143,12 +1228,12 @@ class ShellFileOperations(FileOperations):
                 # Try context line (dash-separated: file-line-content)
                 # Only attempt if context was requested to avoid false positives
                 if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
+                    parsed = _parse_search_context_line(line)
+                    if parsed:
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500]
+                            path=parsed[0],
+                            line_number=parsed[1],
+                            content=parsed[2][:500]
                         ))
             
             total = len(matches)
@@ -1223,7 +1308,6 @@ class ShellFileOperations(FileOperations):
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -1239,12 +1323,12 @@ class ShellFileOperations(FileOperations):
                     continue
                 
                 if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
+                    parsed = _parse_search_context_line(line)
+                    if parsed:
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500]
+                            path=parsed[0],
+                            line_number=parsed[1],
+                            content=parsed[2][:500]
                         ))
 
             

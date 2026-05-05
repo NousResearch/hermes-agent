@@ -531,10 +531,41 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
 
     def test_full_create_via_dispatcher(self, tmp_path):
+        """Foreground create does NOT mark the skill as agent-created.
+
+        Skills created by user-directed foreground turns belong to the user;
+        only the background self-improvement review fork should mark its
+        own sediment as agent-created (so the curator can later consolidate
+        or prune it).
+        """
         with _skill_dir(tmp_path):
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            from tools.skill_usage import load_usage
+            usage = load_usage()
         result = json.loads(raw)
         assert result["success"] is True
+        # No provenance marker on a foreground create — record either missing
+        # entirely (telemetry best-effort) or present with created_by unset.
+        rec = usage.get("test-skill") or {}
+        assert rec.get("created_by") in (None, "", False)
+
+    def test_create_from_background_review_marks_agent_created(self, tmp_path):
+        """Background-review fork creates ARE marked as agent-created."""
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path):
+                raw = skill_manage(
+                    action="create", name="review-sediment", content=VALID_SKILL_CONTENT
+                )
+                from tools.skill_usage import load_usage
+                usage = load_usage()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert usage["review-sediment"]["created_by"] == "agent"
 
     def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
         # Dispatcher must plumb absorbed_into through to _delete_skill so the

@@ -410,6 +410,24 @@ class TestClassifyApiError:
         result = classify_api_error(e, approx_tokens=1000, context_length=200000)
         assert result.reason == FailoverReason.format_error
 
+    def test_400_generic_many_messages_below_large_context_pressure_is_format_error(self):
+        """Large-context sessions should not overflow solely due to message count."""
+        e = MockAPIError(
+            "Error",
+            status_code=400,
+            body={"error": {"message": "Error"}},
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=74320,
+            context_length=1_000_000,
+            num_messages=432,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.should_compress is False
+
     # ── Server disconnect + large session ──
 
     def test_disconnect_large_session_context_overflow(self):
@@ -424,6 +442,20 @@ class TestClassifyApiError:
         e = Exception("server disconnected without sending complete message")
         result = classify_api_error(e, approx_tokens=5000, context_length=200000)
         assert result.reason == FailoverReason.timeout
+
+    def test_disconnect_many_messages_below_large_context_pressure_is_timeout(self):
+        """Large-context disconnects should not overflow solely due to message count."""
+        e = Exception("server disconnected without sending complete message")
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=74320,
+            context_length=1_000_000,
+            num_messages=432,
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.should_compress is False
 
     # ── Provider-specific: Anthropic thinking signature ──
 

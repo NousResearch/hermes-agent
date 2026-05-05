@@ -809,6 +809,7 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
     # Web dashboard settings
@@ -1286,7 +1287,10 @@ DEFAULT_CONFIG = {
         # for a single update run.
         "pre_update_backup": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
-        # automatically after each successful backup.
+        # automatically after each successful backup.  Values below 1 are
+        # floored to 1 — the backup just created is always preserved.  To
+        # disable backups entirely, set ``pre_update_backup: false`` above
+        # rather than ``backup_keep: 0``.
         "backup_keep": 5,
     },
 
@@ -4675,7 +4679,9 @@ def set_config_value(key: str, value: str):
         "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "terminal.cwd": "TERMINAL_CWD",
+        # terminal.cwd intentionally excluded — CLI resolves at runtime,
+        # gateway bridges it in gateway/run.py. Persisting to .env causes
+        # stale values to poison child processes.
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",

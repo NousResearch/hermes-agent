@@ -274,6 +274,101 @@ class TestCaptureLogSnapshot:
 
 
 # ---------------------------------------------------------------------------
+# Capture log redaction (force=True applies regardless of HERMES_REDACT_SECRETS)
+# ---------------------------------------------------------------------------
+
+# A vendor-prefixed token used across redaction tests. Long enough to clear
+# the redactor's `floor` parameter so it actually masks rather than fully blanks.
+_REDACT_FIXTURE_TOKEN = "sk-proj-A1B2C3D4E5F6G7H8I9J0aA"
+
+
+class TestCaptureLogSnapshotRedaction:
+    """Pin upload-time redaction at the _capture_log_snapshot boundary."""
+
+    @pytest.fixture
+    def hermes_home_with_secret(self, tmp_path, monkeypatch):
+        """Isolated HERMES_HOME whose agent.log contains a vendor-prefixed token."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Critical: ensure the user has NOT opted in to redaction. The whole
+        # point of this PR is that share-time redaction works for users who
+        # never set this env var.
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+
+        logs_dir = home / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "agent.log").write_text(
+            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n"
+        )
+        (logs_dir / "errors.log").write_text("")
+        (logs_dir / "gateway.log").write_text("")
+        return home
+
+    def test_default_redacts_tail_and_full_text(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        # Both views the upload uses must be sanitized.
+        assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
+        assert snap.full_text is not None
+        assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_redact_false_passes_through(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        # Original token survives when the caller opts out.
+        assert _REDACT_FIXTURE_TOKEN in snap.tail_text
+        assert _REDACT_FIXTURE_TOKEN in (snap.full_text or "")
+
+    def test_force_true_overrides_unset_env_var(self, hermes_home_with_secret):
+        """Regression test: redact_sensitive_text short-circuits without force=True.
+
+        If a future refactor drops `force=True` from `_redact_log_text`, this
+        test fails immediately. Without `force=True`, the redactor returns the
+        input unchanged when HERMES_REDACT_SECRETS is unset, and the feature
+        ships silently broken for its target audience.
+        """
+        import os
+
+        from hermes_cli.debug import _capture_log_snapshot
+
+        # Belt-and-suspenders: confirm the env var is genuinely unset for this
+        # test so we know we're exercising the force=True path.
+        assert os.environ.get("HERMES_REDACT_SECRETS", "") == ""
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
+        assert snap.full_text is not None
+        assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_capture_default_log_snapshots_threads_redact(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_default_log_snapshots
+
+        snaps = _capture_default_log_snapshots(50)
+
+        # Default threads redact=True to all three captured logs.
+        assert _REDACT_FIXTURE_TOKEN not in snaps["agent"].tail_text
+        assert _REDACT_FIXTURE_TOKEN not in (snaps["agent"].full_text or "")
+
+    def test_capture_default_log_snapshots_no_redact_passes_through(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_default_log_snapshots
+
+        snaps = _capture_default_log_snapshots(50, redact=False)
+
+        assert _REDACT_FIXTURE_TOKEN in snaps["agent"].tail_text
+        assert _REDACT_FIXTURE_TOKEN in (snaps["agent"].full_text or "")
+
+
+# ---------------------------------------------------------------------------
 # Debug report collection
 # ---------------------------------------------------------------------------
 
@@ -554,6 +649,124 @@ class TestRunDebugShare:
         assert exc_info.value.code == 1
         out = capsys.readouterr()
         assert "all failed" in out.err
+
+
+# ---------------------------------------------------------------------------
+# Share-time redaction wiring + visible banner
+# ---------------------------------------------------------------------------
+
+class TestRunDebugShareRedaction:
+    """End-to-end: --no-redact flag, banner injection, default behavior."""
+
+    @pytest.fixture
+    def hermes_home_with_secret(self, tmp_path, monkeypatch):
+        """Isolated HERMES_HOME whose agent.log contains a vendor-prefixed token."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+
+        logs_dir = home / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "agent.log").write_text(
+            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n"
+        )
+        (logs_dir / "errors.log").write_text("")
+        (logs_dir / "gateway.log").write_text(
+            f"2026-04-12 17:00:01 INFO gateway.run: token {_REDACT_FIXTURE_TOKEN}\n"
+        )
+        return home
+
+    def test_default_share_redacts_uploaded_content(
+        self, hermes_home_with_secret, capsys
+    ):
+        """The uploaded report and full-log pastes do not contain the raw token."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.no_redact = False
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+            run_debug_share(args)
+
+        # At least the report plus one full log paste reached the upload path.
+        assert len(captured) >= 2
+        for content in captured:
+            assert _REDACT_FIXTURE_TOKEN not in content, (
+                "raw token leaked into upload-bound content"
+            )
+
+    def test_default_share_includes_redaction_banner(
+        self, hermes_home_with_secret, capsys
+    ):
+        """Each upload-bound paste carries the visible redaction banner."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.no_redact = False
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+            run_debug_share(args)
+
+        for content in captured:
+            assert "redacted at upload time" in content, (
+                "redaction banner missing from upload-bound content"
+            )
+
+    def test_no_redact_flag_disables_redaction_and_banner(
+        self, hermes_home_with_secret, capsys
+    ):
+        """--no-redact preserves original log content and omits the banner."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.no_redact = True
+
+        captured: list[str] = []
+
+        def fake_upload(content, expiry_days=7):
+            captured.append(content)
+            return f"https://paste.rs/{len(captured)}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+            run_debug_share(args)
+
+        # The agent.log paste should now contain the raw token.
+        assert any(_REDACT_FIXTURE_TOKEN in c for c in captured), (
+            "expected raw token in --no-redact upload"
+        )
+        # No banner anywhere when redaction is disabled.
+        for content in captured:
+            assert "redacted at upload time" not in content, (
+                "banner present with --no-redact"
+            )
 
 
 # ---------------------------------------------------------------------------

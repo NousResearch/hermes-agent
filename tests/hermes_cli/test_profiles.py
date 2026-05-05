@@ -15,6 +15,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from hermes_cli.profiles import (
+    normalize_profile_name,
     validate_profile_name,
     get_profile_dir,
     create_profile,
@@ -58,6 +59,24 @@ def profile_env(tmp_path, monkeypatch):
 # TestValidateProfileName
 # ===================================================================
 
+class TestNormalizeProfileName:
+    """Tests for normalize_profile_name()."""
+
+    def test_title_case_normalized(self):
+        assert normalize_profile_name("Jules") == "jules"
+        assert normalize_profile_name("  Librarian ") == "librarian"
+
+    def test_default_case_insensitive(self):
+        assert normalize_profile_name("Default") == "default"
+        assert normalize_profile_name("DEFAULT") == "default"
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            normalize_profile_name("")
+        with pytest.raises(ValueError, match="cannot be empty"):
+            normalize_profile_name("   ")
+
+
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
 
@@ -65,6 +84,11 @@ class TestValidateProfileName:
     def test_valid_names_accepted(self, name):
         # Should not raise
         validate_profile_name(name)
+
+    def test_uppercase_rejected(self):
+        # validate_profile_name is strict — callers normalize first, then validate.
+        with pytest.raises(ValueError):
+            validate_profile_name("Jules")
 
     @pytest.mark.parametrize("name", ["UPPER", "has space", ".hidden", "-leading"])
     def test_invalid_names_rejected(self, name):
@@ -106,6 +130,10 @@ class TestGetProfileDir:
         tmp_path = profile_env
         result = get_profile_dir("coder")
         assert result == tmp_path / ".hermes" / "profiles" / "coder"
+
+    def test_named_profile_matching_is_case_insensitive(self, profile_env):
+        tmp_path = profile_env
+        assert get_profile_dir("Coder") == tmp_path / ".hermes" / "profiles" / "coder"
 
 
 # ===================================================================

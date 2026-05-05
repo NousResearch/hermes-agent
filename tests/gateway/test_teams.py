@@ -32,6 +32,9 @@ def _ensure_teams_mock():
     microsoft_teams_api_activities_invoke_adaptive_card = types.ModuleType(
         "microsoft_teams.api.activities.invoke.adaptive_card"
     )
+    microsoft_teams_common = types.ModuleType("microsoft_teams.common")
+    microsoft_teams_common_http = types.ModuleType("microsoft_teams.common.http")
+    microsoft_teams_common_http_client = types.ModuleType("microsoft_teams.common.http.client")
     microsoft_teams_api_models = types.ModuleType("microsoft_teams.api.models")
     microsoft_teams_api_models_adaptive_card = types.ModuleType("microsoft_teams.api.models.adaptive_card")
     microsoft_teams_api_models_invoke_response = types.ModuleType("microsoft_teams.api.models.invoke_response")
@@ -76,6 +79,7 @@ def _ensure_teams_mock():
 
     microsoft_teams_apps.App = MockApp
     microsoft_teams_apps.ActivityContext = MagicMock
+    microsoft_teams_common_http_client.ClientOptions = MagicMock
 
     # MessageActivity mock
     microsoft_teams_api.MessageActivity = MagicMock
@@ -143,6 +147,9 @@ def _ensure_teams_mock():
         "microsoft_teams.api.activities.typing": microsoft_teams_api_activities_typing,
         "microsoft_teams.api.activities.invoke": microsoft_teams_api_activities_invoke,
         "microsoft_teams.api.activities.invoke.adaptive_card": microsoft_teams_api_activities_invoke_adaptive_card,
+        "microsoft_teams.common": microsoft_teams_common,
+        "microsoft_teams.common.http": microsoft_teams_common_http,
+        "microsoft_teams.common.http.client": microsoft_teams_common_http_client,
         "microsoft_teams.api.models": microsoft_teams_api_models,
         "microsoft_teams.api.models.adaptive_card": microsoft_teams_api_models_adaptive_card,
         "microsoft_teams.api.models.invoke_response": microsoft_teams_api_models_invoke_response,
@@ -161,6 +168,13 @@ _teams_mod = load_plugin_adapter("teams")
 
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 _teams_mod.AIOHTTP_AVAILABLE = True
+
+# Ensure SDK symbols that were None (import failed on Python <3.12) are
+# replaced with the mocked versions so runtime calls don't silently no-op.
+import sys as _sys
+_mt = _sys.modules.get("microsoft_teams.api.activities.typing")
+if _mt and _teams_mod.TypingActivityInput is None:
+    _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
 check_requirements = _teams_mod.check_requirements
@@ -313,8 +327,32 @@ class TestTeamsPluginRegistration:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Connect / Disconnect
+# Tests: Interactive setup (import fix regression — #18325 / #19173)
 # ---------------------------------------------------------------------------
+
+class TestTeamsInteractiveSetup:
+    def test_interactive_setup_persists_credentials(self, tmp_path, monkeypatch):
+        """Regression for #19173: interactive_setup must import prompt helpers
+        from hermes_cli.cli_output (not hermes_cli.config) and persist
+        credentials to .env without crashing.
+        """
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import hermes_cli.cli_output as cli_output_mod
+
+        answers = iter(["client-id", "client-secret", "tenant-id", "aad-1, aad-2"])
+        monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(answers))
+        monkeypatch.setattr(cli_output_mod, "prompt_yes_no", lambda *_a, **_kw: True)
+        monkeypatch.setattr(cli_output_mod, "print_info", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli_output_mod, "print_success", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli_output_mod, "print_warning", lambda *_a, **_kw: None)
+
+        _teams_mod.interactive_setup()
+
+        env_text = (hermes_home / ".env").read_text(encoding="utf-8")
+        assert "TEAMS_CLIENT_ID=client-id" in env_text
+        assert "TEAMS_TENANT_ID=tenant-id" in env_text
 
 class TestTeamsConnect:
     @pytest.mark.asyncio

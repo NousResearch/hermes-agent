@@ -39,6 +39,7 @@ from typing import Dict, Optional, Any, List, Union
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.i18n import t
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -7377,7 +7378,7 @@ class GatewayRunner:
         if self._restart_requested or self._draining:
             count = self._running_agent_count()
             if count:
-                return f"⏳ Draining {count} active agent(s) before restart..."
+                return t("gateway.draining", count=count)
             return EphemeralReply("⏳ Gateway restart already in progress...")
 
         # Save the requester's routing info so the new gateway process can
@@ -7429,7 +7430,7 @@ class GatewayRunner:
         else:
             self.request_restart(detached=True, via_service=False)
         if active_agents:
-            return f"⏳ Draining {active_agents} active agent(s) before restart..."
+            return t("gateway.draining", count=active_agents)
         return EphemeralReply("♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`.")
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
@@ -8099,7 +8100,7 @@ class GatewayRunner:
         if lower in ("clear", "stop", "done"):
             had = mgr.has_goal()
             mgr.clear()
-            return "✓ Goal cleared." if had else "No active goal."
+            return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
 
         # Otherwise — treat the remaining text as the new goal.
         try:
@@ -9317,7 +9318,7 @@ class GatewayRunner:
         try:
             user_config: dict = _load_gateway_config()
         except Exception as e:
-            return f"⚠️ Could not read config.yaml: {e}"
+            return t("gateway.config_read_failed", error=e)
 
         effective = resolve_footer_config(user_config, platform_key)
 
@@ -9350,7 +9351,7 @@ class GatewayRunner:
             atomic_yaml_write(config_path, user_config)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
-            return f"⚠️ Could not save config: {e}"
+            return t("gateway.config_save_failed", error=e)
 
         state = "ON" if new_state else "OFF"
         example = ""
@@ -10788,7 +10789,7 @@ class GatewayRunner:
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
-                return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+                return t("gateway.approval_expired")
             return "No pending command to approve."
 
         # Parse args: support "all", "all session", "all always", "session", "always"

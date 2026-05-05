@@ -1028,6 +1028,74 @@ class SessionStore:
             self._save()
             return True
 
+    def reconcile_orphaned_json_files(self) -> int:
+        """Remove session JSON/JSONL files on disk that are not tracked in sessions.json.
+
+        On each gateway restart a new session JSON file is written to
+        ``sessions_dir`` but the old ones are never deleted.  This causes the
+        ``sessions.json`` index to drift out of sync with the on-disk files,
+        which eventually triggers ``invalid tool call id`` cross-session
+        contamination errors (#20098).
+
+        This method:
+        1. Collects the set of session_id values tracked by the in-memory
+           ``_entries`` index.
+        2. Scans ``sessions_dir`` for ``*.json`` and ``*.jsonl`` files whose
+           basename (without extension) looks like a session ID (i.e. is NOT
+           the index file ``sessions.json``) but is **not** referenced by any
+           live entry.
+        3. Deletes those orphaned files and returns the count removed.
+
+        It intentionally leaves ``sessions.json`` alone so the index is never
+        truncated by this cleanup.  It also skips files whose name starts with
+        a dot (temp files written by ``_save()``) and ``request_dump_*`` files
+        that belong to a known session.
+
+        Safe to call on every gateway startup — it is a no-op when there are
+        no orphaned files.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            known_ids: set[str] = {
+                entry.session_id for entry in self._entries.values()
+            }
+
+        removed = 0
+        try:
+            for path in self.sessions_dir.iterdir():
+                name = path.name
+                # Skip the index itself, hidden/temp files, and directories.
+                if name == "sessions.json" or name.startswith(".") or path.is_dir():
+                    continue
+                # Strip known extensions to get the bare session ID.
+                if name.endswith(".jsonl"):
+                    candidate_id = name[: -len(".jsonl")]
+                elif name.endswith(".json"):
+                    candidate_id = name[: -len(".json")]
+                else:
+                    # request_dump_* or other files — leave alone.
+                    continue
+                if candidate_id not in known_ids:
+                    try:
+                        path.unlink()
+                        logger.info(
+                            "SessionStore removed orphaned session file: %s", path.name
+                        )
+                        removed += 1
+                    except OSError as exc:
+                        logger.warning(
+                            "SessionStore could not remove orphaned file %s: %s",
+                            path.name, exc,
+                        )
+        except OSError as exc:
+            logger.warning("SessionStore orphan reconciliation scan failed: %s", exc)
+
+        if removed:
+            logger.info(
+                "SessionStore reconciled %d orphaned session file(s)", removed
+            )
+        return removed
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 

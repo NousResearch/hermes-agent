@@ -3119,6 +3119,17 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("Session suspension on startup failed: %s", e)
 
+        # Orphan file cleanup (#20098): remove session JSON/JSONL files on
+        # disk that are no longer tracked in sessions.json.  Repeated gateway
+        # restarts create new session files without removing old ones, causing
+        # the index to drift and cross-session tool-call-id contamination.
+        try:
+            orphaned = self.session_store.reconcile_orphaned_json_files()
+            if orphaned:
+                logger.info("Removed %d orphaned session file(s) from sessions_dir", orphaned)
+        except Exception as e:
+            logger.warning("Session orphan reconciliation failed: %s", e)
+
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same
         # history keeps causing the agent to hang).  Auto-suspend it so the

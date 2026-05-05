@@ -2225,10 +2225,26 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "boxd":
+            if importlib.util.find_spec("boxd") is None:
+                logger.error(
+                    "boxd is required for the boxd terminal backend: "
+                    "pip install 'hermes-agent[boxd]' (or pip install boxd)"
+                )
+                return False
+            if not (os.getenv("BOXD_API_KEY") or os.getenv("BOXD_TOKEN")):
+                logger.error(
+                    "boxd backend selected but neither BOXD_API_KEY nor BOXD_TOKEN "
+                    "is set. Create one with `boxd keys create <name>` and add "
+                    "BOXD_API_KEY=bxd_... to ~/.hermes/.env."
+                )
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, boxd, vercel_sandbox, ssh.",
                 env_type,
             )
             return False

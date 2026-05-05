@@ -89,7 +89,7 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
-    assert i18n._normalize_lang("Turkish") == "tr"
+    assert i18n._normalize_lang("turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
 

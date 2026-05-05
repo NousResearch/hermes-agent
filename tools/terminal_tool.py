@@ -1540,6 +1540,45 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(r"\b(?:nohup|disown|setsid)\b", re.IGNORECASE)
+
+
+def _strip_quoted_content(command: str) -> str:
+    """Remove content inside single/double/backtick quotes from a command.
+
+    Safety-filter regexes should match on the *unquoted* shell structure,
+    not on keywords that happen to appear inside string literals (commit
+    messages, Python -c code, grep patterns, etc.).
+    """
+    result = []
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch in ("'", '`'):
+            # Find closing quote of same type (no escaping for single/backtick)
+            close = command.find(ch, i + 1)
+            if close == -1:
+                break  # unclosed quote — stop stripping
+            i = close + 1
+        elif ch == '"':
+            # Handle escaped quotes inside double quotes
+            j = i + 1
+            while j < n:
+                if command[j] == '\\' and j + 1 < n:
+                    j += 2
+                    continue
+                if command[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                break  # unclosed double quote
+            i = j + 1
+        else:
+            result.append(ch)
+            i += 1
+    return ''.join(result)
+
+
 _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
 _LONG_LIVED_FOREGROUND_PATTERNS = (
@@ -1574,7 +1613,7 @@ def _foreground_background_guidance(command: str) -> str | None:
     if _looks_like_help_or_version_command(command):
         return None
 
-    if _SHELL_LEVEL_BACKGROUND_RE.search(command):
+    if _SHELL_LEVEL_BACKGROUND_RE.search(_strip_quoted_content(command)):
         return (
             "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
             "Use terminal(background=true) so Hermes can track the process, then run "

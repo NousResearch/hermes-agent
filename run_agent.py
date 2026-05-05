@@ -6861,6 +6861,21 @@ class AIAgent:
         # cold-start kills.  The chat_completions path doesn't get this
         # signal (no equivalent SDK hook installed there).
         ping_seen = {"yes": False}
+        # Whether the model is currently emitting a thinking content block
+        # (content_block_start with type="thinking" fired, next non-thinking
+        # content_block_start not yet seen). Drives the heartbeat status so
+        # multi-minute thinking phases display as "thinking" instead of the
+        # generic "queued/prefilling".
+        thinking_active = {"yes": False}
+        # Cumulative characters streamed in thinking_delta events for this
+        # request. Surfaced in the heartbeat as a progress signal.
+        thinking_chars = {"n": 0}
+        # Last semantic content event (any content_block_*). Distinct from
+        # last_chunk_time, which is also reset by SSE pings — when pings flow
+        # but no content events arrive (server-side summarized thinking),
+        # content_silence grows while last_chunk_time stays fresh, so the
+        # heartbeat keys off this for accurate status during long thinking.
+        last_content_time = {"t": time.time()}
 
         def _fire_first_delta():
             if not first_delta_fired["done"] and on_first_delta:
@@ -7182,8 +7197,11 @@ class AIAgent:
                         event_type = getattr(event, "type", None)
 
                         if event_type == "content_block_start":
+                            last_content_time["t"] = time.time()
                             block = getattr(event, "content_block", None)
-                            if block and getattr(block, "type", None) == "tool_use":
+                            block_type = getattr(block, "type", None) if block else None
+                            thinking_active["yes"] = (block_type == "thinking")
+                            if block_type == "tool_use":
                                 has_tool_use = True
                                 tool_name = getattr(block, "name", None)
                                 if tool_name:
@@ -7197,12 +7215,15 @@ class AIAgent:
                                 if delta_type == "text_delta":
                                     text = getattr(delta, "text", "")
                                     if text and not has_tool_use:
+                                        last_content_time["t"] = time.time()
                                         _fire_first_delta()
                                         self._fire_stream_delta(text)
                                         deltas_were_sent["yes"] = True
                                 elif delta_type == "thinking_delta":
                                     thinking_text = getattr(delta, "thinking", "")
                                     if thinking_text:
+                                        thinking_chars["n"] += len(thinking_text)
+                                        last_content_time["t"] = time.time()
                                         _fire_first_delta()
                                         self._fire_reasoning_delta(thinking_text)
 
@@ -7569,15 +7590,29 @@ class AIAgent:
                 #     are flowing.  A subsequent silence is a true stall;
                 #     reporting silence_secs there ("streaming stalled —
                 #     30 s") is what the user actually wants to see.
+                # _content_silence grows during summarized thinking (only SSE
+                # pings flow); _silence_secs gets reset by pings and stays
+                # near zero. Drive the heartbeat off content_silence so the
+                # user sees status updates during long thinking phases.
+                _content_silence = int(_hb_now - last_content_time["t"])
                 if first_event_seen["yes"]:
-                    _user_elapsed = _silence_secs
+                    _user_elapsed = _content_silence
                 else:
                     _user_elapsed = int(_hb_now - _request_started)
                 if _user_elapsed >= int(_HEARTBEAT_INTERVAL):
                     try:
                         _model_name = api_kwargs.get("model", "unknown")
-                        if first_event_seen["yes"]:
-                            _phase = "streaming stalled"
+                        if thinking_active["yes"]:
+                            if thinking_chars["n"]:
+                                _phase = (
+                                    f"thinking ({thinking_chars['n']:,} chars streamed)"
+                                )
+                            else:
+                                _phase = "thinking"
+                        elif first_event_seen["yes"] and _content_silence > 10:
+                            _phase = "thinking (server-side, summarized)"
+                        elif first_event_seen["yes"]:
+                            _phase = "streaming"
                         elif ping_seen["yes"]:
                             _phase = "queued/prefilling, server alive"
                         else:

@@ -536,7 +536,7 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lic", f"set +m; {shlex.quote(command)}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,

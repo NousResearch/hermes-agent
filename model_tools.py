@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
+import re
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -705,6 +706,16 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
+    # Apply targeted repairs for common open-model failure patterns
+    function_args, shape_repairs = repair_tool_args(function_name, function_args)
+    function_args, rel_repairs = _relational_repair(function_name, function_args)
+    all_repairs = shape_repairs + rel_repairs
+    if all_repairs:
+        _record_repairs(function_name, all_repairs)
+        logger.info(
+            "tool_input_repaired:%s %s", function_name, ",".join(all_repairs)
+        )
+
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
@@ -810,12 +821,167 @@ def handle_function_call(
         except Exception:
             pass
 
+        # Inject relational-repair note into the result so the model
+        # sees what we defaulted and can self-correct if our guess was wrong.
+        # Transparency over silent magic.
+        note = _relational_note(all_repairs)
+        if note:
+            try:
+                result_data = json.loads(result)
+                if isinstance(result_data, dict):
+                    result_data["_note"] = note
+                    result = json.dumps(result_data, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
         return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+
+# =============================================================================
+# Tool input repair
+# =============================================================================
+# After coerce_tool_args() handles type-level coercion, repair_tool_args()
+# applies a small catalogue of targeted fixes for common failure patterns
+# from open-weight models (DeepSeek, GLM, Qwen).  Most repairs are
+# schema-aware and only fire when the value's Python type mismatches the
+# schema-declared type, so valid inputs are never touched.  The autolink
+# unwrap is an exception — it's a type-safe string→string normalization
+# that runs on all string values.
+#
+# Design: validate-then-repair.  We don't preprocess blindly — we let the
+# schema act as a prior, then spend repair budget only where the declared
+# type disagrees with the actual value.  This avoids silent corruption of
+# payloads that happen to look like something they aren't (e.g. file content
+# that is valid JSON).
+
+AUTOLINK_RE = re.compile(r'^\[([^\]]+)\]\(https?://\1\)$')
+
+
+def _unwrap_autolink(value: str) -> tuple[str, bool]:
+    """Unwrap degenerate markdown auto-link where link text equals URL.
+
+    Example: ``[notes.md](http://notes.md)`` → ``notes.md``.
+    Preserves real links like ``[click](https://x.com)``.
+    """
+    m = AUTOLINK_RE.match(value)
+    if m:
+        return m.group(1), True
+    return value, False
+
+
+def repair_tool_args(
+    tool_name: str, args: Dict[str, Any]
+) -> tuple[Dict[str, Any], list[str]]:
+    """Apply targeted repairs after type coercion.
+
+    Repairs applied (in order):
+      1. Strip ``None`` for non-nullable optional fields
+      2. Unwrap markdown auto-links in string fields
+
+    Returns ``(repaired_args, repair_log)`` where *repair_log* is a list
+    of ``"<key>:<repair_type>"`` strings suitable for structured logging.
+    """
+    repairs: list[str] = []
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args, repairs
+
+    params = schema.get("parameters") or {}
+    properties = params.get("properties") or {}
+    required = set(params.get("required", ()))
+
+    for key in list(args.keys()):
+        value = args[key]
+        prop = properties.get(key)
+        if not prop:
+            continue
+
+        # ── Repair 1: Strip null for non-nullable optional fields ──
+        if value is None and key not in required and not _schema_allows_null(prop):
+            del args[key]
+            repairs.append(f"{key}:strip_null")
+            continue
+
+        # ── Repair 2: Autolink unwrap (runs on all string values) ──
+        if isinstance(value, str):
+            unwrapped, did_unwrap = _unwrap_autolink(value)
+            if did_unwrap:
+                args[key] = unwrapped
+                repairs.append(f"{key}:autolink_unwrap")
+                value = unwrapped
+
+    return args, repairs
+
+
+# ── Relational repairs (invariants spanning multiple fields) ──
+
+def _relational_repair(
+    tool_name: str, args: Dict[str, Any]
+) -> tuple[Dict[str, Any], list[str]]:
+    """Fix invariants that span multiple fields.
+
+    Currently only ``read_file`` offset/limit pairing:
+    - ``limit`` only → ``offset = 1``
+    - ``offset`` only → ``limit = 500`` (matches the tool's default window)
+    """
+    repairs: list[str] = []
+    if tool_name != "read_file":
+        return args, repairs
+
+    has_offset = "offset" in args
+    has_limit = "limit" in args
+
+    if has_limit and not has_offset:
+        args["offset"] = 1
+        repairs.append("offset:defaulted_to_1")
+    elif has_offset and not has_limit:
+        args["limit"] = 500
+        repairs.append("limit:defaulted_to_500")
+
+    return args, repairs
+
+
+# ── Per-tool telemetry ──
+
+# Keyed by ``"<tool_name>:<repair_type>"``.
+_repair_stats: Dict[str, int] = {}
+_repair_stats_lock = threading.Lock()
+
+
+def _record_repairs(tool_name: str, repairs: list[str]) -> None:
+    """Record repair events for monitoring (thread-safe)."""
+    with _repair_stats_lock:
+        for r in repairs:
+            key = f"{tool_name}:{r}"
+            _repair_stats[key] = _repair_stats.get(key, 0) + 1
+
+
+def get_repair_stats() -> Dict[str, int]:
+    """Return a snapshot of per-tool repair counts."""
+    with _repair_stats_lock:
+        return dict(_repair_stats)
+
+
+# ── Default note for relational repairs ──
+
+def _relational_note(repairs: list[str]) -> str | None:
+    """Build a model-facing note when we defaulted a value."""
+    if "offset:defaulted_to_1" in repairs:
+        return (
+            "Note: offset was not provided; defaulted to 1. "
+            "To start from a different line, retry with both offset and limit."
+        )
+    if "limit:defaulted_to_500" in repairs:
+        return (
+            "Note: limit was not provided; defaulted to 500 lines. "
+            "To read more or fewer lines, retry with both offset and limit."
+        )
+    return None
 
 
 # =============================================================================

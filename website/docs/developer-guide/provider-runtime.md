@@ -20,6 +20,9 @@ Primary implementation:
 - `hermes_cli/auth.py` — provider registry, `resolve_provider()`
 - `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
 - `agent/auxiliary_client.py` — auxiliary model routing
+- `providers/` — declarative source for `api_mode`, `base_url`, `env_vars`, `fallback_models` (auto-registered into `auth.py` `PROVIDER_REGISTRY` at startup)
+
+`get_provider_profile()` in `providers/` returns a typed dict for a given provider id. `runtime_provider.py` calls this at resolution time to get the canonical `base_url`, `env_vars` priority list, `api_mode`, and `fallback_models` without needing to duplicate that data in multiple files. Adding a new `providers/*.py` file that calls `register_provider()` is enough for `runtime_provider.py` to pick it up — no branch needed in the resolver itself.
 
 If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
 

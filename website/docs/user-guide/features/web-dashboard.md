@@ -113,7 +113,7 @@ Config changes take effect on the next agent session or gateway restart. The web
 Manage the `.env` file where API keys and credentials are stored. Keys are grouped by category:
 
 - **LLM Providers** — OpenRouter, Anthropic, OpenAI, DeepSeek, etc.
-- **Tool API Keys** — Browserbase, Firecrawl, Tavily, ElevenLabs, etc.
+- **Tool API Keys** — Browserbase, Firecrawl, Tavily, TinyFish, ElevenLabs, etc.
 - **Messaging Platforms** — Telegram, Discord, Slack bot tokens, etc.
 - **Agent Settings** — non-secret env vars like `API_SERVER_ENABLED`
 

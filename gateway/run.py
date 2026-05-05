@@ -1086,6 +1086,7 @@ class GatewayRunner:
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        self._session_sources: Dict[str, "SessionSource"] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -2450,6 +2451,9 @@ class GatewayRunner:
                     session_key,
                     e,
                 )
+
+            if source is None:
+                source = self._get_cached_session_source(session_key)
 
             if source is not None:
                 platform_str = source.platform.value
@@ -6006,6 +6010,26 @@ class GatewayRunner:
             return []
         return list(pending_native.pop(session_key, []) or [])
 
+    def _cache_session_source(self, session_key: str, source) -> None:
+        if not session_key or source is None:
+            return
+        cached_sources = getattr(self, "_session_sources", None)
+        if cached_sources is None:
+            cached_sources = {}
+            self._session_sources = cached_sources
+        try:
+            cached_sources[session_key] = dataclasses.replace(source)
+        except Exception:
+            logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
+
+    def _get_cached_session_source(self, session_key: str):
+        if not session_key:
+            return None
+        cached_sources = getattr(self, "_session_sources", None)
+        if not cached_sources:
+            return None
+        return cached_sources.get(session_key)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -6020,6 +6044,7 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
             try:
                 binding = self._session_db.get_telegram_topic_binding(
@@ -11893,6 +11918,10 @@ class GatewayRunner:
                     session_key,
                     exc,
                 )
+
+            cached_source = self._get_cached_session_source(session_key)
+            if cached_source is not None:
+                return cached_source
 
             _parsed = _parse_session_key(session_key)
             if _parsed:

@@ -74,6 +74,7 @@ def make_restart_runner(
     runner._update_prompt_pending = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
+    runner._session_sources = {}
     runner._shutdown_all_gateway_honcho = lambda: None
     runner._update_runtime_status = MagicMock()
     runner._queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event.__get__(
@@ -114,6 +115,12 @@ def make_restart_runner(
     )
     runner._notify_active_sessions_of_shutdown = (
         GatewayRunner._notify_active_sessions_of_shutdown.__get__(runner, GatewayRunner)
+    )
+    runner._cache_session_source = GatewayRunner._cache_session_source.__get__(
+        runner, GatewayRunner
+    )
+    runner._get_cached_session_source = GatewayRunner._get_cached_session_source.__get__(
+        runner, GatewayRunner
     )
     runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
         runner, GatewayRunner

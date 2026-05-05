@@ -97,6 +97,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "morpheus": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("MORPHEUS_API_KEY", "MOR_API_KEY", "EVERCLAW_API_KEY"),
+        # Remote gateway preferred (session-tested). /api/v1 required; /v1 → 403.
+        # Key with embedded dot (sk-hrOKrR.88..) works via Bearer but fragile in SDK.
+        base_url_override="https://api.mor.org/api/v1",
+        base_url_env_var="MORPHEUS_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -235,6 +243,14 @@ ALIASES: Dict[str, str] = {
     "z.ai": "zai",
     "zhipu": "zai",
 
+    # morpheus / everclaw (GLM-5.1 via decentralized proxy)
+    "morpheus": "morpheus",
+    "morpheus-skill": "morpheus",
+    "everclaw": "morpheus",
+    "mor": "morpheus",
+    "glm-5": "morpheus",
+    "glm-5.1": "morpheus",
+
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
@@ -361,6 +377,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "morpheus": "Morpheus Skill (EverClaw / MOR decentralized)",
 }
 
 

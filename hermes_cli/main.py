@@ -1216,6 +1216,26 @@ def _launch_tui(
     sys.exit(code)
 
 
+def _pin_kanban_board_env() -> None:
+    """Pin the active kanban board into ``HERMES_KANBAN_BOARD`` for the chat session.
+
+    Without this, in-process tools (``kanban_*``) and shelled-out CLI calls
+    (``hermes kanban …``) resolve the board on different paths: the env-pin if
+    set, otherwise the global ``<root>/kanban/current`` file. A concurrent
+    ``hermes kanban boards switch`` from another session can flip the file
+    mid-turn, so the same chat sees its tool calls hit board A while its shell
+    calls hit board B (#20074). Pinning at chat boot mirrors what the
+    dispatcher already does for spawned workers.
+    """
+    if os.environ.get("HERMES_KANBAN_BOARD"):
+        return
+    try:
+        from hermes_cli.kanban_db import get_current_board
+        os.environ["HERMES_KANBAN_BOARD"] = get_current_board()
+    except Exception:
+        pass
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
@@ -1323,6 +1343,8 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+
+    _pin_kanban_board_env()
 
     if use_tui:
         _launch_tui(

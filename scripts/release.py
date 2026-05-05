@@ -61,6 +61,7 @@ AUTHOR_MAP = {
     "ashermorse@icloud.com": "ashermorse",
     "happy5318@users.noreply.github.com": "happy5318",
     "chengoak@users.noreply.github.com": "chengoak",
+    "mrhanoi@outlook.com": "qxxaa",
     "emelyanenko.kirill@gmail.com": "EmelyanenkoK",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",

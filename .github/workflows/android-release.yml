@@ -61,6 +61,7 @@ jobs:
         working-directory: android
         env:
           HERMES_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SOURCE_DATE_EPOCH: "315532800"
         run: |
           rm -rf ../build
           export PYTHON_FOR_BUILD="$(command -v python3.13 || command -v python3 || command -v python)"

@@ -14,7 +14,7 @@ Concrete exercises grouped by duration. Use when the user wants to *do* an exerc
 
 ## 30 minutes
 
-**Constraint dispatch** *(`../full-prompt-library.md`)* — pick a constraint; 5 min per idea; generate 3; discard the obvious; generate a 4th; output the 3 strongest. Output: 3 candidate projects.
+**Constraint dispatch** *(`full-prompt-library.md`)* — pick a constraint; 5 min per idea; generate 3; discard the obvious; generate a 4th; output the 3 strongest. Output: 3 candidate projects.
 
 **SCAMPER on a base idea** *(`methods/scamper.md`)* — write base in one sentence; run all 7 operators; surface the surprising one; elaborate. Output: 7 raw, 1 elaborated.
 
@@ -42,7 +42,7 @@ Concrete exercises grouped by duration. Use when the user wants to *do* an exerc
 
 **Hard-constraint writing day** *(`methods/oulipo.md`)* — pick one constraint (lipogram, univocalism, snowball, prisoner's, pilish); write 1000 words under it; resist abandoning when it gets hard. Output: 1000 constrained words.
 
-**High concept low effort** *(`../full-prompt-library.md`)* — pick a brilliant idea; execute lazily; ship by end of day. Output: a finished thing that exists.
+**High concept low effort** *(`full-prompt-library.md`)* — pick a brilliant idea; execute lazily; ship by end of day. Output: a finished thing that exists.
 
 ## 1 week
 

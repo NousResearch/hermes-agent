@@ -6,7 +6,7 @@ Decision tree for picking a method. Read top to bottom; first match wins.
 
 | Signal | Method |
 |---|---|
-| Blank page, no domain | constraint dispatch (`../full-prompt-library.md`) |
+| Blank page, no domain | constraint dispatch (`full-prompt-library.md`) |
 | Has a domain, no project | route by domain (next section) |
 | Has one idea, want variations | `methods/scamper.md` |
 | Need many ideas fast | `methods/volume-generation.md` |
@@ -37,7 +37,7 @@ Decision tree for picking a method. Read top to bottom; first match wins.
 | Research / picking a question | `methods/compression-progress.md` |
 | Attacking a known problem | `methods/polya.md` + `methods/first-principles.md` |
 | Product strategy / why-does-this-exist | `methods/jobs-to-be-done.md` |
-| New venture from scratch | `../full-prompt-library.md` "solve your own itch" + `methods/jobs-to-be-done.md` |
+| New venture from scratch | `full-prompt-library.md` "solve your own itch" + `methods/jobs-to-be-done.md` |
 | Career / what to study | `methods/derive-and-mapping.md` + `methods/compression-progress.md` |
 | Habit / discipline | `methods/creative-discipline.md` |
 

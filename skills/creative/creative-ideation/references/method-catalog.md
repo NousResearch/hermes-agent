@@ -16,7 +16,7 @@ One-line summary + when-to-use for every method. Cross-reference with `heuristic
 |---|---|
 | `methods/oulipo.md` | Writing, especially poetry/fiction. Lipograms, S+7, snowballs, palindromes. |
 | `methods/scamper.md` | Have a base idea, want 7 systematic variations cheaply. |
-| `../full-prompt-library.md` | Blank-page default. wttdotm-style project constraints. Sectioned by domain (General / Software / Physical / Social / Lists) — pick from the matching section, not the whole library. |
+| `full-prompt-library.md` | Blank-page default. wttdotm-style project constraints. Sectioned by domain (General / Software / Physical / Social / Lists) — pick from the matching section, not the whole library. |
 
 ## Theoretical
 
@@ -81,7 +81,7 @@ One-line summary + when-to-use for every method. Cross-reference with `heuristic
 
 ## Deliberately not in the catalog
 
-- **Hero's Journey / Save the Cat / 3-Act / Story Circle.** Story formulas, not ideation methods. They flatten work into tired shapes. `story-skeletons.md` includes alternatives.
+- **Hero's Journey / Save the Cat / 3-Act / Story Circle.** Story formulas, not ideation methods. They flatten work into tired shapes. `methods/story-skeletons.md` includes alternatives.
 - **Design Thinking** as franchise. The underlying methods (interviews, affinity mapping, ideation, prototyping) are here under their actual names.
 - **Mind maps, Six Hats, fishbone.** Containers for ideation, not generators. The methods here generate.
 - **Disrupt-X / blue-ocean / lean-startup.** Positioning frameworks, not generative ones.

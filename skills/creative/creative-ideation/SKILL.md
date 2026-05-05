@@ -72,10 +72,10 @@ Do this *before* generating any output. Routing failures produce slop.
 
 Override rules beat the routing table:
 
-- **Mood signal** — user says "weird", "strange", "surprising", "less obvious", "more interesting" → `methods/lateral-provocations.md` or `methods/pataphysics.md`, regardless of domain.
+- **Mood signal** — user says "weird", "strange", "surprising", "less obvious", "more interesting" → `references/methods/lateral-provocations.md` or `references/methods/pataphysics.md`, regardless of domain.
 - **User names a method** — use it.
 - **User asks for a method recommendation** ("which method") → surface 2–3 candidates with one-line each, ask which to apply. Don't silently default.
-- **High-slop terrain** — "AI ideas", "startup ideas", "habit tracker", "productivity / wellness / fitness / food / travel app" → force `methods/lateral-provocations.md` or `methods/pataphysics.md` over the obvious method. Refuse the first **5** ideas, not 3.
+- **High-slop terrain** — "AI ideas", "startup ideas", "habit tracker", "productivity / wellness / fitness / food / travel app" → force `references/methods/lateral-provocations.md` or `references/methods/pataphysics.md` over the obvious method. Refuse the first **5** ideas, not 3.
 
 ### Step 3 — Route by phase first, then domain
 
@@ -83,45 +83,45 @@ Override rules beat the routing table:
 
 | Phase | Default route |
 |---|---|
-| GENERATING + SPECIFICITY=NONE | `../full-prompt-library.md` **General** section (constraint dispatch) |
+| GENERATING + SPECIFICITY=NONE | `references/full-prompt-library.md` **General** section (constraint dispatch) |
 | GENERATING + DOMAIN known | route by domain (next table) |
-| EXPANDING | `methods/scamper.md` |
-| SELECTING | `methods/premortem-and-inversion.md` (or `methods/compression-progress.md` for upside) |
-| UNBLOCKING | `methods/oblique-strategies.md` |
-| SUBVERTING | `methods/lateral-provocations.md` (fallback `methods/pataphysics.md`) |
-| REFINING (text) | `methods/defamiliarization.md` |
-| REFINING (other) | `methods/creative-discipline.md` (Tharp's spine) |
-| SYNTHESIZING | `methods/affinity-diagrams.md` |
-| Volume needed fast | `methods/volume-generation.md` |
+| EXPANDING | `references/methods/scamper.md` |
+| SELECTING | `references/methods/premortem-and-inversion.md` (or `references/methods/compression-progress.md` for upside) |
+| UNBLOCKING | `references/methods/oblique-strategies.md` |
+| SUBVERTING | `references/methods/lateral-provocations.md` (fallback `references/methods/pataphysics.md`) |
+| REFINING (text) | `references/methods/defamiliarization.md` |
+| REFINING (other) | `references/methods/creative-discipline.md` (Tharp's spine) |
+| SYNTHESIZING | `references/methods/affinity-diagrams.md` |
+| Volume needed fast | `references/methods/volume-generation.md` |
 
 **By domain (when GENERATING with DOMAIN known):**
 
 | Domain | Default route |
 |---|---|
-| TEXT — formal / poetry | `methods/oulipo.md` |
-| TEXT — narrative | `methods/story-skeletons.md` |
-| TEXT — has source material to remix | `methods/chance-and-remix.md` |
-| OBJECT (music, visual, performance) | `methods/oblique-strategies.md` |
-| OBJECT — physical maker / wants a starting constraint | `../full-prompt-library.md` **Physical / object** section |
-| ARTIFACT — wants a starting constraint | `../full-prompt-library.md` **Software / artifact** section |
-| ARTIFACT — engineering invention with parameter conflict | `methods/triz-principles.md` |
-| ARTIFACT — software architecture | `methods/pattern-languages.md` |
-| ARTIFACT — has natural-system analog | `methods/biomimicry.md` |
-| ARTIFACT — accumulated assumptions to question | `methods/first-principles.md` |
-| SYSTEM (civic, org, institutional) | `methods/leverage-points.md` |
-| SYSTEM — collective / participatory | `../full-prompt-library.md` **Social / collective** section |
-| SELF (life, career, what-to-study) | `methods/derive-and-mapping.md` |
-| RESEARCH — picking a question | `methods/compression-progress.md` |
-| RESEARCH — attacking a known problem | `methods/polya.md` |
-| PRODUCT (business, service) | `methods/jobs-to-be-done.md` |
-| Need to break a frame / find analogy | `methods/analogy-and-blending.md` |
+| TEXT — formal / poetry | `references/methods/oulipo.md` |
+| TEXT — narrative | `references/methods/story-skeletons.md` |
+| TEXT — has source material to remix | `references/methods/chance-and-remix.md` |
+| OBJECT (music, visual, performance) | `references/methods/oblique-strategies.md` |
+| OBJECT — physical maker / wants a starting constraint | `references/full-prompt-library.md` **Physical / object** section |
+| ARTIFACT — wants a starting constraint | `references/full-prompt-library.md` **Software / artifact** section |
+| ARTIFACT — engineering invention with parameter conflict | `references/methods/triz-principles.md` |
+| ARTIFACT — software architecture | `references/methods/pattern-languages.md` |
+| ARTIFACT — has natural-system analog | `references/methods/biomimicry.md` |
+| ARTIFACT — accumulated assumptions to question | `references/methods/first-principles.md` |
+| SYSTEM (civic, org, institutional) | `references/methods/leverage-points.md` |
+| SYSTEM — collective / participatory | `references/full-prompt-library.md` **Social / collective** section |
+| SELF (life, career, what-to-study) | `references/methods/derive-and-mapping.md` |
+| RESEARCH — picking a question | `references/methods/compression-progress.md` |
+| RESEARCH — attacking a known problem | `references/methods/polya.md` |
+| PRODUCT (business, service) | `references/methods/jobs-to-be-done.md` |
+| Need to break a frame / find analogy | `references/methods/analogy-and-blending.md` |
 
 ### Step 4 — Handle ambiguity and contradiction
 
 - **Multiple paths plausible** → pick the one closest to the user's actual phrasing. Don't pick the most interesting method to seem sophisticated.
 - **Genuinely ambiguous** → ask ONE clarifying question, don't silently guess. Examples: *"Are you generating ideas or picking between ones you have?"* / *"Is this for fiction, essay, or something else?"*
 - **Signals contradict** (e.g., "weird startup ideas" → product domain + weird mood) → **stack two methods explicitly**. State what you're doing: *"Using `jobs-to-be-done` for the product framing + `lateral-provocations` to break the obvious shape."*
-- **No match** → constraint dispatch (`../full-prompt-library.md`) is the safe fallback.
+- **No match** → constraint dispatch (`references/full-prompt-library.md`) is the safe fallback.
 - **Same question asked again** → switch methods. Variation in method = variation in idea distribution.
 
 ### Anti-default check (run before generating)

@@ -742,7 +742,7 @@ def handle_function_call(
             try:
                 from tools.file_tools import notify_other_tool_call
                 notify_other_tool_call(task_id or "default")
-            except Exception:
+            except (ImportError, AttributeError):
                 pass  # file_tools may not be loaded yet
 
         # Measure tool dispatch latency so post_tool_call and

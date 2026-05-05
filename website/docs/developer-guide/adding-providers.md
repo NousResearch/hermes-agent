@@ -93,6 +93,42 @@ This path includes everything from Path A plus:
 11. `run_agent.py`
 12. `pyproject.toml` if a provider SDK is required
 
+## Fast path: Simple API-key providers
+
+If your provider is just an OpenAI-compatible endpoint that authenticates with a single API key, you do not need to touch `auth.py`, `runtime_provider.py`, `main.py`, or any of the other files in the full checklist below.
+
+All you need is:
+
+1. A file in `providers/` (e.g. `providers/myprovider.py`) that calls `register_provider()` with the provider config.
+2. That's it. `auth.py` auto-registers every file in `providers/` at startup via a module-level import sweep.
+
+When you add a `providers/*.py` file and call `register_provider()`, the following wire up automatically:
+
+1. `PROVIDER_REGISTRY` entry in `auth.py` (credential resolution, env-var lookup)
+2. `api_mode` set to `chat_completions`
+3. `base_url` sourced from the config or the declared env var
+4. `env_vars` checked in priority order for the API key
+5. `fallback_models` list registered for the provider
+6. `--provider` CLI flag accepts the provider id
+7. `hermes model` menu includes the provider
+8. `hermes setup` wizard delegates to `main.py` automatically
+9. `provider:model` alias syntax works
+10. Runtime resolver returns the correct `base_url` and `api_key`
+11. `HERMES_INFERENCE_PROVIDER` env-var override accepts the provider id
+12. Fallback model activation can switch into the provider cleanly
+
+See `providers/nvidia.py` or `providers/gmi.py` as a template.
+
+## Full path: OAuth and complex providers
+
+Use the full checklist below when your provider needs any of the following:
+
+- OAuth or token refresh (Nous Portal, Codex, Google Gemini, Qwen Portal, Copilot)
+- A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
+- Custom endpoint detection or multi-region probing (z.ai, Kimi)
+- A curated static model catalog or live `/models` fetch
+- Provider-specific `hermes model` menu entries with bespoke auth flows
+
 ## Step 1: Pick one canonical provider id
 
 Choose a single provider id and use it everywhere.

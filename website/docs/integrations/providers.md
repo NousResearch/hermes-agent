@@ -480,6 +480,44 @@ model:
 For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
 :::
 
+### GMI Cloud
+
+Open and reasoning models via [GMI Cloud](https://inference.gmi.ai) — OpenAI-compatible API, API key authentication.
+
+```bash
+# GMI Cloud
+hermes chat --provider gmi --model deepseek-ai/DeepSeek-R1
+# Requires: GMI_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "gmi"
+  default: "deepseek-ai/DeepSeek-R1"
+```
+
+The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi.ai/v1`).
+
+### StepFun
+
+Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compatible API, API key authentication.
+
+```bash
+# StepFun
+hermes chat --provider stepfun --model step-3-mini
+# Requires: STEPFUN_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "stepfun"
+  default: "step-3-mini"
+```
+
+The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
+
 ### Hugging Face Inference Providers
 
 [Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers) routes to 20+ open models through a unified OpenAI-compatible endpoint (`router.huggingface.co/v1`). Requests are automatically routed to the fastest available backend (Groq, Together, SambaNova, etc.) with automatic failover.
@@ -1239,7 +1277,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `alibaba`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

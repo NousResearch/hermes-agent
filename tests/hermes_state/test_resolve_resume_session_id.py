@@ -50,10 +50,38 @@ def test_redirects_from_empty_head_to_descendant_with_messages(db):
     assert db.resolve_resume_session_id("head") == "bulk"
 
 
-def test_returns_self_when_session_has_messages(db):
+def test_returns_self_when_non_compression_session_has_messages(db):
     _make_chain(db, [("root", None), ("child", "root")])
     db.append_message("root", role="user", content="hi")
+    db.append_message("child", role="user", content="child from unrelated fork")
     assert db.resolve_resume_session_id("root") == "root"
+
+
+def test_redirects_compressed_parent_with_messages_to_live_tip(db):
+    _make_chain(db, [("root", None), ("child", "root")])
+    db.append_message("root", role="user", content="old pre-compression context")
+    db.end_session("root", "compression")
+    # Make the child a valid compression continuation, created after root ended.
+    ended_at = db.get_session("root")["ended_at"]
+    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ended_at + 1, "child"))
+    db._conn.commit()
+    db.append_message("child", role="user", content="latest post-compression context")
+    assert db.resolve_resume_session_id("root") == "child"
+
+
+def test_redirects_historical_compression_chain_past_shutdown_overwrite(db):
+    _make_chain(db, [("root", None), ("child", "root"), ("grandchild", "child")])
+    db.append_message("root", role="user", content="old root context")
+    db.end_session("root", "compression")
+    ended_at = db.get_session("root")["ended_at"]
+    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ended_at + 1, "child"))
+    db._conn.commit()
+    db.append_message("child", role="user", content="middle context")
+    db.end_session("child", "tui_shutdown")
+    # Older TUI chains can still point later compression children at this row
+    # even after shutdown overwrote the intermediate end_reason.
+    db.append_message("grandchild", role="user", content="latest context")
+    assert db.resolve_resume_session_id("root") == "grandchild"
 
 
 def test_returns_self_when_no_descendant_has_messages(db):

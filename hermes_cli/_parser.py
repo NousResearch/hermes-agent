@@ -202,6 +202,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--mode",
+        default=None,
+        metavar="MODE",
+        help="Load a mode file from ~/.hermes/modes/<name>.md as an ephemeral system prompt. Injected into every LLM turn, never compacted. Combine with --resume / -c to apply a mode to an existingsession.",
+    )
+    _inherited_flag(
+        parser,
         "--ignore-rules",
         action="store_true",
         default=False,
@@ -353,6 +360,13 @@ def build_top_level_parser():
         "--source",
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--mode",
+        default=None,
+        metavar="MODE",
+        help="Load a mode file from ~/.hermes/modes/<name>.md as an ephemeral system prompt. Injected into every LLM turn,never compacted. Combine with --resume / -c to apply a mode to an existing session.",
     )
     _inherited_flag(
         chat_parser,

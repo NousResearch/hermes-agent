@@ -706,6 +706,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
+        _get_model_config,
     )
     from hermes_cli.auth import AuthError
 
@@ -724,6 +725,21 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    # Resolution order for max_tokens:
+    #   1. Per-provider override from custom_providers / providers entry
+    #      (already lifted onto runtime by _resolve_named_custom_runtime).
+    #   2. Top-level model.max_tokens from config.yaml.
+    #   3. None → AIAgent / transport picks a provider-appropriate default.
+    # See issue #20004.
+    max_tokens = _coerce_max_tokens(runtime.get("max_tokens"))
+    if max_tokens is None:
+        try:
+            model_cfg = _get_model_config()
+        except Exception:
+            model_cfg = {}
+        if isinstance(model_cfg, dict):
+            max_tokens = _coerce_max_tokens(model_cfg.get("max_tokens"))
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -732,12 +748,28 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": max_tokens,
     }
+
+
+def _coerce_max_tokens(raw: object) -> int | None:
+    """Return a positive int or None.  Strings, zero, negatives → None.
+
+    Used by the gateway's runtime-kwargs resolvers so a misconfigured
+    \"max_tokens: 64K\" entry doesn't crash AIAgent construction — it
+    just falls through to the next layer (model.max_tokens → provider
+    default), matching how _normalize_custom_provider_entry validates.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int) and raw > 0:
+        return raw
+    return None
 
 
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import resolve_runtime_provider, _get_model_config
     try:
         import yaml as _y
         cfg_path = _hermes_home / "config.yaml"
@@ -760,6 +792,17 @@ def _try_resolve_fallback_provider() -> dict | None:
                     explicit_api_key=entry.get("api_key"),
                 )
                 logger.info("Fallback provider resolved: %s", runtime.get("provider"))
+                # Honour the same max_tokens resolution order as the primary
+                # path (custom_providers > model.max_tokens > None) so a
+                # fallback kick-in doesn't silently change the output cap.
+                max_tokens = _coerce_max_tokens(runtime.get("max_tokens"))
+                if max_tokens is None:
+                    try:
+                        model_cfg = _get_model_config()
+                    except Exception:
+                        model_cfg = {}
+                    if isinstance(model_cfg, dict):
+                        max_tokens = _coerce_max_tokens(model_cfg.get("max_tokens"))
                 return {
                     "api_key": runtime.get("api_key"),
                     "base_url": runtime.get("base_url"),
@@ -768,6 +811,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "max_tokens": max_tokens,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -1775,6 +1819,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,

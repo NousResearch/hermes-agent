@@ -17,8 +17,8 @@
 | **Binary Entry** | `/root/.local/bin/hermes` → `hermes-agent/venv/bin/hermes` |
 | **Platform**     | Telegram (DM with pkd11) |
 
-**DEPLOYED_COMMIT:** `86b45e935`
-**DEPLOYED_VERSION:** `v2026.4.30-398-g86b45e93`
+**DEPLOYED_COMMIT:** `60e9bde48`
+**DEPLOYED_VERSION:** `v0.12.0`
 **DEPLOYED_DATE:** `2026-05-04`
 
 ---
@@ -141,6 +141,123 @@ All tools defined in `tools/registry.py` — schemas, handlers, dispatch.
 - **Threshold:** 85% context usage
 - **Target ratio:** 20%
 - **Protect last N:** 20 messages
+
+---
+
+## Local Patches & Modifications (Restore After Update)
+
+These are all code modifications made on top of upstream `NousResearch/hermes-agent` v0.12.0 (`0ce1b9fe2`). After any `hermes update --yes`, these patches must be re-applied and committed.
+
+### Patch 1: Copilot Provider Model List (`hermes_cli/models.py`)
+
+**File:** `hermes_cli/models.py`, line ~205-223
+**Commit:** `a2d1c363e` → squashed into `60e9bde48`
+**Problem:** The static `_PROVIDER_MODELS["copilot"]` list was missing Claude Opus models and newer GPT versions, causing the `/model` picker to not show them.
+**Change:** Added the following models to `_PROVIDER_MODELS["copilot"]`:
+
+```python
+"copilot": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5-mini",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-4.1",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "claude-opus-4.7",
+    "claude-opus-4.6",
+    "claude-opus-4.5",
+    "claude-sonnet-4.6",
+    "claude-sonnet-4",
+    "claude-sonnet-4.5",
+    "claude-haiku-4.5",
+    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    # ... rest of list
+]
+```
+
+**Re-apply after update:** Patch `_PROVIDER_MODELS["copilot"]` in `hermes_cli/models.py` to include `claude-opus-4.5`, `claude-opus-4.6`, `claude-opus-4.7`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`.
+
+**Note:** The picker uses `provider_model_ids("copilot")` which fetches the LIVE GitHub Copilot API (not the static list). The static list is used as fallback when the API is unreachable. Both must be kept in sync.
+
+### Patch 2: Copilot Provider Config (`~/.hermes/config.yaml`)
+
+**File:** `~/.hermes/config.yaml`
+**Change:** Added `copilot` provider block:
+
+```yaml
+providers:
+  copilot:
+    provider_type: openai
+    base_url: https://api.business.githubcopilot.com
+    api_key_env: COPILOT_GITHUB_TOKEN
+```
+
+**Re-apply after update:** Edit `~/.hermes/config.yaml` — the Hermes update does NOT touch user config, so this persists automatically. But verify it's still present.
+
+### Patch 3: Token Rotation Script
+
+**File:** `/root/.hermes/scripts/hermes-token-rotation.sh`
+**Also in repo:** `scripts/hermes-token-rotation.sh` (committed to `running` branch)
+**Commit:** `86b45e935`
+**Purpose:** Calls `GET http://localhost:5111/api/best-token?tool=hermes` with Basic Auth, updates `COPILOT_GITHUB_TOKEN` in `/root/.hermes/.env`, logs rotation events.
+**Cron:** Host crontab (NOT Hermes scheduler) — `*/5 * * * *` in `/etc/crontab` or `crontab -e`.
+**Log:** `/var/log/hermes-token-rotation.log`
+
+**Re-apply after update:**
+1. Verify `/root/.hermes/scripts/hermes-token-rotation.sh` still exists (it's outside the repo, survives updates)
+2. Copy to repo: `cp /root/.hermes/scripts/hermes-token-rotation.sh /root/.hermes/hermes-agent/scripts/`
+3. Re-add to host crontab: `*/5 * * * * /root/.hermes/scripts/hermes-token-rotation.sh --once >> /var/log/hermes-token-rotation.log 2>&1`
+
+### Patch 4: Copilot Model Picker Bug Investigation (2026-05-04)
+
+**Issue:** User reported that selecting `claude-opus-4.6` in the Telegram `/model` picker was selecting `claude-opus-4.7` instead.
+
+**Root Cause Analysis:**
+- The picker calls `list_authenticated_providers()` in `hermes_cli/model_switch.py`
+- For Copilot, it calls `provider_model_ids("copilot")` (line 1306-1307) which fetches the LIVE GitHub API
+- The live API returns models in its own order (may differ from static list)
+- The picker builds buttons with `mm:{index}` callbacks
+- Callback resolution uses the same `state["model_list"]`, so indices should match
+
+**Verification (2026-05-04):**
+- Live API currently returns: `[0] claude-opus-4.6, [1] claude-opus-4.7` — correct order
+- Static list patched to match
+- Picker should work correctly now
+
+**Key files for future debugging:**
+- `gateway/platforms/telegram.py` — `_build_model_keyboard()` (line 1647), `_handle_model_picker_callback()` (line 1688)
+- `hermes_cli/model_switch.py` — `list_authenticated_providers()` (line 1008)
+- `hermes_cli/models.py` — `provider_model_ids()` (line 1909), `_fetch_github_models()` (line 2475)
+
+**If the bug recurs:** The issue is likely that the GitHub Copilot API changed its model ordering. The picker uses live API order for buttons AND state, so it should always be internally consistent. If mismatch occurs, check:
+1. Is the gateway process running with cached Python modules? → Full restart needed (`kill` + restart, not just USR1)
+2. Is there a stale `__pycache__`? → `find /root/.hermes/hermes-agent -name __pycache__ -exec rm -rf {} +`
+3. Is the token rotation changing to a different GitHub account with different model access? → Possible if accounts have different feature flags
+
+### Patch 5: Git Branch Status
+
+**Remote setup:**
+- `origin` → `NousResearch/hermes-agent` (upstream)
+- `personal` → `kiranvk-code/hermes-agent` (private fork)
+
+**Branches:**
+- `upstream/main` — was intended as clean mirror, NOT created as local branch yet
+- `running` — exists at `personal/running` (commit `60e9bde48`)
+- `running-local` — local working branch (currently checked out)
+
+**To create upstream/main mirror (one-time setup):**
+```bash
+cd /root/.hermes/hermes-agent
+git fetch origin
+git branch upstream/main origin/main
+git push personal upstream/main
+```
 
 ---
 

@@ -7,10 +7,13 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
 DEFAULT_PACKAGE = "com.nousresearch.hermesagent"
+DEFAULT_READY_TEXT = "Message Hermes"
+UI_DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
 
 
 def adb_path() -> str:
@@ -49,6 +52,22 @@ def screenshot(args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         adb_args(args.serial, "exec-out", "screencap", "-p"),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr.decode("utf-8", "replace"))
+        return proc.returncode
+    out.write_bytes(proc.stdout)
+    print(out)
+    return 0
+
+
+def write_screenshot(serial: str | None, out: Path) -> int:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        adb_args(serial, "exec-out", "screencap", "-p"),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -114,6 +133,53 @@ def launch(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def wait_for_focus(serial: str | None, package: str, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    last_focus = ""
+    while time.monotonic() <= deadline:
+        result = run_adb(serial, "shell", "dumpsys", "window", check=False)
+        combined = result.stdout + result.stderr
+        focus_lines = [
+            line.strip()
+            for line in combined.splitlines()
+            if "mCurrentFocus" in line or "mFocusedApp" in line
+        ]
+        if focus_lines:
+            last_focus = " | ".join(focus_lines)
+        if any("mCurrentFocus" in line and package in line for line in focus_lines):
+            return True
+        time.sleep(1)
+    sys.stderr.write(f"Timed out waiting for focused window from {package}. Last focus: {last_focus}\n")
+    return False
+
+
+def read_ui_xml(serial: str | None) -> str:
+    run_adb(serial, "shell", "rm", "-f", UI_DUMP_REMOTE_PATH, check=False)
+    dump_result = run_adb(serial, "shell", "uiautomator", "dump", UI_DUMP_REMOTE_PATH, check=False)
+    if dump_result.returncode != 0:
+        return ""
+    cat_result = run_adb(serial, "exec-out", "cat", UI_DUMP_REMOTE_PATH, check=False)
+    if cat_result.returncode != 0:
+        return ""
+    xml = cat_result.stdout
+    if not xml.lstrip().startswith("<?xml"):
+        return ""
+    return xml
+
+
+def wait_for_ui_text(serial: str | None, ready_text: str, timeout_ms: int) -> bool:
+    if not ready_text:
+        return True
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while time.monotonic() <= deadline:
+        xml = read_ui_xml(serial)
+        if ready_text in xml:
+            return True
+        time.sleep(2)
+    sys.stderr.write(f"Timed out waiting for UI text: {ready_text}\n")
+    return False
+
+
 def set_size(args: argparse.Namespace) -> int:
     run_adb(args.serial, "shell", "wm", "size", args.size)
     if args.density:
@@ -125,6 +191,47 @@ def reset_size(args: argparse.Namespace) -> int:
     run_adb(args.serial, "shell", "wm", "size", "reset")
     run_adb(args.serial, "shell", "wm", "density", "reset")
     return 0
+
+
+def dump_ui(args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    xml = read_ui_xml(args.serial)
+    if not xml:
+        sys.stderr.write(f"uiautomator dump did not produce XML at {UI_DUMP_REMOTE_PATH}\n")
+        return 1
+    out.write_text(xml, encoding="utf-8")
+    print(out)
+    return 0
+
+
+def wide_capture(args: argparse.Namespace) -> int:
+    if args.size:
+        run_adb(args.serial, "shell", "wm", "size", args.size)
+    if args.density:
+        run_adb(args.serial, "shell", "wm", "density", str(args.density))
+    try:
+        if not args.no_launch:
+            launch_result = launch(argparse.Namespace(serial=args.serial, package=args.package))
+            if launch_result != 0:
+                return launch_result
+            if args.ready_timeout_ms and not wait_for_focus(
+                args.serial,
+                args.package,
+                args.ready_timeout_ms,
+            ):
+                return 1
+            if args.ready_timeout_ms and not wait_for_ui_text(
+                args.serial,
+                args.ready_text,
+                args.ready_timeout_ms,
+            ):
+                return 1
+        time.sleep(args.wait_ms / 1000)
+        return write_screenshot(args.serial, Path(args.out))
+    finally:
+        if not args.keep_size:
+            reset_size(argparse.Namespace(serial=args.serial))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -142,6 +249,11 @@ def parser() -> argparse.ArgumentParser:
     tap_parser.add_argument("x", type=int)
     tap_parser.add_argument("y", type=int)
     tap_parser.set_defaults(func=tap)
+
+    click_parser = sub.add_parser("click")
+    click_parser.add_argument("x", type=int)
+    click_parser.add_argument("y", type=int)
+    click_parser.set_defaults(func=tap)
 
     swipe_parser = sub.add_parser("swipe")
     swipe_parser.add_argument("x1", type=int)
@@ -170,6 +282,31 @@ def parser() -> argparse.ArgumentParser:
 
     reset_parser = sub.add_parser("reset-size")
     reset_parser.set_defaults(func=reset_size)
+
+    dump_parser = sub.add_parser("dump-ui")
+    dump_parser.add_argument("--out", required=True, help="Host XML output path.")
+    dump_parser.set_defaults(func=dump_ui)
+
+    wide_parser = sub.add_parser("wide-capture")
+    wide_parser.add_argument("--out", required=True, help="Host PNG output path.")
+    wide_parser.add_argument("--package", default=DEFAULT_PACKAGE)
+    wide_parser.add_argument("--size", default="1920x1080", help="Temporary emulator resolution.")
+    wide_parser.add_argument("--density", type=int, default=240, help="Temporary emulator density.")
+    wide_parser.add_argument("--wait-ms", type=int, default=1500, help="Wait after launch before capture.")
+    wide_parser.add_argument(
+        "--ready-timeout-ms",
+        type=int,
+        default=90000,
+        help="Maximum time to wait for the package to own the focused window.",
+    )
+    wide_parser.add_argument(
+        "--ready-text",
+        default=DEFAULT_READY_TEXT,
+        help="UI text that must appear before capture; pass an empty value to skip this check.",
+    )
+    wide_parser.add_argument("--no-launch", action="store_true", help="Capture current screen without launching Hermes.")
+    wide_parser.add_argument("--keep-size", action="store_true", help="Do not reset wm size/density after capture.")
+    wide_parser.set_defaults(func=wide_capture)
     return root
 
 

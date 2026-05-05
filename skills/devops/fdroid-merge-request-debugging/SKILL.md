@@ -17,7 +17,8 @@ state, not from stale screenshots.
 
 1. Identify the fdroiddata worktree, app id, MR iid, source branch, and upstream
    app repo/tag/commit.
-2. Check both worktrees before editing:
+2. Check both worktrees before editing and record whether either tree already
+   has unrelated local changes:
 
 ```powershell
 git -C C:\path\to\fdroiddata status --short --branch
@@ -35,6 +36,9 @@ $glab = "C:\Users\Ady\AppData\Local\Programs\glab\glab.exe"
 4. Record every unresolved resolvable discussion id, comment body, file, line,
    and suggested change. Do not resolve threads until the branch is pushed and
    CI confirms the fix.
+5. If screenshots were provided, treat them as hints only. Re-query GitLab
+   before editing because labels, discussions, pipelines, and suggested changes
+   can change quickly during F-Droid review.
 
 ## Metadata Rules
 
@@ -47,6 +51,11 @@ $glab = "C:\Users\Ady\AppData\Local\Programs\glab\glab.exe"
   upstream release publishes a comparable APK.
 - Do not run `fdroid rewritemeta` casually; it can rewrite formatting and create
   unrelated churn. If CI requests it, inspect the diff before committing.
+- If CI's `fdroid rewritemeta` job fails with a tiny formatter diff, apply the
+  formatter output exactly even when local `fdroid lint` reports a cosmetic
+  warning. The GitLab formatter job is the source of truth for merge readiness.
+  Hermes Agent hit this with a `Binaries: ` multiline scalar where the formatter
+  required a trailing space after the colon.
 - Use unrestricted `UpdateCheckMode: Tags` unless there is a strong reason to
   filter tags. If version codes cannot be derived from a single regex capture,
   add a small upstream version metadata file and use `UpdateCheckData` to read
@@ -91,6 +100,9 @@ while writing status output if local config expects Unix tools such as `rsync`.
 Treat that as an environment issue only if verbose output already proves the
 app version was detected and the GitLab `checkupdates` job later passes.
 
+Local lint can also be weaker than the MR pipeline. Always monitor GitLab before
+claiming the MR is ready.
+
 ## Commit, Push, and Pipeline
 
 Use noninteractive git commands. If Git opens a browser or credential selector,
@@ -100,6 +112,17 @@ configure the repo or host before retrying; do not rely on manual clicks.
 git add metadata/<appid>.yml
 git commit -m "Address <app> review comments"
 git push origin <branch>
+```
+
+For GitHub source repos on this Windows machine, prefer the GitHub CLI
+credential helper over Git Credential Manager prompts:
+
+```powershell
+gh auth status
+gh auth setup-git --hostname github.com
+git config --local credential.helper ""
+git config --local credential.https://github.com.helper "!gh auth git-credential"
+git config --local credential.useHttpPath true
 ```
 
 Monitor the source-project pipeline, then inspect failed job logs directly:
@@ -120,7 +143,8 @@ checks.
 After CI is green:
 
 1. Update the MR description with current version, version code, source commit,
-   binary URL, autoupdate behavior, and latest passing pipeline.
+   metadata commit, binary URL, binary digest, signing key, autoupdate behavior,
+   and latest passing pipeline.
 2. Reply directly to reviewer questions with the concrete fix and pipeline URL.
 3. Resolve only the threads whose requested changes are actually handled.
 4. Re-query the MR to verify:
@@ -134,6 +158,11 @@ blocking_discussions_resolved = True
 
 If a maintainer-owned label such as `waiting-on-response` does not change via
 API, leave a clear comment and rely on the resolved threads plus green pipeline.
+
+When a reviewer asks whether `UpdateCheckMode: Tags` is limited to a specific
+version line, answer from the metadata: unrestricted `Tags` is not limited to
+`0.13.x`; any future semver tag can be detected when `UpdateCheckData` reads
+`versionName` and `versionCode` from the upstream tag.
 
 ## Completion Audit
 

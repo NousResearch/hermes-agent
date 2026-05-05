@@ -5,6 +5,9 @@ import com.nousresearch.hermesagent.api.ChatContentPart
 import com.nousresearch.hermesagent.api.ChatMessage
 import com.nousresearch.hermesagent.api.HermesApiClient
 import com.nousresearch.hermesagent.api.toJsonObject
+import com.nousresearch.hermesagent.device.HermesAccessibilityController
+import com.nousresearch.hermesagent.device.HermesAccessibilityUiBridge
+import com.nousresearch.hermesagent.device.HermesGlobalAction
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.NativeAndroidShellTool
@@ -158,6 +161,7 @@ class NativeToolCallingChatClient(
             "file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)
             "android_system_tool", "android_system_action", "system_tool", "settings_tool", "phone_tool" ->
                 executeAndroidSystemTool(toolCall)
+            "android_ui_tool", "ui_tool", "screen_tool", "accessibility_tool" -> executeAndroidUiTool(toolCall)
             else -> JSONObject()
                 .put("exit_code", 127)
                 .put("error", "Unsupported native Hermes tool: ${toolCall.name}")
@@ -256,20 +260,89 @@ class NativeToolCallingChatClient(
         }
     }
 
+    private fun executeAndroidUiTool(toolCall: ToolCall): String {
+        val action = listOf("action", "operation", "name")
+            .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
+            ?.trim()
+            ?.lowercase()
+            .orEmpty()
+        return when (action.ifBlank { "status" }) {
+            "status", "read_status" -> androidUiStatusJson()
+            "snapshot", "screen_snapshot", "read_screen" -> HermesAccessibilityUiBridge.snapshotJson(
+                limit = toolCall.arguments.optInt("limit", DEFAULT_UI_SNAPSHOT_LIMIT),
+            )
+            "click",
+            "long_click",
+            "focus",
+            "scroll_forward",
+            "scroll_backward",
+            "set_text" -> HermesAccessibilityUiBridge.performActionJson(
+                action = action,
+                textContains = toolCall.arguments.optString("text_contains"),
+                contentDescriptionContains = toolCall.arguments.optString("content_description_contains"),
+                viewId = toolCall.arguments.optString("view_id"),
+                packageName = toolCall.arguments.optString("package_name"),
+                value = toolCall.arguments.optString("value"),
+                index = toolCall.arguments.optInt("index", 0),
+            )
+            "back", "global_back" -> globalUiActionJson("back", HermesGlobalAction.Back)
+            "home", "global_home" -> globalUiActionJson("home", HermesGlobalAction.Home)
+            "recents", "global_recents" -> globalUiActionJson("recents", HermesGlobalAction.Recents)
+            "notifications", "global_notifications" -> globalUiActionJson("notifications", HermesGlobalAction.Notifications)
+            "quick_settings", "global_quick_settings" -> globalUiActionJson("quick_settings", HermesGlobalAction.QuickSettings)
+            "open_accessibility_settings" -> HermesSystemControlBridge.performActionJson("open_accessibility_settings")
+            else -> JSONObject()
+                .put("success", false)
+                .put("error", "Unsupported Android UI action: $action")
+                .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
+                .toString()
+        }
+    }
+
+    private fun androidUiStatusJson(): String {
+        return JSONObject()
+            .put("accessibility_service_enabled", HermesAccessibilityController.isServiceEnabled(appContext))
+            .put("accessibility_connected", HermesAccessibilityController.isServiceConnected())
+            .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
+            .put("selection_arguments", JSONArray(UI_SELECTOR_ARGUMENTS))
+            .put("message", "Enable the Hermes accessibility service before using snapshot, click, set_text, scroll, or global navigation actions.")
+            .toString()
+    }
+
+    private fun globalUiActionJson(action: String, globalAction: HermesGlobalAction): String {
+        val connected = HermesAccessibilityController.isServiceConnected()
+        val success = connected && HermesAccessibilityController.performAction(globalAction)
+        return JSONObject()
+            .put("success", success)
+            .put("action", action)
+            .put("accessibility_connected", connected)
+            .put(
+                "message",
+                if (success) {
+                    "Performed Android global action: $action"
+                } else {
+                    "Hermes accessibility service is not connected or Android rejected global action: $action"
+                },
+            )
+            .toString()
+    }
+
     private fun systemMessage(): JSONObject {
         return JSONObject()
             .put("role", "system")
             .put(
                 "content",
                 "You are Hermes running inside the native Android app. " +
-                    "You have functions named terminal_tool, file_write_tool, and android_system_tool. " +
+                    "You have functions named terminal_tool, file_write_tool, android_system_tool, and android_ui_tool. " +
                     "When the user asks to write or replace a text file, prefer file_write_tool so multiline content is written exactly. " +
                     "When the user asks to run a command, inspect the filesystem, read a file, or use a device command, call terminal_tool instead of simulating the result. " +
                     "terminal_tool runs through /system/bin/sh in the Hermes app workspace. " +
                     "file_write_tool writes UTF-8 text files in the Hermes app workspace. " +
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
-                    "Protected Android settings require user-granted permissions, Shizuku/Sui, or an opened settings panel.",
+                    "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
+                    "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
+                    "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
             )
     }
 
@@ -301,6 +374,77 @@ class NativeToolCallingChatClient(
                                             ),
                                     )
                                     .put("required", JSONArray().put("command")),
+                            ),
+                    ),
+            )
+            .put(
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject()
+                            .put("name", "android_ui_tool")
+                            .put(
+                                "description",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, and global Back/Home/Recents/notifications/quick-settings actions.",
+                            )
+                            .put(
+                                "parameters",
+                                JSONObject()
+                                    .put("type", "object")
+                                    .put(
+                                        "properties",
+                                        JSONObject()
+                                            .put(
+                                                "action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "status, snapshot, click, long_click, focus, set_text, scroll_forward, scroll_backward, back, home, recents, notifications, quick_settings, or open_accessibility_settings."),
+                                            )
+                                            .put(
+                                                "text_contains",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Match a visible node whose text contains this value."),
+                                            )
+                                            .put(
+                                                "content_description_contains",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Match a visible node whose accessibility description contains this value."),
+                                            )
+                                            .put(
+                                                "view_id",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Match a node by full or partial Android view id."),
+                                            )
+                                            .put(
+                                                "package_name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Restrict matching to a package name fragment."),
+                                            )
+                                            .put(
+                                                "value",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Text value for set_text."),
+                                            )
+                                            .put(
+                                                "index",
+                                                JSONObject()
+                                                    .put("type", "integer")
+                                                    .put("description", "Zero-based match index when multiple nodes match."),
+                                            )
+                                            .put(
+                                                "limit",
+                                                JSONObject()
+                                                    .put("type", "integer")
+                                                    .put("description", "Maximum nodes to return for snapshot."),
+                                            ),
+                                    )
+                                    .put("required", JSONArray().put("action")),
                             ),
                     ),
             )
@@ -455,5 +599,31 @@ class NativeToolCallingChatClient(
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 512
         private const val MAX_TOOL_RESULT_CHARS = 12_000
+        private const val DEFAULT_UI_SNAPSHOT_LIMIT = 80
+        private val ANDROID_UI_ACTIONS = listOf(
+            "status",
+            "snapshot",
+            "click",
+            "long_click",
+            "focus",
+            "set_text",
+            "scroll_forward",
+            "scroll_backward",
+            "back",
+            "home",
+            "recents",
+            "notifications",
+            "quick_settings",
+            "open_accessibility_settings",
+        )
+        private val UI_SELECTOR_ARGUMENTS = listOf(
+            "text_contains",
+            "content_description_contains",
+            "view_id",
+            "package_name",
+            "value",
+            "index",
+            "limit",
+        )
     }
 }

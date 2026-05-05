@@ -50,7 +50,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "japanese": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es",
-    "turkish": "tr", "Türkçe": "tr", "tr-tr": "tr",
+    "Turkish": "tr", "Türkçe": "tr", "tr-tr": "tr",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

@@ -32,6 +32,11 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+# Toolsets here are available only when explicitly requested.  They are not
+# included by the legacy enabled_toolsets=None path, which otherwise means
+# "walk every registered toolset" for older direct AIAgent callers.
+_OPT_IN_ONLY_TOOLSETS = {"knowledge"}
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -357,9 +362,12 @@ def _compute_tool_definitions(
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
-        # Default: start with everything
+        # Default: start with broadly available toolsets, excluding cold opt-ins
+        # whose schema/storage side effects must require an explicit toolset.
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
+            if ts_name in _OPT_IN_ONLY_TOOLSETS:
+                continue
             tools_to_include.update(resolve_toolset(ts_name))
 
     # Always apply disabled toolsets as a subtraction step at the end.

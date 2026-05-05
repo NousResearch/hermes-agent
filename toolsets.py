@@ -179,6 +179,12 @@ TOOLSETS = {
         "tools": ["memory"],
         "includes": []
     },
+
+    "knowledge": {
+        "description": "Cold, source-attributed local knowledge ledger (on-demand; not hot memory)",
+        "tools": ["knowledge_capture", "knowledge_search", "knowledge_get"],
+        "includes": []
+    },
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",

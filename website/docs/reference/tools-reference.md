@@ -6,9 +6,9 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 68 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts:** 10 browser tools (core) + 2 browser-cdp tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools, 5 Yuanbao tools, 2 Discord tools, and 15 standalone tools across other toolsets.
+**Quick overview:** Hermes ships built-in browser, file, terminal, web, RL, Home Assistant, Feishu, Spotify, Yuanbao, Discord, Kanban, knowledge-ledger, and standalone tools. Availability varies by platform, credentials, and enabled toolsets.
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with a server-name prefix (e.g., `github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
@@ -114,6 +114,16 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `memory` | Save important information to persistent memory that survives across sessions. Your memory appears in your system prompt at session start -- it's how you remember things about the user and your environment between conversations. WHEN TO SA… | — |
+
+## `knowledge` toolset
+
+Opt-in cold source-attributed recall. Not included in default platform toolsets; enable explicitly when you want on-demand knowledge records without adding prompt tax to every session.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `knowledge_capture` | Capture a cold, source-attributed knowledge ledger record under `$HERMES_HOME/knowledge`. Non-inbox records require at least one source; unsourced automatic extraction goes to `inbox` as a candidate. | — |
+| `knowledge_search` | Lexically search the cold knowledge ledger and return ranked metadata plus short snippets, not a full memory dump. | — |
+| `knowledge_get` | Read one knowledge record by id or relative path after search. Paths are constrained to the knowledge directory. | — |
 
 ## `messaging` toolset
 

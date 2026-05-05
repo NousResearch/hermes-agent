@@ -108,7 +108,7 @@ For cloud sandboxes such as Modal, Daytona, boxd, and Vercel Sandbox, `container
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
-| **boxd** | [boxd](https://boxd.sh) cloud microVM | Full (Firecracker microVM) | Persistent cloud sandbox with sub-ms suspend/resume |
+| **boxd** | [boxd](https://boxd.sh) cloud microVM | Full (KVM microVM, one process per VM) | Persistent cloud sandbox with sub-ms suspend/resume |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
@@ -231,7 +231,7 @@ terminal:
 
 ### boxd Backend
 
-Runs commands in a [boxd](https://boxd.sh) cloud microVM (Firecracker). Persistent VMs warm-suspend on cleanup and resume in sub-millisecond on the next session, preserving filesystem **and** running processes.
+Runs commands in a [boxd](https://boxd.sh) cloud microVM. Each VM is a dedicated KVM process running boxd's own VMM (`boxd-vmm`) — sub-millisecond warm suspend/resume, virtio-mem, NMI fork. Persistent VMs warm-suspend on cleanup and resume in sub-ms on the next session, preserving filesystem **and** running processes.
 
 ```yaml
 terminal:
@@ -249,7 +249,7 @@ terminal:
 
 **Auto-suspend:** Hermes also configures the VM's `auto_suspend_timeout` to 300s by default — boxd suspends idle VMs server-side and wakes them on the next exec. You only pay for compute while a command is running.
 
-**Image:** `boxd_image` accepts any OCI registry reference docker can pull — Docker Hub (`ubuntu:22.04`, `nikolaik/python-nodejs:python3.11-nodejs20`), GHCR (`ghcr.io/org/img:tag`), Quay, custom registries. The worker runs `docker pull` and exports the rootfs into a Firecracker base image. Leave empty to use the cluster's default image (currently `ubuntu:latest`). First pull of a given image is slow (rootfs export); subsequent VMs from the same image hit a local cache.
+**Image:** `boxd_image` accepts any OCI registry reference docker can pull — Docker Hub (`ubuntu:22.04`, `nikolaik/python-nodejs:python3.11-nodejs20`), GHCR (`ghcr.io/org/img:tag`), Quay, custom registries. The worker runs `docker pull`, exports the rootfs, and packs it into a microVM base image. Leave empty to use the cluster's default image (currently `ubuntu:latest`). First pull of a given image is slow (rootfs export); subsequent VMs from the same image hit a local cache.
 
 ### Vercel Sandbox Backend
 

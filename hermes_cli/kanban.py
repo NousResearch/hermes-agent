@@ -308,6 +308,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
 
+    # --- reclaim / reassign (recovery) ---
+    p_reclaim = sub.add_parser(
+        "reclaim",
+        help="Release an active worker claim on a running task",
+    )
+    p_reclaim.add_argument("task_id")
+    p_reclaim.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
+    p_reassign = sub.add_parser(
+        "reassign",
+        help="Reassign a task to a different profile, optionally reclaiming first",
+    )
+    p_reassign.add_argument("task_id")
+    p_reassign.add_argument(
+        "profile",
+        help="New profile name (or 'none' to unassign)",
+    )
+    p_reassign.add_argument(
+        "--reclaim", action="store_true",
+        help="Release any active claim before reassigning (required if task is running)",
+    )
+    p_reassign.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -597,6 +626,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "ls":       _cmd_list,
         "show":     _cmd_show,
         "assign":   _cmd_assign,
+        "reclaim":  _cmd_reclaim,
+        "reassign": _cmd_reassign,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -1114,6 +1145,45 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    return 0
+
+
+def _cmd_reclaim(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.reclaim_task(
+            conn, args.task_id,
+            reason=getattr(args, "reason", None),
+        )
+    if not ok:
+        print(
+            f"cannot reclaim {args.task_id} (not running or unknown id)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Reclaimed {args.task_id}")
+    return 0
+
+
+def _cmd_reassign(args: argparse.Namespace) -> int:
+    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    with kb.connect() as conn:
+        ok = kb.reassign_task(
+            conn, args.task_id, profile,
+            reclaim_first=bool(getattr(args, "reclaim", False)),
+            reason=getattr(args, "reason", None),
+        )
+    if not ok:
+        print(
+            f"cannot reassign {args.task_id} "
+            f"(unknown id, or still running — pass --reclaim to release first)",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"Reassigned {args.task_id} to "
+        f"{profile or '(unassigned)'}"
+        + (" (claim reclaimed)" if getattr(args, "reclaim", False) else "")
+    )
     return 0
 
 

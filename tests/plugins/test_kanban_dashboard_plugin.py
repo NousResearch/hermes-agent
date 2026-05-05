@@ -1117,3 +1117,221 @@ def test_home_channels_empty_when_no_homes_configured(client, monkeypatch):
     r = client.get("/api/plugins/kanban/home-channels")
     assert r.status_code == 200
     assert r.json()["home_channels"] == []
+
+
+# ---------------------------------------------------------------------------
+# Recovery endpoints (reclaim + reassign) and warnings field
+# ---------------------------------------------------------------------------
+
+def test_board_surfaces_warnings_field_for_hallucinated_completions(client):
+    """Tasks with a pending completion_blocked_hallucination event surface
+    a ``warnings`` object on the /board payload so the UI can badge
+    them without fetching per-task events."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent,
+                summary="claimed phantom",
+                created_cards=[real, "t_deadbeefcafe"],
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    tasks = [t for col in data["columns"] for t in col["tasks"]]
+    parent_dict = next(t for t in tasks if t["title"] == "parent")
+    assert parent_dict.get("warnings") is not None
+    w = parent_dict["warnings"]
+    assert w["count"] >= 1
+    assert "completion_blocked_hallucination" in w["kinds"]
+
+
+def test_board_warnings_cleared_after_clean_completion(client):
+    """A completed or edited event after a hallucination event clears
+    the warning badge — we don't mark tasks permanently."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent,
+                summary="first attempt phantom",
+                created_cards=[real, "t_phantom11"],
+            )
+
+        # Second attempt drops the bad id — succeeds.
+        ok = kb.complete_task(
+            conn, parent,
+            summary="retry without phantom",
+            created_cards=[real],
+        )
+        assert ok is True
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board", params={"include_archived": True})
+    assert r.status_code == 200
+    data = r.json()
+    tasks = [t for col in data["columns"] for t in col["tasks"]]
+    parent_dict = next(t for t in tasks if t["title"] == "parent")
+    # The clean completion wiped the warning.
+    assert parent_dict.get("warnings") is None
+
+
+def test_reclaim_endpoint_releases_running_claim(client):
+    """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
+    a manual reclaimed event."""
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="x")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reclaim",
+        json={"reason": "browser recovery"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == t
+
+    # Confirm the task is back to ready.
+    conn2 = kb.connect()
+    try:
+        row = conn2.execute(
+            "SELECT status, claim_lock FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+    finally:
+        conn2.close()
+
+
+def test_reclaim_endpoint_409_for_non_running_task(client):
+    """Reclaiming a task that's already ready returns 409."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="ready", assignee="x")
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reclaim",
+        json={},
+    )
+    assert r.status_code == 409
+
+
+def test_reassign_endpoint_switches_profile(client):
+    """POST /tasks/<id>/reassign changes the assignee field."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="task", assignee="orig")
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reassign",
+        json={"profile": "newbie", "reclaim_first": False},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assignee"] == "newbie"
+
+    conn2 = kb.connect()
+    try:
+        row = conn2.execute(
+            "SELECT assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "newbie"
+    finally:
+        conn2.close()
+
+
+def test_reassign_endpoint_409_on_running_without_reclaim(client):
+    """Reassigning a running task without reclaim_first returns 409."""
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=? WHERE id=?",
+            (secrets.token_hex(4), t),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reassign",
+        json={"profile": "new", "reclaim_first": False},
+    )
+    assert r.status_code == 409
+
+
+def test_reassign_endpoint_with_reclaim_first_succeeds_on_running(client):
+    """With reclaim_first=true, a running task is reclaimed+reassigned in
+    one call."""
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        lock = secrets.token_hex(4)
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, int(time.time()) + 3600, 1234, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, int(time.time()) + 3600, 1234, int(time.time())),
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, t))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reassign",
+        json={"profile": "new", "reclaim_first": True, "reason": "switch"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assignee"] == "new"
+
+    conn2 = kb.connect()
+    try:
+        row = conn2.execute(
+            "SELECT status, assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["assignee"] == "new"
+    finally:
+        conn2.close()

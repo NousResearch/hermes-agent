@@ -160,6 +160,15 @@ class TestCurrentBoard:
         kb.set_current_board("filepick")
         assert kb.get_current_board() == "filepick"
 
+    def test_stale_file_pointer_falls_back_to_default(self, fresh_home):
+        current = fresh_home / "kanban" / "current"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("missing-board\n", encoding="utf-8")
+
+        assert kb.get_current_board() == "default"
+        assert not kb.board_exists("missing-board")
+        assert [b["slug"] for b in kb.list_boards()] == ["default"]
+
     def test_env_beats_file(self, fresh_home, monkeypatch):
         kb.create_board("a")
         kb.create_board("b")

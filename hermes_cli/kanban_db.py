@@ -190,12 +190,12 @@ def get_current_board() -> str:
     1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
        spawn, or manually for ad-hoc overrides).
     2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
-       switch``).
+       switch``), but only when that board still exists.
     3. ``DEFAULT_BOARD`` (``"default"``).
 
-    A malformed slug at any step falls through to the next layer with a
-    best-effort warning — the dispatcher must never crash because a user
-    hand-edited a file.
+    A malformed or stale slug at any step falls through to the next layer
+    with a best-effort warning — the dispatcher must never crash because a
+    user hand-edited a file or removed a board directory.
     """
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
@@ -212,7 +212,7 @@ def get_current_board() -> str:
             if val:
                 try:
                     normed = _normalize_board_slug(val)
-                    if normed:
+                    if normed and board_exists(normed):
                         return normed
                 except ValueError:
                     pass

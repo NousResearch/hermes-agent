@@ -3855,6 +3855,27 @@ class TestAutoMaintenance:
         # Active session's transcript is untouched
         assert (sessions_dir / "new.jsonl").exists()
 
+    def test_delete_session_removes_session_prefixed_json(self, db, tmp_path):
+        """Regression: session_<id>.json must be cleaned up on delete.
+
+        Older builds wrote the transcript snapshot as ``session_{id}.json`` while the remover only
+        swept ``{id}.json``, silently leaving the (secret-bearing) snapshot orphaned on disk.
+        """
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        db.create_session(session_id="test123", source="cli")
+        json_file = sessions_dir / "session_test123.json"
+        json_file.write_text("{}")
+        jsonl_file = sessions_dir / "test123.jsonl"
+        jsonl_file.write_text("{}\n")
+        neighbour = sessions_dir / "session_test1234.json"
+        neighbour.write_text("{}")
+
+        db.delete_session("test123", sessions_dir=sessions_dir)
+
+        assert not json_file.exists(), "session_<id>.json should be removed"
+        assert not jsonl_file.exists(), "<id>.jsonl should be removed"
+        assert neighbour.exists(), "another session's snapshot must survive"
 
 
 

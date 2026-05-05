@@ -1522,11 +1522,14 @@ class SessionSessionsMixin:
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
-        """Remove ``<id>.json``/``.jsonl`` and gateway ``request_dump_<id>_*.json``; OSError is swallowed
-        so a filesystem hiccup never blocks a DB operation."""
+        """Remove ``<id>.json``/``.jsonl``, the older ``session_<id>.json`` snapshot, and gateway
+        ``request_dump_<id>_*.json``; OSError is swallowed so a filesystem hiccup never blocks a DB
+        operation. Every historical writer name is swept because a "deleted" session's snapshot can
+        carry plaintext secrets (#20334)."""
         if sessions_dir is None:
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
+        targets.append(sessions_dir / f"session_{session_id}.json")
         try:
             # glob.escape: a session id carrying ``[`` / ``?`` / ``*`` is a PATTERN otherwise, so the
             # dump sweep either matches nothing or matches another session's files.

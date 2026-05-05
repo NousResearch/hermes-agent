@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -860,6 +861,145 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return "\n".join(parts)
 
 
+def _normalize_direct_command(raw_command) -> list[str]:
+    """Normalize a direct cron command into an argv list without invoking a shell."""
+    if isinstance(raw_command, str):
+        command = shlex.split(raw_command)
+    elif isinstance(raw_command, (list, tuple)):
+        command = [str(part) for part in raw_command]
+    else:
+        raise ValueError("direct_command must be a string or argv list")
+    if not command or not command[0].strip():
+        raise ValueError("direct_command cannot be empty")
+    return command
+
+
+def _run_direct_command(job: dict, job_id: str, job_name: str) -> CronRunResult:
+    """Run a deterministic cron command directly, without waking AIAgent."""
+    started = _hermes_now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        command = _normalize_direct_command(job.get("direct_command"))
+    except ValueError as exc:
+        message = f"Invalid direct command: {exc}"
+        output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {started}
+
+## Direct Command Error
+
+```
+{message}
+```
+"""
+        return _cron_result(
+            success=False,
+            output=output,
+            final_response="",
+            error=message,
+            stage="direct_command",
+            exit_code=2,
+            message=message,
+        )
+
+    workdir = (job.get("workdir") or "").strip() or None
+    if workdir and not Path(workdir).is_dir():
+        message = f"Direct command workdir does not exist: {workdir}"
+        output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {started}
+
+## Direct Command Error
+
+```
+{message}
+```
+"""
+        return _cron_result(
+            success=False,
+            output=output,
+            final_response="",
+            error=message,
+            stage="direct_command",
+            exit_code=2,
+            message=message,
+        )
+
+    timeout = int(job.get("direct_command_timeout") or 3600)
+    logger.info("Job '%s' (ID: %s): running direct command: %s", job_name, job_id, command)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workdir,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        message = f"Direct command timed out after {timeout}s"
+        combined = "\n".join(part for part in [stdout, stderr] if part).strip()
+        output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {started}
+**Stage:** direct_command
+**Exit Code:** timeout
+
+## Direct Command Error
+
+{message}
+
+## Output
+
+```
+{combined}
+```
+"""
+        return _cron_result(
+            success=False,
+            output=output,
+            final_response="",
+            error=message,
+            stage="direct_command",
+            exit_code=124,
+            message=message,
+        )
+
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    combined = "\n".join(part for part in [stdout, stderr] if part).strip()
+    success = completed.returncode == 0
+    status = "OK" if success else "FAILED"
+    message = "direct command completed" if success else f"Direct command failed with exit code {completed.returncode}"
+    output = f"""# Cron Job: {job_name} ({status})
+
+**Job ID:** {job_id}
+**Run Time:** {started}
+**Stage:** direct_command
+**Exit Code:** {completed.returncode}
+**Command:** `{shlex.join(command)}`
+
+## Output
+
+```
+{combined}
+```
+"""
+    return _cron_result(
+        success=success,
+        output=output,
+        final_response=SILENT_MARKER if success else "",
+        error=None if success else message,
+        stage="direct_command",
+        exit_code=completed.returncode,
+        message=message,
+    )
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -880,6 +1020,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
+
+    if job.get("direct_command"):
+        return _run_direct_command(job, job_id, job_name)
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit

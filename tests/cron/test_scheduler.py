@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import sys
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1124,6 +1125,65 @@ class TestRunJobSessionPersistence:
         assert call_args[0][0] == "empty-job"
         assert call_args[0][1] is False  # success should be False
         assert "empty" in call_args[0][2].lower()  # error should mention empty
+
+    def test_run_job_direct_command_bypasses_agent_and_propagates_exit(self, tmp_path):
+        """Deterministic cron runners should not wake an outer LLM wrapper."""
+        from cron.scheduler import run_job
+
+        script = tmp_path / "runner.py"
+        marker = tmp_path / "marker.txt"
+        script.write_text(
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n"
+            "print('runner ok')\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "direct-job",
+            "name": "direct deterministic runner",
+            "prompt": "this prompt must not reach an agent",
+            "direct_command": [sys.executable, str(script)],
+            "workdir": str(tmp_path),
+            "deliver": "local",
+        }
+
+        with patch("run_agent.AIAgent") as mock_agent_cls:
+            result = run_job(job)
+
+        assert result.success is True
+        assert result.state == "ok"
+        assert result.stage == "direct_command"
+        assert result.exit_code == 0
+        assert result.final_response == "[SILENT]"
+        assert "runner ok" in result.output
+        assert marker.read_text(encoding="utf-8") == "ran"
+        mock_agent_cls.assert_not_called()
+
+    def test_run_job_direct_command_failure_is_typed_failure_without_agent(self, tmp_path):
+        from cron.scheduler import run_job
+
+        script = tmp_path / "fail.py"
+        script.write_text("import sys\nprint('runner failed')\nsys.exit(7)\n", encoding="utf-8")
+        job = {
+            "id": "direct-fail-job",
+            "name": "direct failing runner",
+            "direct_command": [sys.executable, str(script)],
+            "workdir": str(tmp_path),
+            "deliver": "local",
+        }
+
+        with patch("run_agent.AIAgent") as mock_agent_cls:
+            result = run_job(job)
+
+        assert result.success is False
+        assert result.state == "fail"
+        assert result.stage == "direct_command"
+        assert result.exit_code == 7
+        assert "runner failed" in result.output
+        assert "Direct command failed" in (result.error or "")
+        mock_agent_cls.assert_not_called()
 
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {

@@ -7,10 +7,12 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
-from tui_gateway import server
-
 # Safety: prevent this test module from being imported outside pytest.
-assert "pytest" in sys.modules, "test_tui_gateway_server must only be loaded by pytest"
+# Must run before the tui_gateway.server import to prevent side-effects.
+if "pytest" not in sys.modules:
+    raise RuntimeError("test_tui_gateway_server must only be loaded by pytest")
+
+from tui_gateway import server
 
 
 class _ChunkyStdout:

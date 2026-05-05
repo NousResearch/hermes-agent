@@ -336,6 +336,12 @@ atexit.register(_shutdown_sessions)
 
 
 def _is_usable_session_db(db) -> bool:
+    """Check that *db* looks like a real SessionDB, not a test stub.
+
+    Quick type-check first, then spot-check key methods used by the gateway.
+    """
+    if type(db).__module__ != "hermes_state" or type(db).__name__ != "SessionDB":
+        return False
     return (
         db is not None
         and callable(getattr(db, "list_sessions_rich", None))

@@ -216,7 +216,26 @@ def _fixed_temperature_for_model(
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
-_API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
+def _get_aux_model_for_provider(provider_id: str) -> str:
+    """Return the cheap auxiliary model for a provider.
+
+    Reads from ProviderProfile.default_aux_model first, falling back to the
+    legacy hardcoded dict for providers that predate the profiles system.
+    """
+    try:
+        from providers import get_provider_profile
+        _p = get_provider_profile(provider_id)
+        if _p and _p.default_aux_model:
+            return _p.default_aux_model
+    except Exception:
+        pass
+    return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
+
+
+# Fallback for providers not yet migrated to ProviderProfile.default_aux_model,
+# plus providers we intentionally keep pinned here (e.g. Anthropic predates
+# profiles). New providers should set default_aux_model on their profile instead.
+_API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
@@ -234,6 +253,10 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "ollama-cloud": "nemotron-3-nano:30b",
     "tencent-tokenhub": "hy3-preview",
 }
+
+# Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
+# can still use this dict directly. Kept in sync with _FALLBACK above.
+_API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
 
 # Vision-specific model overrides for direct providers.
 # When the user's main provider has a dedicated vision/multimodal model that
@@ -1157,7 +1180,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
             raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
             base_url = _to_openai_base_url(raw_base_url)
-            model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
+            model = _get_aux_model_for_provider(provider_id) or None
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
@@ -1173,6 +1196,14 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            else:
+                try:
+                    from providers import get_provider_profile as _gpf_aux
+                    _ph_aux = _gpf_aux(provider_id)
+                    if _ph_aux and _ph_aux.default_headers:
+                        extra["default_headers"] = dict(_ph_aux.default_headers)
+                except Exception:
+                    pass
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
@@ -1184,7 +1215,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         base_url = _to_openai_base_url(raw_base_url)
-        model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
+        model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
@@ -1200,6 +1231,14 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        else:
+            try:
+                from providers import get_provider_profile as _gpf_aux2
+                _ph_aux2 = _gpf_aux2(provider_id)
+                if _ph_aux2 and _ph_aux2.default_headers:
+                    extra["default_headers"] = dict(_ph_aux2.default_headers)
+            except Exception:
+                pass
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
@@ -1572,7 +1611,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
     from agent.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
+    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
         real_client = build_anthropic_client(token, base_url)
@@ -2408,7 +2447,7 @@ def resolve_provider_client(
         if explicit_base_url:
             base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
 
-        default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
+        default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
 
         if provider == "gemini":

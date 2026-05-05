@@ -169,6 +169,85 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+_APIKEY_PROVIDERS_CACHE: list | None = None
+
+
+def _build_apikey_providers_list() -> list:
+    """Build the API-key provider health-check list once and cache it.
+
+    Tuple format: (name, env_vars, default_url, base_env, supports_models_endpoint)
+    Base list augmented with any ProviderProfile with auth_type="api_key" not
+    already present — adding providers/*.py is sufficient to get into doctor.
+    """
+    _static = [
+        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("StepFun Step Plan", ("STEPFUN_API_KEY",),                          "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
+        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
+        ("Arcee AI",         ("ARCEEAI_API_KEY",),                           "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
+        ("GMI Cloud",        ("GMI_API_KEY",),                               "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
+        ("DeepSeek",         ("DEEPSEEK_API_KEY",),                          "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
+        ("Hugging Face",     ("HF_TOKEN",),                                  "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
+        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                            "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
+        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
+        # MiniMax global: /v1 endpoint supports /models.
+        ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
+        # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
+        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
+        ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
+        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
+        # OpenCode Go has no shared /models endpoint; skip the health check.
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                       None,                                  "OPENCODE_GO_BASE_URL", False),
+    ]
+    _known_names = {t[0] for t in _static}
+    # Also index by profile canonical name so profiles without display_name
+    # don't create duplicate entries for providers already in the static list.
+    _known_canonical: set[str] = set()
+    _name_to_canonical = {
+        "Z.AI / GLM": "zai", "Kimi / Moonshot": "kimi-coding",
+        "StepFun Step Plan": "stepfun", "Kimi / Moonshot (China)": "kimi-coding-cn",
+        "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
+        "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
+        "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
+        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
+        "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
+        "OpenCode Go": "opencode-go",
+    }
+    for _label, _canonical in _name_to_canonical.items():
+        _known_canonical.add(_canonical)
+    try:
+        from providers import list_providers
+        from providers.base import ProviderProfile as _PP
+        for _pp in list_providers():
+            if not isinstance(_pp, _PP) or _pp.auth_type != "api_key" or not _pp.env_vars:
+                continue
+            _label = _pp.display_name or _pp.name
+            if _label in _known_names or _pp.name in _known_canonical:
+                continue
+            # Separate API-key vars from base-URL override vars — the health-check
+            # loop sends the first found value as Authorization: Bearer, so a URL
+            # string must never be picked.
+            _key_vars = tuple(
+                v for v in _pp.env_vars
+                if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+            )
+            _base_var = next(
+                (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
+                None,
+            )
+            if not _key_vars:
+                continue
+            _models_url = (
+                (_pp.models_url or (_pp.base_url.rstrip("/") + "/models"))
+                if _pp.base_url else None
+            )
+            _static.append((_label, _key_vars, _models_url, _base_var, True))
+    except Exception:
+        pass
+    return _static
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1081,27 +1160,11 @@ def run_doctor(args):
     # -- API-key providers --
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
-    _apikey_providers = [
-        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
-        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
-        ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
-        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
-        ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
-        ("GMI Cloud",        ("GMI_API_KEY",),                                "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
-        ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
-        ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
-        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
-        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
-        # MiniMax global: /v1 endpoint supports /models.
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
-        # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
-        ("Vercel AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
-        ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
-        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
-        # OpenCode Go has no shared /models endpoint; skip the health check.
-        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         None,                                  "OPENCODE_GO_BASE_URL", False),
-    ]
+    # Cached at module level after first build — profiles auto-extend it.
+    global _APIKEY_PROVIDERS_CACHE
+    if _APIKEY_PROVIDERS_CACHE is None:
+        _APIKEY_PROVIDERS_CACHE = _build_apikey_providers_list()
+    _apikey_providers = _APIKEY_PROVIDERS_CACHE
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
         for _ev in _env_vars:

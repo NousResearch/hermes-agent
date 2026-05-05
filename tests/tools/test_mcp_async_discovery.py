@@ -15,10 +15,19 @@ def _reset_mcp_state():
     old_thread = mcp._mcp_thread
     old_servers = dict(mcp._servers)
     yield
+    # Restore server state.
     mcp._servers.clear()
     mcp._servers.update(old_servers)
+    # If the test created a new background thread, stop it cleanly.
+    new_loop = mcp._mcp_loop
+    new_thread = mcp._mcp_thread
+    if new_loop is not old_loop and new_loop is not None:
+        new_loop.call_soon_threadsafe(new_loop.stop)
+    if new_thread is not old_thread and new_thread is not None:
+        new_thread.join(timeout=2)
     mcp._mcp_loop = old_loop
     mcp._mcp_thread = old_thread
+    mcp._mcp_loop_ready.clear()
 
 
 class TestDiscoverMcpToolsAsync:

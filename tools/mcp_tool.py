@@ -2017,6 +2017,8 @@ def _handle_session_expired_and_retry(
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
+# Set once the background loop has entered run_forever().
+_mcp_loop_ready: threading.Event = threading.Event()
 # Holds Futures from discover_mcp_tools_async() to prevent GC of
 # in-flight background discovery coroutines.
 _pending_async_discoveries: list = []
@@ -2086,8 +2088,15 @@ def _ensure_mcp_loop():
             return
         _mcp_loop = asyncio.new_event_loop()
         _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
+        _mcp_loop_ready.clear()
+
+        def _run_forever():
+            # Signal readiness once the loop starts processing.
+            _mcp_loop.call_soon(_mcp_loop_ready.set)
+            _mcp_loop.run_forever()
+
         _mcp_thread = threading.Thread(
-            target=_mcp_loop.run_forever,
+            target=_run_forever,
             name="mcp-event-loop",
             daemon=True,
         )
@@ -3287,19 +3296,22 @@ def discover_mcp_tools_async() -> None:
                     _format_connect_error(result),
                 )
 
-    # _ensure_mcp_loop() starts a daemon thread.  The thread may not
-    # have entered run_forever() yet, but the loop object is stored
-    # and the coroutine will execute as soon as the thread starts.
-    with _lock:
-        loop = _mcp_loop
-    if loop is None:
+    # Wait for the background loop to be ready (up to 5 seconds).
+    # _mcp_loop_ready is set via call_soon() once run_forever() starts.
+    if not _mcp_loop_ready.wait(timeout=5):
         logger.error("MCP event loop not running -- async discovery abandoned")
         return
+
+    loop = _mcp_loop
 
     # Store the Future so unexpected exceptions in _discover_all() are
     # reported through the loop's exception handler instead of silently
     # dropped.
     future = asyncio.run_coroutine_threadsafe(_discover_all(), loop)
+    future.add_done_callback(
+        lambda f: logger.error("MCP async discovery crashed: %s", f.exception())
+        if f.exception() else None
+    )
     # Keep a reference to prevent GC of the coroutine before it runs.
     _pending_async_discoveries.append(future)
 

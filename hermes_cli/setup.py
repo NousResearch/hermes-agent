@@ -76,11 +76,7 @@ _DEFAULT_PROVIDER_MODELS = {
         "copilot-acp",
     ],
     "copilot": [
-        "gpt-5.4",
-        "gpt-5.4-mini",
         "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
         "gpt-4.1",
         "gpt-4o",
         "gpt-4o-mini",
@@ -90,6 +86,12 @@ _DEFAULT_PROVIDER_MODELS = {
         "claude-haiku-4.5",
         "gemini-2.5-pro",
         "grok-code-fast-1",
+    ],
+    "openai-codex": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
     ],
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",

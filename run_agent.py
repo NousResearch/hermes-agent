@@ -11411,7 +11411,7 @@ class AIAgent:
                     # Validate response shape before proceeding
                     response_invalid = False
                     error_details = []
-                    if self.api_mode == "codex_responses":
+                    if self.api_mode == "codex_responses" or self.provider == "openai-codex":
                         _ct_v = self._get_transport()
                         if not _ct_v.validate_response(response):
                             if response is None:

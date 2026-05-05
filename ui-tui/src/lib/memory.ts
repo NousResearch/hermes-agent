@@ -62,6 +62,11 @@ export interface HeapDumpPruneStats {
 const DEFAULT_HEAP_DIAGNOSTIC_RETENTION_DAYS = 60
 const DEFAULT_HEAP_SNAPSHOT_KEEP = 3
 
+type NamedDirent = {
+  isFile(): boolean
+  name: string
+}
+
 const safeRm = async (path: string): Promise<boolean> => {
   try {
     await rm(path, { force: true })
@@ -79,9 +84,9 @@ export async function pruneHeapDumpArtifacts(
   const maxSnapshots = Math.max(1, opts.maxSnapshots ?? DEFAULT_HEAP_SNAPSHOT_KEEP)
   const out: HeapDumpPruneStats = { removedDiagnostics: 0, removedSnapshots: 0 }
 
-  let entries: Awaited<ReturnType<typeof readdir>>
+  let entries: NamedDirent[]
   try {
-    entries = await readdir(dir, { withFileTypes: true })
+    entries = (await readdir(dir, { withFileTypes: true })) as unknown as NamedDirent[]
   } catch {
     return out
   }

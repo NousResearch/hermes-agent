@@ -157,6 +157,9 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+# Matches @botname with word-boundary (e.g. "@wooking", "@my-bot") but NOT @_user_xxx.
+# Used for converting plain @mentions in outbound messages to Feishu at-element format.
+_BOT_AT_RE = re.compile(r"@([\w\u4e00-\u9fff-]+)")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -543,8 +546,13 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _build_markdown_post_payload(content: str) -> str:
-    rows = _build_markdown_post_rows(content)
+def _build_markdown_post_payload(
+    content: str,
+    *,
+    bot_open_id: str | None = None,
+    bot_name: str | None = None,
+) -> str:
+    rows = _build_markdown_post_rows(content, bot_open_id=bot_open_id, bot_name=bot_name)
     return json.dumps(
         {
             "zh_cn": {
@@ -555,20 +563,74 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
-def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
+def _split_text_with_at_elements(
+    text: str,
+    bot_open_id: str | None,
+    bot_name: str | None,
+) -> List[Dict[str, Any]]:
+    """Convert plain @mentions in text to Feishu at-element dicts.
+
+    Returns a list of post-element dicts (mixed ``{"tag":"md","text":"..."}`` and
+    ``{"tag":"at","open_id":"...","user_name":"..."}``) for use inside a
+    ``post`` content row.  Only self-mentions are converted (bot_open_id +
+    bot_name must both be set and match).
+    """
+    if not text or not bot_open_id or not bot_name:
+        return [{"tag": "md", "text": text}] if text else []
+
+    segments: List[Dict[str, Any]] = []
+    last_end = 0
+
+    for m in _BOT_AT_RE.finditer(text):
+        name = m.group(1)
+        # Only convert if it matches the bot's own name (case-insensitive)
+        if name.lower() != bot_name.lower():
+            continue
+        start, end = m.start(), m.end()
+        if start > last_end:
+            segments.append({"tag": "md", "text": text[last_end:start]})
+        segments.append({"tag": "at", "open_id": bot_open_id, "user_name": bot_name})
+        last_end = end
+
+    if last_end < len(text):
+        segments.append({"tag": "md", "text": text[last_end:]})
+
+    return segments if segments else [{"tag": "md", "text": text}]
+
+
+def _build_markdown_post_rows(
+    content: str,
+    *,
+    bot_open_id: str | None = None,
+    bot_name: str | None = None,
+) -> List[List[Dict[str, Any]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
     Feishu's `md` renderer can swallow trailing content when a fenced code block
     appears inside one large markdown element. Split the reply at real fence
     lines so prose before/after the code block remains visible while code stays
     in a dedicated row.
+
+    When ``bot_open_id`` and ``bot_name`` are provided, any @bot_name patterns
+    in non-code-block text are converted to Feishu at-element dicts so the
+    mention renders as a highlighted link rather than plain text.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
+
+    has_fence = "```" in content
+
+    if not has_fence:
+        # Fast path: no code fences — check for @mentions and convert if needed.
+        if bot_open_id and bot_name:
+            segments = _split_text_with_at_elements(content, bot_open_id, bot_name)
+            # If no self-mentions found, return simple single-row form.
+            if len(segments) == 1 and segments[0].get("tag") == "md":
+                return [[segments[0]]]
+            return [segments]
         return [[{"tag": "md", "text": content}]]
 
-    rows: List[List[Dict[str, str]]] = []
+    rows: List[List[Dict[str, Any]]] = []
     current: List[str] = []
     in_code_block = False
 
@@ -578,7 +640,11 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
             return
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            if bot_open_id and bot_name:
+                segments = _split_text_with_at_elements(segment, bot_open_id, bot_name)
+                rows.append(segments)
+            else:
+                rows.append([{"tag": "md", "text": segment}])
         current = []
 
     for raw_line in content.splitlines():
@@ -3996,7 +4062,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+            return "post", _build_markdown_post_payload(
+                content,
+                bot_open_id=self._bot_open_id,
+                bot_name=self._bot_name,
+            )
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

@@ -10083,7 +10083,12 @@ class GatewayRunner:
                 return f"Could not list sessions: {e}"
 
         # Resolve the name to a session ID.
+        # First try title lookup, then fall back to direct session ID lookup.
         target_id = self._session_db.resolve_session_by_title(name)
+        if not target_id:
+            # Fallback: treat name as a raw session ID (e.g. "20260502_074200_04a931")
+            session = self._session_db.get_session(name)
+            target_id = session["id"] if session else None
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"

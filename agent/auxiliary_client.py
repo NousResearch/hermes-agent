@@ -3451,11 +3451,27 @@ def call_llm(
             # through OpenRouter (which causes confusing 404s).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                raise RuntimeError(
-                    f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
+                # Fall back to the session's own api_key (from main_runtime) so
+                # that auxiliary tasks can reuse the same credentials as the
+                # parent conversation when auxiliary.<task>.api_key is empty.
+                _runtime_key = (
+                    main_runtime.get("api_key") if isinstance(main_runtime, dict) else None
                 )
+                if _runtime_key:
+                    client, final_model = _get_cached_client(
+                        resolved_provider,
+                        resolved_model,
+                        base_url=resolved_base_url,
+                        api_key=_runtime_key,
+                        api_mode=resolved_api_mode,
+                        main_runtime=None,
+                    )
+                if client is None:
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"variable, or switch to a different provider with `hermes model`."
+                    )
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
             # Pass model=None so each provider uses its own default —

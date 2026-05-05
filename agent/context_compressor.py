@@ -722,6 +722,28 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _call_summary_with_fallback(self, call_kwargs: dict):
+        """Call the primary LLM for summarization, falling back to openrouter/free on failure.
+
+        This avoids compressing with a degraded context when the primary provider
+        is temporarily unavailable (rate limit, network glitch, 401 on a rotated key, etc.).
+        """
+        try:
+            return call_llm(**call_kwargs)
+        except Exception as primary_err:
+            logging.warning(
+                "Primary summary LLM failed (%s); trying openrouter/free fallback.",
+                str(primary_err)[:120],
+            )
+            fallback_kwargs = dict(call_kwargs)
+            fallback_kwargs.pop("task", None)  # bypass auxiliary.compression config
+            fallback_kwargs["provider"] = "openrouter"
+            fallback_kwargs["model"] = "openrouter/free"
+            fallback_kwargs["main_runtime"] = call_kwargs.get("main_runtime")
+            # Use a shorter timeout for the free fallback model
+            fallback_kwargs["timeout"] = min(call_kwargs.get("timeout", 120) * 0.5, 60)
+            return call_llm(**fallback_kwargs)
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -881,7 +903,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+            response = self._call_summary_with_fallback(call_kwargs)
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):

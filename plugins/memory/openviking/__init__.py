@@ -582,7 +582,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if args.get("limit"):
             payload["top_k"] = args["limit"]
 
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"[DEBUG] viking_search args={args}, payload={payload}")
         resp = self._client.post("/api/v1/search/find", payload)
+        logger.warning(f"[DEBUG] viking_search response status=OK, result keys={list(resp.get('result',{}).keys()) if isinstance(resp.get('result'), dict) else 'N/A'}")
         result = resp.get("result", {})
 
         # Format results for the model — keep it concise

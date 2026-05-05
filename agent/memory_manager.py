@@ -367,6 +367,10 @@ class MemoryManager:
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
         try:
+            import logging
+            logging.getLogger("hermes.memory").debug(
+                "Routing %s to provider %s, args=%s", tool_name, provider.name, args
+            )
             return provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error(

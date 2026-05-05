@@ -81,6 +81,30 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_history_to_messages_handles_multimodal_list_content():
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+        },
+        {"role": "assistant", "content": "A screenshot."},
+    ]
+
+    messages = server._history_to_messages(history)
+
+    assert messages == [
+        {"role": "user", "text": "What is this?\n[image]"},
+        {"role": "assistant", "text": "A screenshot."},
+    ]
+    assert "base64" not in messages[0]["text"]
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

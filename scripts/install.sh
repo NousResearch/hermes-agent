@@ -15,6 +15,19 @@
 
 set -e
 
+# Guard against environment leakage when the installer is launched from another
+# Python-driven tool session (e.g. Hermes terminal tool). A pre-set PYTHONPATH
+# can force pip/entrypoints to import a different checkout than the one being
+# installed, which makes fresh installs appear broken or stale.
+if [ -n "${PYTHONPATH:-}" ]; then
+    echo "⚠ Ignoring inherited PYTHONPATH during install to avoid module shadowing"
+    unset PYTHONPATH
+fi
+if [ -n "${PYTHONHOME:-}" ]; then
+    echo "⚠ Ignoring inherited PYTHONHOME during install"
+    unset PYTHONHOME
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1047,9 +1060,17 @@ setup_path() {
     command_link_display_dir="$(get_command_link_display_dir)"
 
     # Create a user-facing shim for the hermes command.
+    # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
+    # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
-    ln -sf "$HERMES_BIN" "$command_link_dir/hermes"
-    log_success "Symlinked hermes → $command_link_display_dir/hermes"
+    cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "\$@"
+EOF
+    chmod +x "$command_link_dir/hermes"
+    log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"

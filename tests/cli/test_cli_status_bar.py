@@ -1,7 +1,9 @@
-from datetime import datetime, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from cli import HermesCLI
 
 
@@ -205,6 +207,91 @@ class TestCLIStatusBar:
 
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
+
+    def test_configurable_status_line_supports_codex_like_fields(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.status_line_fields = [
+            "model-with-reasoning",
+            "current-dir",
+            "project-root",
+            "git-branch",
+            "context-usage",
+            "five-hour-limit",
+            "weekly-limit",
+            "used-tokens",
+            "thread-title",
+        ]
+        cli_obj._pending_title = "Status bar polish"
+        cli_obj._status_bar_account_usage_snapshot = lambda: None
+
+        with patch.dict(os.environ, {"TERMINAL_CWD": "/Users/maj/project/subdir"}), \
+             patch.object(
+                 cli_obj,
+                 "_status_bar_git_info",
+                 return_value={"project_root": "/Users/maj/project", "git_branch": "main"},
+             ):
+            text = cli_obj._build_status_bar_text(width=220)
+
+        assert "claude-sonnet-4-20250514" in text
+        assert "~/project/subdir" in text
+        assert "project" in text
+        assert "main" in text
+        assert "12.4K/200K" in text
+        assert "12.4K used" in text
+        assert "Status bar polish" in text
+        assert "five-hour" not in text
+        assert "weekly" not in text
+
+    def test_configured_quota_fields_render_account_limits_when_available(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.status_line_fields = ["five-hour-limit", "weekly-limit"]
+        cli_obj._status_bar_account_usage_snapshot = lambda: AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            windows=(
+                AccountUsageWindow(label="Session", used_percent=18.4),
+                AccountUsageWindow(label="Weekly", used_percent=37.1),
+            ),
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "5h 82%" in text
+        assert "week 63%" in text
+
+    def test_configured_fast_mode_field_renders_current_service_tier(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.status_line_fields = ["fast-mode"]
+        cli_obj.service_tier = "priority"
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert text == "fast on"
 
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()

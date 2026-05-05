@@ -253,6 +253,33 @@ def test_patch_invalid_status(client):
     assert r.status_code == 400
 
 
+def test_patch_status_running_rejected(client):
+    """Dashboard PATCH cannot transition a task directly to 'running'.
+
+    The only legitimate path into 'running' is through the dispatcher's
+    ``claim_task`` — which atomically creates a ``task_runs`` row,
+    claim_lock, expiry, and worker-PID metadata. Allowing a direct set
+    creates orphaned 'running' tasks with no run row or claim, which
+    violate the board's run-history invariants. See issue #19535.
+    """
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "running"},
+    )
+    assert r.status_code == 400
+    assert "running" in r.json()["detail"]
+    # Task's status should still be its pre-request value — the direct-set
+    # was rejected before any mutation.
+    board = client.get("/api/plugins/kanban/board").json()
+    statuses = {
+        tt["id"]: col["name"]
+        for col in board["columns"]
+        for tt in col["tasks"]
+    }
+    assert statuses.get(t["id"]) != "running"
+
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------
@@ -478,9 +505,11 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     kb.init_db()
 
     # Stub web_server so _check_ws_token has a token to compare against.
+    import hermes_cli
     import types
     stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
@@ -530,6 +559,49 @@ def test_bulk_status_ready(client):
     ready = next(col for col in board["columns"] if col["name"] == "ready")
     ids = {t["id"] for t in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
+
+
+def test_bulk_status_done_forwards_completion_summary(client):
+    a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
+    b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [a["id"], b["id"]],
+            "status": "done",
+            "result": "DECIDED: ship it",
+            "summary": "DECIDED: ship it",
+            "metadata": {"source": "dashboard"},
+        },
+    )
+
+    assert r.status_code == 200
+    assert all(r["ok"] for r in r.json()["results"])
+    conn = kb.connect()
+    try:
+        for tid in (a["id"], b["id"]):
+            task = kb.get_task(conn, tid)
+            run = kb.latest_run(conn, tid)
+            assert task.status == "done"
+            assert task.result == "DECIDED: ship it"
+            assert run.summary == "DECIDED: ship it"
+            assert run.metadata == {"source": "dashboard"}
+    finally:
+        conn.close()
+
+
+def test_dashboard_done_actions_prompt_for_completion_summary():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    assert "withCompletionSummary" in bundle
+    assert "Completion summary" in bundle
+    assert "result: summary" in bundle
+    assert "body: JSON.stringify(patch)" in bundle
+    assert "body: JSON.stringify(finalPatch)" in bundle
 
 
 def test_bulk_archive(client):
@@ -887,3 +959,379 @@ def test_create_task_probe_error_does_not_break_create(client, monkeypatch):
     )
     assert r.status_code == 200
     assert r.json()["task"]["title"] == "resilient"
+
+
+
+# ---------------------------------------------------------------------------
+# Home-channel subscription endpoints (#19534 follow-up: GUI opt-in)
+# ---------------------------------------------------------------------------
+#
+# Dashboard surface for per-task, per-platform notification toggles. The
+# backend endpoints read the live GatewayConfig, so tests set env vars
+# (BOT_TOKEN + HOME_CHANNEL) to simulate a user who has run /sethome on
+# telegram and discord.
+
+
+@pytest.fixture
+def with_home_channels(monkeypatch):
+    """Simulate a user with home channels set on telegram and discord."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc:fake")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1234567")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "42")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_NAME", "Main TG")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "disc_fake")
+    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "9999999")
+    monkeypatch.setenv("DISCORD_HOME_CHANNEL_NAME", "Main Discord")
+    # Slack has a token but NO home — should be excluded from the list.
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "slack_fake")
+
+
+def test_home_channels_lists_only_platforms_with_home(client, with_home_channels):
+    """GET /home-channels returns entries only for platforms where the
+    user has set a home; untoggled-subscribed bool is false by default."""
+    r = client.get("/api/plugins/kanban/home-channels")
+    assert r.status_code == 200
+    platforms = {h["platform"] for h in r.json()["home_channels"]}
+    assert platforms == {"telegram", "discord"}, (
+        f"slack has a token but no home — must not appear. got {platforms}"
+    )
+    for h in r.json()["home_channels"]:
+        assert h["subscribed"] is False
+
+
+def test_home_channels_no_task_id_all_unsubscribed(client, with_home_channels):
+    """Without task_id, every entry's subscribed=false (UI "no task" state)."""
+    r = client.get("/api/plugins/kanban/home-channels")
+    assert r.status_code == 200
+    assert all(not h["subscribed"] for h in r.json()["home_channels"])
+
+
+def test_home_subscribe_creates_notify_sub_row(client, with_home_channels):
+    """POST .../home-subscribe/telegram writes a kanban_notify_subs row
+    keyed to the telegram home's (chat_id, thread_id)."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, t["id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "1234567"
+    assert subs[0]["thread_id"] == "42"
+
+
+def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_home_channels):
+    """After subscribe, the GET endpoint reports subscribed=true for that
+    platform and false for the others."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+
+    r = client.get(f"/api/plugins/kanban/home-channels?task_id={t['id']}")
+    flags = {h["platform"]: h["subscribed"] for h in r.json()["home_channels"]}
+    assert flags == {"telegram": True, "discord": False}
+
+
+def test_home_subscribe_is_idempotent(client, with_home_channels):
+    """Re-subscribing keeps a single row at the DB layer."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    conn = kb.connect()
+    try:
+        assert len(kb.list_notify_subs(conn, t["id"])) == 1
+    finally:
+        conn.close()
+
+
+def test_home_subscribe_unknown_platform_returns_404(client, with_home_channels):
+    """Platforms without a home configured (slack in the fixture) return 404."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/slack")
+    assert r.status_code == 404
+    assert "slack" in r.json()["detail"]
+
+
+def test_home_subscribe_unknown_task_returns_404(client, with_home_channels):
+    r = client.post("/api/plugins/kanban/tasks/t_nonexistent/home-subscribe/telegram")
+    assert r.status_code == 404
+
+
+def test_home_unsubscribe_removes_notify_sub_row(client, with_home_channels):
+    """DELETE .../home-subscribe/telegram removes the matching row."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, t["id"]) == []
+    finally:
+        conn.close()
+
+
+def test_home_subscribe_multiple_platforms_independent(client, with_home_channels):
+    """Subscribing on telegram does not affect discord and vice versa."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/discord")
+
+    conn = kb.connect()
+    try:
+        subs = {s["platform"]: s for s in kb.list_notify_subs(conn, t["id"])}
+    finally:
+        conn.close()
+    assert set(subs) == {"telegram", "discord"}
+
+    # Unsubscribe telegram only.
+    client.delete(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    conn = kb.connect()
+    try:
+        subs = {s["platform"]: s for s in kb.list_notify_subs(conn, t["id"])}
+    finally:
+        conn.close()
+    assert set(subs) == {"discord"}
+
+
+def test_home_channels_empty_when_no_homes_configured(client, monkeypatch):
+    """Zero platforms with a home -> empty list (UI hides the section)."""
+    # No BOT_TOKEN env vars set → load_gateway_config().platforms is empty.
+    for var in [
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL",
+        "DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL",
+        "SLACK_BOT_TOKEN",
+    ]:
+        monkeypatch.delenv(var, raising=False)
+    r = client.get("/api/plugins/kanban/home-channels")
+    assert r.status_code == 200
+    assert r.json()["home_channels"] == []
+
+
+# ---------------------------------------------------------------------------
+# Recovery endpoints (reclaim + reassign) and warnings field
+# ---------------------------------------------------------------------------
+
+def test_board_surfaces_warnings_field_for_hallucinated_completions(client):
+    """Tasks with a pending completion_blocked_hallucination event surface
+    a ``warnings`` object on the /board payload so the UI can badge
+    them without fetching per-task events."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent,
+                summary="claimed phantom",
+                created_cards=[real, "t_deadbeefcafe"],
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    tasks = [t for col in data["columns"] for t in col["tasks"]]
+    parent_dict = next(t for t in tasks if t["title"] == "parent")
+    assert parent_dict.get("warnings") is not None
+    w = parent_dict["warnings"]
+    assert w["count"] >= 1
+    assert "completion_blocked_hallucination" in w["kinds"]
+
+
+def test_board_warnings_cleared_after_clean_completion(client):
+    """A completed or edited event after a hallucination event clears
+    the warning badge — we don't mark tasks permanently."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent,
+                summary="first attempt phantom",
+                created_cards=[real, "t_phantom11"],
+            )
+
+        # Second attempt drops the bad id — succeeds.
+        ok = kb.complete_task(
+            conn, parent,
+            summary="retry without phantom",
+            created_cards=[real],
+        )
+        assert ok is True
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board", params={"include_archived": True})
+    assert r.status_code == 200
+    data = r.json()
+    tasks = [t for col in data["columns"] for t in col["tasks"]]
+    parent_dict = next(t for t in tasks if t["title"] == "parent")
+    # The clean completion wiped the warning.
+    assert parent_dict.get("warnings") is None
+
+
+def test_reclaim_endpoint_releases_running_claim(client):
+    """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
+    a manual reclaimed event."""
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="x")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reclaim",
+        json={"reason": "browser recovery"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == t
+
+    # Confirm the task is back to ready.
+    conn2 = kb.connect()
+    try:
+        row = conn2.execute(
+            "SELECT status, claim_lock FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+    finally:
+        conn2.close()
+
+
+def test_reclaim_endpoint_409_for_non_running_task(client):
+    """Reclaiming a task that's already ready returns 409."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="ready", assignee="x")
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reclaim",
+        json={},
+    )
+    assert r.status_code == 409
+
+
+def test_reassign_endpoint_switches_profile(client):
+    """POST /tasks/<id>/reassign changes the assignee field."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="task", assignee="orig")
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reassign",
+        json={"profile": "newbie", "reclaim_first": False},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assignee"] == "newbie"
+
+    conn2 = kb.connect()
+    try:
+        row = conn2.execute(
+            "SELECT assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "newbie"
+    finally:
+        conn2.close()
+
+
+def test_reassign_endpoint_409_on_running_without_reclaim(client):
+    """Reassigning a running task without reclaim_first returns 409."""
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=? WHERE id=?",
+            (secrets.token_hex(4), t),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reassign",
+        json={"profile": "new", "reclaim_first": False},
+    )
+    assert r.status_code == 409
+
+
+def test_reassign_endpoint_with_reclaim_first_succeeds_on_running(client):
+    """With reclaim_first=true, a running task is reclaimed+reassigned in
+    one call."""
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        lock = secrets.token_hex(4)
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, int(time.time()) + 3600, 1234, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, int(time.time()) + 3600, 1234, int(time.time())),
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, t))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/reassign",
+        json={"profile": "new", "reclaim_first": True, "reason": "switch"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assignee"] == "new"
+
+    conn2 = kb.connect()
+    try:
+        row = conn2.execute(
+            "SELECT status, assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["assignee"] == "new"
+    finally:
+        conn2.close()

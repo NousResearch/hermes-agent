@@ -1,0 +1,24 @@
+# Hermes 静态消息目录 -- 中文（简体）
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  危险命令： {description}"
+  choose_long:     "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"
+  choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
+  prompt_long:     "      选择 [o/s/a/D]: "
+  prompt_short:    "      选择 [o/s/D]: "
+  timeout:         "      ⏱ 超时 — 已拒绝命令"
+  allowed_once:    "      ✓ 本次允许"
+  allowed_session: "      ✓ 本次会话内允许"
+  allowed_always:  "      ✓ 已加入永久允许列表"
+  denied:          "      ✗ 已拒绝"
+  cancelled:       "      ✗ 已取消"
+  blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
+
+gateway:
+  approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
+  draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
+  goal_cleared:     "✓ 目标已清除。"
+  no_active_goal:   "当前没有活跃的目标。"
+  config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
+  config_save_failed: "⚠️ 无法保存配置：{error}"

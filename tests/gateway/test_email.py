@@ -425,6 +425,91 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
 
+    def test_non_allowlisted_sender_dropped(self):
+        """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"99",
+                "sender_addr": "outsider@evil.com",
+                "sender_name": "Spammer",
+                "subject": "Buy now!!!",
+                "message_id": "<spam@evil.com>",
+                "in_reply_to": "",
+                "body": "Cheap meds",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should NOT be called for non-allowlisted sender
+            adapter._message_handler.assert_not_called()
+            # Thread context should NOT be created
+            self.assertNotIn("outsider@evil.com", adapter._thread_context)
+
+    def test_allowlisted_sender_proceeds(self):
+        """Senders in EMAIL_ALLOWED_USERS should proceed to dispatch normally."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            captured_events = []
+
+            async def mock_handler(event):
+                captured_events.append(event)
+                return None
+
+            adapter._message_handler = mock_handler
+
+            msg_data = {
+                "uid": b"100",
+                "sender_addr": "admin@test.com",
+                "sender_name": "Admin",
+                "subject": "Important",
+                "message_id": "<msg@test.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
+
+    def test_empty_allowlist_allows_all(self):
+        """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""
+        import asyncio
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure EMAIL_ALLOWED_USERS is not in the env
+            if "EMAIL_ALLOWED_USERS" in os.environ:
+                del os.environ["EMAIL_ALLOWED_USERS"]
+
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"101",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hey",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should be called when no allowlist is configured
+            adapter._message_handler.assert_called()
+
 
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""

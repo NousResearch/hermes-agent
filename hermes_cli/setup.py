@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import copy
@@ -208,10 +209,21 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         else:
             value = input(color(display, Colors.YELLOW))
 
-        return value.strip() or default or ""
+        cleaned = _sanitize_pasted_input(value)
+        return cleaned.strip() or default or ""
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)
+
+
+_BRACKETED_PASTE_PATTERN = re.compile(r"\x1b\[\s*200~|\x1b\[\s*201~")
+
+
+def _sanitize_pasted_input(value: str) -> str:
+    """Strip terminal bracketed-paste control markers from pasted text."""
+    if not isinstance(value, str) or not value:
+        return value
+    return _BRACKETED_PASTE_PATTERN.sub("", value)
 
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
@@ -964,7 +976,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                     )
                 else:
                     _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
-                save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+                if _selected_vision_model:
+                    save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
                 print_success(
                     f"Vision configured with {_base_url}"
                     + (f" ({_selected_vision_model})" if _selected_vision_model else "")
@@ -1190,6 +1203,13 @@ def _setup_tts_provider(config: dict):
                     "Falling back to Edge TTS."
                 )
                 selected = "edge"
+        if selected == "xai":
+            print()
+            voice_id = prompt("xAI voice_id (Enter for 'eve', or paste a custom voice ID)")
+            if voice_id and voice_id.strip():
+                config.setdefault("tts", {}).setdefault("xai", {})["voice_id"] = voice_id.strip()
+                print_success(f"xAI voice_id set to: {voice_id.strip()}")
+
 
     elif selected == "minimax":
         existing = get_env_value("MINIMAX_API_KEY")
@@ -1321,15 +1341,13 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
 
-        # CWD for messaging
+        # Gateway/cron working directory
         print()
-        print_info("Working directory for messaging sessions:")
-        print_info("  When using Hermes via Telegram/Discord, this is where")
-        print_info(
-            "  the agent starts. CLI mode always starts in the current directory."
-        )
+        print_info("Gateway working directory:")
+        print_info("  Used by Telegram/Discord/cron sessions.")
+        print_info("  CLI/TUI always uses your launch directory instead.")
         current_cwd = cfg_get(config, "terminal", "cwd", default="")
-        cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
+        cwd = prompt("  Gateway working directory", current_cwd or str(Path.home()))
         if cwd:
             config["terminal"]["cwd"] = cwd
 
@@ -1643,7 +1661,11 @@ def setup_terminal_backend(config: dict):
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
     config.setdefault("agent", {})["max_turns"] = 90
-    save_env_value("HERMES_MAX_ITERATIONS", "90")
+    # config.yaml is the authoritative source for max_turns; the gateway
+    # bridges it into HERMES_MAX_ITERATIONS at startup. We no longer write
+    # to .env to avoid the dual-source inconsistency that caused the
+    # 60-vs-500 bug (stale .env entry silently shadowing config.yaml).
+    remove_env_value("HERMES_MAX_ITERATIONS")
 
     config.setdefault("display", {})["tool_progress"] = "all"
 
@@ -1673,9 +1695,10 @@ def setup_agent_settings(config: dict):
     print()
 
     # ── Max Iterations ──
-    current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
-        cfg_get(config, "agent", "max_turns", default=90)
-    )
+    # config.yaml is authoritative; read from there. If a legacy .env
+    # entry is still around (from pre-PR#18413 setups), prefer the
+    # config value so we don't surface a stale number to the user.
+    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info(
@@ -1686,9 +1709,13 @@ def setup_agent_settings(config: dict):
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
-            save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
+            # Write to config.yaml (authoritative) only. Also clean up any
+            # stale .env entry from earlier setup runs — the gateway's
+            # bridge in gateway/run.py now unconditionally derives
+            # HERMES_MAX_ITERATIONS from agent.max_turns at startup.
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
+            remove_env_value("HERMES_MAX_ITERATIONS")
             print_success(f"Max iterations set to {max_iter}")
     except ValueError:
         print_warning("Invalid number, keeping current value")
@@ -2032,6 +2059,16 @@ def _setup_slack():
     else:
         print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: open the channel in Slack, then right-click")
+    print_info("   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).")
+    print_info("   You can also set this later by typing /set-home in a Slack channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("SLACK_HOME_CHANNEL", home_channel.strip())
 
 
 def _write_slack_manifest_and_instruct():
@@ -2979,6 +3016,21 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
 
+    # Back up existing config before setup modifies it (#3522)
+    config_path = get_config_path()
+    if config_path.exists():
+        from datetime import datetime as _dt
+        _backup_path = config_path.with_suffix(
+            f".yaml.bak.{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        try:
+            import shutil
+            shutil.copy2(config_path, _backup_path)
+        except Exception:
+            _backup_path = None
+    else:
+        _backup_path = None
+
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
@@ -3148,6 +3200,10 @@ def run_setup_wizard(args):
 
     # Save and show summary
     save_config(config)
+    if _backup_path and _backup_path.exists():
+        print_info(f"Previous config backed up to: {_backup_path}")
+        print_info("If setup changed a value you customized, restore it with:")
+        print_info(f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
 
     _offer_launch_chat()

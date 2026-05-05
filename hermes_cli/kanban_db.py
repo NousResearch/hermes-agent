@@ -1,8 +1,56 @@
-"""SQLite-backed Kanban board for multi-profile collaboration.
+"""SQLite-backed Kanban board for multi-profile, multi-project collaboration.
 
-The board lives at ``$HERMES_HOME/kanban.db`` (profile-agnostic on purpose:
-multiple profiles on the same machine all see the same board, which IS the
-coordination primitive).
+In a fresh install the board lives at ``<root>/kanban.db`` where
+``<root>`` is the **shared Hermes root** (the parent of any active
+profile). Profiles intentionally collapse onto a shared board: it IS
+the cross-profile coordination primitive. A worker spawned with
+``hermes -p <profile>`` joins the same board as the dispatcher that
+claimed the task. The same applies to ``<root>/kanban/workspaces/`` and
+``<root>/kanban/logs/``.
+
+**Multiple boards (projects):** users can create additional boards to
+separate unrelated streams of work (e.g. one per project / repo / domain).
+Each board is a directory under ``<root>/kanban/boards/<slug>/`` with
+its own ``kanban.db``, ``workspaces/``, and ``logs/``. All boards share
+the profile's Hermes home but are otherwise isolated: a worker spawned
+for a task on board ``atm10-server`` sees only that board's tasks,
+cannot enumerate other boards, and its dispatcher ticks don't touch
+other boards' DBs.
+
+The first (and for single-project users, only) board is ``default``.
+For back-compat its on-disk DB is ``<root>/kanban.db`` (not
+``boards/default/kanban.db``), so installs that predate the boards
+feature keep working with zero migration. See :func:`kanban_db_path`.
+
+Board resolution order (highest precedence first, all optional):
+
+* ``board=`` argument passed directly to :func:`connect` / :func:`init_db`
+  (explicit — used by the CLI ``--board`` flag and the dashboard
+  ``?board=...`` query param).
+* ``HERMES_KANBAN_BOARD`` env var (used by the dispatcher to pin workers
+  to the board their task lives on — workers cannot see other boards).
+* ``HERMES_KANBAN_DB`` env var (pins the DB file path directly — legacy
+  override still honoured; highest precedence when the file path itself
+  is what the caller wants to force).
+* ``<root>/kanban/current`` — a one-line text file holding the slug of
+  the "currently selected" board. Written by ``hermes kanban boards
+  switch <slug>``. When absent, the active board is ``default``.
+
+In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
+deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
+``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Legacy env-var
+overrides still work:
+
+* ``HERMES_KANBAN_DB`` — pin the database file path directly.
+* ``HERMES_KANBAN_WORKSPACES_ROOT`` — pin the workspaces root directly.
+* ``HERMES_KANBAN_HOME`` — pin the umbrella root that anchors kanban
+  paths. Useful for tests and unusual deployments.
+
+The dispatcher injects ``HERMES_KANBAN_DB``,
+``HERMES_KANBAN_WORKSPACES_ROOT``, and ``HERMES_KANBAN_BOARD`` into
+worker subprocess env so workers converge on the exact DB the
+dispatcher used to claim their task — even under unusual symlink or
+Docker layouts.
 
 Schema is intentionally small: tasks, task_links, task_comments,
 task_events.  The ``workspace_kind`` field decouples coordination from git
@@ -15,6 +63,9 @@ transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
 ``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
 most one claimer can win any given task.  Losers observe zero affected
 rows and move on -- no retry loops, no distributed-lock machinery.
+The CAS coordination is **per-board** — each board is a separate DB,
+so multi-board installs get the same atomicity guarantees without any
+new locking.
 """
 
 from __future__ import annotations
@@ -22,8 +73,10 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -61,16 +114,438 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # Paths
 # ---------------------------------------------------------------------------
 
-def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+DEFAULT_BOARD = "default"
+
+# Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
+# Strict enough to stop traversal (`..`) and embedded path separators, loose
+# enough that kebab-case names like ``atm10-server`` or ``hermes-agent``
+# pass without fuss. Board names with display formatting (spaces, emoji)
+# live in ``board.json``; the slug is just the directory name.
+_BOARD_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
 
 
-def workspaces_root() -> Path:
-    """Return the directory under which ``scratch`` workspaces are created."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "workspaces"
+def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
+    """Lowercase + strip a slug; validate; return ``None`` for empty."""
+    if slug is None:
+        return None
+    s = str(slug).strip().lower()
+    if not s:
+        return None
+    if not _BOARD_SLUG_RE.match(s):
+        raise ValueError(
+            f"invalid board slug {slug!r}: must be 1-64 chars, lowercase "
+            f"alphanumerics / hyphens / underscores, not starting with '-' or '_'"
+        )
+    return s
+
+
+def kanban_home() -> Path:
+    """Return the shared Hermes root that anchors the kanban board.
+
+    Resolution order:
+
+    1. ``HERMES_KANBAN_HOME`` env var when set and non-empty (explicit
+       override for tests and unusual deployments).
+    2. ``get_default_hermes_root()``, which already returns ``<root>``
+       when ``HERMES_HOME`` is ``<root>/profiles/<name>``, and returns
+       ``HERMES_HOME`` directly for Docker / custom deployments.
+
+    The kanban board is shared across profiles **by design** (see the
+    module docstring). Resolving the kanban paths through the active
+    profile's ``HERMES_HOME`` would silently fork the board per profile,
+    which breaks the dispatcher / worker handoff.
+    """
+    override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
+
+
+def boards_root() -> Path:
+    """Return ``<root>/kanban/boards`` — the parent of non-default board dirs.
+
+    ``default`` is intentionally NOT under this directory — its DB lives at
+    ``<root>/kanban.db`` for back-compat with pre-boards installs. This
+    function returns the directory where *additional* named boards live,
+    used by :func:`list_boards` to enumerate them.
+    """
+    return kanban_home() / "kanban" / "boards"
+
+
+def current_board_path() -> Path:
+    """Return the path to ``<root>/kanban/current``.
+
+    One-line text file written by ``hermes kanban boards switch <slug>``
+    to persist the user's board selection across CLI invocations. Absent
+    by default (meaning: active board is ``default``).
+    """
+    return kanban_home() / "kanban" / "current"
+
+
+def get_current_board() -> str:
+    """Return the active board slug, honouring the resolution chain.
+
+    Order (highest precedence first):
+
+    1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
+       spawn, or manually for ad-hoc overrides).
+    2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
+       switch``), but only when that board still exists.
+    3. ``DEFAULT_BOARD`` (``"default"``).
+
+    A malformed or stale slug at any step falls through to the next layer
+    with a best-effort warning — the dispatcher must never crash because a
+    user hand-edited a file or removed a board directory.
+    """
+    env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if env:
+        try:
+            normed = _normalize_board_slug(env)
+            if normed:
+                return normed
+        except ValueError:
+            pass
+    try:
+        f = current_board_path()
+        if f.exists():
+            val = f.read_text(encoding="utf-8").strip()
+            if val:
+                try:
+                    normed = _normalize_board_slug(val)
+                    if normed and board_exists(normed):
+                        return normed
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return DEFAULT_BOARD
+
+
+def set_current_board(slug: str) -> Path:
+    """Persist ``slug`` as the active board. Returns the file written.
+
+    Writes ``<root>/kanban/current``. The caller should validate the slug
+    exists first (via :func:`board_exists`) — this function does not —
+    so that ``hermes kanban boards switch <typo>`` returns an error
+    instead of silently pointing at nothing.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    path = current_board_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normed + "\n", encoding="utf-8")
+    return path
+
+
+def clear_current_board() -> None:
+    """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
+    try:
+        current_board_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def board_dir(board: Optional[str] = None) -> Path:
+    """Return the on-disk directory for ``board``.
+
+    ``default`` is ``<root>/kanban/boards/default/`` **for metadata only**
+    (board.json + workspaces/ + logs/). Its DB file stays at
+    ``<root>/kanban.db`` for back-compat — see :func:`kanban_db_path`.
+
+    All other boards live at ``<root>/kanban/boards/<slug>/`` with
+    everything inside that directory including the ``kanban.db``.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    return boards_root() / slug
+
+
+def board_exists(board: Optional[str] = None) -> bool:
+    """Return True if the board has a DB or a metadata dir on disk.
+
+    ``default`` is considered to always exist — its DB is created
+    on first :func:`connect` and there's no way for it to be missing
+    in a configuration where the kanban feature is usable at all.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    if slug == DEFAULT_BOARD:
+        return True
+    d = board_dir(slug)
+    return d.is_dir() or (d / "kanban.db").exists()
+
+
+def kanban_db_path(board: Optional[str] = None) -> Path:
+    """Return the path to the ``kanban.db`` for ``board``.
+
+    Resolution (highest precedence first):
+
+    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
+       back-compat and for the dispatcher→worker handoff (defense in
+       depth: dispatcher injects this into worker env so workers are
+       immune to any path-resolution disagreement).
+    2. When ``board`` arg is None, the active board from
+       :func:`get_current_board` is used.
+    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+       Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
+    """
+    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if override:
+        return Path(override).expanduser()
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
+
+
+def workspaces_root(board: Optional[str] = None) -> Path:
+    """Return the directory under which ``scratch`` workspaces are created.
+
+    Anchored per-board so workspaces don't leak between projects.
+    ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
+    precedence) — the dispatcher injects this into worker env.
+
+    ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
+    that existing scratch workspaces from before the boards feature are
+    preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
+    """
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "workspaces"
+    return board_dir(slug) / "workspaces"
+
+
+def worker_logs_dir(board: Optional[str] = None) -> Path:
+    """Return the directory under which per-task worker logs are written.
+
+    ``default`` keeps the legacy path ``<root>/kanban/logs/``. Other
+    boards use ``<root>/kanban/boards/<slug>/logs/``. Logs follow the
+    board — makes ``hermes kanban log`` unambiguous even when multiple
+    boards have tasks with the same id.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "logs"
+    return board_dir(slug) / "logs"
+
+
+def board_metadata_path(board: Optional[str] = None) -> Path:
+    """Return the path to ``board.json`` for ``board``.
+
+    Stores display metadata (display name, description, icon, color,
+    created_at). The on-disk slug is the canonical identity; this file
+    is purely for presentation in the CLI / dashboard.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    return board_dir(slug) / "board.json"
+
+
+def _default_board_display_name(slug: str) -> str:
+    """Turn a slug into a reasonable default display name.
+
+    ``atm10-server`` → ``Atm10 Server``. Users can override via
+    ``board.json`` but the default should look presentable in the
+    dashboard without any follow-up editing.
+    """
+    return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
+
+
+def read_board_metadata(board: Optional[str] = None) -> dict:
+    """Return ``board.json`` contents (or synthesized defaults).
+
+    Never raises — a missing / malformed ``board.json`` falls back to a
+    synthesised entry so the dashboard always has something to render.
+    Includes the canonical ``slug`` and ``db_path`` so the caller
+    doesn't need to reconstruct them.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    meta: dict[str, Any] = {
+        "slug": slug,
+        "name": _default_board_display_name(slug),
+        "description": "",
+        "icon": "",
+        "color": "",
+        "created_at": None,
+        "archived": False,
+    }
+    try:
+        p = board_metadata_path(slug)
+        if p.exists():
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                # Never let the metadata file claim a different slug than
+                # its directory — trust the filesystem.
+                raw["slug"] = slug
+                meta.update(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    meta["db_path"] = str(kanban_db_path(slug))
+    return meta
+
+
+def write_board_metadata(
+    board: Optional[str],
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    icon: Optional[str] = None,
+    color: Optional[str] = None,
+    archived: Optional[bool] = None,
+) -> dict:
+    """Create / update ``board.json`` for ``board``.
+
+    Preserves any existing fields not mentioned in the call. Sets
+    ``created_at`` on first write. Returns the resulting metadata dict.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    meta = read_board_metadata(slug)
+    # Preserve existing DB-derived fields — they get re-computed each
+    # read but shouldn't be written into board.json.
+    meta.pop("db_path", None)
+    if name is not None:
+        meta["name"] = str(name).strip() or _default_board_display_name(slug)
+    if description is not None:
+        meta["description"] = str(description)
+    if icon is not None:
+        meta["icon"] = str(icon)
+    if color is not None:
+        meta["color"] = str(color)
+    if archived is not None:
+        meta["archived"] = bool(archived)
+    if not meta.get("created_at"):
+        meta["created_at"] = int(time.time())
+    path = board_metadata_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    meta["db_path"] = str(kanban_db_path(slug))
+    return meta
+
+
+def create_board(
+    slug: str,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    icon: Optional[str] = None,
+    color: Optional[str] = None,
+) -> dict:
+    """Create a new board directory + DB + metadata. Idempotent.
+
+    Returns the resulting metadata. Raises :class:`ValueError` for a
+    malformed slug; returns the existing metadata (not an error) if the
+    board already exists — matching ``mkdir -p`` semantics.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    meta = write_board_metadata(
+        normed,
+        name=name,
+        description=description,
+        icon=icon,
+        color=color,
+    )
+    # Touch the DB so list_boards() sees it immediately.
+    init_db(board=normed)
+    return meta
+
+
+def list_boards(*, include_archived: bool = True) -> list[dict]:
+    """Enumerate all boards that exist on disk.
+
+    Always includes ``default`` (even when the ``boards/default/``
+    metadata dir doesn't exist, because its DB is at the legacy path).
+    Other boards are discovered by scanning ``boards/`` for subdirectories
+    that either contain a ``kanban.db`` or a ``board.json``.
+
+    Returns a list of metadata dicts, sorted with ``default`` first and
+    the rest alphabetically.
+    """
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    # Default board is always first.
+    entries.append(read_board_metadata(DEFAULT_BOARD))
+    seen.add(DEFAULT_BOARD)
+
+    root = boards_root()
+    if root.is_dir():
+        for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if not child.is_dir():
+                continue
+            slug = child.name
+            # Keep slug normalisation soft for discovery — but skip dirs
+            # that don't parse as valid slugs so we don't surface junk.
+            try:
+                normed = _normalize_board_slug(slug)
+            except ValueError:
+                continue
+            if not normed or normed in seen:
+                continue
+            has_db = (child / "kanban.db").exists()
+            has_meta = (child / "board.json").exists()
+            if not (has_db or has_meta):
+                continue
+            meta = read_board_metadata(normed)
+            if meta.get("archived") and not include_archived:
+                continue
+            entries.append(meta)
+            seen.add(normed)
+    return entries
+
+
+def remove_board(slug: str, *, archive: bool = True) -> dict:
+    """Remove or archive a board.
+
+    ``archive=True`` (default) moves the board's directory to
+    ``<root>/kanban/boards/_archived/<slug>-<timestamp>/`` so the data
+    is recoverable. ``archive=False`` deletes the directory outright.
+
+    The ``default`` board cannot be removed — raises :class:`ValueError`.
+    Returns a summary dict describing what happened (``{"slug", "action",
+    "new_path"}``).
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    if normed == DEFAULT_BOARD:
+        raise ValueError("the 'default' board cannot be removed")
+    d = board_dir(normed)
+    if not d.exists():
+        raise ValueError(f"board {normed!r} does not exist")
+
+    # If the user removed the currently-active board, revert to default.
+    if get_current_board() == normed:
+        clear_current_board()
+
+    if archive:
+        archive_root = boards_root() / "_archived"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        target = archive_root / f"{normed}-{ts}"
+        # Avoid collision on rapid double-archives.
+        suffix = 1
+        while target.exists():
+            target = archive_root / f"{normed}-{ts}-{suffix}"
+            suffix += 1
+        d.rename(target)
+        return {"slug": normed, "action": "archived", "new_path": str(target)}
+    else:
+        import shutil
+        shutil.rmtree(d)
+        return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +843,11 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 
 
-def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def connect(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
     WAL mode is enabled on every connection; it's a no-op after the first
@@ -378,8 +857,19 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     fresh installs and test harnesses that construct `connect()`
     directly don't have to remember a separate init step. Subsequent
     connections skip the schema check via a module-level path cache.
+
+    Path resolution:
+
+    * ``db_path`` explicit → used as-is (legacy callers, tests).
+    * ``board`` explicit → resolves to that board's DB.
+    * Neither → :func:`kanban_db_path` resolves via
+      ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
+      ``<root>/kanban/current`` → ``default``.
     """
-    path = db_path or kanban_db_path()
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS
@@ -398,7 +888,11 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: Optional[Path] = None) -> Path:
+def init_db(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Path:
     """Create the schema if it doesn't exist; return the path used.
 
     Kept as a public entry point so CLI ``hermes kanban init`` and the
@@ -409,7 +903,10 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     external tools that upgrade an old DB file — can call this to
     force re-migration.
     """
-    path = db_path or kanban_db_path()
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     # Clear the cache entry so the underlying connect() re-runs the
@@ -590,6 +1087,15 @@ def _claimer_id() -> str:
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
+def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    if assignee is None:
+        return None
+    from hermes_cli.profiles import normalize_profile_name
+
+    return normalize_profile_name(assignee)
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -631,6 +1137,7 @@ def create_task(
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
     """
+    assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
     if workspace_kind not in VALID_WORKSPACE_KINDS:
@@ -795,7 +1302,7 @@ def list_tasks(
     params: list[Any] = []
     if assignee is not None:
         query += " AND assignee = ?"
-        params.append(assignee)
+        params.append(_canonical_assignee(assignee))
     if status is not None:
         if status not in VALID_STATUSES:
             raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -819,6 +1326,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
     """
+    profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
@@ -1334,6 +1842,212 @@ def release_stale_claims(conn: sqlite3.Connection) -> int:
     return reclaimed
 
 
+def reclaim_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+) -> bool:
+    """Operator-driven reclaim: release the claim and reset to ``ready``.
+
+    Unlike :func:`release_stale_claims` which only acts on tasks whose
+    ``claim_expires`` has passed, this function reclaims immediately
+    regardless of TTL. Intended for the dashboard/CLI recovery flow
+    when an operator wants to abort a running worker without waiting
+    for the TTL to expire (e.g. after seeing a hallucination warning).
+
+    Returns True if a reclaim happened, False if the task isn't in a
+    reclaimable state (not running, or doesn't exist).
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] != "running" and row["claim_lock"] is None:
+            # Nothing to reclaim — already ready / blocked / done.
+            return False
+        prev_lock = row["claim_lock"]
+        prev_pid = row["worker_pid"]
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked')",
+            (task_id,),
+        )
+        run_id = _end_run(
+            conn, task_id,
+            outcome="reclaimed", status="reclaimed",
+            error=(
+                f"manual_reclaim: {reason}" if reason
+                else f"manual_reclaim lock={prev_lock}"
+            ),
+        )
+        _append_event(
+            conn, task_id, "reclaimed",
+            {
+                "manual": True,
+                "reason": reason,
+                "prev_lock": prev_lock,
+                "prev_pid": prev_pid,
+            },
+            run_id=run_id,
+        )
+    return True
+
+
+def reassign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    reclaim_first: bool = False,
+    reason: Optional[str] = None,
+) -> bool:
+    """Reassign a task, optionally reclaiming a stuck running worker first.
+
+    This is the recovery path for "this profile's model is broken, try
+    a different one". If ``reclaim_first`` is True, any active claim is
+    released (via :func:`reclaim_task`) before the reassign happens;
+    otherwise the function refuses to reassign a currently-running task
+    and returns False (caller can retry with ``reclaim_first=True``).
+
+    Returns True if the reassign landed. ``profile`` may be ``None`` to
+    unassign entirely.
+    """
+    if reclaim_first:
+        # Safe to call even if nothing to reclaim.
+        reclaim_task(conn, task_id, reason=reason or "reassign")
+    # assign_task handles its own txn + the still-running guard.
+    try:
+        return assign_task(conn, task_id, profile)
+    except RuntimeError:
+        # Task is still running and reclaim_first was False; caller
+        # needs to decide whether to retry with reclaim.
+        return False
+
+
+def _verify_created_cards(
+    conn: sqlite3.Connection,
+    completing_task_id: str,
+    claimed_ids: Iterable[str],
+) -> tuple[list[str], list[str]]:
+    """Partition ``claimed_ids`` into (verified, phantom).
+
+    A card is "verified" iff a row exists in ``tasks`` with the given id
+    AND ``created_by`` matches the completing task's ``assignee`` (or
+    the completing task itself — workers that create children of their
+    own task also qualify).
+
+    ``phantom`` returns ids that either don't exist at all or exist but
+    were not created by the completing worker. The caller decides what
+    to do with each bucket; this helper never mutates.
+    """
+    claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
+    if not claimed:
+        return [], []
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for cid in claimed:
+        if cid not in seen:
+            seen.add(cid)
+            ordered.append(cid)
+
+    row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (completing_task_id,),
+    ).fetchone()
+    if row is None:
+        # Completing task not found — nothing resolves.
+        return [], ordered
+    completing_assignee = row["assignee"]
+
+    # Batch-fetch existence + created_by in one query.
+    placeholders = ",".join(["?"] * len(ordered))
+    rows = conn.execute(
+        f"SELECT id, created_by FROM tasks WHERE id IN ({placeholders})",
+        tuple(ordered),
+    ).fetchall()
+    found = {r["id"]: r["created_by"] for r in rows}
+
+    verified: list[str] = []
+    phantom: list[str] = []
+    for cid in ordered:
+        created_by = found.get(cid)
+        if created_by is None:
+            phantom.append(cid)
+            continue
+        # Accept if created_by matches the completing task's assignee
+        # profile, OR the task itself (workers whose created_by happens
+        # to match their task id are unusual but harmless to accept).
+        if completing_assignee and created_by == completing_assignee:
+            verified.append(cid)
+        elif created_by == completing_task_id:
+            verified.append(cid)
+        else:
+            phantom.append(cid)
+    return verified, phantom
+
+
+# Task-id pattern used both by ``kanban_create`` (``t_<12 hex>``) and
+# ``_new_task_id`` below. Kept permissive on length for forward compat:
+# accept 8+ hex chars after the ``t_`` prefix.
+_TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
+
+
+def _scan_prose_for_phantom_ids(
+    conn: sqlite3.Connection,
+    text: str,
+) -> list[str]:
+    """Regex-scan free-form text for ``t_<hex>`` references; return the
+    ones that don't exist in ``tasks``.
+
+    Used as a non-blocking advisory check on completion summaries. An
+    empty return means "no suspicious references found" — either the
+    text had no IDs at all, or every ID it mentioned resolves to a real
+    task. Duplicates are deduped.
+    """
+    if not text:
+        return []
+    matches = _TASK_ID_PROSE_RE.findall(text)
+    if not matches:
+        return []
+    # Dedupe preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+    placeholders = ",".join(["?"] * len(unique))
+    rows = conn.execute(
+        f"SELECT id FROM tasks WHERE id IN ({placeholders})",
+        tuple(unique),
+    ).fetchall()
+    existing = {r["id"] for r in rows}
+    return [m for m in unique if m not in existing]
+
+
+class HallucinatedCardsError(ValueError):
+    """Raised by ``complete_task`` when ``created_cards`` contains ids
+    that don't exist or weren't created by the completing worker.
+
+    The phantom list is attached as ``.phantom`` for callers that want
+    structured access. Kept as ``ValueError`` subclass so existing
+    tool-error handlers treat it as a recoverable user error.
+    """
+
+    def __init__(self, phantom: list[str], completing_task_id: str):
+        self.phantom = list(phantom)
+        self.completing_task_id = completing_task_id
+        super().__init__(
+            f"completion blocked: claimed created_cards that do not exist "
+            f"or were not created by this worker: {', '.join(phantom)}"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1341,21 +2055,65 @@ def complete_task(
     result: Optional[str] = None,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
-    Accepts a task that's merely ``ready`` too, so a manual CLI
+    Accepts a task that is merely ``ready`` too, so a manual CLI
     completion (``hermes kanban complete <id>``) works without requiring
     a claim/start/complete sequence.
 
     ``summary`` and ``metadata`` are stored on the closing run (if any)
     and surfaced to downstream children via :func:`build_worker_context`.
     When ``summary`` is omitted we fall back to ``result`` so single-run
-    callers don't have to pass both. ``metadata`` is a free-form dict
+    callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    ``created_cards`` is an optional list of task ids the completing
+    worker claims to have created. Each id is verified against
+    ``tasks.created_by``. If any id is phantom (does not exist or was
+    not created by this worker's assignee profile), completion is blocked
+    with a ``HallucinatedCardsError`` and a
+    ``completion_blocked_hallucination`` event is emitted so the rejected
+    attempt is auditable. When all ids verify, they are recorded on the
+    ``completed`` event payload.
+
+    After a successful completion, ``summary`` and ``result`` are scanned
+    for prose references like ``t_deadbeefcafe`` that do not resolve.
+    Any suspected phantom references are recorded as a
+    ``suspected_hallucinated_references`` event. This pass is advisory
+    and never blocks.
     """
     now = int(time.time())
+
+    # Gate: verify created_cards BEFORE the main write txn. A rejected
+    # completion still needs an auditable event, so we emit it in a
+    # tiny dedicated txn, then raise. The caller is responsible for
+    # surfacing HallucinatedCardsError to the worker; this function
+    # never mutates task state on a phantom-card rejection.
+    if created_cards:
+        verified_cards, phantom_cards = _verify_created_cards(
+            conn, task_id, created_cards
+        )
+        if phantom_cards:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_hallucination",
+                    {
+                        "phantom_cards": phantom_cards,
+                        "verified_cards": verified_cards,
+                        "summary_preview": (
+                            (summary or result or "").strip().splitlines()[0][:200]
+                            if (summary or result)
+                            else None
+                        ),
+                    },
+                )
+            raise HallucinatedCardsError(phantom_cards, task_id)
+    else:
+        verified_cards = []
+
     with write_txn(conn):
         cur = conn.execute(
             """
@@ -1396,16 +2154,107 @@ def complete_task(
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        completed_payload: dict = {
+            "result_len": len(result) if result else 0,
+            "summary": ev_summary or None,
+        }
+        if verified_cards:
+            completed_payload["verified_cards"] = verified_cards
         _append_event(
             conn, task_id, "completed",
+            completed_payload,
+            run_id=run_id,
+        )
+    # Prose-scan the summary + result for t_<hex> references that do
+    # not resolve. Advisory — does not block the completion. Runs in
+    # its own txn so the completion itself is already durable by the
+    # time we emit the warning.
+    scan_text = " ".join(filter(None, [summary, result]))
+    if scan_text:
+        phantom_refs = _scan_prose_for_phantom_ids(conn, scan_text)
+        # Drop any phantom refs that were already flagged as verified
+        # above (shouldn't happen — verified means they exist — but
+        # belt-and-suspenders).
+        phantom_refs = [p for p in phantom_refs if p not in set(verified_cards)]
+        if phantom_refs:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "suspected_hallucinated_references",
+                    {
+                        "phantom_refs": phantom_refs,
+                        "source": "completion_summary",
+                    },
+                    run_id=run_id,
+                )
+    # Recompute ready status for dependents (separate txn so children see done).
+    recompute_ready(conn)
+    return True
+
+
+def edit_completed_task_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: str,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Backfill the user-visible result for an already completed task."""
+    handoff_summary = summary if summary is not None else result
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "done":
+            return False
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
+        run = conn.execute(
+            """
+            SELECT id FROM task_runs
+             WHERE task_id = ?
+               AND outcome = 'completed'
+             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        run_id = int(run["id"]) if run else None
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=handoff_summary,
+                metadata=metadata,
+            )
+        else:
+            conn.execute(
+                "UPDATE task_runs SET summary = ? WHERE id = ?",
+                (handoff_summary, run_id),
+            )
+            if metadata is not None:
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), run_id),
+                )
+        ev_summary = (
+            handoff_summary.strip().splitlines()[0][:400]
+            if handoff_summary else ""
+        )
+        _append_event(
+            conn, task_id, "edited",
             {
+                "fields": (
+                    ["result", "summary"]
+                    + (["metadata"] if metadata is not None else [])
+                ),
                 "result_len": len(result) if result else 0,
                 "summary": ev_summary or None,
             },
             run_id=run_id,
         )
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
     return True
 
 
@@ -1513,15 +2362,18 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
-def resolve_workspace(task: Task) -> Path:
+def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
-    - ``scratch``: a fresh dir under ``$HERMES_HOME/kanban/workspaces/<id>/``.
+    - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
+      where ``<board-root>`` is the active board's root. The path is the
+      same for the dispatcher and every profile worker, so handoff is
+      path-stable.
     - ``dir:<path>``: the path stored in ``workspace_path``.  Created
       if missing.  MUST be absolute — relative paths are rejected to
       prevent confused-deputy traversal where ``../../../tmp/attacker``
       resolves against the dispatcher's CWD instead of a meaningful
-      root.  Users who want a HERMES_HOME-relative workspace should
+      root.  Users who want a kanban-root-relative workspace should
       compute the absolute path themselves.
     - ``worktree``: a git worktree at ``workspace_path``.  Not created
       automatically in v1 -- the kanban-worker skill documents
@@ -1543,7 +2395,7 @@ def resolve_workspace(task: Task) -> Path:
                     f"{task.workspace_path!r}; workspace paths must be absolute"
                 )
         else:
-            p = workspaces_root() / task.id
+            p = workspaces_root(board=board) / task.id
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "dir":
@@ -1608,6 +2460,15 @@ class DispatchResult:
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
+    """Ready task ids skipped because they have no assignee at all.
+    Operator-actionable — usually a misfiled task waiting for routing."""
+    skipped_nonspawnable: list[str] = field(default_factory=list)
+    """Ready task ids skipped because their assignee names a control-plane
+    lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
+    profile. Expected steady-state on multi-lane setups; NOT an
+    operator-actionable failure. Tracked separately so health telemetry
+    can distinguish "real stuck" (nothing spawned but spawnable work
+    available) from "correctly idle" (nothing spawnable in the queue)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1622,16 +2483,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
     Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
     on Windows. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling (Linux):** ``os.kill(pid, 0)`` succeeds against
+    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
     zombie processes (post-exit, pre-reap) because the process table
     entry still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
     the window between exit and reap, we'd otherwise see stale "alive"
-    signals. On Linux we additionally peek at ``/proc/<pid>/status``
-    and treat ``State: Z`` as dead. On other POSIX or on Windows the
-    zombie check is a no-op.
+    signals. On Linux we peek at ``/proc/<pid>/status`` and treat
+    ``State: Z`` as dead. On macOS we ask ``ps`` for the BSD ``stat``
+    field and treat values containing ``Z`` as dead.
     """
     if not pid or pid <= 0:
         return False
@@ -1645,7 +2506,8 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return True
     except OSError:
         return False
-    # Still here → kill(0) succeeded. Check for zombie on Linux.
+    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
             with open(f"/proc/{int(pid)}/status", "r") as f:
@@ -1659,6 +2521,23 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # proc entry gone → already reaped; treat as dead.
             # PermissionError shouldn't happen for our own children but
             # be defensive.
+            pass
+    elif sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(int(pid))],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False
+            if "Z" in (proc.stdout or "").strip():
+                return False
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
 
@@ -1949,6 +2828,38 @@ def _clear_spawn_failures(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+    """Return True iff there is at least one ready+assigned+unclaimed task
+    whose assignee maps to a real Hermes profile.
+
+    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
+    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
+    work waiting) or a "correctly idle" condition (only control-plane
+    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
+    that pull tasks via ``claim_task`` directly).
+
+    Falls back to "any ready+assigned" if ``profile_exists`` is not
+    importable (e.g. partial install) — preserves the old behavior so
+    the warning still fires in degraded environments.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "    AND claim_lock IS NULL"
+    ).fetchall()
+    if not rows:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # Can't introspect — assume spawnable, preserve legacy behavior.
+        return True
+    for row in rows:
+        if profile_exists(row["assignee"]):
+            return True
+    return False
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -1957,6 +2868,7 @@ def dispatch_once(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    board: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -1965,15 +2877,17 @@ def dispatch_once(
       2. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
       4. For each ready task with an assignee, atomically claim and call
-         ``spawn_fn(task, workspace_path) -> Optional[int]``. The return
-         value (if any) is recorded as ``worker_pid`` so subsequent ticks
-         can detect crashes before the TTL expires.
+         ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
+         return value (if any) is recorded as ``worker_pid`` so subsequent
+         ticks can detect crashes before the TTL expires.
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
     failures the task is auto-blocked with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
+    ``board`` pins workspace/log/db resolution for this tick to a specific
+    board. When omitted, the current-board resolution chain is used.
     """
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
@@ -1993,6 +2907,29 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        # Skip ready tasks whose assignee is not a real Hermes profile.
+        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
+        # with "Profile 'X' does not exist" when the assignee names a
+        # control-plane lane (e.g. an interactive Claude Code terminal
+        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
+        # profile. Those task lanes are pulled by terminals via
+        # ``claim_task`` directly and should NEVER auto-spawn — the
+        # subprocess would crash on startup, get reaped as a zombie,
+        # the task would loop back to ``ready`` on next tick, and we'd
+        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        try:
+            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        except Exception:
+            profile_exists = None  # type: ignore[assignment]
+        if profile_exists is not None and not profile_exists(row["assignee"]):
+            # Bucket separately from skipped_unassigned: the operator
+            # cannot fix this by assigning a profile (the assignee IS the
+            # intended owner — a terminal lane). Health telemetry uses
+            # this distinction to suppress spurious "stuck" warnings on
+            # multi-lane setups where the ready queue is steadily full
+            # of human-pulled work.
+            result.skipped_nonspawnable.append(row["id"])
+            continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -2000,7 +2937,7 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed)
+            workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -2013,7 +2950,18 @@ def dispatch_once(
         set_workspace_path(conn, claimed.id, str(workspace))
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            pid = _spawn(claimed, str(workspace))
+            # Back-compat: older spawn_fn signatures accept only
+            # (task, workspace). Test stubs in the suite rely on that.
+            # Introspect the callable and pass `board` only when supported.
+            import inspect
+            try:
+                sig = inspect.signature(_spawn)
+                if "board" in sig.parameters:
+                    pid = _spawn(claimed, str(workspace), board=board)
+                else:
+                    pid = _spawn(claimed, str(workspace))
+            except (TypeError, ValueError):
+                pid = _spawn(claimed, str(workspace))
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             _clear_spawn_failures(conn, claimed.id)
@@ -2052,17 +3000,31 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
-def _default_spawn(task: Task, workspace: str) -> Optional[int]:
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the spawned child's PID so the dispatcher can detect crashes
     before the claim TTL expires. The child's completion is still observed
     via the ``complete`` / ``block`` transitions the worker writes itself;
     the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+
+    ``board`` pins the child's kanban context to that board: the child's
+    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
+    vars all resolve to the same board the dispatcher claimed the task
+    from. Workers cannot accidentally see other boards.
     """
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+
+    from hermes_cli.profiles import normalize_profile_name
+
+    profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
@@ -2070,15 +3032,28 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Pin the shared board + workspaces root the dispatcher resolved, so
+    # that even when the worker activates a profile (`hermes -p <name>`
+    # rewrites HERMES_HOME), its kanban paths still match the
+    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
+    # resolution in `kanban_home()` — symmetric resolution is the norm,
+    # but unusual symlink / Docker layouts are caught here too.
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    # Board slug — the final defense-in-depth pin. If the worker ever
+    # resolves kanban paths without the DB / workspaces env vars, the
+    # board slug still forces it to the right directory.
+    resolved_board = _normalize_board_slug(board) or get_current_board()
+    env["HERMES_KANBAN_BOARD"] = resolved_board
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
-    env["HERMES_PROFILE"] = task.assignee
+    env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
         "hermes",
-        "-p", task.assignee,
+        "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry
         # diagnostics, block-reason examples) in its context, even if
@@ -2104,9 +3079,11 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         "chat",
         "-q", prompt,
     ])
-    # Redirect output to a per-task log under HERMES_HOME/kanban/logs/.
-    from hermes_constants import get_hermes_home
-    log_dir = get_hermes_home() / "kanban" / "logs"
+    # Redirect output to a per-task log under <board-root>/logs/.
+    # Anchored at the board root (not the shared kanban root), so
+    # `hermes kanban log` on a specific board reads its own file and
+    # logs don't collide across boards that happen to share task ids.
+    log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
@@ -2587,12 +3564,14 @@ def gc_events(
 
 def gc_worker_logs(
     *, older_than_seconds: int = 30 * 24 * 3600,
+    board: Optional[str] = None,
 ) -> int:
     """Delete worker log files older than ``older_than_seconds``. Returns
     the number of files removed. Kept separate from ``gc_events`` because
-    log files live on disk, not in SQLite."""
-    from hermes_constants import get_hermes_home
-    log_dir = get_hermes_home() / "kanban" / "logs"
+    log files live on disk, not in SQLite. Scoped to ``board`` (defaults
+    to the active board) — per-board isolation means deleting logs from
+    board A cannot touch board B's logs."""
+    log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0
     cutoff = time.time() - older_than_seconds
@@ -2611,20 +3590,25 @@ def gc_worker_logs(
 # Worker log accessor
 # ---------------------------------------------------------------------------
 
-def worker_log_path(task_id: str) -> Path:
+def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
     """Return the path to a worker's log file. The file may not exist
-    (task never spawned, or log already GC'd)."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "logs" / f"{task_id}.log"
+    (task never spawned, or log already GC'd).
+
+    When ``board`` is None, resolves via the active board (env var →
+    current-board file → default). The dispatcher always passes the
+    board explicitly to avoid any resolution ambiguity when multiple
+    boards exist."""
+    return worker_logs_dir(board=board) / f"{task_id}.log"
 
 
 def read_worker_log(
     task_id: str, *, tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
 ) -> Optional[str]:
     """Read the worker log for ``task_id``. Returns None if the file
     doesn't exist. If ``tail_bytes`` is set, only the last N bytes are
     returned (useful for the dashboard drawer which shouldn't page megabytes)."""
-    path = worker_log_path(task_id)
+    path = worker_log_path(task_id, board=board)
     if not path.exists():
         return None
     try:
@@ -2653,29 +3637,38 @@ def read_worker_log(
 # ---------------------------------------------------------------------------
 
 def list_profiles_on_disk() -> list[str]:
-    """Return the set of named profiles discovered on disk.
+    """Return the set of assignee/profile names discovered on disk.
 
-    Reads ``~/.hermes/profiles/`` directly so this module has no import
-    dependency on ``hermes_cli.profiles`` (which pulls in a large chunk
-    of the CLI startup path). Only returns directories that contain a
-    ``config.yaml`` — a bare dir without config isn't a real profile.
+    Includes:
+    - named profiles under ``<default-root>/profiles/<name>/config.yaml``
+    - the implicit ``default`` profile when the default Hermes root exists
+
+    Reads profile paths directly so this module has no import dependency on
+    ``hermes_cli.profiles`` (which pulls in a large chunk of the CLI startup
+    path).
     """
     try:
-        home = Path.home() / ".hermes" / "profiles"
+        from hermes_constants import get_default_hermes_root
+        default_root = get_default_hermes_root()
+        profiles_dir = default_root / "profiles"
     except Exception:
         return []
-    if not home.is_dir():
-        return []
-    names: list[str] = []
-    try:
-        for entry in sorted(home.iterdir()):
-            if not entry.is_dir():
-                continue
-            if (entry / "config.yaml").is_file():
-                names.append(entry.name)
-    except OSError:
-        return names
-    return names
+
+    names: set[str] = set()
+    if default_root.exists():
+        names.add("default")
+
+    if profiles_dir.is_dir():
+        try:
+            for entry in sorted(profiles_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if (entry / "config.yaml").is_file():
+                    names.add(entry.name)
+        except OSError:
+            pass
+
+    return sorted(names)
 
 
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:

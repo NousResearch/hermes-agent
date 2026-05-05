@@ -64,10 +64,23 @@ class TestCoerceNumber:
     def test_scientific_notation(self):
         assert _coerce_number("1e5") == 100000
 
-    def test_inf_stays_string_for_integer_only(self):
-        """Infinity should not be converted to int."""
+    def test_inf_stays_string(self):
+        """Infinity is not JSON-serializable, so it should stay as string."""
         result = _coerce_number("inf")
         assert result == "inf"
+        assert isinstance(result, str)
+
+    def test_negative_inf_stays_string(self):
+        """Negative infinity should also stay as string."""
+        result = _coerce_number("-inf")
+        assert result == "-inf"
+        assert isinstance(result, str)
+
+    def test_nan_stays_string(self):
+        """NaN is not JSON-serializable, so it should stay as string."""
+        result = _coerce_number("nan")
+        assert result == "nan"
+        assert isinstance(result, str)
 
     def test_negative_float(self):
         assert _coerce_number("-2.5") == -2.5
@@ -284,13 +297,69 @@ class TestCoerceToolArgs:
             result = coerce_tool_args("test_tool", args)
             assert result["stages"] is None
 
-    def test_invalid_json_array_preserved_as_string(self):
-        """If the string isn't valid JSON, pass it through — let the tool decide."""
+    def test_invalid_json_array_wrapped_in_single_element_list(self):
+        """A bare string gets wrapped into ``[value]`` when the schema says array.
+
+        Open-weight models (DeepSeek, Qwen, GLM) sometimes emit
+        ``{"urls": "https://a.com"}`` when the tool expects a list.
+        Wrapping produces a valid dispatch rather than a confusing tool
+        failure.  This supersedes the earlier "pass the string through"
+        behavior — no real tool handles a bare string as an array
+        gracefully.
+        """
         schema = self._mock_schema({"items": {"type": "array"}})
         with patch("model_tools.registry.get_schema", return_value=schema):
             args = {"items": "not-json"}
             result = coerce_tool_args("test_tool", args)
-            assert result["items"] == "not-json"
+            assert result["items"] == ["not-json"]
+
+    def test_bare_string_wrapped_as_array(self):
+        """Bare string on array field → single-element list."""
+        schema = self._mock_schema({"urls": {"type": "array", "items": {"type": "string"}}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"urls": "https://a.com"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["urls"] == ["https://a.com"]
+
+    def test_bare_int_wrapped_as_array(self):
+        """Bare non-string scalars (int, bool, float) also get wrapped."""
+        schema = self._mock_schema({"ids": {"type": "array", "items": {"type": "integer"}}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"ids": 5}
+            result = coerce_tool_args("test_tool", args)
+            assert result["ids"] == [5]
+
+    def test_bare_dict_wrapped_as_array(self):
+        """Bare dict on array field → single-element list."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": {"a": 1}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"a": 1}]
+
+    def test_none_on_array_field_preserved(self):
+        """``None`` is never wrapped — tools with defaults handle it."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": None}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] is None
+
+    def test_existing_list_passthrough(self):
+        """An already-valid list is not touched."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": ["a", "b"]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == ["a", "b"]
+
+    def test_json_encoded_array_still_parses(self):
+        """JSON-encoded strings still parse (not double-wrapped)."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": '["a","b"]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == ["a", "b"]
 
     def test_extra_args_without_schema_left_alone(self):
         """Args not in the schema properties are not touched."""

@@ -24,16 +24,33 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_aux_credential(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+class _ReviewRuntimeBinding(NamedTuple):
+    """Provider/model for the curator review fork plus optional per-slot overrides."""
+
+    provider: str
+    model: str
+    explicit_api_key: Optional[str]
+    explicit_base_url: Optional[str]
 
 
 DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
@@ -387,6 +404,11 @@ CURATOR_REVIEW_PROMPT = (
     "  - skill_manage action=write_file — add a references/, templates/, "
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
+    "  - skill_manage action=delete     — archive a skill. MUST pass "
+    "`absorbed_into=<umbrella>` when you've merged its content into another "
+    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
+    "forwarding target. This drives cron-job skill-reference migration — "
+    "guessing from your YAML summary after the fact is fragile.\n"
     "  - terminal                       — mv a sibling into the archive "
     "OR move its content into a support subfile\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
@@ -446,6 +468,24 @@ def _reports_root() -> Path:
     except OSError as e:
         logger.debug("Curator reports dir create failed: %s", e)
     return root
+
+
+def _needle_in_path_component(needle: str, path: str) -> bool:
+    """Check if *needle* is a complete filename stem or directory name in *path*.
+
+    Unlike simple substring matching, this avoids false positives where short
+    skill names are embedded in longer filenames (e.g. "api" matching
+    "references/api-design.md").  Hyphens and underscores are normalised so
+    "open-webui-setup" matches "open_webui_setup.md".
+    """
+    norm_needle = needle.replace("-", "_")
+    for part in path.replace("\\", "/").split("/"):
+        if not part:
+            continue
+        stem = part.rsplit(".", 1)[0] if "." in part else part
+        if stem.replace("-", "_") == norm_needle:
+            return True
+    return False
 
 
 def _classify_removed_skills(
@@ -526,15 +566,29 @@ def _classify_removed_skills(
                 continue
 
             # Look for the removed skill's name in file_path / content / raw.
-            haystacks: List[str] = []
+            # Matching strategy differs by field type:
+            #   file_path — needle must be a complete path component
+            #     (filename stem or directory name), so "api" does NOT
+            #     falsely match "references/api-design.md".
+            #   content fields — word-boundary regex so "test" does NOT
+            #     falsely match "latest" or "testing".
+            haystacks: List[tuple[str, str]] = []
             for key in ("file_path", "file_content", "content", "new_string", "_raw"):
                 v = args.get(key)
                 if isinstance(v, str):
-                    haystacks.append(v)
+                    haystacks.append((key, v))
             hit = False
-            for hay in haystacks:
+            for key, hay in haystacks:
                 for needle in needles:
-                    if needle and needle in hay:
+                    if not needle:
+                        continue
+                    if key == "file_path":
+                        matched = _needle_in_path_component(needle, hay)
+                    else:
+                        matched = bool(
+                            re.search(rf'\b{re.escape(needle)}\b', hay)
+                        )
+                    if matched:
                         hit = True
                         evidence = (
                             f"skill_manage action={args.get('action', '?')} "
@@ -637,15 +691,76 @@ def _parse_structured_summary(
     return out
 
 
+def _extract_absorbed_into_declarations(
+    tool_calls: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Walk this run's tool calls and extract model-declared absorption targets.
+
+    The curator prompt requires every ``skill_manage(action='delete')`` call
+    to pass ``absorbed_into=<umbrella>`` when consolidating, or
+    ``absorbed_into=""`` when truly pruning. This is the single authoritative
+    signal for classification — the model's own declaration at the moment of
+    deletion, which beats both post-hoc YAML summary parsing and substring
+    heuristics on other tool calls.
+
+    Returns ``{skill_name: {"into": "<umbrella>" | "", "declared": True}}``.
+    Entries with ``into == ""`` are explicit prunings.
+    Skills without a ``skill_manage(delete)`` call, or with one that omitted
+    ``absorbed_into``, are not in the returned dict — caller falls back to
+    the existing heuristic/YAML logic for those (backward compat with older
+    curator runs and any callers that don't populate the arg).
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        if tc.get("name") != "skill_manage":
+            continue
+        raw = tc.get("arguments") or ""
+        args: Dict[str, Any] = {}
+        if isinstance(raw, dict):
+            args = raw
+        elif isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except Exception:
+                continue
+        if not isinstance(args, dict):
+            continue
+        if args.get("action") != "delete":
+            continue
+        name = args.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        # absorbed_into must be present (even empty string is meaningful);
+        # missing key means the model didn't declare intent.
+        if "absorbed_into" not in args:
+            continue
+        target = args.get("absorbed_into")
+        if target is None:
+            continue
+        if not isinstance(target, str):
+            continue
+        out[name.strip()] = {"into": target.strip(), "declared": True}
+    return out
+
+
 def _reconcile_classification(
     removed: List[str],
     heuristic: Dict[str, List[Dict[str, Any]]],
     model_block: Dict[str, List[Dict[str, str]]],
     destinations: Set[str],
+    absorbed_declarations: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Merge heuristic (tool-call evidence) with the model's structured block.
 
-    Rules:
+    Rules (evaluated in order; first match wins):
+    - **Model-declared `absorbed_into` at delete time is authoritative.** Any
+      entry in ``absorbed_declarations`` beats every other signal. This is
+      the model telling us directly, at the moment of deletion, what it did.
+      ``into != ""`` and target exists → consolidated. ``into == ""`` →
+      pruned. ``into != ""`` but target doesn't exist → hallucination; fall
+      through to the usual signals.
     - Model-declared consolidation wins when its ``into`` target exists
       in ``destinations`` (survived or newly-created). This gives the
       model authority over intent + rationale.
@@ -666,6 +781,8 @@ def _reconcile_classification(
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
 
+    declared = absorbed_declarations or {}
+
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
 
@@ -673,6 +790,36 @@ def _reconcile_classification(
         mc = model_cons.get(name)
         mp = model_pruned.get(name)
         hc = heur_cons.get(name)
+        dec = declared.get(name)
+
+        # Authoritative: model declared `absorbed_into` at the delete call.
+        if dec is not None:
+            into_claim = dec.get("into", "")
+            if into_claim and into_claim in destinations:
+                entry: Dict[str, Any] = {
+                    "name": name,
+                    "into": into_claim,
+                    "source": "absorbed_into (model-declared at delete)",
+                    "reason": (mc.get("reason") or "") if mc else "",
+                }
+                if hc and hc.get("evidence"):
+                    entry["evidence"] = hc["evidence"]
+                consolidated.append(entry)
+                continue
+            if into_claim == "":
+                # Explicit prune declaration
+                pruned.append({
+                    "name": name,
+                    "source": "absorbed_into=\"\" (model-declared prune)",
+                    "reason": (mp.get("reason") or "") if mp else "",
+                })
+                continue
+            # into_claim is non-empty but target doesn't exist: the model
+            # named a nonexistent umbrella at delete time. The tool already
+            # rejects this at the skill_manage layer, so we shouldn't see it
+            # in practice — but if it slips through (e.g. the umbrella was
+            # deleted LATER in the same run), fall through to the usual
+            # signals rather than trusting a broken reference.
 
         # Model says consolidated — trust it if the destination is real.
         if mc and mc.get("into") in destinations:
@@ -808,11 +955,20 @@ def _write_run_report(
     )
     model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
     destinations = set(after_names) | set(added or [])
+    # Authoritative signal: extract per-delete `absorbed_into` declarations
+    # from this run's tool calls. These beat both the YAML summary block and
+    # the substring heuristic — the model is telling us directly, at the
+    # moment of deletion, whether each archived skill was consolidated
+    # (into=<umbrella>) or pruned (into="").
+    absorbed_declarations = _extract_absorbed_into_declarations(
+        llm_meta.get("tool_calls", []) or []
+    )
     classification = _reconcile_classification(
         removed=removed,
         heuristic=heuristic,
         model_block=model_block,
         destinations=destinations,
+        absorbed_declarations=absorbed_declarations,
     )
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
@@ -1291,6 +1447,52 @@ def run_curator_review(
     }
 
 
+def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
+    """Resolve provider/model and per-slot credentials for the curator review fork.
+
+    Same precedence as `_resolve_review_model()`. Non-empty ``api_key`` /
+    ``base_url`` from the active slot are returned as explicit overrides so
+    ``resolve_runtime_provider`` does not silently reuse the main chat
+    credential chain for a routed auxiliary model.
+    """
+    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    _main_provider = _main.get("provider") or "auto"
+    _main_model = _main.get("default") or _main.get("model") or ""
+
+    # 1. Canonical aux task slot
+    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
+    _task_provider = (_cur_task.get("provider") or "").strip() or None
+    _task_model = (_cur_task.get("model") or "").strip() or None
+    if _task_provider and _task_provider != "auto" and _task_model:
+        return _ReviewRuntimeBinding(
+            _task_provider,
+            _task_model,
+            _strip_aux_credential(_cur_task.get("api_key")),
+            _strip_aux_credential(_cur_task.get("base_url")),
+        )
+
+    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
+    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
+    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
+    _legacy_provider = _legacy.get("provider") or None
+    _legacy_model = _legacy.get("model") or None
+    if _legacy_provider and _legacy_model:
+        logger.info(
+            "curator: using deprecated curator.auxiliary.{provider,model} "
+            "config — please migrate to auxiliary.curator.{provider,model}"
+        )
+        return _ReviewRuntimeBinding(
+            str(_legacy_provider),
+            str(_legacy_model),
+            _strip_aux_credential(_legacy.get("api_key")),
+            _strip_aux_credential(_legacy.get("base_url")),
+        )
+
+    # 3. Fall through to the main chat model
+    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
+
+
 def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     """Pick (provider, model) for the curator review fork.
 
@@ -1306,32 +1508,8 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
       2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
       3. Main ``model.{provider,default/model}`` pair
     """
-    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
-    _main_provider = _main.get("provider") or "auto"
-    _main_model = _main.get("default") or _main.get("model") or ""
-
-    # 1. Canonical aux task slot
-    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
-    _task_provider = (_cur_task.get("provider") or "").strip() or None
-    _task_model = (_cur_task.get("model") or "").strip() or None
-    if _task_provider and _task_provider != "auto" and _task_model:
-        return _task_provider, _task_model
-
-    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
-    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
-    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
-    _legacy_provider = _legacy.get("provider") or None
-    _legacy_model = _legacy.get("model") or None
-    if _legacy_provider and _legacy_model:
-        logger.info(
-            "curator: using deprecated curator.auxiliary.{provider,model} "
-            "config — please migrate to auxiliary.curator.{provider,model}"
-        )
-        return _legacy_provider, _legacy_model
-
-    # 3. Fall through to the main chat model
-    return _main_provider, _main_model
+    b = _resolve_review_runtime(cfg)
+    return b.provider, b.model
 
 
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
@@ -1370,10 +1548,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     # arguments hits an auto-resolution path that fails for OAuth-only
     # providers and for pool-backed credentials.
     #
-    # `_resolve_review_model()` honors `auxiliary.curator.{provider,model}`
+    # `_resolve_review_runtime()` honors `auxiliary.curator.{provider,model,...}`
     # (canonical aux-task slot, wired through `hermes model` → auxiliary
     # picker and the dashboard Models tab), with a legacy fallback to
-    # `curator.auxiliary.{provider,model}`. See docs/user-guide/features/curator.md.
+    # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -1383,9 +1561,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
-        _provider, _model_name = _resolve_review_model(_cfg)
+        _binding = _resolve_review_runtime(_cfg)
+        _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
-            requested=_provider, target_model=_model_name
+            requested=_provider,
+            target_model=_model_name,
+            explicit_api_key=_binding.explicit_api_key,
+            explicit_base_url=_binding.explicit_base_url,
         )
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")

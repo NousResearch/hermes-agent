@@ -348,6 +348,64 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     assert entry.access_token == "sk-or-seeded"
 
 
+
+def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
+    """Regression for #18254: stale OPENROUTER_API_KEY in os.environ (inherited
+    from a parent shell) must NOT shadow the fresh key in ~/.hermes/.env when
+    seeding the credential pool. Before the fix, `get_env_value()` preferred
+    os.environ and silently wrote the stale value into auth.json, causing
+    persistent 401 errors after key rotation.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate the bug: parent shell exported a stale test key
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-STALE-from-shell")
+
+    # User edited ~/.hermes/.env with the fresh key
+    (hermes_home / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-or-FRESH-from-dotenv\n"
+    )
+
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:OPENROUTER_API_KEY"
+    # The fresh key from .env must win over the stale shell export
+    assert entry.access_token == "sk-or-FRESH-from-dotenv", (
+        f"Expected .env to win, got {entry.access_token!r}"
+    )
+
+
+def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypatch):
+    """When ~/.hermes/.env does not define OPENROUTER_API_KEY (typical Docker /
+    K8s / systemd deployment), seeding must still pick up the key from
+    os.environ. Guards against regressions that would break production
+    deployments relying on runtime-injected env vars.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-from-runtime-env")
+
+    # .env exists but does not define OPENROUTER_API_KEY
+    (hermes_home / ".env").write_text("SOME_OTHER_VAR=unrelated\n")
+
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == "sk-or-from-runtime-env"
+
+
 def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

@@ -32,19 +32,22 @@ class _FakeAnthropicClient:
 
 class _FakeOpenAIClient:
     """Fake OpenAI client returned by mocked resolve_provider_client."""
-    api_key = "fake-codex-key"
-    base_url = "https://api.openai.com/v1"
-    _default_headers = None
+
+    def __init__(self, base_url="https://api.openai.com/v1", api_key="fake-codex-key"):
+        self.api_key = api_key
+        self.base_url = base_url
+        self._default_headers = None
 
 
 def _make_agent(monkeypatch, api_mode, provider, response_fn):
     _patch_bootstrap(monkeypatch)
     if api_mode == "anthropic_messages":
         monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", lambda k, b=None, **kwargs: _FakeAnthropicClient())
-    if provider == "openai-codex":
+    if provider in {"openai-codex", "openrouter"}:
+        routed_base_url = "https://openrouter.ai/api/v1" if provider == "openrouter" else "https://api.openai.com/v1"
         monkeypatch.setattr(
             "agent.auxiliary_client.resolve_provider_client",
-            lambda *a, **kw: (_FakeOpenAIClient(), "test-model"),
+            lambda *a, **kw: (_FakeOpenAIClient(base_url=routed_base_url), "test-model"),
         )
 
     class _A(run_agent.AIAgent):

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import gateway.pairing as gateway_pairing
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
@@ -105,6 +106,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_pairing, "PAIRING_DIR", tmp_path / "pairing")
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())
@@ -358,6 +360,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     import gateway.pairing as pairing_mod
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+# Merge branch feat/windows-native-installer-support with upstream/main
     # gateway.pairing.PAIRING_DIR is a module-level constant captured at
     # import time from whichever HERMES_HOME was set then. Per-test
     # HERMES_HOME redirection in conftest doesn't retroactively move it.
@@ -366,6 +369,9 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     pairing_dir = tmp_path / "pairing"
     pairing_dir.mkdir()
     monkeypatch.setattr(pairing_mod, "PAIRING_DIR", pairing_dir)
+# 
+    monkeypatch.setattr(gateway_pairing, "PAIRING_DIR", tmp_path / "pairing")
+# End conflict resolution (Fix validation regressions before upstream rebase)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by

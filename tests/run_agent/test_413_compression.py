@@ -86,8 +86,10 @@ def agent():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
+            model="gpt-4o",
             api_key="test-key-1234567890",
-            base_url="https://openrouter.ai/api/v1",
+            base_url="https://api.openai.com/v1",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

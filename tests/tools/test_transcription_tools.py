@@ -8,10 +8,16 @@ end-to-end dispatch.  All external dependencies are mocked.
 import os
 import struct
 import subprocess
+import sys
+import types
 import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _mock_faster_whisper_module(mock_whisper_cls):
+    return patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=mock_whisper_cls)})
 
 
 # ============================================================================
@@ -435,7 +441,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             _mock_faster_whisper_module(mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
             from tools.transcription_tools import _transcribe_local
@@ -461,7 +467,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             _mock_faster_whisper_module(mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
             from tools.transcription_tools import _transcribe_local
@@ -477,7 +483,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             _mock_faster_whisper_module(mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "large-v3")
@@ -501,7 +507,7 @@ class TestTranscribeLocalExtended:
         mock_model.transcribe.return_value = ([seg1, seg2], mock_info)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             _mock_faster_whisper_module(MagicMock(return_value=mock_model)), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")

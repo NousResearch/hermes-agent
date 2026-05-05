@@ -1,7 +1,6 @@
 """Tests for Arcee AI provider support — standard direct API provider."""
 
 import types
-
 import pytest
 
 from hermes_cli.auth import (

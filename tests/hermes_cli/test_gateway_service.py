@@ -256,6 +256,11 @@ class TestGeneratedSystemdUnits:
             "_get_restart_drain_timeout",
             lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("testuser", "testgroup", "/home/testuser"),
+        )
         unit = gateway_cli.generate_systemd_unit(system=True)
 
         assert "ExecStart=" in unit
@@ -1114,6 +1119,7 @@ class TestGeneratedUnitIncludesLocalBin:
         assert f"{home}/.local/bin" in unit
 
     def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_system_service_identity", lambda run_as_user=None: ("testuser", "testgroup", "/home/testuser"))
         monkeypatch.setattr(
             gateway_cli,
             "_build_user_local_paths",

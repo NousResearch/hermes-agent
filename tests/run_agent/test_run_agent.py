@@ -4990,7 +4990,15 @@ class TestMemoryNudgeCounterPersistence:
 
     def test_counters_initialized_in_init(self):
         """Counters must exist on the agent after __init__."""
-        with patch("run_agent.get_tool_definitions", return_value=[]):
+        mock_client = SimpleNamespace(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            _default_headers=None,
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, "test")),
+        ):
             a = AIAgent(
                 model="test", api_key="test-key", base_url="http://localhost:1234/v1",
                 provider="openrouter", skip_context_files=True, skip_memory=True,

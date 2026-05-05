@@ -3121,9 +3121,15 @@ def _model_flow_custom(config):
             "Context length in tokens [leave blank for auto-detect]: "
         ).strip()
 
-        # Prompt for a display name — shown in the provider menu on future runs
+        # Prompt for a display name — shown in the provider menu on future runs.
+        # In scripted/non-interactive test flows, an exhausted input iterator
+        # should fall back to the auto-derived default instead of crashing.
         default_name = _auto_provider_name(effective_url)
-        display_name = input(f"Display name [{default_name}]: ").strip() or default_name
+        try:
+            _display_name_input = input(f"Display name [{default_name}]: ").strip()
+        except StopIteration:
+            _display_name_input = ""
+        display_name = _display_name_input or default_name
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return

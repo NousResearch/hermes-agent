@@ -21,3 +21,13 @@ class TestDiscordImportSafety:
 
         assert module.DISCORD_AVAILABLE is False
         assert module.discord is None
+
+        # Ensure this forced-import-failure variant does not leak into later
+        # tests that expect a normal import path when discord.py is present.
+        monkeypatch.delitem(sys.modules, "gateway.platforms.discord", raising=False)
+        try:
+            import gateway.platforms as _gateway_platforms
+            if hasattr(_gateway_platforms, "discord"):
+                delattr(_gateway_platforms, "discord")
+        except Exception:
+            pass

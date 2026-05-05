@@ -121,7 +121,6 @@ def _strip_mdv2(text: str) -> str:
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
     return cleaned
 
-
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -232,6 +231,31 @@ def _wrap_markdown_tables(text: str) -> str:
         i += 1
 
     return '\n'.join(out)
+
+def _telegram_chat_type_name(chat_type: Any) -> str:
+    """Normalize Telegram chat type enums, mocks, and strings to a stable name."""
+    candidates = []
+    if isinstance(chat_type, str):
+        candidates.append(chat_type)
+
+    for attr_name in ("value", "name"):
+        attr_value = getattr(chat_type, attr_name, None)
+        if isinstance(attr_value, str):
+            candidates.append(attr_value)
+
+    if not candidates and chat_type is not None:
+        candidates.append(str(chat_type))
+
+    combined = " ".join(candidates).strip().lower()
+    if "supergroup" in combined:
+        return "supergroup"
+    if "private" in combined:
+        return "private"
+    if "channel" in combined:
+        return "channel"
+    if "group" in combined:
+        return "group"
+    return combined
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -2537,15 +2561,16 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             chat = await self._bot.get_chat(int(chat_id))
-            
+            normalized_chat_type = _telegram_chat_type_name(chat.type)
+
             chat_type = "dm"
-            if chat.type == ChatType.GROUP:
+            if normalized_chat_type == "group":
                 chat_type = "group"
-            elif chat.type == ChatType.SUPERGROUP:
+            elif normalized_chat_type == "supergroup":
                 chat_type = "group"
                 if chat.is_forum:
                     chat_type = "forum"
-            elif chat.type == ChatType.CHANNEL:
+            elif normalized_chat_type == "channel":
                 chat_type = "channel"
             
             return {
@@ -3531,10 +3556,12 @@ class TelegramAdapter(BasePlatformAdapter):
         user = message.from_user
         
         # Determine chat type
+        normalized_chat_type = _telegram_chat_type_name(chat.type)
+
         chat_type = "dm"
-        if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        if normalized_chat_type in ("group", "supergroup"):
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif normalized_chat_type == "channel":
             chat_type = "channel"
 
         # Resolve DM topic name and skill binding

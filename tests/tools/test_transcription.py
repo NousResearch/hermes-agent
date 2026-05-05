@@ -6,11 +6,17 @@ dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 
 import json
 import os
+import sys
 import tempfile
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
+
+
+def _mock_faster_whisper_module(mock_whisper_cls):
+    return patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=mock_whisper_cls)})
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +144,7 @@ class TestTranscribeLocal:
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             _mock_faster_whisper_module(MagicMock(return_value=mock_model)), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")

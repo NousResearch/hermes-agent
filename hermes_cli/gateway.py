@@ -1732,7 +1732,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     restart_timeout = max(60, _drain_timeout) + 30
 
     if system:
-        username, group_name, home_dir = _system_service_identity(run_as_user)
+        resolved_run_as_user = run_as_user or _default_system_service_user()
+        username, group_name, home_dir = _system_service_identity(resolved_run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home

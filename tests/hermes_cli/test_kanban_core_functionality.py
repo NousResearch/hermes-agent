@@ -80,7 +80,7 @@ def test_no_idempotency_key_never_collides(kanban_home):
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 
-def test_spawn_failure_auto_blocks_after_limit(kanban_home):
+def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawnable):
     """N consecutive spawn failures on the same task → auto_blocked."""
     def _bad_spawn(task, ws):
         raise RuntimeError("no PATH")
@@ -109,7 +109,7 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home):
         conn.close()
 
 
-def test_successful_spawn_resets_failure_counter(kanban_home):
+def test_successful_spawn_resets_failure_counter(kanban_home, all_assignees_spawnable):
     """A successful spawn clears the counter so past failures don't count
     against future retries of the same task."""
     calls = [0]
@@ -138,7 +138,7 @@ def test_successful_spawn_resets_failure_counter(kanban_home):
         conn.close()
 
 
-def test_workspace_resolution_failure_also_counts(kanban_home):
+def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spawnable):
     """`dir:` workspace with no path should fail workspace resolution AND
     count against the failure budget — not just crash the tick."""
     conn = kb.connect()
@@ -824,7 +824,7 @@ def test_recompute_ready_emits_promoted_not_ready(kanban_home):
         conn.close()
 
 
-def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home):
+def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home, all_assignees_spawnable):
     def _bad(task, ws):
         raise RuntimeError("nope")
     conn = kb.connect()
@@ -840,7 +840,7 @@ def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home):
         conn.close()
 
 
-def test_spawned_event_emitted_with_pid(kanban_home):
+def test_spawned_event_emitted_with_pid(kanban_home, all_assignees_spawnable):
     """Successful spawn must append a ``spawned`` event with the pid in
     the payload so humans tailing events see pid tracking."""
     def _spawn_returns_pid(task, ws):
@@ -1154,7 +1154,7 @@ def test_run_on_block_with_reason(kanban_home):
         conn.close()
 
 
-def test_run_on_spawn_failure_records_failed_runs(kanban_home):
+def test_run_on_spawn_failure_records_failed_runs(kanban_home, all_assignees_spawnable):
     """Each spawn_failed event closes a run with outcome='spawn_failed',
     and the Nth failure closes a run with outcome='gave_up'."""
     def _bad(task, ws):

@@ -561,13 +561,15 @@ async def get_status():
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
+    runtime_from_remote_health = False
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+        runtime_from_remote_health = True
 
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}
-        if configured_gateway_platforms is not None:
+        if configured_gateway_platforms is not None and not runtime_from_remote_health:
             gateway_platforms = {
                 key: value
                 for key, value in gateway_platforms.items()

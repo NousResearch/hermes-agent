@@ -25,7 +25,7 @@ fi
 # --- Running as hermes from here ---
 source "${INSTALL_DIR}/.venv/bin/activate"
 
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home,plugins}
 
 [ -f "$HERMES_HOME/.env" ]       || cp "$INSTALL_DIR/.env.example"        "$HERMES_HOME/.env"
 [ -f "$HERMES_HOME/config.yaml" ] || cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
@@ -33,6 +33,19 @@ mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,wo
 
 if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py" || true
+fi
+
+# HackClaw: symlink the skill + plugin from the image into the volume.
+# The image install (Dockerfile.railway) already pip-installed hackclaw into
+# the venv; these symlinks expose it to Hermes' skills/plugins lookup paths.
+if [ -d "$INSTALL_DIR/hackclaw" ]; then
+    for pair in "skills/hackclaw:skills" "plugin/hackclaw:plugins"; do
+        src="$INSTALL_DIR/hackclaw/${pair%%:*}"
+        dst="$HERMES_HOME/${pair##*:}/hackclaw"
+        if [ -L "$dst" ] || [ ! -e "$dst" ]; then
+            ln -snf "$src" "$dst"
+        fi
+    done
 fi
 
 # Auto-enable the composio plugin when an API key is present.

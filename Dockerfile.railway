@@ -36,6 +36,12 @@ USER hermes
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
+# HackClaw plugin (https://github.com/hypermari0/hackclaw): clone into the
+# image and install into the venv. Skill + plugin dirs are symlinked into the
+# Railway volume at runtime by docker/railway-launcher.sh.
+RUN git clone --depth 1 https://github.com/hypermari0/hackclaw.git /opt/hermes/hackclaw && \
+    uv pip install --no-cache-dir -e /opt/hermes/hackclaw
+
 # Back to root so the entrypoint can chown Railway's root-owned volume at
 # /opt/data, then gosu-drop to the hermes user. (Railway mounts volumes as
 # root; without this, mkdir under /opt/data fails.)

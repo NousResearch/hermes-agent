@@ -17,7 +17,7 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 
 const ref = <T>(current: T) => ({ current })
 
-const buildCtx = (appended: Msg[]) =>
+const buildCtx = (appended: Msg[], overrides: Record<string, any> = {}) =>
   ({
     composer: {
       dequeue: () => undefined,
@@ -54,16 +54,116 @@ const buildCtx = (appended: Msg[]) =>
       setProcessing: vi.fn(),
       setRecording: vi.fn(),
       setVoiceEnabled: vi.fn()
-    }
+    },
+    ...overrides
   }) as any
 
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     resetOverlayState()
     resetUiState()
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('keeps sticky transcript pinned after final assistant text enters history', () => {
+    vi.useFakeTimers()
+
+    const appended: Msg[] = []
+
+    const scroll = {
+      getPendingDelta: vi.fn(() => 0),
+      getScrollHeight: vi.fn(() => 100),
+      getScrollTop: vi.fn(() => 70),
+      getViewportHeight: vi.fn(() => 20),
+      isSticky: vi.fn(() => true),
+      scrollToBottom: vi.fn()
+    }
+
+    const onEvent = createGatewayEventHandler(
+      buildCtx(appended, {
+        transcript: {
+          appendMessage: (msg: Msg) => appended.push(msg),
+          panel: vi.fn(),
+          scrollRef: ref(scroll),
+          setHistoryItems: vi.fn()
+        }
+      })
+    )
+
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    expect(scroll.scrollToBottom).not.toHaveBeenCalled()
+
+    vi.runOnlyPendingTimers()
+
+    expect(appended).toContainEqual({ role: 'assistant', text: 'final answer' })
+    expect(scroll.scrollToBottom).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps positionally-at-bottom transcript pinned even before sticky flag is restored', () => {
+    vi.useFakeTimers()
+
+    const appended: Msg[] = []
+
+    const scroll = {
+      getPendingDelta: vi.fn(() => 0),
+      getScrollHeight: vi.fn(() => 100),
+      getScrollTop: vi.fn(() => 79),
+      getViewportHeight: vi.fn(() => 20),
+      isSticky: vi.fn(() => false),
+      scrollToBottom: vi.fn()
+    }
+
+    const onEvent = createGatewayEventHandler(
+      buildCtx(appended, {
+        transcript: {
+          appendMessage: (msg: Msg) => appended.push(msg),
+          panel: vi.fn(),
+          scrollRef: ref(scroll),
+          setHistoryItems: vi.fn()
+        }
+      })
+    )
+
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+    vi.runOnlyPendingTimers()
+
+    expect(scroll.scrollToBottom).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not yank transcript to bottom when sticky scroll was broken', () => {
+    vi.useFakeTimers()
+
+    const appended: Msg[] = []
+
+    const scroll = {
+      getPendingDelta: vi.fn(() => 0),
+      getScrollHeight: vi.fn(() => 100),
+      getScrollTop: vi.fn(() => 20),
+      getViewportHeight: vi.fn(() => 20),
+      isSticky: vi.fn(() => false),
+      scrollToBottom: vi.fn()
+    }
+
+    const onEvent = createGatewayEventHandler(
+      buildCtx(appended, {
+        transcript: {
+          appendMessage: (msg: Msg) => appended.push(msg),
+          panel: vi.fn(),
+          scrollRef: ref(scroll),
+          setHistoryItems: vi.fn()
+        }
+      })
+    )
+
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    vi.runOnlyPendingTimers()
+
+    expect(scroll.scrollToBottom).not.toHaveBeenCalled()
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

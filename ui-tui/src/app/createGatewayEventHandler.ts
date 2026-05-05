@@ -82,7 +82,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
-  const { appendMessage, panel, setHistoryItems } = ctx.transcript
+  const { appendMessage, panel, scrollRef, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
   const { submitRef } = ctx.submission
   const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
@@ -118,6 +118,30 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
     })
     patchOverlayState({ clarify: null })
+  }
+
+  const transcriptAtBottom = () => {
+    const scroll = scrollRef?.current
+
+    if (!scroll) {
+      return false
+    }
+
+    const bottom = scroll.getScrollTop() + scroll.getPendingDelta() + scroll.getViewportHeight()
+
+    return scroll.isSticky() || bottom >= scroll.getScrollHeight() - 2
+  }
+
+  const snapStickyTranscriptToBottom = () => {
+    if (!transcriptAtBottom()) {
+      return
+    }
+
+    setTimeout(() => {
+      if (transcriptAtBottom()) {
+        scrollRef?.current?.scrollToBottom()
+      }
+    }, 0)
   }
 
   // Inject the disk-save callback into turnController so recordMessageComplete
@@ -952,6 +976,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
+          snapStickyTranscriptToBottom()
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')

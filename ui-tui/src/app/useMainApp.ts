@@ -756,7 +756,7 @@ export function useMainApp(gw: GatewayClient) {
         },
         submission: { submitRef },
         system: { bellOnComplete, stdout, sys },
-        transcript: { appendMessage, panel, setHistoryItems },
+        transcript: { appendMessage, panel, scrollRef, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
           setRecording: setVoiceRecording,

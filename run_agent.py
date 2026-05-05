@@ -11116,6 +11116,7 @@ class AIAgent:
             thinking_sig_retry_attempted = False
             image_shrink_retry_attempted = False
             oauth_1m_beta_retry_attempted = False
+            llama_cpp_grammar_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -12205,6 +12206,49 @@ class AIAgent:
                             self.log_prefix, len(messages),
                         )
                         continue
+
+                    # ── llama.cpp grammar-parse recovery ──────────────────
+                    # llama.cpp's ``json-schema-to-grammar`` converter rejects
+                    # regex escape classes (``\d``, ``\w``, ``\s``) and most
+                    # ``format`` values in tool schemas.  MCP servers emit
+                    # these routinely for date/phone/email params.  Recovery:
+                    # strip ``pattern``/``format`` from ``self.tools`` and
+                    # retry once.  We keep the keywords by default so cloud
+                    # providers get the full prompting hints; this branch
+                    # fires only for users on llama.cpp's OAI server.
+                    if (
+                        classified.reason == FailoverReason.llama_cpp_grammar_pattern
+                        and not llama_cpp_grammar_retry_attempted
+                    ):
+                        llama_cpp_grammar_retry_attempted = True
+                        try:
+                            from tools.schema_sanitizer import strip_pattern_and_format
+                            _, _stripped = strip_pattern_and_format(self.tools)
+                        except Exception as _strip_exc:  # pragma: no cover — defensive
+                            logging.warning(
+                                "%sllama.cpp grammar recovery: strip helper failed: %s",
+                                self.log_prefix, _strip_exc,
+                            )
+                            _stripped = 0
+                        if _stripped:
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  llama.cpp rejected tool schema grammar — "
+                                f"stripped {_stripped} pattern/format keyword(s), retrying...",
+                                force=True,
+                            )
+                            logging.warning(
+                                "%sllama.cpp grammar recovery: stripped %d "
+                                "pattern/format keyword(s) from tool schemas",
+                                self.log_prefix, _stripped,
+                            )
+                            continue
+                        # No keywords found to strip — fall through to normal
+                        # retry path rather than loop forever on the same error.
+                        logging.warning(
+                            "%sllama.cpp grammar error but no pattern/format "
+                            "keywords to strip — falling through to normal retry",
+                            self.log_prefix,
+                        )
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time

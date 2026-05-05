@@ -17,8 +17,9 @@ Example config::
         command: "npx"
         args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
         env: {}
-        timeout: 120         # per-tool-call timeout in seconds (default: 120)
-        connect_timeout: 60  # initial connection timeout (default: 60)
+        timeout: 120             # per-tool-call timeout in seconds (default: 120)
+        connect_timeout: 60      # initial connection timeout (default: 60)
+        pre_connect_timeout: 120 # optional pre_connect hook timeout (default: 120)
       github:
         command: "npx"
         args: ["-y", "@modelcontextprotocol/server-github"]
@@ -253,8 +254,9 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
-_DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+_DEFAULT_TOOL_TIMEOUT = 120          # seconds for tool calls
+_DEFAULT_CONNECT_TIMEOUT = 60        # seconds for initial connection per server
+_DEFAULT_PRE_CONNECT_TIMEOUT = 120   # seconds for pre_connect hooks
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
@@ -1425,6 +1427,67 @@ class MCPServerTask:
             else []
         )
 
+    async def _run_pre_connect(self, config: dict):
+        """Run optional pre_connect hook before a transport connect attempt."""
+        pre_connect = config.get("pre_connect")
+        if pre_connect is None:
+            return
+        if not isinstance(pre_connect, str):
+            logger.warning(
+                "MCP server '%s': pre_connect is not a string (type=%s), skipping",
+                self.name, type(pre_connect).__name__,
+            )
+            return
+        if not pre_connect:
+            return
+
+        logger.info(
+            "MCP server '%s': running pre_connect: %s",
+            self.name, _sanitize_error(pre_connect)[:120],
+        )
+        pre_connect_timeout = config.get(
+            "pre_connect_timeout", _DEFAULT_PRE_CONNECT_TIMEOUT
+        )
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                pre_connect,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=pre_connect_timeout,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "MCP server '%s': pre_connect failed (exit %d): %s",
+                    self.name, proc.returncode,
+                    _sanitize_error(
+                        (stderr or b"").decode(errors="replace")
+                    )[:200],
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MCP server '%s': pre_connect timed out after %ss",
+                self.name, pre_connect_timeout,
+            )
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning(
+                "MCP server '%s': pre_connect raised: %s",
+                self.name, _sanitize_error(str(exc)),
+            )
+        # pre_connect failure is non-fatal — proceed with connect
+
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
 
@@ -1451,64 +1514,13 @@ class MCPServerTask:
                 self.name,
             )
 
-        # Optional pre-connect hook — e.g. docker pull for container-based
-        # servers.  Runs before each transport connect cycle so image pulls
-        # stay fresh; idempotent hooks (cached image pull) are near-instant.
-        pre_connect = config.get("pre_connect")
-        if pre_connect:
-            if not isinstance(pre_connect, str):
-                logger.warning(
-                    "MCP server '%s': pre_connect is not a string (type=%s), skipping",
-                    self.name, type(pre_connect).__name__,
-                )
-            else:
-                logger.info(
-                    "MCP server '%s': running pre_connect: %s",
-                    self.name, pre_connect[:120],
-                )
-                pre_connect_timeout = config.get(
-                    "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
-                )
-                try:
-                    proc = await asyncio.create_subprocess_shell(
-                        pre_connect,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(),
-                        timeout=pre_connect_timeout,
-                    )
-                    if proc.returncode != 0:
-                        logger.warning(
-                            "MCP server '%s': pre_connect failed (exit %d): %s",
-                            self.name, proc.returncode,
-                            (stderr or stdout or b"").decode(
-                                errors="replace",
-                            )[:200],
-                        )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "MCP server '%s': pre_connect timed out after %ds",
-                        self.name, pre_connect_timeout,
-                    )
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                except Exception as exc:
-                    logger.warning(
-                        "MCP server '%s': pre_connect raised: %s",
-                        self.name, exc,
-                    )
-                # pre_connect failure is non-fatal — proceed with connect
-
         retries = 0
         initial_retries = 0
         backoff = 1.0
 
         while True:
             try:
+                await self._run_pre_connect(config)
                 if self._is_http():
                     await self._run_http(config)
                 else:

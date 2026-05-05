@@ -21,6 +21,17 @@ def _reset_mcp_state():
     mcp._mcp_thread = old_thread
 
 
+async def _run_once_with_stubbed_transport(server, config):
+    """Run server.run once with transports stubbed to avoid real subprocesses."""
+    server._shutdown_event.set()
+    with (
+        patch.object(type(server), "_run_stdio", new_callable=AsyncMock) as mock_stdio,
+        patch.object(type(server), "_run_http", new_callable=AsyncMock) as mock_http,
+    ):
+        await asyncio.wait_for(server.run(config), timeout=1)
+    return mock_stdio, mock_http
+
+
 class TestPreConnectHook:
     """Tests for the optional pre_connect key in MCP server config."""
 
@@ -30,39 +41,102 @@ class TestPreConnectHook:
         config = {
             "command": "echo server",
             "pre_connect": "echo prepped",
-            "connect_timeout": 1,
+            "pre_connect_timeout": 1,
         }
 
         import tools.mcp_tool as mcp
 
         server = mcp.MCPServerTask("test-preconnect")
-        server._reconnect_event.set()
-        server._shutdown_event.set()
+        events = []
 
-        with patch.object(
-            mcp.asyncio, "create_subprocess_shell"
-        ) as mock_subproc:
+        async def fake_subproc(*_args, **_kwargs):
+            events.append("pre_connect")
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(
-                return_value=(b"prepped\n", b"")
-            )
+            mock_proc.communicate = AsyncMock(return_value=(None, b""))
             mock_proc.returncode = 0
-            mock_subproc.return_value = mock_proc
+            return mock_proc
 
-            task = asyncio.ensure_future(server.run(config))
-            await asyncio.sleep(0.05)
+        async def fake_stdio(_config):
+            events.append("transport")
+            server._shutdown_event.set()
 
-            mock_subproc.assert_called_once_with(
+        with (
+            patch.object(
+                mcp.asyncio,
+                "create_subprocess_shell",
+                new_callable=AsyncMock,
+                side_effect=fake_subproc,
+            ) as mock_subproc,
+            patch.object(type(server), "_run_stdio", new_callable=AsyncMock) as mock_stdio,
+            patch.object(type(server), "_run_http", new_callable=AsyncMock) as mock_http,
+        ):
+            mock_stdio.side_effect = fake_stdio
+
+            await asyncio.wait_for(server.run(config), timeout=1)
+
+            mock_subproc.assert_awaited_once_with(
                 "echo prepped",
-                stdout=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
+            mock_stdio.assert_awaited_once_with(config)
+            mock_http.assert_not_awaited()
 
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        assert events == ["pre_connect", "transport"]
+
+    @pytest.mark.asyncio
+    async def test_pre_connect_runs_on_reconnect_cycles(self):
+        """pre_connect runs before every reconnect transport cycle."""
+        config = {
+            "command": "echo server",
+            "pre_connect": "echo prepped",
+            "pre_connect_timeout": 1,
+        }
+
+        import tools.mcp_tool as mcp
+
+        server = mcp.MCPServerTask("test-preconnect-reconnect")
+        events = []
+        transport_calls = 0
+
+        async def fake_subproc(*_args, **_kwargs):
+            events.append("pre_connect")
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(None, b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        async def fake_stdio(_config):
+            nonlocal transport_calls
+            events.append("transport")
+            transport_calls += 1
+            if transport_calls == 2:
+                server._shutdown_event.set()
+
+        with (
+            patch.object(
+                mcp.asyncio,
+                "create_subprocess_shell",
+                new_callable=AsyncMock,
+                side_effect=fake_subproc,
+            ) as mock_subproc,
+            patch.object(type(server), "_run_stdio", new_callable=AsyncMock) as mock_stdio,
+            patch.object(type(server), "_run_http", new_callable=AsyncMock) as mock_http,
+        ):
+            mock_stdio.side_effect = fake_stdio
+
+            await asyncio.wait_for(server.run(config), timeout=1)
+
+            assert mock_subproc.await_count == 2
+            assert mock_stdio.await_count == 2
+            mock_http.assert_not_awaited()
+
+        assert events == [
+            "pre_connect",
+            "transport",
+            "pre_connect",
+            "transport",
+        ]
 
     @pytest.mark.asyncio
     async def test_pre_connect_failure_is_non_fatal(self):
@@ -70,35 +144,30 @@ class TestPreConnectHook:
         config = {
             "command": "echo server",
             "pre_connect": "exit 1",
-            "connect_timeout": 1,
+            "pre_connect_timeout": 1,
         }
 
         import tools.mcp_tool as mcp
 
         server = mcp.MCPServerTask("test-preconnect-fail")
-        server._reconnect_event.set()
-        server._shutdown_event.set()
 
         with patch.object(
-            mcp.asyncio, "create_subprocess_shell"
+            mcp.asyncio,
+            "create_subprocess_shell",
+            new_callable=AsyncMock,
         ) as mock_subproc:
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(
-                return_value=(b"", b"pull failed")
-            )
+            mock_proc.communicate = AsyncMock(return_value=(None, b"pull failed"))
             mock_proc.returncode = 1
             mock_subproc.return_value = mock_proc
 
-            task = asyncio.ensure_future(server.run(config))
-            await asyncio.sleep(0.05)
+            mock_stdio, mock_http = await _run_once_with_stubbed_transport(
+                server, config
+            )
 
-            assert mock_subproc.called, "pre_connect should have been attempted"
-
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+            mock_subproc.assert_awaited_once()
+            mock_stdio.assert_awaited_once_with(config)
+            mock_http.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_pre_connect_when_not_configured(self):
@@ -108,22 +177,19 @@ class TestPreConnectHook:
         import tools.mcp_tool as mcp
 
         server = mcp.MCPServerTask("test-no-preconnect")
-        server._reconnect_event.set()
-        server._shutdown_event.set()
 
         with patch.object(
-            mcp.asyncio, "create_subprocess_shell"
+            mcp.asyncio,
+            "create_subprocess_shell",
+            new_callable=AsyncMock,
         ) as mock_subproc:
-            task = asyncio.ensure_future(server.run(config))
-            await asyncio.sleep(0.05)
+            mock_stdio, mock_http = await _run_once_with_stubbed_transport(
+                server, config
+            )
 
             mock_subproc.assert_not_called()
-
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+            mock_stdio.assert_awaited_once_with(config)
+            mock_http.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pre_connect_exception_is_non_fatal(self):
@@ -131,29 +197,26 @@ class TestPreConnectHook:
         config = {
             "command": "echo server",
             "pre_connect": "docker pull nosuchimage",
-            "connect_timeout": 1,
+            "pre_connect_timeout": 1,
         }
 
         import tools.mcp_tool as mcp
 
         server = mcp.MCPServerTask("test-preconnect-exc")
-        server._reconnect_event.set()
-        server._shutdown_event.set()
 
         with patch.object(
-            mcp.asyncio, "create_subprocess_shell",
+            mcp.asyncio,
+            "create_subprocess_shell",
+            new_callable=AsyncMock,
             side_effect=OSError("no such file"),
         ) as mock_subproc:
-            task = asyncio.ensure_future(server.run(config))
-            await asyncio.sleep(0.05)
+            mock_stdio, mock_http = await _run_once_with_stubbed_transport(
+                server, config
+            )
 
-            assert mock_subproc.called, "pre_connect was attempted despite OSError"
-
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+            mock_subproc.assert_awaited_once()
+            mock_stdio.assert_awaited_once_with(config)
+            mock_http.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pre_connect_timeout_is_non_fatal(self):
@@ -163,40 +226,39 @@ class TestPreConnectHook:
         config = {
             "command": "echo server",
             "pre_connect": "sleep 999",
-            "connect_timeout": 0.1,
+            "pre_connect_timeout": 0.01,
         }
 
         server = mcp.MCPServerTask("test-preconnect-timeout")
-        server._reconnect_event.set()
-        server._shutdown_event.set()
 
         async def fake_communicate():
             await asyncio.sleep(999)
-            return b"", b""
+            return None, b""
 
         with patch.object(
-            mcp.asyncio, "create_subprocess_shell"
+            mcp.asyncio,
+            "create_subprocess_shell",
+            new_callable=AsyncMock,
         ) as mock_subproc:
             mock_proc = MagicMock()
             mock_proc.communicate = fake_communicate
             mock_proc.kill = MagicMock()
+            mock_proc.wait = AsyncMock(return_value=None)
             mock_subproc.return_value = mock_proc
 
-            task = asyncio.ensure_future(server.run(config))
-            await asyncio.sleep(0.2)
+            mock_stdio, mock_http = await _run_once_with_stubbed_transport(
+                server, config
+            )
 
-            assert mock_subproc.called
-            assert mock_proc.kill.called, "proc.kill() should be called on timeout"
-
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+            mock_subproc.assert_awaited_once()
+            mock_proc.kill.assert_called_once()
+            mock_proc.wait.assert_awaited_once()
+            mock_stdio.assert_awaited_once_with(config)
+            mock_http.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_string_pre_connect_skipped(self):
-        """Non-string pre_connect values are silently skipped."""
+        """Non-string pre_connect values log a warning and are skipped."""
         import tools.mcp_tool as mcp
 
         config = {
@@ -206,19 +268,16 @@ class TestPreConnectHook:
         }
 
         server = mcp.MCPServerTask("test-preconnect-nonstr")
-        server._reconnect_event.set()
-        server._shutdown_event.set()
 
         with patch.object(
-            mcp.asyncio, "create_subprocess_shell"
+            mcp.asyncio,
+            "create_subprocess_shell",
+            new_callable=AsyncMock,
         ) as mock_subproc:
-            task = asyncio.ensure_future(server.run(config))
-            await asyncio.sleep(0.05)
+            mock_stdio, mock_http = await _run_once_with_stubbed_transport(
+                server, config
+            )
 
             mock_subproc.assert_not_called()
-
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+            mock_stdio.assert_awaited_once_with(config)
+            mock_http.assert_not_awaited()

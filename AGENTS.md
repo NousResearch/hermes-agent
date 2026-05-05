@@ -741,6 +741,69 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 - `error` — only the final message when exit code != 0
 - `off` — no watcher messages at all
 
+### Optional extras and submodules — security boundaries
+
+A subset of opt-in extras and the `tinker-atropos` git submodule pull research
+code from upstream repositories that **lack a LICENSE file** or are otherwise
+unsuitable for production. These are deliberately fenced behind opt-in
+extras / uninitialized submodules, and the boundary is load-bearing: if it is
+crossed by accident (e.g. a deploy script that runs `pip install -e ".[all,yc-bench]"`),
+unlicensed code lands in product runtime. The 2026-05-05 dependency audit
+(`CHG-0001`) flagged this as the cheapest mitigation for two latent CRITICAL
+findings.
+
+**Research-only — must NOT appear in any orchestrator default-install path,
+deployment image, or CI workflow that runs in production:**
+
+| Item | Source | License | Notes |
+|---|---|---|---|
+| `[rl]` extra | `NousResearch/atropos` (MIT) + `thinking-machines-lab/tinker` (Apache-2.0) | OK individually | RL training stack — research-only, heavy GPU deps (`wandb`, `fastapi`). Not for product runtime. |
+| `[yc-bench]` extra | `collinear-ai/yc-bench` @ `bfb0c88` | **NO LICENSE** (CRIT-2) | No grant of use. Pulling this into a deploy is an unlicensed-code incident. |
+| `tinker-atropos` submodule | `nousresearch/tinker-atropos` | **NO LICENSE** (CRIT-1) | Registered in `.gitmodules`, intentionally **uninitialized**. Do NOT add `git submodule update --init` to any deploy/CI step. |
+
+**The operating rule:**
+
+1. The default install — `uv pip install .` (or `pip install -e .`, or
+   `uv pip install '.[all]'`) — does NOT pull `[rl]` or `[yc-bench]`. The
+   `[all]` meta-extra deliberately omits both. Keep it that way.
+2. The `tinker-atropos` submodule must NOT be initialized in any
+   deployment-time path. `git clone` without `--recurse-submodules`, and
+   leave it that way.
+3. Opting in is a deliberate research-mode choice. To enable the RL stack
+   locally for research, run `uv pip install '.[rl]'` (and `'.[yc-bench]'`
+   separately on Python ≥ 3.12). Doing so is an explicit acceptance of the
+   unlicensed-code risk for `yc-bench` / `tinker-atropos` and means the
+   environment is for personal research only — never a shared image, never
+   a deploy target.
+4. Orchestrators that consume `hermes-agent-ucpm` (e.g. `paperclip-UCPM-orchestrator`)
+   MUST NOT add `[rl]` or `[yc-bench]` to their default-install manifest, and
+   MUST NOT initialize the `tinker-atropos` submodule in their build steps.
+
+**Maintainer check — verify defaults are clean:**
+
+```bash
+# 1. Confirm [rl] and [yc-bench] are in [project.optional-dependencies] only,
+#    NOT in [project.dependencies] or [all]:
+grep -nE '^(rl|yc-bench)\s*=' pyproject.toml          # must be under [project.optional-dependencies]
+grep -nE 'hermes-agent\[(rl|yc-bench)\]' pyproject.toml  # must return nothing (i.e. not in [all])
+
+# 2. Confirm tinker-atropos is registered but uninitialized in fresh clones:
+git config --file .gitmodules --get submodule.tinker-atropos.url   # registered → URL prints
+ls tinker-atropos 2>/dev/null && echo "WARNING: submodule populated" || echo "OK: not initialized"
+
+# 3. Confirm the default install resolves without research deps:
+uv pip install --dry-run . 2>&1 | grep -E '(yc-bench|atroposlib|tinker[^-])' \
+  && echo "FAIL: research dep in default tree" || echo "OK: default tree clean"
+```
+
+If any of those checks flag a regression, the security boundary has been
+breached — fix `pyproject.toml` / `.gitmodules` before merging.
+
+**Aside — `[messaging]`, `[matrix]`, `[homeassistant]`, `[sms]`:** these extras
+pull `aiohttp@3.13.3`, which has 10 known CVEs (3 HIGH per audit CRIT-5).
+Orchestrators layering these in should pin a `aiohttp>=3.14` floor in their
+own manifest until the upstream pin is bumped.
+
 ---
 
 ## Profiles: Multi-Instance Support

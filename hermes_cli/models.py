@@ -114,6 +114,7 @@ def _codex_curated_models() -> list[str]:
 # or retires a model, the disk cache picks it up on the next refresh and the
 # fallback here only matters until that refresh lands.
 _XAI_STATIC_FALLBACK: list[str] = [
+    "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
     "grok-4.20-multi-agent-0309",

@@ -39,6 +39,28 @@ def test_android_wheel_includes_iteration_limits_module():
     assert "iteration_limits" in pyproject["tool"]["setuptools"]["py-modules"]
 
 
+def test_fdroid_updatecheck_data_uses_literal_version_code_for_future_tags():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version_name = pyproject["project"]["version"]
+    major, minor, patch = (int(part) for part in version_name.split("."))
+    expected_code = major * 1_000_000 + minor * 10_000 + patch * 100 + 90
+    version_file = dict(
+        line.split("=", 1)
+        for line in (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.version")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    )
+    template = (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.yml.template").read_text(encoding="utf-8")
+
+    assert version_file == {
+        "versionName": version_name,
+        "versionCode": str(expected_code),
+    }
+    assert "UpdateCheckMode: Tags" in template
+    assert "UpdateCheckData: fdroid/com.nousresearch.hermesagent.version|versionCode=(\\d+)|.|versionName=(.*)" in template
+
+
 def test_android_anthropic_stub_matches_project_requirement_floor():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     stub_project = tomllib.loads(

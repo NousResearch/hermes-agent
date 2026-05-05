@@ -4,8 +4,7 @@
 
 Disabled: Needs F-Droid review of Chaquopy, LiteRT-LM, generated native assets, and pip/Maven dependency licensing before official submission.
 Categories:
-  - Internet
-  - Science & Education
+  - AI Chat
 License: MIT
 AuthorName: Nous Research
 WebSite: https://nousresearch.com/
@@ -18,9 +17,9 @@ RepoType: git
 Repo: https://github.com/adybag14-cyber/hermes-agent.git
 
 Builds:
-  - versionName: 0.13.14
-    versionCode: 131490
-    commit: v0.13.14
+  - versionName: 0.13.15
+    versionCode: 131590
+    commit: v0.13.15
     subdir: android
     gradle:
       - yes
@@ -32,5 +31,6 @@ Builds:
 
 AutoUpdateMode: Version v%v
 UpdateCheckMode: Tags
-CurrentVersion: 0.13.14
-CurrentVersionCode: 131490
+UpdateCheckData: fdroid/com.nousresearch.hermesagent.version|versionCode=(\d+)|.|versionName=(.*)
+CurrentVersion: 0.13.15
+CurrentVersionCode: 131590

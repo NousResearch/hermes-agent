@@ -8,6 +8,10 @@ description: "Your first conversation with Hermes Agent — from install to chat
 
 This guide gets you from zero to a working Hermes setup that survives real use. Install, choose a provider, verify a working chat, and know exactly what to do when something breaks.
 
+:::tip Prefer to watch?
+**Onchain AI Garage** runs a [Hermes Agent Tutorials & Use Cases](https://www.youtube.com/channel/UCqB1bhMwGsW-yefBxYwFCCg) playlist — including a Masterclass series covering installation, setup, and basic commands. Good companion to this page if you'd rather follow along on video.
+:::
+
 ## Who this is for
 
 - Brand new and want the shortest path to a working setup

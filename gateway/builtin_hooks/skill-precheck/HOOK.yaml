@@ -1,0 +1,4 @@
+name: "skill-precheck"
+description: "Intercepts user messages before the Agent processes them to recommend relevant skills via SRA matching."
+events:
+  - "agent:pre_process"

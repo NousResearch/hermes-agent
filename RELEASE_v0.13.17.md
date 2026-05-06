@@ -12,7 +12,7 @@ workflow.
 - Keeps privileged system control explicit and reviewable: protected Android
   settings still require a user-facing settings panel, Shizuku/Sui, the Hermes
   accessibility service, or external ADB during developer validation.
-- Documents the Shizuku and Shopify Tinker capability map for Android agent
+- Documents the Shizuku and Tasker capability map for Android agent
   work.
 
 ## Debugging And Release

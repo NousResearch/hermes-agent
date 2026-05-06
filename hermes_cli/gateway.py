@@ -505,6 +505,7 @@ def _read_systemd_unit_properties(
         "SubState",
         "Result",
         "ExecMainStatus",
+        "MainPID",
     ),
 ) -> dict[str, str]:
     """Return selected ``systemctl show`` properties for the gateway unit."""
@@ -538,6 +539,41 @@ def _read_systemd_unit_properties(
     return parsed
 
 
+def _systemd_main_pid_from_props(props: dict[str, str]) -> int | None:
+    try:
+        pid = int(props.get("MainPID", "0") or "0")
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _systemd_main_pid(system: bool = False) -> int | None:
+    return _systemd_main_pid_from_props(_read_systemd_unit_properties(system=system))
+
+
+def _read_gateway_runtime_status() -> dict | None:
+    try:
+        from gateway.status import read_runtime_status
+
+        state = read_runtime_status()
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _gateway_runtime_status_for_pid(pid: int | None) -> dict | None:
+    if not pid:
+        return None
+    state = _read_gateway_runtime_status()
+    if not state:
+        return None
+    try:
+        state_pid = int(state.get("pid", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return state if state_pid == pid else None
+
+
 def _wait_for_systemd_service_restart(
     *,
     system: bool = False,
@@ -550,6 +586,7 @@ def _wait_for_systemd_service_restart(
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
     deadline = time.time() + timeout
+    printed_runtime_wait = False
 
     while time.time() < deadline:
         props = _read_systemd_unit_properties(system=system)
@@ -562,18 +599,31 @@ def _wait_for_systemd_service_restart(
             new_pid = get_running_pid()
         except Exception:
             new_pid = None
+        if not new_pid:
+            new_pid = _systemd_main_pid_from_props(props)
 
         if active_state == "active":
             if new_pid and (previous_pid is None or new_pid != previous_pid):
-                print(f"✓ {scope_label} service restarted (PID {new_pid})")
-                return True
-            if previous_pid is None:
-                print(f"✓ {scope_label} service restarted")
-                return True
+                runtime_state = _gateway_runtime_status_for_pid(new_pid)
+                gateway_state = (runtime_state or {}).get("gateway_state")
+                if gateway_state == "running":
+                    print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                    return True
+                if gateway_state == "startup_failed":
+                    reason = (runtime_state or {}).get("exit_reason") or "startup failed"
+                    print(f"⚠ {scope_label} service process restarted (PID {new_pid}), but gateway startup failed: {reason}")
+                    return False
+                if not printed_runtime_wait:
+                    print(f"⏳ {scope_label} service process started (PID {new_pid}); waiting for gateway runtime...")
+                    printed_runtime_wait = True
 
         if active_state == "activating" and sub_state == "auto-restart":
             time.sleep(1)
             continue
+
+        if _systemd_unit_is_start_limited(props):
+            _print_systemd_start_limit_wait(system=system)
+            return False
 
         time.sleep(2)
 
@@ -583,6 +633,46 @@ def _wait_for_systemd_service_restart(
         f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} -l --since '2 min ago'"
     )
     return False
+
+
+def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:
+    result = props.get("Result", "").lower()
+    sub_state = props.get("SubState", "").lower()
+    return result == "start-limit-hit" or sub_state == "start-limit-hit"
+
+
+def _systemd_error_indicates_start_limit(exc: subprocess.CalledProcessError) -> bool:
+    parts: list[str] = []
+    for attr in ("stderr", "stdout", "output"):
+        value = getattr(exc, attr, None)
+        if not value:
+            continue
+        if isinstance(value, bytes):
+            value = value.decode(errors="replace")
+        parts.append(str(value))
+    text = "\n".join(parts).lower()
+    return (
+        "start-limit-hit" in text
+        or "start request repeated too quickly" in text
+        or "start-limit" in text
+    )
+
+
+def _systemd_service_is_start_limited(system: bool = False) -> bool:
+    return _systemd_unit_is_start_limited(_read_systemd_unit_properties(system=system))
+
+
+def _print_systemd_start_limit_wait(system: bool = False) -> None:
+    svc = get_service_name()
+    scope_label = _service_scope_label(system).capitalize()
+    scope_flag = " --system" if system else ""
+    systemctl_prefix = "systemctl " if system else "systemctl --user "
+    journal_prefix = "journalctl " if system else "journalctl --user "
+    print(f"⏳ {scope_label} service is temporarily rate-limited by systemd.")
+    print("  systemd is refusing another immediate start after repeated exits.")
+    print(f"  Wait for the start-limit window to expire, then run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}")
+    print(f"  Or clear the failed state manually: {systemctl_prefix}reset-failed {svc}")
+    print(f"  Check logs: {journal_prefix}-u {svc} -l --since '5 min ago'")
 
 
 def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | None = None) -> bool:
@@ -2135,41 +2225,52 @@ def systemd_restart(system: bool = False):
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
-    pid = get_running_pid()
-    if pid is not None and _request_gateway_self_restart(pid):
-        import time
+    pid = get_running_pid() or _systemd_main_pid(system=system)
+    if pid is not None:
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
+        drain_timeout = _get_restart_drain_timeout()
 
-        # Phase 1: wait for old process to exit (drain + shutdown)
-        print(f"⏳ {scope_label} service draining active work...")
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            try:
-                os.kill(pid, 0)
-                time.sleep(1)
-            except (ProcessLookupError, PermissionError):
-                break  # old process is gone
-        else:
-            print(f"⚠ Old process (PID {pid}) still alive after 90s")
+        print(f"⏳ {scope_label} service restarting gracefully (PID {pid})...")
+        if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+            # The gateway exits with code 75 for a planned service restart.
+            # RestartSec can otherwise delay the relaunch even though the
+            # operator asked for an immediate restart, so kick the unit once
+            # the old PID has exited and then wait for the replacement PID.
+            _run_systemctl(
+                ["reset-failed", svc],
+                system=system,
+                check=False,
+                timeout=30,
+            )
+            _run_systemctl(
+                ["restart", svc],
+                system=system,
+                check=False,
+                timeout=90,
+            )
+            if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+                return
+            if _systemd_service_is_start_limited(system=system):
+                return
 
-        # The gateway exits with code 75 for a planned service restart.
-        # systemd can sit in the RestartSec window or even wedge itself into a
-        # failed/rate-limited state if the operator asks for another restart in
-        # the middle of that handoff. Clear any stale failed state and kick the
-        # unit immediately so `hermes gateway restart` behaves idempotently.
+        print(
+            f"⚠ Graceful restart did not complete within {int(drain_timeout + 5)}s; "
+            "forcing a service restart..."
+        )
         _run_systemctl(
             ["reset-failed", svc],
             system=system,
             check=False,
             timeout=30,
         )
-        _run_systemctl(
-            ["start", svc],
-            system=system,
-            check=False,
-            timeout=90,
-        )
+        try:
+            _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
+        except subprocess.CalledProcessError as exc:
+            if _systemd_error_indicates_start_limit(exc) or _systemd_service_is_start_limited(system=system):
+                _print_systemd_start_limit_wait(system=system)
+                return
+            raise
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
 
@@ -2182,8 +2283,14 @@ def systemd_restart(system: bool = False):
         check=False,
         timeout=30,
     )
-    _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
-    print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
+    try:
+        _run_systemctl(["restart", get_service_name()], system=system, check=True, timeout=90)
+    except subprocess.CalledProcessError as exc:
+        if _systemd_error_indicates_start_limit(exc) or _systemd_service_is_start_limited(system=system):
+            _print_systemd_start_limit_wait(system=system)
+            return
+        raise
+    _wait_for_systemd_service_restart(system=system, previous_pid=pid)
 
 
 
@@ -2255,6 +2362,10 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     result_code = unit_props.get("Result", "")
     if active_state == "activating" and sub_state == "auto-restart":
         print("  ⏳ Restart pending: systemd is waiting to relaunch the gateway")
+    elif _systemd_unit_is_start_limited(unit_props):
+        print("  ⏳ Restart pending: systemd is temporarily rate-limiting starts")
+        print(f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}")
+        print(f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}")
     elif active_state == "failed" and exec_main_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE):
         print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
         print(f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}")

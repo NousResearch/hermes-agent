@@ -1521,6 +1521,13 @@ async def stream_events(ws: WebSocket):
             await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
+    except asyncio.CancelledError:
+        # Normal shutdown path: dashboard process exit (Ctrl-C) cancels the
+        # websocket task while it is sleeping in the poll loop.
+        # CancelledError is a BaseException in 3.8+ so the bare Exception
+        # handler below would not catch it; without this clause Uvicorn
+        # surfaces the cancellation as an application traceback. Quiet it.
+        return
     except Exception as exc:  # defensive: never crash the dashboard worker
         log.warning("Kanban event stream error: %s", exc)
         try:

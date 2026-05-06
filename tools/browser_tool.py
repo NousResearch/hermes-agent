@@ -555,6 +555,11 @@ def _should_inject_engine(engine: str) -> bool:
     return _is_local_mode()
 
 
+def _using_lightpanda_engine() -> bool:
+    """Return True when local browser commands are configured for Lightpanda."""
+    return _get_browser_engine() == "lightpanda"
+
+
 def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
     """Return the user-visible reason a Lightpanda result needs Chrome fallback.
 
@@ -683,6 +688,21 @@ def _run_chrome_fallback_command(
         browser_cmd = _find_agent_browser()
     except FileNotFoundError as e:
         return {"success": False, "error": str(e)}
+
+    if not _chromium_installed():
+        if _running_in_docker():
+            hint = (
+                "Chrome fallback requires Chromium, but it is missing. "
+                "You're running in Docker — pull the latest image: "
+                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+        else:
+            hint = (
+                "Chrome fallback requires Chromium, but it is missing. Install it with: "
+                "npx agent-browser install --with-deps "
+                "(or: npx playwright install --with-deps chromium)"
+            )
+        return {"success": False, "error": hint}
 
     cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
@@ -2686,23 +2706,26 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
             else:
                 images = raw_result
 
-            return json.dumps({
+            response = {
                 "success": True,
                 "images": images,
                 "count": len(images)
-            }, ensure_ascii=False)
+            }
+            return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
         except json.JSONDecodeError:
-            return json.dumps({
+            response = {
                 "success": True,
                 "images": [],
                 "count": 0,
                 "warning": "Could not parse image data"
-            }, ensure_ascii=False)
+            }
+            return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
     else:
-        return json.dumps({
+        response = {
             "success": False,
             "error": result.get("error", "Failed to get images")
-        }, ensure_ascii=False)
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
@@ -2768,9 +2791,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 screenshot_path = persistent_path
         else:
             logger.warning("Lightpanda Chrome fallback vision screenshot failed: %s", fb_result.get("error"))
-            # Fall through to normal path as last resort. Mark that we already
-            # tried Chrome so _run_browser_command doesn't recursively fallback.
-            _lp_prerouted = True
+            # Fall through to the normal screenshot path so _run_browser_command
+            # can still produce the standard fallback metadata/error.
+            _lp_prerouted = False
 
     try:
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -2793,6 +2816,11 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 },
                 "fallback_warning": _lp_fallback_warning,
                 "browser_engine": "chrome",
+                "browser_engine_fallback": {
+                    "from": "lightpanda",
+                    "to": "chrome",
+                    "reason": "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture.",
+                },
             }
         else:
             # Take screenshot using agent-browser
@@ -3248,7 +3276,9 @@ def check_browser_requirements() -> bool:
     Check if browser tool requirements are met.
 
     In **local mode** (no cloud provider configured): the ``agent-browser``
-    CLI must be findable *and* a Chromium build must be installed on disk.
+    CLI must be findable. Chrome/Chromium is required for the default Chrome
+    engine and for fallback/screenshot paths, but not for Lightpanda-only text
+    navigation/snapshot workflows.
 
     In **cloud mode** (Browserbase, Browser Use, or Firecrawl): the CLI
     and the provider's required credentials must be present. The cloud
@@ -3285,8 +3315,14 @@ def check_browser_requirements() -> bool:
     if provider is not None:
         return provider.is_configured()
 
-    # Local mode: agent-browser needs a Chromium build on disk. Without it
-    # the CLI hangs on first use until the command timeout fires.
+    # Local mode with Lightpanda can provide text/navigation tools without a
+    # local Chromium install. Chrome fallback, screenshots, and browser_vision
+    # will still return actionable Chromium install errors if invoked.
+    if _using_lightpanda_engine():
+        return True
+
+    # Local Chrome mode: agent-browser needs a Chromium build on disk. Without
+    # it the CLI hangs on first use until the command timeout fires.
     if not _chromium_installed():
         return False
 

@@ -1948,21 +1948,21 @@ def build_anthropic_kwargs(
     # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
     # Only for native Anthropic endpoints — third-party providers would
     # reject the unknown beta header and speed parameter.
-    if (
-        fast_mode
-        and not _is_third_party_anthropic_endpoint(base_url)
-        and _supports_fast_mode(model)
-    ):
-        kwargs.setdefault("extra_body", {})["speed"] = "fast"
+    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
         # Build extra_headers with ALL applicable betas (the per-request
-        # extra_headers override the client-level anthropic-beta header).
+        # extra_headers override the client-level anthropic-beta header).  Keep
+        # these headers even when the model no longer supports ``speed=fast``;
+        # Bedrock/Azure still need context-1m here whenever a fast-mode caller
+        # forces per-request headers through this path.
         betas = list(_common_betas_for_base_url(
             base_url,
             drop_context_1m_beta=drop_context_1m_beta,
         ))
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
-        betas.append(_FAST_MODE_BETA)
+        if _supports_fast_mode(model):
+            kwargs.setdefault("extra_body", {})["speed"] = "fast"
+            betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs

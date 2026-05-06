@@ -441,7 +441,7 @@ class TestExecute:
         cmd, args, kwargs = vercel_sdk.current.run_command_calls[-1]
         assert cmd == "bash"
         assert args[0] == "-c"
-        assert "cd /tmp" in args[1]
+        assert "builtin cd -- /tmp" in args[1]
         assert kwargs["cwd"] == "/vercel/sandbox"
 
     @pytest.mark.parametrize(

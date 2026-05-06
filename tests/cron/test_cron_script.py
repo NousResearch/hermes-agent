@@ -224,8 +224,7 @@ class TestBuildJobPromptWithScript:
             "script": str(script),
         }
         prompt = _build_job_prompt(job)
-        assert "no output" in prompt.lower()
-        assert "Check status." in prompt
+        assert prompt is None
 
 
 class TestCronjobToolScript:

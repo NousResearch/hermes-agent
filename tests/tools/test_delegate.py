@@ -1724,9 +1724,10 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         child.run_conversation.side_effect = slow_run
 
-        # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
-        # We should see the heartbeat stop firing well before 0.6s.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Patch the idle threshold low so the test stays fast while preserving
+        # the runtime default's larger production safety window.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5):
             _run_single_child(
                 task_index=0,
                 goal="Test wedged child",

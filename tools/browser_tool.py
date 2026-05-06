@@ -2737,13 +2737,14 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
-    global _cached_chromium_installed
+    global _cached_chromium_installed, _cached_chromium_signature
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
     _cached_chromium_installed = None
+    _cached_chromium_signature = None
 
 # ============================================================================
 # Requirements Check
@@ -2751,7 +2752,10 @@ def cleanup_all_browsers() -> None:
 
 
 # Cache for Chromium discovery. Invalidated by _reset_browser_caches.
+# Include environment-dependent inputs in the cache signature so test/user
+# environment changes don't reuse stale Chromium discovery results.
 _cached_chromium_installed: Optional[bool] = None
+_cached_chromium_signature: Optional[tuple] = None
 
 
 def _chromium_search_roots() -> List[str]:
@@ -2801,9 +2805,16 @@ def _chromium_installed() -> bool:
     the tool behind this check prevents advertising a capability that will
     fail at runtime.
     """
-    global _cached_chromium_installed
-    if _cached_chromium_installed is not None:
+    global _cached_chromium_installed, _cached_chromium_signature
+    signature = (
+        os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", ""),
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+        os.environ.get("PATH", ""),
+        os.path.expanduser("~"),
+    )
+    if _cached_chromium_installed is not None and _cached_chromium_signature == signature:
         return _cached_chromium_installed
+    _cached_chromium_signature = signature
 
     # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
     ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()

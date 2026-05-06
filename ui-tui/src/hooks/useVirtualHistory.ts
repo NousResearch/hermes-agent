@@ -130,6 +130,9 @@ export function useVirtualHistory(
   })
 
   const [hasScrollRef, setHasScrollRef] = useState(false)
+  // Height cache writes happen in layout effects; bump once so offsets and
+  // clamp bounds rebuild without waiting for the next scroll/input event.
+  const [measuredHeightVersion, bumpMeasuredHeightVersion] = useState(0)
   const metrics = useRef({ sticky: true, top: 0, vp: 0 })
   const lastScrollTopRef = useRef(0)
 
@@ -434,6 +437,7 @@ export function useVirtualHistory(
   useLayoutEffect(() => {
     const s = scrollRef.current
     let dirty = false
+    let heightDirty = false
 
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
@@ -474,6 +478,7 @@ export function useVirtualHistory(
         if (h > 0 && heights.current.get(k) !== h) {
           heights.current.set(k, h)
           dirty = true
+          heightDirty = true
         }
       }
     }
@@ -499,7 +504,11 @@ export function useVirtualHistory(
       offsetVersion.current++
       onHeightsChangeRef.current?.(heights.current)
     }
-  })
+
+    if (heightDirty) {
+      bumpMeasuredHeightVersion(n => n + 1)
+    }
+  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),

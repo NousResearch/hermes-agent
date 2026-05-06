@@ -39,6 +39,7 @@ from gateway.run import (
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
+    _should_clear_resume_pending_after_turn,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -50,6 +51,23 @@ from tests.gateway.restart_test_helpers import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_resume_pending_is_cleared_only_after_successful_turn():
+    """Interrupted/failed drain results must keep the restart recovery marker.
+
+    Regression for dogfood failure: during gateway restart the interrupted run
+    returned an empty final response and was normalized into a user-facing
+    fallback, but the gateway cleared ``resume_pending`` before startup could
+    auto-resume it.
+    """
+    assert _should_clear_resume_pending_after_turn({"final_response": "done"}) is True
+    assert _should_clear_resume_pending_after_turn({"completed": True}) is True
+    assert _should_clear_resume_pending_after_turn({"interrupted": True}) is False
+    assert _should_clear_resume_pending_after_turn({"completed": False}) is False
+    assert _should_clear_resume_pending_after_turn({"failed": True}) is False
+    assert _should_clear_resume_pending_after_turn({"partial": True}) is False
+    assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

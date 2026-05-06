@@ -362,7 +362,7 @@ class NativeToolCallingChatClient(
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
-                    "When the user asks to create a recurring phone automation or reusable Android task, call android_automation_tool. It can save shell tasks, run them manually, enable/disable/delete them, and schedule interval tasks with Android alarms. " +
+                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, or phone-state trigger, call android_automation_tool. It can save shell tasks, run them manually, enable/disable/delete them, schedule interval tasks with Android alarms, run boot/power/battery triggers, and expand saved variables in commands. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -409,7 +409,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, or delete saved Android shell automations. Supports manual tasks and interval tasks scheduled by Android alarms. Shizuku execution must be explicitly requested per task.",
+                                "Create, list, run, enable, disable, or delete saved Android shell automations and variables. Supports manual tasks, interval tasks, boot/power/battery phone-state triggers, and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per task.",
                             )
                             .put(
                                 "parameters",
@@ -422,7 +422,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, create_shell_task, run, delete, enable, or disable."),
+                                                    .put("description", "list, create_shell_task, run, run_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "id",
@@ -440,7 +440,13 @@ class NativeToolCallingChatClient(
                                                 "command",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Shell command for create_shell_task."),
+                                                    .put("description", "Shell command for create_shell_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "trigger",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional trigger for create_shell_task or run_trigger: manual, boot, power_connected, power_disconnected, battery_low, or battery_okay. interval_minutes creates an interval trigger."),
                                             )
                                             .put(
                                                 "interval_minutes",
@@ -459,6 +465,18 @@ class NativeToolCallingChatClient(
                                                 JSONObject()
                                                     .put("type", "boolean")
                                                     .put("description", "Run this automation through Shizuku/Sui privileged shell. Requires Shizuku setup and user-granted permission."),
+                                            )
+                                            .put(
+                                                "name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Variable name for set_variable, get_variable, or delete_variable. Leading % is optional."),
+                                            )
+                                            .put(
+                                                "value",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Variable value for set_variable."),
                                             ),
                                     )
                                     .put("required", JSONArray().put("action")),

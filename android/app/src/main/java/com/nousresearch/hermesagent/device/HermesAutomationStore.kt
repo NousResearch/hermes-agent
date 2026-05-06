@@ -98,6 +98,38 @@ class HermesAutomationStore(context: Context) {
 
     fun clear() {
         saveAll(emptyList())
+        saveVariables(JSONObject())
+    }
+
+    fun listVariables(): JSONObject {
+        val raw = preferences.getString(KEY_VARIABLES, "{}").orEmpty()
+        return runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
+    }
+
+    fun getVariable(name: String): String? {
+        val normalized = normalizeVariableName(name) ?: return null
+        val variables = listVariables()
+        return if (variables.has(normalized) && !variables.isNull(normalized)) {
+            variables.optString(normalized)
+        } else {
+            null
+        }
+    }
+
+    fun setVariable(name: String, value: String): Boolean {
+        val normalized = normalizeVariableName(name) ?: return false
+        val variables = listVariables().put(normalized, value.take(MAX_VARIABLE_VALUE_CHARS))
+        saveVariables(variables)
+        return true
+    }
+
+    fun removeVariable(name: String): Boolean {
+        val normalized = normalizeVariableName(name) ?: return false
+        val variables = listVariables()
+        val existed = variables.has(normalized)
+        variables.remove(normalized)
+        saveVariables(variables)
+        return existed
     }
 
     private fun saveAll(records: List<HermesAutomationRecord>) {
@@ -107,12 +139,33 @@ class HermesAutomationStore(context: Context) {
         preferences.edit().putString(KEY_RECORDS, array.toString()).apply()
     }
 
+    private fun saveVariables(variables: JSONObject) {
+        preferences.edit().putString(KEY_VARIABLES, variables.toString()).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "hermes_android_automations"
         private const val KEY_RECORDS = "records_json"
+        private const val KEY_VARIABLES = "variables_json"
+        private const val MAX_VARIABLE_VALUE_CHARS = 4_000
+
+        fun normalizeVariableName(name: String): String? {
+            val trimmed = name.trim().removePrefix("%")
+            if (!VARIABLE_NAME_REGEX.matches(trimmed)) {
+                return null
+            }
+            return trimmed.uppercase()
+        }
+
+        private val VARIABLE_NAME_REGEX = Regex("[A-Za-z_][A-Za-z0-9_]{0,63}")
     }
 }
 
 const val ACTION_TYPE_SHELL = "shell"
 const val TRIGGER_MANUAL = "manual"
 const val TRIGGER_INTERVAL = "interval"
+const val TRIGGER_BOOT = "boot"
+const val TRIGGER_POWER_CONNECTED = "power_connected"
+const val TRIGGER_POWER_DISCONNECTED = "power_disconnected"
+const val TRIGGER_BATTERY_LOW = "battery_low"
+const val TRIGGER_BATTERY_OKAY = "battery_okay"

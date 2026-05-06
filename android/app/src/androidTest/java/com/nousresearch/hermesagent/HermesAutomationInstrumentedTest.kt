@@ -78,4 +78,48 @@ class HermesAutomationInstrumentedTest {
         assertFalse(rejected.toString(), rejected.getBoolean("success"))
         assertTrue(rejected.getString("error").contains("at least 15"))
     }
+
+    @Test
+    fun triggerAutomationExpandsVariablesAndRunsShellTask() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-automation-trigger.txt").apply { delete() }
+
+        val variable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%message")
+                    .put("value", "trigger-ok"),
+            )
+        )
+        assertTrue(variable.toString(), variable.getBoolean("success"))
+        assertEquals("MESSAGE", variable.getString("name"))
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_shell_task",
+                JSONObject()
+                    .put("label", "Boot trigger smoke")
+                    .put("command", "printf %MESSAGE > \"\$HOME/hermes-automation-trigger.txt\"")
+                    .put("trigger", "boot"),
+            )
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("boot", created.getJSONObject("automation").getString("trigger_type"))
+
+        val triggered = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_trigger",
+                JSONObject().put("trigger", "boot"),
+            )
+        )
+        assertTrue(triggered.toString(), triggered.getBoolean("success"))
+        assertEquals(1, triggered.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("trigger-ok", target.readText())
+    }
 }

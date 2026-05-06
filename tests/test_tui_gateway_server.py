@@ -2426,6 +2426,33 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_omits_system_prompt_when_empty():
+    """system_prompt is typed `string | undefined` on the TS side; the gateway
+    must omit the key when no prompt is cached so the TS optional carries a
+    real signal (#20669)."""
+    info = server._session_info(
+        types.SimpleNamespace(tools=[], model="", _cached_system_prompt="")
+    )
+    assert "system_prompt" not in info
+
+    info_none = server._session_info(
+        types.SimpleNamespace(tools=[], model="", _cached_system_prompt=None)
+    )
+    assert "system_prompt" not in info_none
+
+    info_missing = server._session_info(types.SimpleNamespace(tools=[], model=""))
+    assert "system_prompt" not in info_missing
+
+
+def test_session_info_includes_system_prompt_when_set():
+    info = server._session_info(
+        types.SimpleNamespace(
+            tools=[], model="", _cached_system_prompt="You are helpful."
+        )
+    )
+    assert info["system_prompt"] == "You are helpful."
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

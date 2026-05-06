@@ -1414,7 +1414,9 @@ def _session_info(agent) -> dict:
     except Exception:
         info["mcp_servers"] = []
     try:
-        info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
+        _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+        if _sys_prompt:
+            info["system_prompt"] = _sys_prompt
     except Exception:
         pass
     try:

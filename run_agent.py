@@ -4134,9 +4134,9 @@ class AIAgent:
         *,
         title: str,
         summary: str,
-        provider: object | None = None,
-        model: object | None = None,
-        base_url: object | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
         detail: str | None = None,
     ) -> str:
         lines = [title, ""]
@@ -4168,9 +4168,9 @@ class AIAgent:
         partial: bool = False,
         error_kind: str = "provider_error",
         status_code: int | None = None,
-        provider: object | None = None,
-        model: object | None = None,
-        base_url: object | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
         title: str = "Model request failed",
         detail: str | None = None,
         display_error: str | None = None,
@@ -11905,9 +11905,9 @@ class AIAgent:
                                         "display_error": self._format_failure_display_error(
                                             title="Response truncated",
                                             summary="Response remained truncated after 3 continuation attempts",
-                                            provider=self.provider,
-                                            model=self.model,
-                                            base_url=self.base_url,
+                                            provider=str(self.provider) if self.provider else None,
+                                            model=str(self.model) if self.model else None,
+                                            base_url=str(self.base_url) if self.base_url else None,
                                         ),
                                     }
                                 return self._make_failure_result(
@@ -13574,9 +13574,9 @@ class AIAgent:
                                 failed=False,
                                 partial=True,
                                 error_kind="truncated_tool_arguments",
-                                provider=self.provider,
-                                model=self.model,
-                                base_url=self.base_url,
+                                provider=str(self.provider) if self.provider else None,
+                                model=str(self.model) if self.model else None,
+                                base_url=str(self.base_url) if self.base_url else None,
                                 title="Response truncated",
                             )
 

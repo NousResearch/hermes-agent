@@ -968,22 +968,30 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 _plugin_handlers = []
 
-            for _action_id, _cb, _plugin_name in _plugin_handlers:
-                # Capture loop vars per iteration via default args.
-                async def _wrapped(ack, body, action, _cb=_cb, _plugin_name=_plugin_name):
+            # Closure factory — keeps the wrapper's signature limited to
+            # ``(ack, body, action)``. slack_bolt inspects listener
+            # signatures via ``inspect.signature`` and passes ``None`` for
+            # any parameter name it doesn't recognise, so capturing loop
+            # vars as default args (``_cb=_cb`` etc.) silently clobbers
+            # them at dispatch time.
+            def _make_wrapper(cb, plugin_name):
+                async def _wrapped(ack, body, action):
                     try:
-                        await _cb(ack, body, action)
+                        await cb(ack, body, action)
                     except Exception as exc:  # pragma: no cover - defensive
                         logger.error(
                             "[Slack] Plugin '%s' action handler raised: %s",
-                            _plugin_name, exc, exc_info=True,
+                            plugin_name, exc, exc_info=True,
                         )
                         # Best-effort ack so Slack doesn't retry the click.
                         try:
                             await ack()
                         except Exception:
                             pass
-                self._app.action(_action_id)(_wrapped)
+                return _wrapped
+
+            for _action_id, _cb, _plugin_name in _plugin_handlers:
+                self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
                 logger.debug(
                     "[Slack] Registered plugin action handler %s (from %s)",
                     _action_id, _plugin_name,

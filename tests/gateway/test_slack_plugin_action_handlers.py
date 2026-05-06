@@ -343,6 +343,34 @@ class TestSlackAdapterPluginActionWiring:
         assert seen["body"] == {"b": 1}
         assert seen["action"] == {"action_id": "approve_x"}
 
+    def test_wrapper_signature_only_exposes_slack_bolt_args(self):
+        """Regression: slack_bolt introspects listener signatures and passes
+        ``None`` for any parameter name it doesn't recognise. If the wrapper
+        leaks closure variables (e.g. ``_cb``, ``_plugin_name``) into its
+        signature via default args, they get clobbered to None at dispatch
+        time and the wrapped callback becomes ``NoneType``.
+
+        The wrapper must only expose ``(ack, body, action)``.
+        """
+        import inspect
+
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        async def cb(ack, body, action):  # pragma: no cover
+            await ack()
+
+        plugin_handlers = [("approve_x", cb, "plug_x")]
+        _result, registered = _connect_with_recording_app(
+            adapter, plugin_handlers=plugin_handlers,
+        )
+
+        wrapped = next(c for aid, c in registered if aid == "approve_x")
+        params = list(inspect.signature(wrapped).parameters)
+        assert params == ["ack", "body", "action"], (
+            f"wrapper exposes extra params slack_bolt would clobber: {params}"
+        )
+
     def test_plugin_loader_failure_does_not_break_connect(self):
         """If get_plugin_manager() blows up, connect() must still succeed.
 

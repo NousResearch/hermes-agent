@@ -387,6 +387,13 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    "smart_model_routing": {
+        "enabled": False,
+        "mode": "smart-primary",
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+        "cheap_model": {},
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
@@ -2792,7 +2799,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "smart_model_routing", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",

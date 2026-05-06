@@ -952,6 +952,7 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        smart_model_routing: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
@@ -1032,6 +1033,13 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        if smart_model_routing is None:
+            try:
+                from hermes_cli.config import load_config
+                smart_model_routing = (load_config() or {}).get("smart_model_routing") or {}
+            except Exception:
+                smart_model_routing = {}
+        self._smart_model_routing = dict(smart_model_routing or {})
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -7486,6 +7494,174 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    # ── Smart model routing ────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_model_target_api_key(target: Dict[str, Any]) -> str | None:
+        """Resolve api_key/key_env from a model target config."""
+        api_key = (target.get("api_key") or "").strip()
+        if api_key.startswith("${") and api_key.endswith("}"):
+            api_key = os.getenv(api_key[2:-1], "").strip()
+        if not api_key:
+            key_env = (target.get("key_env") or "").strip()
+            if key_env:
+                api_key = os.getenv(key_env, "").strip()
+        return api_key or None
+
+    def _apply_model_target_for_turn(self, target: Dict[str, Any], *, reason: str) -> bool:
+        """Temporarily swap runtime to a target model for the current turn.
+
+        Mirrors the provider/client bookkeeping used by fallback, but does not
+        advance the fallback chain. ``_fallback_activated`` is intentionally set
+        so the existing start-of-next-turn restoration path returns to primary.
+        """
+        target_provider = (target.get("provider") or "").strip().lower()
+        target_model = (target.get("model") or "").strip()
+        if not target_provider or not target_model:
+            return False
+
+        try:
+            from agent.auxiliary_client import resolve_provider_client
+            from hermes_cli.model_normalize import normalize_model_for_provider
+
+            target_base_url = (target.get("base_url") or "").strip() or None
+            target_api_key = self._resolve_model_target_api_key(target)
+            target_client, _resolved_model = resolve_provider_client(
+                target_provider,
+                model=target_model,
+                raw_codex=True,
+                explicit_base_url=target_base_url,
+                explicit_api_key=target_api_key,
+            )
+            if target_client is None:
+                logging.warning(
+                    "Smart model routing target unavailable: %s/%s",
+                    target_provider,
+                    target_model,
+                )
+                return False
+
+            target_model = normalize_model_for_provider(target_model, target_provider)
+            target_base_url = str(target_client.base_url)
+            target_api_mode = (target.get("api_mode") or "").strip()
+            if not target_api_mode:
+                target_api_mode = "chat_completions"
+                if target_provider == "openai-codex":
+                    target_api_mode = "codex_responses"
+                elif target_provider == "anthropic" or target_base_url.rstrip("/").lower().endswith("/anthropic"):
+                    target_api_mode = "anthropic_messages"
+                elif self._is_azure_openai_url(target_base_url):
+                    target_api_mode = "chat_completions"
+                elif self._is_direct_openai_url(target_base_url):
+                    target_api_mode = "codex_responses"
+                elif self._provider_model_requires_responses_api(
+                    target_model,
+                    provider=target_provider,
+                ):
+                    target_api_mode = "codex_responses"
+                elif target_provider == "bedrock" or (
+                    base_url_hostname(target_base_url).startswith("bedrock-runtime.")
+                    and base_url_host_matches(target_base_url, "amazonaws.com")
+                ):
+                    target_api_mode = "bedrock_converse"
+
+            old_model = self.model
+            self.model = target_model
+            self.provider = target_provider
+            self.base_url = target_base_url
+            self.api_mode = target_api_mode
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
+            self._fallback_activated = True
+
+            timeout = get_provider_request_timeout(target_provider, target_model)
+            if target_api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+                effective_key = (target_client.api_key or resolve_anthropic_token() or "") if target_provider == "anthropic" else (target_client.api_key or "")
+                self.api_key = effective_key
+                self._anthropic_api_key = effective_key
+                self._anthropic_base_url = target_base_url
+                self._anthropic_client = build_anthropic_client(
+                    effective_key,
+                    self._anthropic_base_url,
+                    timeout=timeout,
+                )
+                self._is_anthropic_oauth = _is_oauth_token(effective_key) if target_provider == "anthropic" else False
+                self.client = None
+                self._client_kwargs = {}
+            else:
+                self.api_key = target_client.api_key
+                self.client = target_client
+                headers = getattr(target_client, "_custom_headers", None) or getattr(target_client, "default_headers", None)
+                self._client_kwargs = {
+                    "api_key": target_client.api_key,
+                    "base_url": target_base_url,
+                    **({"default_headers": dict(headers)} if headers else {}),
+                }
+                if timeout is not None:
+                    self._client_kwargs["timeout"] = timeout
+                    self._replace_primary_openai_client(reason="smart_routing_timeout_apply")
+
+            self._use_prompt_caching, self._use_native_cache_layout = (
+                self._anthropic_prompt_cache_policy(
+                    provider=target_provider,
+                    base_url=target_base_url,
+                    api_mode=target_api_mode,
+                    model=target_model,
+                )
+            )
+
+            if hasattr(self, "context_compressor") and self.context_compressor:
+                from agent.model_metadata import get_model_context_length
+                context_length = get_model_context_length(
+                    self.model,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    provider=self.provider,
+                    config_context_length=getattr(self, "_config_context_length", None),
+                )
+                self.context_compressor.update_model(
+                    model=self.model,
+                    context_length=context_length,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    provider=self.provider,
+                )
+
+            logging.info(
+                "Smart model routing activated: %s -> %s (%s), reason=%s",
+                old_model,
+                target_model,
+                target_provider,
+                reason,
+            )
+            return True
+        except Exception as e:
+            logging.warning("Smart model routing failed for %s: %s", target_model, e)
+            return False
+
+    def _maybe_apply_smart_routing(self, user_message: str) -> bool:
+        """Route simple turns to cheap_model when smart_model_routing is enabled."""
+        cfg = getattr(self, "_smart_model_routing", {}) or {}
+        try:
+            from agent.smart_model_routing import decide_route
+
+            decision = decide_route(user_message, cfg)
+            logging.debug(
+                "Smart model routing decision: target=%s reason=%s",
+                decision.target,
+                decision.reason,
+            )
+            if decision.target != "cheap":
+                return False
+            cheap = cfg.get("cheap_model") if isinstance(cfg, dict) else None
+            if not isinstance(cheap, dict):
+                return False
+            return self._apply_model_target_for_turn(cheap, reason=decision.reason)
+        except Exception as e:
+            logging.debug("Smart model routing skipped: %s", e)
+            return False
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
@@ -10430,6 +10606,8 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+
+        self._maybe_apply_smart_routing(user_message)
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback

@@ -10,6 +10,7 @@ Each route defines:
   - events: which event types to accept (header-based filtering)
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
+  - allow_raw_prompt: opt-in for {__raw__} payload dumps
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
@@ -59,10 +60,88 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
+_WEBHOOK_INVISIBLE_CHARS = {
+    "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff",
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+}
+
+_WEBHOOK_THREAT_PATTERNS = (
+    (
+        re.compile(
+            r"ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+"
+            r"(?:\w+\s+)*instructions",
+            re.IGNORECASE,
+        ),
+        "prompt_injection",
+    ),
+    (
+        re.compile(
+            r"disregard\s+(?:your|all|any)\s+"
+            r"(?:instructions|rules|guidelines)",
+            re.IGNORECASE,
+        ),
+        "disregard_rules",
+    ),
+    (
+        re.compile(r"(?:system|developer)\s+prompt\s+override", re.IGNORECASE),
+        "system_prompt_override",
+    ),
+    (
+        re.compile(
+            r"do\s+not\s+tell\s+the\s+user|hide\s+this\s+from\s+the\s+user|"
+            r"secretly\s+(?:run|execute|call)",
+            re.IGNORECASE,
+        ),
+        "deception",
+    ),
+    (
+        re.compile(
+            r"\b(?:terminal_command|execute_code|write_file|read_file|"
+            r"browser_console|delegate_task)\b",
+            re.IGNORECASE,
+        ),
+        "privileged_tool_request",
+    ),
+    (
+        re.compile(
+            r"\b(?:cat|read|open|dump|print|exfiltrate|send|upload)\b[^\n]{0,160}"
+            r"(?:~\/\.hermes|\.env|credentials?|secrets?|api[_ -]?keys?|tokens?|passwords?|"
+            r"\/etc\/(?:passwd|shadow)|\.ssh|id_rsa|private[_ -]?key)",
+            re.IGNORECASE,
+        ),
+        "secret_access",
+    ),
+    (
+        re.compile(
+            r"\b(?:curl|wget|fetch|http)\b[^\n]{0,160}"
+            r"(?:\.env|credentials?|secrets?|api[_ -]?keys?|tokens?|passwords?)",
+            re.IGNORECASE,
+        ),
+        "secret_exfiltration",
+    ),
+    (
+        re.compile(r"authorized_keys|\/etc\/sudoers|rm\s+-rf\s+\/", re.IGNORECASE),
+        "host_modification",
+    ),
+)
+
 
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _scan_webhook_prompt(prompt: str) -> str:
+    """Return a block reason if rendered webhook prompt content is unsafe."""
+    for char in _WEBHOOK_INVISIBLE_CHARS:
+        if char in prompt:
+            return f"invisible unicode U+{ord(char):04X}"
+
+    for pattern, reason in _WEBHOOK_THREAT_PATTERNS:
+        if pattern.search(prompt):
+            return reason
+
+    return ""
 
 
 class WebhookAdapter(BasePlatformAdapter):
@@ -372,8 +451,34 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
-        # Format prompt from template
+        # Format prompt from template. Agent routes require an explicit
+        # template so attacker-controlled payloads are not dumped wholesale
+        # into the main instruction channel by default.
         prompt_template = route_config.get("prompt", "")
+        deliver_only = bool(route_config.get("deliver_only"))
+        if (
+            not deliver_only
+            and (not isinstance(prompt_template, str) or not prompt_template.strip())
+        ):
+            logger.warning(
+                "[webhook] Rejecting route %s without explicit prompt template",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Webhook prompt template required"},
+                status=400,
+            )
+
+        if "{__raw__}" in str(prompt_template) and not route_config.get("allow_raw_prompt"):
+            logger.warning(
+                "[webhook] Rejecting {__raw__} template for route %s without allow_raw_prompt",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Raw webhook payload disabled"},
+                status=400,
+            )
+
         prompt = self._render_prompt(
             prompt_template, payload, event_type, route_name
         )
@@ -407,6 +512,19 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
+        if not deliver_only:
+            scan_reason = _scan_webhook_prompt(prompt)
+            if scan_reason:
+                logger.warning(
+                    "[webhook] Blocked unsafe prompt for route %s: %s",
+                    route_name,
+                    scan_reason,
+                )
+                return web.json_response(
+                    {"error": "Unsafe webhook prompt", "reason": scan_reason},
+                    status=400,
+                )
+
         # Build a unique delivery ID
         delivery_id = request.headers.get(
             "X-GitHub-Delivery",
@@ -438,7 +556,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # cron jobs, other agents) that need to push a plain notification
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
-        if route_config.get("deliver_only"):
+        if deliver_only:
             delivery = {
                 "deliver": route_config.get("deliver", "log"),
                 "deliver_extra": self._render_delivery_extra(

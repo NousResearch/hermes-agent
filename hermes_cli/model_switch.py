@@ -1605,6 +1605,7 @@ def list_authenticated_providers(
                     "slug": slug,
                     "name": display_name,
                     "api_url": api_url,
+                    "api_key": api_key,
                     "models": [],
                 }
 
@@ -1666,6 +1667,29 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+
+            # Live model discovery for custom provider endpoints.
+            # If the endpoint exposes OpenAI-compatible /v1/models, fetch the
+            # live model list so the picker shows all available models instead
+            # of just the single model: field from config. Falls back to the
+            # static model list from config if the endpoint is unreachable.
+            api_url = grp["api_url"]
+            api_key = grp.get("api_key") or ""
+            if api_url and api_key:
+                try:
+                    from hermes_cli.models import fetch_api_models
+                    live_models = fetch_api_models(api_key, api_url)
+                    if live_models:
+                        # Merge live models with any statically configured
+                        # models (preserve config order, append new ones)
+                        existing = set(grp["models"])
+                        for m in live_models:
+                            if m not in existing:
+                                grp["models"].append(m)
+                                existing.add(m)
+                except Exception:
+                    pass
+
             results.append({
                 "slug": slug,
                 "name": grp["name"],
@@ -1687,11 +1711,9 @@ def list_authenticated_providers(
 
 def list_picker_providers(
     current_provider: str = "",
-    current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
-    current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -1716,11 +1738,9 @@ def list_picker_providers(
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
-        current_base_url=current_base_url,
         user_providers=user_providers,
         custom_providers=custom_providers,
         max_models=max_models,
-        current_model=current_model,
     )
 
     filtered: List[dict] = []

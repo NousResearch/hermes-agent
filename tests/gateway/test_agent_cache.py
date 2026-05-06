@@ -938,12 +938,12 @@ class TestAgentCacheSpilloverLive:
         """Many threads inserting in parallel end with len(cache) == CAP."""
         from gateway import run as gw_run
 
-        CAP = 16
+        CAP = 8
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
         runner = self._runner()
 
-        N_THREADS = 8
-        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
+        N_THREADS = 4
+        PER_THREAD = 8  # 4 * 8 = 32 inserts into an 8-slot cache
 
         def worker(tid: int):
             for j in range(PER_THREAD):

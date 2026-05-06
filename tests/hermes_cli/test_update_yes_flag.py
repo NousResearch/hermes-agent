@@ -12,7 +12,22 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 import hermes_cli.main as hermes_main
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_wrapper(monkeypatch):
+    """Keep these unit tests focused on --yes behavior, not install mode/stdio state."""
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.config.managed_error", lambda _action: None)
+    monkeypatch.setattr(hermes_main, "_install_hangup_protection", lambda gateway_mode=False: {})
+    monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda _state: None)
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda _args: None)
+    monkeypatch.setattr(hermes_main, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(hermes_main, "_update_node_dependencies", lambda *a, **k: None)
+    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
 
 
 def _make_run_side_effect(

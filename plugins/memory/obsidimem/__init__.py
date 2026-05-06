@@ -493,6 +493,35 @@ class ObsidimemProvider(MemoryProvider):
         ).start()
         return ""
 
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror explicit /remember writes to obsidimem as level=explicit observations."""
+        if action == "remove" or self._cron_skipped or not self._config or not self._client:
+            return
+
+        payload = {
+            "observations": [{
+                "observer_name": self._config["observer_name"],
+                "observed_name": self._config["observed_name"],
+                "content": f"[memory:{target}:{action}] {content}",
+                "level": "explicit",
+            }]
+        }
+
+        def _write():
+            try:
+                self._client.post("/memory/observations", json=payload)
+            except Exception as e:
+                logger.debug("obsidimem: on_memory_write failed: %s", e)
+
+        self._write_thread = threading.Thread(target=_write, daemon=True, name="obsidimem-write")
+        self._write_thread.start()
+
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         """Store delegated task+result as an explicit observation."""
         if self._cron_skipped or not self._config or not self._client:

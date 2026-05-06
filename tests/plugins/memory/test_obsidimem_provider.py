@@ -166,3 +166,82 @@ def test_session_switch_cron_skipped_is_noop(monkeypatch, tmp_path, fake_client)
     p.on_session_switch("session-2")
 
     assert fake_client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# on_memory_write
+# ---------------------------------------------------------------------------
+
+def test_memory_write_add_posts_observation(provider, fake_client):
+    """add action must POST an explicit-level observation to obsidimem."""
+    fake_client.calls.clear()
+
+    provider.on_memory_write("add", "memory", "Doug prefers terse responses")
+    provider._write_thread.join(timeout=2.0)
+
+    obs_posts = [b for m, u, b in fake_client.calls if m == "POST" and "/memory/observations" in u]
+    assert len(obs_posts) == 1
+    obs = obs_posts[0]["observations"][0]
+    assert obs["level"] == "explicit"
+    assert "Doug prefers terse responses" in obs["content"]
+    assert obs["observer_name"] == "hermes"
+    assert obs["observed_name"] == "doug"
+
+
+def test_memory_write_replace_posts_observation(provider, fake_client):
+    """replace action must also POST to obsidimem (same as add)."""
+    fake_client.calls.clear()
+
+    provider.on_memory_write("replace", "user", "Doug is a networking veteran")
+    provider._write_thread.join(timeout=2.0)
+
+    obs_posts = [b for m, u, b in fake_client.calls if m == "POST" and "/memory/observations" in u]
+    assert len(obs_posts) == 1
+
+
+def test_memory_write_remove_is_noop(provider, fake_client):
+    """remove action must not call any API (no observation delete endpoint)."""
+    fake_client.calls.clear()
+
+    provider.on_memory_write("remove", "memory", "some old fact")
+
+    obs_posts = [u for m, u, _ in fake_client.calls if m == "POST" and "/memory/observations" in u]
+    assert obs_posts == []
+
+
+def test_memory_write_is_non_blocking(provider, fake_client):
+    """on_memory_write must return immediately (background thread)."""
+    import time
+
+    slow_done = threading.Event()
+    original_post = fake_client.post
+
+    def slow_post(url, *, json=None, **kwargs):
+        if "/memory/observations" in url:
+            time.sleep(0.3)
+            slow_done.set()
+        return original_post(url, json=json, **kwargs)
+
+    fake_client.post = slow_post
+
+    start = time.monotonic()
+    provider.on_memory_write("add", "memory", "test content")
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.1, f"on_memory_write blocked for {elapsed:.2f}s"
+    provider._write_thread.join(timeout=2.0)
+    assert slow_done.is_set()
+
+
+def test_memory_write_cron_skipped_is_noop(monkeypatch, tmp_path, fake_client):
+    """Cron-skipped providers must not post observations."""
+    (tmp_path / "obsidimem.json").write_text(json.dumps(_DEFAULT_CONFIG))
+    p = ObsidimemProvider()
+    p.initialize("session-1", hermes_home=str(tmp_path), platform="cron")
+    fake_client.calls.clear()
+
+    p.on_memory_write("add", "memory", "should not be stored")
+
+    assert p._write_thread is None
+    obs_posts = [u for m, u, _ in fake_client.calls if m == "POST" and "/memory/observations" in u]
+    assert obs_posts == []

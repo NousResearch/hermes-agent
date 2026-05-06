@@ -938,6 +938,7 @@ class AIAgent:
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
+        platform_hint: str = None,
         user_id: str = None,
         user_name: str = None,
         chat_id: str = None,
@@ -995,6 +996,10 @@ class AIAgent:
                 output_config.format instead of a trailing-assistant prefill.
             platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
                 Used to inject platform-specific formatting hints into the system prompt.
+            platform_hint (str): Custom platform description injected into the system prompt verbatim.
+                Takes priority over the static PLATFORM_HINTS dict and the plugin registry when set.
+                Useful for clients (e.g. hermes-webui) whose platform key is not in PLATFORM_HINTS.
+                Example: "You are on the Hermes WebUI in a browser. Markdown is fully supported."
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
@@ -1015,6 +1020,7 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self.platform_hint = platform_hint  # Custom hint; takes priority over PLATFORM_HINTS. (#20637)
         self._user_id = user_id  # Platform user identifier (gateway sessions)
         self._user_name = user_name
         self._chat_id = chat_id
@@ -5038,8 +5044,16 @@ class AIAgent:
         if _env_hints:
             prompt_parts.append(_env_hints)
 
+        # Platform hint resolution order (first match wins):
+        #   1. Caller-supplied platform_hint — lets external clients (e.g. hermes-webui)
+        #      inject a custom description even when their platform key is not in
+        #      PLATFORM_HINTS. (#20637)
+        #   2. Static PLATFORM_HINTS dict lookup by platform key.
+        #   3. Plugin registry fallback.
         platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
+        if self.platform_hint:
+            prompt_parts.append(self.platform_hint)
+        elif platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
         elif platform_key:
             # Check plugin registry for platform-specific LLM guidance

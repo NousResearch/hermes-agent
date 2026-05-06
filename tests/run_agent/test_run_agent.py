@@ -1070,6 +1070,7 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
         agent._cached_system_prompt = "cached value"
@@ -1082,6 +1083,71 @@ class TestInvalidateSystemPrompt:
         agent._cached_system_prompt = "cached"
         agent._invalidate_system_prompt()
         mock_store.load_from_disk.assert_called_once()
+
+
+class TestPlatformHint:
+    """Regression tests for AIAgent.platform_hint parameter (issue #20637).
+
+    External clients such as hermes-webui can pass a custom platform description
+    that takes priority over the static PLATFORM_HINTS dict lookup.
+    """
+
+    def _make_agent_with_platform(self, platform=None, platform_hint=None):
+        """Helper: build a minimal AIAgent with a given platform / platform_hint."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform=platform,
+                platform_hint=platform_hint,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_platform_hint_appears_in_system_prompt(self):
+        """A custom platform_hint is injected verbatim into the system prompt."""
+        custom = "You are on the Hermes WebUI. Markdown is fully supported."
+        agent = self._make_agent_with_platform(platform="webui", platform_hint=custom)
+        prompt = agent._build_system_prompt()
+        assert custom in prompt
+
+    def test_platform_hint_takes_priority_over_static_platform_hints(self):
+        """platform_hint overrides the PLATFORM_HINTS dict even for known keys like 'cli'."""
+        from agent.prompt_builder import PLATFORM_HINTS
+        custom = "CUSTOM HINT — overrides static dict"
+        agent = self._make_agent_with_platform(platform="cli", platform_hint=custom)
+        prompt = agent._build_system_prompt()
+        assert custom in prompt
+        # The static CLI hint must NOT appear when platform_hint is provided.
+        cli_hint = PLATFORM_HINTS.get("cli", "")
+        if cli_hint and cli_hint != custom:
+            assert cli_hint not in prompt
+
+    def test_no_platform_hint_falls_back_to_static_dict(self):
+        """Without platform_hint, the existing PLATFORM_HINTS lookup still works."""
+        from agent.prompt_builder import PLATFORM_HINTS
+        agent = self._make_agent_with_platform(platform="telegram")
+        prompt = agent._build_system_prompt()
+        if "telegram" in PLATFORM_HINTS:
+            assert PLATFORM_HINTS["telegram"] in prompt
+
+    def test_unknown_platform_without_hint_does_not_crash(self):
+        """An unrecognised platform key with no platform_hint does not crash."""
+        agent = self._make_agent_with_platform(platform="webui")
+        # Should not raise; unknown key + no hint = no extra block appended.
+        prompt = agent._build_system_prompt()
+        assert prompt  # at minimum the identity is present
+
+    def test_platform_hint_none_by_default(self, agent):
+        """AIAgent instances created without platform_hint default to None."""
+        assert agent.platform_hint is None
 
 
 class TestBuildApiKwargs:

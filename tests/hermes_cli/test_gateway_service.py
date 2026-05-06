@@ -2177,3 +2177,171 @@ class TestSystemdInstallOffersLegacyRemoval:
 
         assert prompt_called["count"] == 0
         assert remove_called["invoked"] is False
+
+
+class TestSystemScopeRequiresRootError:
+    """Tests for the SystemScopeRequiresRootError replacement of sys.exit(1).
+
+    Before this change, ``_require_root_for_system_service`` called
+    ``sys.exit(1)`` when non-root code tried a system-scope systemd
+    operation. The wizard's ``except Exception`` guards don't catch
+    ``SystemExit`` (it's a ``BaseException`` subclass), so the user was
+    dumped at a bare shell prompt mid-setup. The fix raises a typed
+    exception instead, which the wizard intercepts and handles with
+    actionable remediation.
+    """
+
+    def test_require_root_raises_when_non_root(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        with pytest.raises(gateway_cli.SystemScopeRequiresRootError) as excinfo:
+            gateway_cli._require_root_for_system_service("start")
+
+        assert excinfo.value.args[0] == "System gateway start requires root. Re-run with sudo."
+        assert excinfo.value.args[1] == "start"
+        # str(e) renders only the message, not the tuple repr, so that
+        # wizard format strings like f"Failed: {e}" print cleanly.
+        assert str(excinfo.value) == "System gateway start requires root. Re-run with sudo."
+        assert f"Failed: {excinfo.value}" == "Failed: System gateway start requires root. Re-run with sudo."
+
+    def test_require_root_noop_when_root(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 0)
+
+        # Should not raise, should not exit
+        gateway_cli._require_root_for_system_service("start")
+
+    def test_error_is_runtime_error_subclass(self):
+        """Wizards use ``except Exception`` guards — the error must be a
+        ``RuntimeError`` (catchable by ``Exception``), NOT a ``SystemExit``
+        (``BaseException``), so the wizard can recover from it.
+        """
+        err = gateway_cli.SystemScopeRequiresRootError("msg", "start")
+        assert isinstance(err, RuntimeError)
+        assert isinstance(err, Exception)
+        assert not isinstance(err, SystemExit)
+
+
+class TestSystemScopeWizardPreCheck:
+    """Tests for _system_scope_wizard_would_need_root — the guard the
+    wizard uses to detect the dead-end BEFORE prompting the user to start
+    a service that will fail without sudo.
+    """
+
+    @staticmethod
+    def _setup_units(tmp_path, monkeypatch, system_present: bool, user_present: bool):
+        sys_dir = tmp_path / "sys"
+        usr_dir = tmp_path / "usr"
+        sys_dir.mkdir()
+        usr_dir.mkdir()
+        if system_present:
+            (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        if user_present:
+            (usr_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: (sys_dir if system else usr_dir) / "hermes-gateway.service",
+        )
+
+    def test_non_root_with_only_system_unit_returns_true(self, tmp_path, monkeypatch):
+        self._setup_units(tmp_path, monkeypatch, system_present=True, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is True
+
+    def test_root_never_needs_root(self, tmp_path, monkeypatch):
+        self._setup_units(tmp_path, monkeypatch, system_present=True, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 0)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is False
+
+    def test_non_root_with_user_unit_present_returns_false(self, tmp_path, monkeypatch):
+        # User-scope unit present — user can start it themselves, no sudo needed.
+        self._setup_units(tmp_path, monkeypatch, system_present=True, user_present=True)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is False
+
+    def test_non_root_with_no_units_returns_false(self, tmp_path, monkeypatch):
+        self._setup_units(tmp_path, monkeypatch, system_present=False, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is False
+
+    def test_non_root_with_explicit_system_arg_returns_true(self, tmp_path, monkeypatch):
+        # Caller passed system=True explicitly (e.g. ``hermes gateway start --system``).
+        self._setup_units(tmp_path, monkeypatch, system_present=False, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root(system=True) is True
+
+
+class TestSystemScopeRemediationOutput:
+    """Tests for _print_system_scope_remediation — the actionable guidance
+    shown when the wizard detects a system-scope-only setup as non-root.
+    """
+
+    def test_start_remediation_mentions_sudo_systemctl_and_uninstall(self, capsys, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        gateway_cli._print_system_scope_remediation("start")
+        out = capsys.readouterr().out
+
+        assert "system-wide service" in out
+        assert "start requires root" in out
+        assert "sudo systemctl start hermes-gateway" in out
+        assert "sudo hermes gateway uninstall --system" in out
+        assert "hermes gateway install" in out
+
+    def test_restart_remediation_uses_systemctl_restart(self, capsys, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        gateway_cli._print_system_scope_remediation("restart")
+        out = capsys.readouterr().out
+
+        assert "restart requires root" in out
+        assert "sudo systemctl restart hermes-gateway" in out
+
+    def test_stop_remediation_uses_systemctl_stop(self, capsys, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        gateway_cli._print_system_scope_remediation("stop")
+        out = capsys.readouterr().out
+
+        assert "stop requires root" in out
+        assert "sudo systemctl stop hermes-gateway" in out
+
+
+class TestGatewayCommandCatchesSystemScopeError:
+    """The direct CLI path (``hermes gateway start --system`` etc.) must
+    still exit 1 with a clean message when non-root. The top-level
+    ``gateway_command`` catches ``SystemScopeRequiresRootError`` and
+    converts it back to ``sys.exit(1)``, preserving existing CLI behavior.
+    """
+
+    def test_non_root_system_start_exits_one_with_clean_message(self, tmp_path, monkeypatch, capsys):
+        sys_dir = tmp_path / "sys"
+        usr_dir = tmp_path / "usr"
+        sys_dir.mkdir()
+        usr_dir.mkdir()
+        (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: (sys_dir if system else usr_dir) / "hermes-gateway.service",
+        )
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kw: 0)
+
+        args = SimpleNamespace(gateway_command="start", system=True, all=False)
+
+        with pytest.raises(SystemExit) as excinfo:
+            gateway_cli.gateway_command(args)
+
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        # Renders the message, NOT the ``('msg', 'action')`` tuple repr
+        assert "System gateway start requires root. Re-run with sudo." in out
+        assert "('" not in out  # no tuple repr leaking through

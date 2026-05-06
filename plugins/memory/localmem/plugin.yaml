@@ -1,0 +1,6 @@
+name: localmem
+version: 1.0.0
+description: "Local memory — LLM fact extraction (qwen2.5:7b) + semantic search (nomic-embed-text) + ChromaDB. Zero cloud, zero API tokens."
+pip_dependencies:
+  - chromadb
+  - ollama

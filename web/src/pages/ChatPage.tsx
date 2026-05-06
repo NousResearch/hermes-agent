@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, Mic, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -131,11 +131,66 @@ function copyText(text: string): void {
   }
 }
 
+function preferredAudioMimeType(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/aac",
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
+function extensionForAudioType(mimeType: string): string {
+  const mediaType = mimeType.split(";", 1)[0].trim().toLowerCase();
+  if (mediaType === "audio/mp4") return "mp4";
+  if (mediaType === "audio/aac") return "aac";
+  if (mediaType === "audio/ogg") return "ogg";
+  if (mediaType === "audio/wav" || mediaType === "audio/wave") return "wav";
+  return "webm";
+}
+
+async function transcribeBrowserAudio(blob: Blob, token: string): Promise<string> {
+  const type = blob.type || "audio/webm";
+  const qs = new URLSearchParams({
+    filename: `dashboard-voice.${extensionForAudioType(type)}`,
+  });
+  const resp = await fetch(`/api/voice/transcribe?${qs.toString()}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": type,
+      "X-Hermes-Session-Token": token,
+    },
+    body: blob,
+  });
+
+  let payload: { success?: boolean; transcript?: string; error?: string; detail?: string } = {};
+  try {
+    payload = await resp.json();
+  } catch {
+    // Keep the HTTP error below useful when the server returns non-JSON.
+  }
+
+  if (!resp.ok) {
+    throw new Error(payload.detail || payload.error || `transcription failed (${resp.status})`);
+  }
+  if (payload.success === false) {
+    throw new Error(payload.error || "transcription failed");
+  }
+  return payload.transcript ?? "";
+}
+
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderStreamRef = useRef<MediaStream | null>(null);
+  const recorderChunksRef = useRef<BlobPart[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [transcribingVoice, setTranscribingVoice] = useState(false);
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
@@ -261,6 +316,119 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const restoreTerminalInput = useCallback(() => {
+    requestAnimationFrame(() => {
+      syncMetricsRef.current?.();
+      requestAnimationFrame(() => {
+        syncMetricsRef.current?.();
+        termRef.current?.focus();
+      });
+    });
+  }, []);
+
+  const showVoiceBanner = useCallback((message: string) => {
+    setBanner(message);
+    setRecording(false);
+    setTranscribingVoice(false);
+    restoreTerminalInput();
+  }, [restoreTerminalInput]);
+
+  const injectTranscript = useCallback((text: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showVoiceBanner("Chat websocket is not connected.");
+      return;
+    }
+    ws.send(text);
+    setTimeout(() => {
+      const s = wsRef.current;
+      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
+    }, 100);
+    termRef.current?.focus();
+  }, [showVoiceBanner]);
+
+  const stopBrowserRecording = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    if (recorder.state !== "inactive") recorder.stop();
+  }, []);
+
+  const startBrowserRecording = useCallback(async () => {
+    if (!window.__HERMES_SESSION_TOKEN__) {
+      showVoiceBanner("Session token unavailable. Reload the dashboard.");
+      return;
+    }
+    if (!window.isSecureContext) {
+      showVoiceBanner("Browser microphone requires HTTPS or localhost.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      showVoiceBanner("Browser microphone recording is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = preferredAudioMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorderChunksRef.current = [];
+      recorderRef.current = recorder;
+      recorderStreamRef.current = stream;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recorderChunksRef.current.push(event.data);
+      };
+
+      recorder.onerror = () => {
+        showVoiceBanner("Browser microphone recording failed.");
+      };
+
+      recorder.onstop = () => {
+        const chunks = recorderChunksRef.current;
+        const token = window.__HERMES_SESSION_TOKEN__;
+        recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
+        recorderStreamRef.current = null;
+        recorderRef.current = null;
+        setRecording(false);
+
+        if (!token || chunks.length === 0) return;
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        setTranscribingVoice(true);
+        transcribeBrowserAudio(blob, token)
+          .then((transcript) => {
+            const clean = transcript.trim();
+            if (clean) injectTranscript(clean);
+          })
+          .catch((err: Error) => {
+            showVoiceBanner(err.message || "Voice transcription failed.");
+          })
+          .finally(() => {
+            setTranscribingVoice(false);
+            restoreTerminalInput();
+          });
+      };
+
+      recorder.start();
+      setBanner(null);
+      setRecording(true);
+      termRef.current?.focus();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "microphone permission denied";
+      recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recorderStreamRef.current = null;
+      recorderRef.current = null;
+      showVoiceBanner(`Microphone unavailable: ${message}`);
+    }
+  }, [injectTranscript, restoreTerminalInput, showVoiceBanner]);
+
+  const handleVoiceButton = useCallback(() => {
+    if (recording) {
+      stopBrowserRecording();
+      return;
+    }
+    if (!transcribingVoice) void startBrowserRecording();
+  }, [recording, startBrowserRecording, stopBrowserRecording, transcribingVoice]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -322,7 +490,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
         copyText(text);
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -635,6 +803,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recorderStreamRef.current = null;
+      recorderRef.current = null;
       ws.close();
       wsRef.current = null;
       term.dispose();
@@ -809,6 +980,40 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          <Button
+            ghost
+            onClick={handleVoiceButton}
+            disabled={transcribingVoice}
+            title={
+              recording
+                ? "Stop browser microphone recording and transcribe"
+                : "Record browser microphone and send transcript"
+            }
+            aria-label={
+              recording
+                ? "Stop browser microphone recording"
+                : "Record browser microphone"
+            }
+            className={cn(
+              "absolute z-10",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
+              "bottom-2 left-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:left-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "lg:bottom-4 lg:left-4",
+              recording && "border-red-300/70 text-red-200 opacity-100",
+            )}
+            style={{ color: recording ? undefined : TERMINAL_THEME.foreground }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Mic className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {recording ? "stop voice" : transcribingVoice ? "transcribing" : "voice"}
+              </span>
+            </span>
+          </Button>
 
           <Button
             ghost

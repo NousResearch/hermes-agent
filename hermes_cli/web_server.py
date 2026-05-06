@@ -18,6 +18,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -77,6 +78,20 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+
+_DASHBOARD_VOICE_READ_CHUNK_SIZE = 1024 * 1024
+_DASHBOARD_VOICE_CONTENT_TYPE_SUFFIXES = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-wav": ".wav",
+}
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -147,17 +162,20 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+def _extra_accepted_hosts() -> set[str]:
+    """Dashboard hosts explicitly allowed behind a trusted local proxy."""
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    return {
+        host.strip().lower().rsplit(":", 1)[0]
+        for host in raw.split(",")
+        if host.strip()
+    }
 
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
+
+def _host_from_header(host_header: str) -> str:
+    """Return a normalized host name from an HTTP/WebSocket Host header."""
     if not host_header:
-        return False
+        return ""
     # Strip port suffix. IPv6 addresses use bracket notation:
     #   [::1]         — no port
     #   [::1]:9119    — with port
@@ -174,7 +192,21 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    return host_only.lower()
+
+
+def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+    """True if the Host header targets the interface we bound to.
+
+    Accepts:
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+      no protection possible at this layer)
+    """
+    if not host_header:
+        return False
+    host_only = _host_from_header(host_header)
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -185,7 +217,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return (
+            host_only in _LOOPBACK_HOST_VALUES
+            or host_only in _extra_accepted_hosts()
+        )
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -2916,6 +2951,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """
     if _is_public_bind():
         return True
+    headers_get = getattr(getattr(ws, "headers", None), "get", None)
+    host_header = headers_get("host", "") if headers_get else ""
+    if _host_from_header(host_header) in _extra_accepted_hosts():
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -2961,6 +3000,108 @@ def _resolve_chat_argv(
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
     return list(argv), str(cwd) if cwd else None, env
+
+
+def _dashboard_voice_suffix(
+    filename: str,
+    content_type: str,
+    supported_formats: set[str],
+) -> str:
+    """Return a safe suffix for browser-recorded dashboard audio."""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in supported_formats:
+        return suffix
+
+    media_type = (content_type or "").split(";", 1)[0].strip().lower()
+    return _DASHBOARD_VOICE_CONTENT_TYPE_SUFFIXES.get(media_type, "")
+
+
+async def _write_dashboard_voice_body(
+    request: Request,
+    *,
+    suffix: str,
+    max_size: int,
+) -> str:
+    """Persist one bounded raw audio upload and return its temporary path."""
+    tmp_path = ""
+    size = 0
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix,
+            prefix="dashboard_voice_",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > max_size:
+                    raise HTTPException(status_code=413, detail="audio too large")
+                tmp.write(chunk)
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+    if size == 0:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="empty audio upload")
+
+    return tmp_path
+
+
+@app.post("/api/voice/transcribe")
+async def dashboard_voice_transcribe(request: Request) -> dict:
+    """Transcribe microphone audio captured by the dashboard browser.
+
+    The classic CLI/TUI voice path records with ``sounddevice`` on the host
+    running Hermes.  The dashboard is often opened from another device (for
+    example a MacBook/iPhone controlling a Mac mini over Tailscale), so this
+    endpoint accepts audio recorded by ``MediaRecorder`` in the browser and
+    reuses the existing STT pipeline server-side.  The returned transcript is
+    injected into the embedded PTY by the React chat page; this endpoint does
+    not create a second chat surface.
+    """
+    from tools.transcription_tools import MAX_FILE_SIZE, SUPPORTED_FORMATS, transcribe_audio
+
+    filename = request.query_params.get("filename", "")
+    suffix = _dashboard_voice_suffix(
+        filename,
+        request.headers.get("content-type", ""),
+        SUPPORTED_FORMATS,
+    )
+    if suffix not in SUPPORTED_FORMATS:
+        raise HTTPException(status_code=415, detail="unsupported audio format")
+
+    tmp_path = await _write_dashboard_voice_body(
+        request,
+        suffix=suffix,
+        max_size=MAX_FILE_SIZE,
+    )
+    try:
+        result = await asyncio.to_thread(transcribe_audio, tmp_path)
+        if result.get("success"):
+            try:
+                from tools.voice_mode import is_whisper_hallucination
+
+                transcript = str(result.get("transcript", ""))
+                if is_whisper_hallucination(transcript):
+                    return {"success": True, "transcript": "", "filtered": True}
+            except Exception as exc:
+                _log.debug("dashboard voice hallucination filter skipped: %s", exc)
+        return result
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:

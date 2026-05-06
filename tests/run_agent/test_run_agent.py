@@ -261,6 +261,36 @@ def agent_with_memory_tool():
         return a
 
 
+def test_stream_delta_routes_inline_think_blocks_to_reasoning(agent):
+    """Inline <think> blocks in streamed content must not leak visibly."""
+    visible = []
+    reasoning = []
+    agent.stream_delta_callback = visible.append
+    agent.reasoning_callback = reasoning.append
+
+    for chunk in ["<think>", "private", " thought", "</think>", "Paris"]:
+        agent._fire_stream_delta(chunk)
+    agent._reset_stream_delivery_tracking()
+
+    assert "".join(visible) == "Paris"
+    assert "".join(reasoning) == "private thought"
+
+
+def test_stream_delta_routes_split_inline_think_tags_to_reasoning(agent):
+    """Inline reasoning routing must survive vLLM-style split tag boundaries."""
+    visible = []
+    reasoning = []
+    agent.stream_delta_callback = visible.append
+    agent.reasoning_callback = reasoning.append
+
+    for chunk in ["<thi", "nk>reason", "ing</thi", "nk>final"]:
+        agent._fire_stream_delta(chunk)
+    agent._reset_stream_delivery_tracking()
+
+    assert "".join(visible) == "final"
+    assert "".join(reasoning) == "reasoning"
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

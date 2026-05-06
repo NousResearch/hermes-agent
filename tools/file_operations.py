@@ -486,7 +486,10 @@ class ShellFileOperations(FileOperations):
 
     def _uses_windows_shell_path_translation(self) -> bool:
         """Return True when the backend is native Windows using a POSIX-like shell."""
-        return getattr(self.env, "shell_path_style", "") == "git-bash"
+        shell_path_style = getattr(self.env, "shell_path_style", "")
+        if shell_path_style:
+            return shell_path_style == "git-bash"
+        return os.name == "nt"
 
     def _normalize_shell_path(self, path: str) -> str:
         """Convert Windows-style paths into a form Git Bash can consume."""
@@ -497,7 +500,12 @@ class ShellFileOperations(FileOperations):
             return path
 
         if re.match(r"^[A-Za-z]:[\\/]", path):
-            return path.replace("\\", "/")
+            normalized = path.replace("\\", "/")
+            if getattr(self.env, "shell_path_style", "") == "git-bash":
+                return normalized
+            drive = normalized[0].lower()
+            rest = normalized[2:].lstrip("/")
+            return f"/mnt/{drive}/{rest}"
 
         if path.startswith("\\\\"):
             return "//" + path.lstrip("\\").replace("\\", "/")

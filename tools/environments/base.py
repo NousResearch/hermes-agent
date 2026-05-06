@@ -488,8 +488,10 @@ class BaseEnvironment(ABC):
         if os.name == "nt":
             def _drain():
                 try:
-                    text = proc.stdout.read()
-                    if text:
+                    while True:
+                        text = proc.stdout.readline()
+                        if not text:
+                            break
                         output_chunks.append(text)
                 except Exception:
                     pass

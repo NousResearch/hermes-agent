@@ -728,18 +728,15 @@ class TestKillProcess:
         s.detached = True
         registry._running[s.id] = s
 
-        calls = []
-
-        def fake_kill(pid, sig):
-            calls.append((pid, sig))
-
         try:
-            with patch("tools.process_registry.os.kill", side_effect=fake_kill):
+            with (
+                patch.object(registry, "_is_host_pid_alive", return_value=True),
+                patch.object(registry, "_terminate_host_pid") as terminate_host_pid,
+            ):
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            assert (424242, 0) in calls
-            assert (424242, signal.SIGTERM) in calls
+            terminate_host_pid.assert_called_once_with(424242)
         finally:
             registry._running.pop(s.id, None)
 

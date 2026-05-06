@@ -77,6 +77,23 @@ EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 # Custom endpoints all share provider='custom' but are keyed by their
 # custom_providers name: 'custom:<normalized_name>'.
 CUSTOM_POOL_PREFIX = "custom:"
+_DOTENV_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _expand_dotenv_env_refs(value: str, env_file: Dict[str, str]) -> str:
+    """Expand simple $VAR/${VAR} references from .env before pool persistence."""
+    expanded = value
+    for _ in range(10):
+        next_value = _DOTENV_REF_RE.sub(
+            lambda match: env_file.get(match.group(1) or match.group(2))
+            or os.environ.get(match.group(1) or match.group(2), "")
+            or match.group(0),
+            expanded,
+        )
+        if next_value == expanded:
+            break
+        expanded = next_value
+    return expanded
 
 
 # Fields that are only round-tripped through JSON — never used for logic as attributes.
@@ -1381,14 +1398,20 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
+    env_file = load_env()
 
     # Prefer ~/.hermes/.env over os.environ — the user's config file is the
     # authoritative source for Hermes credentials. Stale env vars from parent
     # processes (Codex CLI, test scripts, etc.) should not override deliberate
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
-        env_file = load_env()
-        val = env_file.get(key) or os.environ.get(key) or ""
+        raw_value = env_file.get(key)
+        if raw_value:
+            val = _expand_dotenv_env_refs(raw_value, env_file)
+            if _DOTENV_REF_RE.search(val):
+                val = os.environ.get(key, "")
+        else:
+            val = os.environ.get(key, "")
         return val.strip()
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an

@@ -382,6 +382,78 @@ def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
     )
 
 
+def test_load_pool_expands_dotenv_reference_before_seeding(tmp_path, monkeypatch):
+    """Regression for #20310: do not persist raw ${VAR} tokens to auth.json."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ant-api03-expanded-from-env")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    (hermes_home / ".env").write_text("ANTHROPIC_API_KEY=${OPENAI_API_KEY}\n")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:ANTHROPIC_API_KEY"
+    assert entry.access_token == "sk-ant-api03-expanded-from-env"
+
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["anthropic"][0]
+    assert persisted["access_token"] == "sk-ant-api03-expanded-from-env"
+
+
+def test_load_pool_expands_dotenv_reference_from_same_file(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ant-api03-stale-from-shell")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    (hermes_home / ".env").write_text(
+        "OPENAI_API_KEY=sk-ant-api03-fresh-from-dotenv\n"
+        "ANTHROPIC_API_KEY=${OPENAI_API_KEY}\n"
+    )
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == "sk-ant-api03-fresh-from-dotenv"
+
+
+def test_load_pool_skips_unresolved_dotenv_reference(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("MISSING_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    (hermes_home / ".env").write_text("ANTHROPIC_API_KEY=${MISSING_API_KEY}\n")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+
+    assert pool.select() is None
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    assert auth_payload.get("credential_pool", {}).get("anthropic", []) == []
+
+
 def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypatch):
     """When ~/.hermes/.env does not define OPENROUTER_API_KEY (typical Docker /
     K8s / systemd deployment), seeding must still pick up the key from

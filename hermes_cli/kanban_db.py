@@ -953,31 +953,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key)"
         )
-    # Legacy column rename: ``spawn_failures`` → ``consecutive_failures``
-    # and ``last_spawn_error`` → ``last_failure_error``. The counter was
-    # originally spawn-only; it's now unified across spawn/timeout/
-    # crash outcomes. Rename when only the legacy columns exist to
-    # preserve historical counter values across upgrades. Add fresh
-    # otherwise.
+    # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
+    # and ``last_spawn_error`` → ``last_failure_error``. Avoid
+    # ``ALTER TABLE ... RENAME COLUMN`` here: existing board DBs may have
+    # related schema objects from older Kanban builds, and SQLite reparses
+    # the whole schema during a rename. Adding/copying is more tolerant and
+    # still preserves the historical counter/error values.
     if "consecutive_failures" not in cols:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN consecutive_failures "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
         if "spawn_failures" in cols:
             conn.execute(
-                "ALTER TABLE tasks RENAME COLUMN spawn_failures TO consecutive_failures"
-            )
-        else:
-            conn.execute(
-                "ALTER TABLE tasks ADD COLUMN consecutive_failures "
-                "INTEGER NOT NULL DEFAULT 0"
+                "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
             )
     if "worker_pid" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
     if "last_failure_error" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
         if "last_spawn_error" in cols:
             conn.execute(
-                "ALTER TABLE tasks RENAME COLUMN last_spawn_error TO last_failure_error"
+                "UPDATE tasks SET last_failure_error = last_spawn_error"
             )
-        else:
-            conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
     if "max_runtime_seconds" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
     if "last_heartbeat_at" not in cols:

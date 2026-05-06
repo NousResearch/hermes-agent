@@ -174,7 +174,9 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     mock_get_client.return_value = (mock_client, "custom/big-model")
 
     agent._emit_status = lambda msg: None
-    agent._check_compression_model_feasibility()
+    with patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.config.get_compatible_custom_providers", return_value=None):
+        agent._check_compression_model_feasibility()
 
     mock_ctx_len.assert_called_once_with(
         "custom/big-model",
@@ -182,6 +184,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="openrouter",
+        custom_providers=None,
     )
 
 
@@ -197,7 +200,9 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
     mock_get_client.return_value = (mock_client, "custom/model")
 
     agent._emit_status = lambda msg: None
-    agent._check_compression_model_feasibility()
+    with patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.config.get_compatible_custom_providers", return_value=None):
+        agent._check_compression_model_feasibility()
 
     mock_ctx_len.assert_called_once_with(
         "custom/model",
@@ -205,6 +210,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         api_key="sk-test",
         config_context_length=None,
         provider="openrouter",
+        custom_providers=None,
     )
 
 
@@ -258,6 +264,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="",
+        custom_providers=None,
     )
 
 
@@ -442,3 +449,58 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
         agent._compression_warning = None
 
     assert len(callback_events) == 0
+
+
+# ── custom_providers forwarding (fix #20608) ────────────────────────
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_passes_custom_providers(mock_get_client, mock_ctx_len):
+    """_check_compression_model_feasibility must forward custom_providers to
+    get_model_context_length so per-model context_length overrides in
+    custom_providers config are respected for the compression model.
+
+    Regression: without this fix the call omitted custom_providers, causing
+    step 0b (custom_providers lookup) to be skipped and context to fall back
+    to the 256K default — producing spurious 'Auto-lowered threshold' warnings
+    even when the compression model has 1M context (#20608).
+    """
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent._aux_compression_context_length_config = None
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://api.360.cn/v1"
+    mock_client.api_key = "sk-custom"
+    mock_get_client.return_value = (mock_client, "deepseek/deepseek/deepseek-v4-flash")
+
+    custom_providers = [
+        {
+            "name": "zhinao",
+            "base_url": "https://api.360.cn/v1",
+            "models": {
+                "deepseek/deepseek/deepseek-v4-flash": {"context_length": 1_000_000}
+            },
+        }
+    ]
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    with patch("hermes_cli.config.load_config", return_value={"custom_providers": custom_providers}), \
+         patch("hermes_cli.config.get_compatible_custom_providers", return_value=custom_providers):
+        agent._check_compression_model_feasibility()
+
+    # custom_providers must be forwarded so the 1M override is applied.
+    # _resolve_task_provider_model raises in tests (not mocked) → provider=""
+    # falls back to self.provider = "openrouter" from _make_agent().
+    mock_ctx_len.assert_called_once_with(
+        "deepseek/deepseek/deepseek-v4-flash",
+        base_url="https://api.360.cn/v1",
+        api_key="sk-custom",
+        config_context_length=None,
+        provider="openrouter",
+        custom_providers=custom_providers,
+    )
+
+    # 1M context >= 100K threshold → no spurious "Auto-lowered" warning
+    assert len(messages) == 0

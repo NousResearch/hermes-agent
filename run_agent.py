@@ -2694,6 +2694,19 @@ class AIAgent:
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
 
+            # Load custom_providers so per-model context_length overrides
+            # (step 0b in get_model_context_length) are honoured for the
+            # compression model. Without this, custom-provider models fall
+            # through to the 256K default, producing spurious
+            # "Auto-lowered threshold" warnings at startup.
+            _ccp_custom_providers = None
+            try:
+                from hermes_cli.config import load_config, get_compatible_custom_providers
+                _ccp_cfg = load_config()
+                _ccp_custom_providers = get_compatible_custom_providers(_ccp_cfg)
+            except Exception:
+                _ccp_custom_providers = None
+
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
@@ -2703,6 +2716,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
+                custom_providers=_ccp_custom_providers,
             )
 
             # Hard floor: the auxiliary compression model must have at least

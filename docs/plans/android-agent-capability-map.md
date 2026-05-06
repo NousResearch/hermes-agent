@@ -51,8 +51,8 @@ Agent Android implementation work.
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
 | Tasker-style manual tasks/actions | Present for saved shell actions through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. |
-| Tasker-style profiles/triggers | Minimal interval scheduling is present through Android alarms for saved shell tasks. Event, location, app-state, and sensor profiles are not yet present. |
-| Tasker-style variables | Partially present through conversation state and files; there is no dedicated variable table exposed as an Android automation primitive yet. |
+| Tasker-style profiles/triggers | Present for manual, interval, boot, power-connected, power-disconnected, battery-low, and battery-okay shell tasks. Location, app-state, sensor, calendar, notification, and plugin-profile triggers are not yet present. |
+| Tasker-style variables | Present as a durable Android automation variable table exposed through `android_automation_tool`; shell tasks can expand `%NAME` or `{{NAME}}` values at run time. |
 | Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
 | Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
 | Tasker Java/JavaScript code action | Partially present through app-workspace shell/Python and Shizuku shell. Arbitrary in-app Java execution is not exposed and should stay permission-gated. |
@@ -74,12 +74,12 @@ control available to consenting users.
 
 ## Next Tasker-Parity Work
 
-The next credible Tasker-parity feature after the minimal shell automation
-engine should extend profile coverage with explicit user-visible records:
+The next credible Tasker-parity feature after shell tasks, variables, and basic
+phone-state triggers should extend action/profile coverage with explicit
+user-visible records:
 
-- a durable variable store,
 - UI/system/file action records beyond shell commands,
-- event, location, app-state, and sensor triggers,
+- location, app-state, calendar, notification, and sensor triggers,
 - Shizuku-only actions clearly marked as requiring user-granted Shizuku/Sui, and
 - tests proving scheduled/manual actions cannot write outside the Hermes app
   workspace unless Shizuku is explicitly selected and available.

@@ -19,6 +19,8 @@ private val ENABLED_TOOLS = listOf(
     "android_shared_folder_read",
     "android_shared_folder_write",
     "android_automation_task",
+    "android_automation_variable",
+    "android_automation_trigger",
     "android_ui_snapshot",
     "android_ui_action",
     "read_file",

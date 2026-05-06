@@ -1,0 +1,10 @@
+{
+  "locations": [
+    {"name": "Dublin, CA",       "lat": 37.70,  "lon": -121.94},
+    {"name": "Ventura, CA",      "lat": 34.27,  "lon": -119.23},
+    {"name": "Santa Barbara, CA","lat": 34.42,  "lon": -119.70},
+    {"name": "Cal Poly SLO, CA", "lat": 35.31,  "lon": -120.66},
+    {"name": "Truckee, CA",      "lat": 39.33,  "lon": -120.18},
+    {"name": "Edinburgh, UK",     "lat": 55.95,  "lon": -3.19}
+  ]
+}

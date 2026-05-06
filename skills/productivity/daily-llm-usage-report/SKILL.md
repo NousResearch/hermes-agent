@@ -72,8 +72,6 @@ tail /opt/data/cost-report-daemon.log
 ```
 
 ## Pitfalls
-
-### Daemon runs without container env vars
 The daemon must be started via `cost_daemon_wrapper.py` (not directly), which reads tokens from `/opt/data/.env.tokens`. Starting it directly causes silent failures — the daemon sleeps and never sends.
 
 ### Old daemon still running with stale tokens

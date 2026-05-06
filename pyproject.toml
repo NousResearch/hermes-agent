@@ -159,19 +159,11 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.src]
-exclude = ["**"]
-
-[[tool.ty.overrides]]
-include = ["**"]
-
-[tool.ty.overrides.rules]
-unresolved-import = "ignore"
-invalid-method-override = "ignore"
-invalid-assignment = "ignore"
-not-iterable = "ignore"
+exclude = ["tinker-atropos"]
 
 [tool.ruff]
-exclude = ["*"]
+exclude = ["tinker-atropos"]
+select = [] # disable all lints for now, until we've wrangled typechecks a bit more :3
 
 [tool.uv]
 exclude-newer = "7 days"

@@ -1101,21 +1101,21 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert "update_mode" not in item
 
-    def test_modern_api_uses_stable_doc_id_with_append(self, provider, monkeypatch):
-        """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
+    def test_modern_api_uses_per_process_doc_id_with_replace(self, provider, monkeypatch):
+        """API on >=0.5.0 — retain replaces the per-process cumulative snapshot."""
         self._clear_capability_cache()
         monkeypatch.setattr(
             "plugins.memory.hindsight._fetch_hindsight_api_version",
             lambda *a, **kw: "0.5.6",
         )
+        old_doc = provider._document_id
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
 
         kw = provider._client.aretain_batch.call_args.kwargs
-        # Stable: just the session id, no per-process timestamp suffix.
-        assert kw["document_id"] == "test-session"
+        assert kw["document_id"] == old_doc
         item = kw["items"][0]
-        assert item["update_mode"] == "append"
+        assert item["update_mode"] == "replace"
 
     def test_capability_cached_per_url(self, provider, monkeypatch):
         """The /version probe must run at most once per (process, api_url)."""
@@ -1154,26 +1154,26 @@ class TestUpdateModeAppendCapability:
         # Cache hit on the second call → no second warn.
         assert len(warns) == 1
 
-    def test_session_switch_flush_picks_capability_against_old_session(
+    def test_session_switch_flush_picks_capability_against_old_document(
         self, provider_with_config, monkeypatch
     ):
-        """When the API supports append, the flush on /reset must land
-        in the OLD session's stable document, not a per-process id."""
+        """When the API supports replace, the flush on /reset must replace
+        the OLD session's per-process document, not append to a session doc."""
         self._clear_capability_cache()
         monkeypatch.setattr(
             "plugins.memory.hindsight._fetch_hindsight_api_version",
             lambda *a, **kw: "0.5.6",
         )
         p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        old_doc = p._document_id
         p.sync_turn("turn1-user", "turn1-asst")
         p.sync_turn("turn2-user", "turn2-asst")
         p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
         p._retain_queue.join()
 
         kw = p._client.aretain_batch.call_args.kwargs
-        # Flush goes to the OLD session's stable doc, not new-sid's.
-        assert kw["document_id"] == "test-session"
-        assert kw["items"][0]["update_mode"] == "append"
+        assert kw["document_id"] == old_doc
+        assert kw["items"][0]["update_mode"] == "replace"
 
 
 # ---------------------------------------------------------------------------

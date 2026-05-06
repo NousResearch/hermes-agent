@@ -1029,13 +1029,16 @@ class HindsightMemoryProvider(MemoryProvider):
     def _resolve_retain_target(self, fallback_document_id: str) -> tuple[str, str | None]:
         """Pick (document_id, update_mode) based on live API capability.
 
-        On Hindsight ≥ 0.5.0 the API supports ``update_mode='append'``,
-        which lets us reuse a stable session-scoped ``document_id`` across
-        process lifecycles without overwriting prior turns. On older APIs
-        we fall back to *fallback_document_id* (the per-process unique
-        ``f"{session_id}-{start_ts}"`` minted at initialize / switch time)
-        and don't pass ``update_mode`` at all — that's the only way the
-        resume-overwrite fix (#6654) keeps working on legacy servers.
+        Hermes retains cumulative transcript snapshots from its in-process
+        session buffer. On Hindsight ≥ 0.5.0, use ``update_mode='replace'``
+        against the per-process document so each retain replaces the previous
+        cumulative snapshot instead of appending earlier turns again. Older
+        APIs fall back to the same per-process document without ``update_mode``.
+
+        Do not use the bare session_id with replace here: after a process
+        restart Hermes may only have newly observed turns in memory, so replacing
+        a session-scoped document could discard older turns retained by a prior
+        process lifecycle.
 
         Probe is cached at module level per API URL, so this is one HTTP
         round-trip per (process, api_url) pair regardless of how many
@@ -1044,7 +1047,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._session_id:
             return fallback_document_id, None
         if _check_api_supports_update_mode_append(self._probe_url(), self._api_key):
-            return self._session_id, "append"
+            return fallback_document_id, "replace"
         return fallback_document_id, None
 
     def initialize(self, session_id: str, **kwargs) -> None:

@@ -86,6 +86,7 @@ def test_normalize_lang_accepts_supported():
 def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("chinese") == "zh"
     assert i18n._normalize_lang("zh-CN") == "zh"
+    assert i18n._normalize_lang("zh-TW") == "zh-hant"
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
@@ -132,6 +133,7 @@ def test_default_when_nothing_set(monkeypatch):
 def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="en").endswith("Denied")
     assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
+    assert i18n.t("approval.denied", lang="zh-hant").endswith("已拒絕") 
     assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
     assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
 

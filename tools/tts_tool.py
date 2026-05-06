@@ -1750,9 +1750,24 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
+        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper"):
+            # These providers always output MP3/WAV regardless of the output path
+            # extension.  If the caller requested .ogg (e.g. Telegram voice reply),
+            # the provider wrote MP3 bytes into the .ogg-named file.  Rename to
+            # .mp3 first so _convert_to_opus receives a correctly-named source,
+            # then convert to real Opus.  The intermediate .mp3 is cleaned up here.
+            if file_str.endswith(".ogg"):
+                mp3_path = file_str[:-4] + ".mp3"
+                os.rename(file_str, mp3_path)
+                file_str = mp3_path
             opus_path = _convert_to_opus(file_str)
             if opus_path:
+                # Remove the intermediate .mp3 temp file
+                try:
+                    if file_str != opus_path:
+                        os.unlink(file_str)
+                except OSError:
+                    pass
                 file_str = opus_path
                 voice_compatible = True
         elif provider in ("elevenlabs", "openai", "mistral", "gemini"):

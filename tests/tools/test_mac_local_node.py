@@ -899,6 +899,57 @@ def test_mac_terminal_local_requires_approval_for_inline_interpreter_code_bypass
     assert stdin_exec["error_code"] == "APPROVAL_REQUIRED"
 
 
+def test_mac_terminal_local_denies_glob_obfuscated_secret_paths(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_terminal_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    (trusted / ".env").write_text("TOKEN=value\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    for command in ["cat .e?v", "cat .[e]nv", f"cat {trusted / '.e?v'}"]:
+        payload = json.loads(handle_mac_terminal_local({"action": "run", "command": command, "cwd": str(trusted)}, policy=policy))
+
+        assert payload["ok"] is False
+        assert payload["error_code"] == "SECRET_DENIED"
+
+
+def test_mac_terminal_local_requires_approval_for_heredoc_interpreter_bypasses(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_terminal_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    (trusted / ".env").write_text("TOKEN=value\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    commands = [
+        "python - <<'EOF'\nprint(open('.e'+'nv').read())\nEOF",
+        "node <<'EOF'\nrequire('fs').readFileSync('.e'+'nv')\nEOF",
+        "env -i python - <<'EOF'\nprint(open('.e'+'nv').read())\nEOF",
+        "command -p python - <<'EOF'\nprint(open('.e'+'nv').read())\nEOF",
+        "env FOO=bar python - <<'EOF'\nprint(open('.e'+'nv').read())\nEOF",
+    ]
+    for command in commands:
+        payload = json.loads(handle_mac_terminal_local({"action": "run", "command": command, "cwd": str(trusted)}, policy=policy))
+
+        assert payload["ok"] is False
+        assert payload["error_code"] == "APPROVAL_REQUIRED"
+
+
+def test_mac_terminal_local_requires_approval_for_broad_delete_forms(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_terminal_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    for command in ["find . -delete", "find . -exec rm -f {} +", "find . -execdir rm -f {} +", "rm ./build --recursive", "rm -R build", "rm -Rf build"]:
+        payload = json.loads(handle_mac_terminal_local({"action": "run", "command": command, "cwd": str(trusted)}, policy=policy))
+
+        assert payload["ok"] is False
+        assert payload["error_code"] == "APPROVAL_REQUIRED"
+
+
 def test_mac_terminal_local_exec_code_runs_short_python_inside_trusted_root(tmp_path):
     from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_terminal_local
 

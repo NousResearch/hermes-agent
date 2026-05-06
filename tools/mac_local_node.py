@@ -155,7 +155,10 @@ class MacLocalPolicy:
     )
 
     destructive_patterns = (
-        re.compile(r"\brm\s+-[^\n;|&]*r[^\n;|&]*\b"),
+        re.compile(r"\brm\b[^\n;|&]*(?:--recursive\b|-[A-Za-z]*r[A-Za-z]*)", re.I),
+        re.compile(r"\bfind\b[^\n;|&]*\s-delete\b"),
+        re.compile(r"\bfind\b[^\n;|&]*\s-(?:exec|execdir)\s+rm\b"),
+        re.compile(r"\bperl\b[^\n;|&]*\b(unlink|rmtree)\b"),
         re.compile(r"\bgit\b.*\breset\s+--hard\b"),
         re.compile(r"\bgit\b.*\bclean\s+-[^\n;|&]*[fdx][^\n;|&]*\b"),
         re.compile(r"\bgit\b.*\bpush\b.*\s--force(?:-with-lease)?\b"),
@@ -283,10 +286,10 @@ class MacLocalPolicy:
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._has_shell_assignment_syntax(compact):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        if self._command_mentions_secret(compact, cwd or os.getcwd()):
+            return PolicyVerdict("deny", "SECRET_DENIED", cwd_scope)
         if self._matches_any(compact, self.unmodeled_shell_expansion_patterns):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
-        if self._command_mentions_secret(compact):
-            return PolicyVerdict("deny", "SECRET_DENIED", cwd_scope)
         if self._matches_any(compact, self.interactive_shell_patterns):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._inline_interpreter_requires_approval(compact):
@@ -322,7 +325,7 @@ class MacLocalPolicy:
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._matches_any(compact, self.external_patterns):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
-        if self._command_mentions_secret(compact):
+        if self._command_mentions_secret(compact, cwd or os.getcwd()):
             return PolicyVerdict("deny", "SECRET_DENIED", cwd_scope)
         if self._command_mentions_untrusted_path(compact, cwd or os.getcwd()):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
@@ -338,18 +341,34 @@ class MacLocalPolicy:
         normalized = text.replace("\\\\", "/")
         return any(pattern.search(normalized) for pattern in self.secret_name_patterns)
 
-    def _command_mentions_secret(self, command: str) -> bool:
+    def _command_mentions_secret(self, command: str, cwd: str | None = None) -> bool:
         if self._contains_secret_path_text(command):
             return True
         if any(self._is_secret_path(_normalize_path_for_policy(path)) for path in _absolute_path_mentions(command)):
             return True
         if self._matches_any(command, self.relative_secret_command_patterns):
             return True
+        cwd_path = _normalize_path_for_policy(cwd or os.getcwd())
         try:
             parts = shlex.split(command)
         except ValueError:
             parts = command.split()
-        return any(self._is_secret_path(_normalize_path_for_policy(part)) for part in parts)
+        for part in parts:
+            cleaned = _clean_command_path_token(part)
+            if not cleaned:
+                continue
+            expanded = _expand_command_path_token(cleaned, cwd_path)
+            path_candidates = [expanded]
+            if any(marker in expanded for marker in "*?[]"):
+                glob_pattern = expanded if expanded.startswith("/") else str(Path(cwd_path, expanded))
+                path_candidates.extend(str(Path(match).resolve(strict=False)) for match in glob.glob(glob_pattern, recursive=False))
+            elif expanded.startswith("/") or "/" in expanded or expanded.startswith("."):
+                base = Path(expanded) if expanded.startswith("/") else Path(cwd_path, expanded)
+                path_candidates.append(str(base.resolve(strict=False)))
+            for candidate in path_candidates:
+                if self._is_secret_path(_normalize_path_for_policy(candidate)):
+                    return True
+        return False
 
     def _has_shell_assignment_syntax(self, command: str) -> bool:
         try:
@@ -369,6 +388,11 @@ class MacLocalPolicy:
         return False
 
     def _inline_interpreter_requires_approval(self, command: str) -> bool:
+        if re.search(
+            r"(?:^|[;&|]\s*)(?:(?:env|command)(?:\s+(?:-\S+|[A-Za-z_][A-Za-z0-9_]*=\S+))*\s+)*(?:python3?|node)\b[^\n;|&]*(?:<<|<\s*[^\s])",
+            command,
+        ):
+            return True
         try:
             parts = shlex.split(command)
         except ValueError:

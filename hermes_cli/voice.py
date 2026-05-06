@@ -373,7 +373,7 @@ def start_continuous(
     silence_threshold: int = 200,
     silence_duration: float = 3.0,
     auto_restart: bool = True,
-) -> None:
+) -> bool:
     """Start a VAD-driven continuous recording loop.
 
     The loop calls ``on_transcript(text)`` each time speech is detected and
@@ -384,8 +384,9 @@ def start_continuous(
     starts so a push-to-talk caller can still enforce the three-strikes guard.
     After ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive silent cycles (no speech
     picked up at all) the loop stops itself and calls ``on_silent_limit`` so the
-    UI can reflect "voice off". Idempotent — calling while already active is a
-    no-op.
+    UI can reflect "voice off". Returns False if a previous stop is still
+    transcribing/cleaning up; otherwise returns True. Idempotent — calling while
+    already active is a successful no-op.
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
@@ -395,9 +396,12 @@ def start_continuous(
     global _continuous_no_speech_count
 
     with _continuous_lock:
-        if _continuous_active or _continuous_stopping:
+        if _continuous_active:
             _debug("start_continuous: already active — no-op")
-            return
+            return True
+        if _continuous_stopping:
+            _debug("start_continuous: stop/transcribe in progress — busy")
+            return False
         _continuous_active = True
         _continuous_auto_restart = auto_restart
         _continuous_on_transcript = on_transcript
@@ -437,13 +441,16 @@ def start_continuous(
         except Exception:
             pass
 
+    return True
+
 
 def stop_continuous(force_transcribe: bool = False) -> None:
     """Stop the active continuous loop and release the microphone.
 
-    Idempotent — calling while not active is a no-op. If force_transcribe
-    is True, the current buffer is transcribed before stopping. Otherwise
-    the buffer is discarded.
+    Idempotent — calling while not active is a no-op. If ``force_transcribe`` is
+    True, the recorder stops synchronously, then transcription/cleanup runs on a
+    background thread before reporting ``"idle"``. Otherwise the buffer is
+    discarded.
     """
     global _continuous_active, _continuous_on_transcript, _continuous_stopping
     global _continuous_on_status, _continuous_on_silent_limit

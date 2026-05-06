@@ -5664,7 +5664,7 @@ def _(rid, params: dict) -> dict:
                 if isinstance(duration, (int, float)) and not isinstance(duration, bool)
                 else 3.0
             )
-            start_continuous(
+            started = start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
@@ -5674,6 +5674,8 @@ def _(rid, params: dict) -> dict:
                 silence_duration=safe_duration,
                 auto_restart=False,
             )
+            if started is False:
+                return _ok(rid, {"status": "busy"})
             return _ok(rid, {"status": "recording"})
 
         # action == "stop"

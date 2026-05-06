@@ -263,6 +263,29 @@ def test_voice_record_stop_forces_transcription(monkeypatch):
     assert captured["force_transcribe"] is True
 
 
+def test_voice_record_start_reports_busy_when_stop_is_in_progress(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: False,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-busy",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        }
+    )
+
+    assert resp["result"]["status"] == "busy"
+
+
 def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     """Round-2 Copilot review regression on #19835.
 

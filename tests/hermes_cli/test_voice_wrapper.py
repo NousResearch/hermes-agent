@@ -344,10 +344,19 @@ class TestContinuousAPI:
 
         monkeypatch.setattr(voice, "_continuous_recorder", FakeRecorder())
 
-        voice.start_continuous(on_transcript=lambda _t: None)
+        started = voice.start_continuous(on_transcript=lambda _t: None)
 
         # The guard inside start_continuous short-circuits before rec.start()
+        assert started is True
         assert called["n"] == 0
+
+    def test_start_returns_false_while_stopping(self, monkeypatch):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(voice, "_continuous_active", False)
+        monkeypatch.setattr(voice, "_continuous_stopping", True, raising=False)
+
+        assert voice.start_continuous(on_transcript=lambda _t: None) is False
 
 
 class TestContinuousLoopSimulation:

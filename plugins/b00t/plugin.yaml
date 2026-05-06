@@ -1,0 +1,9 @@
+name: b00t
+version: 1.0.0
+description: "b00t guard interposition plugin — routes terminal commands through b00t hive run guards before execution. Intercepts pip→uv, docker→podman, main-branch protection, conventional commit enforcement, and custom Rhai guard rules."
+author: PromptExecution
+kind: hook
+platforms:
+  - linux
+hooks:
+  - pre_tool_call

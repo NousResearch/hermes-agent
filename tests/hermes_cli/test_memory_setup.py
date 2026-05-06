@@ -238,3 +238,68 @@ class TestCmdSetupAddVsReplace:
 
         assert saved.get("memory", {}).get("providers") == ["a", "b"]
         # "a" appears once — not duplicated
+
+    def test_setup_returns_after_single_provider(self, tmp_path, monkeypatch):
+        """cmd_setup() returns after configuring one provider without prompting 'Add another?'."""
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home",
+                            lambda: tmp_path)
+        saved = self._mock_providers(
+            monkeypatch,
+            ("x", "local", _DummyProvider()),
+            config_providers=None
+        )
+
+        # Pick provider "x" (index 0) — no add-vs-replace needed
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._curses_select",
+            lambda *args, **kwargs: 0
+        )
+
+        prompt_calls = []
+        def capture_prompt(prompt, default=""):
+            prompt_calls.append(prompt)
+            return default
+        monkeypatch.setattr("hermes_cli.memory_setup._prompt", capture_prompt)
+
+        from hermes_cli.memory_setup import cmd_setup
+        cmd_setup(None)
+
+        assert saved.get("memory", {}).get("providers") == ["x"]
+        # Ensure the "Add another?" prompt was never issued
+        assert not any("Add another" in p for p in prompt_calls)
+
+
+class TestMemoryRemoveCommand:
+    """Tests for 'hermes memory remove <provider>'"""
+
+    def test_remove_existing_provider(self, tmp_path, monkeypatch):
+        """Removing an active provider updates config."""
+        from hermes_cli.memory_setup import _set_configured_providers
+        import hermes_cli.config as config_mod
+
+        config = {}
+        _set_configured_providers(config, ["mnemosyne", "hindsight"])
+        monkeypatch.setattr(config_mod, "load_config", lambda: dict(config))
+
+        saved = {}
+        def fake_save(cfg):
+            saved["memory"] = cfg.get("memory", {})
+        monkeypatch.setattr(config_mod, "save_config", fake_save)
+
+        from hermes_cli.plugins_cmd import _remove_memory_provider
+        assert _remove_memory_provider("hindsight") is True
+        assert saved["memory"]["providers"] == ["mnemosyne"]
+        assert saved["memory"]["provider"] == "mnemosyne"
+
+    def test_remove_nonexistent_provider(self, tmp_path, monkeypatch):
+        """Removing a provider not in the list returns False."""
+        from hermes_cli.memory_setup import _set_configured_providers
+        import hermes_cli.config as config_mod
+
+        config = {}
+        _set_configured_providers(config, ["mnemosyne"])
+        monkeypatch.setattr(config_mod, "load_config", lambda: dict(config))
+        monkeypatch.setattr(config_mod, "save_config", lambda cfg: None)
+
+        from hermes_cli.plugins_cmd import _remove_memory_provider
+        assert _remove_memory_provider("hindsight") is False

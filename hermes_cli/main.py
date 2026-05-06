@@ -9806,6 +9806,8 @@ Examples:
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable all external providers (built-in only)")
+    remove_parser = memory_sub.add_parser("remove", help="Remove a specific memory provider from the active list")
+    remove_parser.add_argument("provider", help="Name of the memory provider to remove")
     _reset_parser = memory_sub.add_parser(
         "reset",
         help="Erase all built-in memory (MEMORY.md and USER.md)",
@@ -9836,6 +9838,29 @@ Examples:
             save_config(config)
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
+        elif sub == "remove":
+            from hermes_cli.plugins_cmd import _remove_memory_provider
+
+            provider_name = getattr(args, "provider", "")
+            if not provider_name:
+                print("\n  Usage: hermes memory remove <provider>\n")
+                return
+            if _remove_memory_provider(provider_name):
+                print(f"\n  ✓ Removed '{provider_name}' from active providers.")
+                from hermes_cli.plugins_cmd import _get_current_memory_provider
+                remaining = _get_current_memory_provider()
+                if remaining:
+                    print(f"  Active providers: {remaining}")
+                else:
+                    print("  Active providers: (none — built-in only)")
+                print("  Start a new session to activate.\n")
+            else:
+                print(f"\n  Provider '{provider_name}' is not in the active providers list.")
+                from hermes_cli.plugins_cmd import _get_current_memory_provider
+                current = _get_current_memory_provider()
+                if current:
+                    print(f"  Active providers: {current}")
+                print()
         elif sub == "reset":
             from hermes_constants import get_hermes_home, display_hermes_home
 

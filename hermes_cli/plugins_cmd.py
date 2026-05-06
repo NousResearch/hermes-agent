@@ -820,8 +820,27 @@ def _save_memory_provider(name: str) -> None:
         existing.append(name)
     config["memory"]["providers"] = existing if name else []
     # Also set legacy single-provider for backwards compat
-    config["memory"]["provider"] = name
+    config["memory"]["provider"] = existing[0] if existing else ""
     save_config(config)
+
+
+def _remove_memory_provider(name: str) -> bool:
+    """Remove a provider from the active providers list.
+
+    Returns True if the provider was found and removed, False otherwise.
+    """
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "memory" not in config:
+        return False
+    providers = config["memory"].get("providers", [])
+    if name not in providers:
+        return False
+    providers.remove(name)
+    config["memory"]["providers"] = providers
+    config["memory"]["provider"] = providers[0] if providers else ""
+    save_config(config)
+    return True
 
 
 def _save_context_engine(name: str) -> None:
@@ -835,39 +854,60 @@ def _save_context_engine(name: str) -> None:
 
 
 def _configure_memory_provider() -> bool:
-    """Launch a radio picker for memory providers. Returns True if changed."""
-    from hermes_cli.curses_ui import curses_radiolist
+    """Launch a checklist picker for memory providers. Returns True if changed."""
+    from hermes_cli.curses_ui import curses_checklist
+    from hermes_cli.config import load_config, save_config
 
-    current = _get_current_memory_provider()
+    config = load_config()
+    current_active = set()
+    mem = config.get("memory", {})
+    providers_list = mem.get("providers", [])
+    if providers_list:
+        current_active = {p for p in providers_list if p}
+    elif mem.get("provider", ""):
+        current_active = {mem["provider"]}
+
     providers = _discover_memory_providers()
 
-    # Build items: "built-in" first, then discovered providers
-    items = ["built-in (default)"]
-    names = [""]  # empty string = built-in
-    selected = 0
+    # Build checklist items: discovered providers + "built-in only" sentinel
+    items = []
+    names = []
+    pre_selected = set()
 
-    for name, desc in providers:
-        names.append(name)
+    for i, (name, desc) in enumerate(providers):
         label = f"{name} \u2014 {desc}" if desc else name
         items.append(label)
-        if name == current:
-            selected = len(items) - 1
+        names.append(name)
+        if name in current_active:
+            pre_selected.add(i)
 
-    # If current provider isn't in discovered list, add it
-    if current and current not in names:
-        names.append(current)
-        items.append(f"{current} (not found)")
-        selected = len(items) - 1
+    # Add built-in sentinel at end
+    builtin_idx = len(items)
+    items.append("built-in only (disable all external providers)")
+    names.append("")
 
-    choice = curses_radiolist(
-        title="Memory Provider (select one)",
+    # If nothing external is active, pre-select built-in
+    if not pre_selected:
+        pre_selected.add(builtin_idx)
+
+    selected_indices = curses_checklist(
+        title="Memory Providers (SPACE to toggle, ENTER to confirm)",
         items=items,
-        selected=selected,
+        selected=pre_selected,
     )
 
-    new_provider = names[choice]
-    if new_provider != current:
-        _save_memory_provider(new_provider)
+    # If built-in only is selected (or nothing), clear all
+    if builtin_idx in selected_indices or not selected_indices:
+        new_active = []
+    else:
+        new_active = [names[i] for i in sorted(selected_indices) if i < len(names) and names[i]]
+
+    # Compare with current and save if changed
+    old_active = sorted(current_active)
+    if sorted(new_active) != old_active:
+        from hermes_cli.memory_setup import _set_configured_providers
+        _set_configured_providers(config, new_active)
+        save_config(config)
         return True
     return False
 

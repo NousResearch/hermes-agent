@@ -349,14 +349,6 @@ def cmd_setup(args) -> None:
             _set_configured_providers(config, active)
         save_config(config)
         print(f"\n  Active providers: {', '.join(active)}")
-        # Ask if user wants to add another provider
-        remaining = [n for n, _, _ in providers if n not in active]
-        if remaining:
-            print(f"\n  Add another provider? ({', '.join(remaining)} available)")
-            ans = _prompt("  Add another? (y/N)", default="n")
-            if ans.lower().startswith("y"):
-                cmd_setup(args)
-                return
         print(f"\n  Start a new session to activate.\n")
         return
 
@@ -458,16 +450,6 @@ def cmd_setup(args) -> None:
         print(f"  Provider config saved")
     if env_writes:
         print(f"  API keys saved to .env")
-
-    # Ask if user wants to add another provider
-    remaining = [n for n, _, _ in providers if n not in active]
-    if remaining:
-        print(f"\n  Add another provider? ({', '.join(remaining)} available)")
-        ans = _prompt("  Add another? (y/N)", default="n")
-        if ans.lower().startswith("y"):
-            # Recursive call to set up another
-            cmd_setup(args)
-            return
 
     print(f"\n  Start a new session to activate.\n")
 

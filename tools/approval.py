@@ -698,7 +698,11 @@ def _normalize_approval_mode(mode) -> str:
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
         normalized = mode.strip().lower()
-        return normalized or "manual"
+        valid = ("manual", "smart", "off")
+        if normalized in valid:
+            return normalized
+        logger.warning("Invalid approval mode '%s' — defaulting to 'smart'", mode)
+        return "smart"
     return "manual"
 
 

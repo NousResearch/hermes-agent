@@ -355,6 +355,13 @@ _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
     "context-1m-2025-08-07",
+    # extended-cache-ttl-2025-04-11 enables the ``ttl`` field on
+    # cache_control markers (e.g. ``{"type": "ephemeral", "ttl": "1h"}``).
+    # Without this header, Anthropic ignores the ttl field and falls back
+    # to the default 5-minute cache TTL — which silently breaks the
+    # ``prompt_caching.cache_ttl: 1h`` config. The header is harmless when
+    # cache_ttl is "5m" (the marker just doesn't include ttl in that case).
+    "extended-cache-ttl-2025-04-11",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
@@ -364,6 +371,10 @@ _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 # Bearer-auth (MiniMax) endpoints since they host their own models and
 # unknown Anthropic beta headers risk request rejection.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
+# Extended cache TTL beta — Anthropic-only feature; bearer-auth endpoints
+# (MiniMax) host their own models and don't honor it, and may reject
+# unknown Anthropic-namespaced betas.
+_EXTENDED_CACHE_TTL_BETA = "extended-cache-ttl-2025-04-11"
 
 
 def _model_supports_1m_context(model: str | None) -> bool:
@@ -648,7 +659,7 @@ def _common_betas_for_base_url(
     gating only — capable models still get the beta.
     """
     if _requires_bearer_auth(base_url):
-        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA}
         return [b for b in _COMMON_BETAS if b not in _stripped]
     if drop_context_1m_beta:
         return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]

@@ -109,7 +109,7 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07,extended-cache-ttl-2025-04-11"
             }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
@@ -137,6 +137,36 @@ class TestBuildAnthropicClient:
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
+
+    def test_extended_cache_ttl_beta_present_for_anthropic_endpoints(self):
+        """Without extended-cache-ttl-2025-04-11, the ttl field on
+        cache_control markers (e.g. ``{"type": "ephemeral", "ttl": "1h"}``)
+        is silently ignored and Anthropic falls back to the 5-minute
+        default. The hermes prompt-caching layer emits ttl markers when
+        ``prompt_caching.cache_ttl: 1h`` is configured — the beta must be
+        on the wire or that config is a no-op."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert (
+                "extended-cache-ttl-2025-04-11"
+                in kwargs["default_headers"]["anthropic-beta"]
+            )
+
+    def test_extended_cache_ttl_beta_stripped_for_minimax_bearer(self):
+        """Bearer-auth endpoints host their own models and don't honor
+        Anthropic-namespaced betas; the extended-cache-ttl beta must be
+        stripped along with the other Anthropic-only betas."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-cn-secret-123",
+                base_url="https://api.minimaxi.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert (
+                "extended-cache-ttl-2025-04-11"
+                not in kwargs["default_headers"]["anthropic-beta"]
+            )
 
 
 class TestReadClaudeCodeCredentials:

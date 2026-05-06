@@ -119,25 +119,26 @@ TASK_CATEGORY_REQUIRED_CAPABILITY: Dict[str, Optional[str]] = {
 # 用于 LLM 分类为 "other" 时的安全网，确保真实工作不落入 other
 
 TASK_TYPE_KEYWORDS: Dict[str, List[str]] = {
-    "marketing_deck": [
-        "方案", "PPT", "提案", "客户", "品牌", "营销",
-        "合作规划", "世界杯", "资源包", "投放", "结案",
-    ],
-    "research": [
-        "搜索", "搜集", "整理资料", "竞品", "人物",
-        "品牌动作", "行业信息", "全网搜索",
-    ],
-    "file_work": [
-        "读 PPT", "改 Excel", "整理 Word", "提取 PDF",
-        "对比文件", "报价表", "排期", "合同",
-    ],
+    # 顺序重要：具体动作优先于领域关键词，避免"搜集+世界杯"被错判为marketing_deck
     "code_maintenance": [
-        "修 bug", "测试", "提交 git", "Hermes 路由",
+        "修 bug", "提交 git", "Hermes 路由",
         "agent_router", "delegate_tool", "系统可以正常跑通",
     ],
     "desktop_operation": [
-        "打开", "看一下界面", "验证", "截图", "操作 App",
-        "在 Hermes 验证", "在浏览器验证",
+        "截图", "操作 App", "在 Hermes 验证", "在浏览器验证",
+    ],
+    "file_work": [
+        ".pptx", ".docx", ".xlsx", ".pdf",
+        "读 PPT", "改 Excel", "整理 Word", "提取 PDF",
+        "对比文件", "合同", "报价表", "排期", "读一下",
+    ],
+    "research": [
+        "搜索", "搜集", "整理资料", "竞品",
+        "品牌动作", "行业信息", "全网搜索",
+    ],
+    "marketing_deck": [
+        "方案", "PPT", "提案", "客户", "品牌", "营销",
+        "合作规划", "世界杯", "资源包", "投放", "结案",
     ],
 }
 
@@ -303,30 +304,25 @@ class AgentRouter:
             raw_lower = raw_request.lower()
             raw_original = raw_request
 
-            # 1) 客户名命中 → 强制 marketing_deck
-            for client_name in CLIENT_NAME_KEYWORDS:
-                if client_name in raw_original:
-                    overridden_category = "marketing_deck"
-                    keyword_match_info = {
-                        "matched_keyword": client_name,
-                        "match_type": "client_name",
-                        "client": client_name,
-                        "local_project_path": CLIENT_DIRECTORY_MAP.get(client_name, ""),
-                    }
+            # 1) 先检查具体任务关键词（优先级高于客户名）
+            for task_type, keywords in TASK_TYPE_KEYWORDS.items():
+                for kw in keywords:
+                    if kw in raw_original or kw.lower() in raw_lower:
+                        overridden_category = task_type
+                        keyword_match_info = {
+                            "matched_keyword": kw,
+                            "match_type": "keyword",
+                        }
+                        break
+                if overridden_category:
                     break
 
-            # 2) 关键词匹配（客户名未命中时）
-            if not overridden_category:
-                for task_type, keywords in TASK_TYPE_KEYWORDS.items():
-                    for kw in keywords:
-                        if kw in raw_original or kw.lower() in raw_lower:
-                            overridden_category = task_type
-                            keyword_match_info = {
-                                "matched_keyword": kw,
-                                "match_type": "keyword",
-                            }
-                            break
-                    if overridden_category:
+            # 2) 独立客户名扫描：不覆盖 task_type，只填充元数据
+            if not keyword_match_info.get("client"):
+                for client_name in CLIENT_NAME_KEYWORDS:
+                    if client_name in raw_original:
+                        keyword_match_info["client"] = client_name
+                        keyword_match_info["local_project_path"] = CLIENT_DIRECTORY_MAP.get(client_name, "")
                         break
 
             # 3) 如果 LLM 分类为 other 但关键词命中 → 强制升格

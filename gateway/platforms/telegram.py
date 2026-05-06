@@ -3250,6 +3250,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
+                # Also resolve image MIME types (#20128)
+                if not ext and doc.mime_type:
+                    IMAGE_MIME_TO_EXT = {
+                        "image/jpeg": ".jpg", "image/png": ".png",
+                        "image/webp": ".webp", "image/gif": ".gif",
+                    }
+                    ext = IMAGE_MIME_TO_EXT.get(doc.mime_type, "")
+
+                # Image documents (.webp, .jpg, .png, .gif) should be routed
+                # through the image/vision pipeline, not rejected as unsupported. (#20128)
+                IMAGE_DOCUMENT_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+                if ext in IMAGE_DOCUMENT_EXTS:
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [f"image/{ext.lstrip('.')}"]
+                    event.message_type = MessageType.IMAGE
+                    logger.info("[Telegram] Cached image document (%s) at %s", ext, cached_path)
+                    await self.handle_message(event)
+                    return
+
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()

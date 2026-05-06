@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -518,6 +519,310 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+_CONTROL_PLANE_CLI_LOCK = threading.Lock()
+
+_CONTROL_PLANE_DISABLED_REASONS = {
+    "supabase_cli_missing": "Supabase CLI not found on server PATH",
+    "control_plane_query_failed": "Control-plane read query failed",
+    "control_plane_invalid_json": "Control-plane query returned invalid JSON",
+    "control_plane_unexpected_shape": "Control-plane query returned an unexpected shape",
+}
+
+
+def _redact_control_plane_error(text: str) -> str:
+    """Return a generic client-safe CLI error without credential details."""
+    if not text:
+        return _CONTROL_PLANE_DISABLED_REASONS["control_plane_query_failed"]
+    return "Control-plane read query failed; check server logs or Supabase CLI link state."
+
+
+def _control_plane_workdir() -> Path:
+    configured = os.environ.get("HERMES_CONTROL_PLANE_WORKDIR")
+    if configured:
+        return Path(configured).expanduser()
+    return get_hermes_home() / "webui-workspace"
+
+
+def _run_supabase_control_plane_read(sql: str) -> Tuple[Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
+    """Run a read-only Supabase CLI query against the linked control-plane project.
+
+    The browser never receives Supabase credentials. The server shells out to
+    the already-authenticated CLI and returns a disabled state instead of
+    raising if the CLI/link/workdir is unavailable.
+    """
+    supabase = shutil.which("supabase")
+    if not supabase:
+        return None, {
+            "enabled": False,
+            "reason": "supabase_cli_missing",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["supabase_cli_missing"],
+        }
+
+    cmd = [supabase, "db", "query", "--linked", "-o", "json", sql]
+    try:
+        with _CONTROL_PLANE_CLI_LOCK:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(_control_plane_workdir()),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+    except Exception:  # pragma: no cover - defensive around local CLI failures
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_query_failed",
+            "message": _redact_control_plane_error(""),
+        }
+
+    if proc.returncode != 0:
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_query_failed",
+            "message": _redact_control_plane_error(proc.stderr or proc.stdout),
+        }
+
+    stdout = (proc.stdout or "").strip()
+    if stdout.startswith("Initialising login role..."):
+        stdout = stdout.split("\n", 1)[1].strip() if "\n" in stdout else ""
+    try:
+        parsed = json.loads(stdout or "[]")
+    except json.JSONDecodeError:
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_invalid_json",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_invalid_json"],
+        }
+    if not isinstance(parsed, list):
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+    return parsed, None
+
+
+def _control_plane_payload_query() -> str:
+    return """
+with latest as (
+  select
+    id::text,
+    report_type,
+    run_ref,
+    status,
+    report_date::text,
+    title,
+    summary_kr,
+    obsidian_ref,
+    paperclip_parent_ref,
+    created_at::text,
+    updated_at::text
+  from hermes_reports.report_runs
+  where report_type = 'morning_brief'
+  order by created_at desc
+  limit 1
+), latest_id as (
+  select id::uuid as id from latest
+), counts as (
+  select jsonb_build_object(
+    'report_runs', (select count(*) from hermes_reports.report_runs),
+    'report_sections', (select count(*) from hermes_reports.report_sections),
+    'source_anchors', (select count(*) from hermes_sources.source_anchors),
+    'delivery_events', (select count(*) from hermes_notify.delivery_events),
+    'audit_events', (select count(*) from hermes_audit.audit_events)
+  ) as payload
+)
+select jsonb_build_object(
+  'enabled', true,
+  'status', 'ok',
+  'mode', 'read_only',
+  'project', 'hermes-control-plane',
+  'updated_at', now()::text,
+  'run', (select to_jsonb(latest) from latest),
+  'sections', coalesce((
+    select jsonb_agg(to_jsonb(s) order by s.section_order)
+    from (
+      select section_key, section_order, title, body_md, judgment_label, created_at::text
+      from hermes_reports.report_sections
+      where report_run_id in (select id from latest_id)
+      order by section_order
+    ) s
+  ), '[]'::jsonb),
+  'sources', coalesce((
+    select jsonb_agg(to_jsonb(src) order by src.created_at)
+    from (
+      select source_ref, source_title, publisher, published_at::text, observed_at::text,
+             timing_label, quality_label, claim_ref, created_at::text
+      from hermes_sources.source_anchors
+      where report_run_id in (select id from latest_id)
+      order by created_at
+    ) src
+  ), '[]'::jsonb),
+  'delivery_events', coalesce((
+    select jsonb_agg(to_jsonb(d) order by d.created_at)
+    from (
+      select
+             channel,
+             case
+               when channel = 'dry_run'
+                    and delivery_status = 'dry_run'
+                    and target_ref like 'telegram://dry-run/%'
+                 then target_ref
+               else '[redacted]'
+             end as target_ref,
+             case
+               when channel = 'dry_run' and delivery_status = 'dry_run'
+                 then payload_summary
+               else null
+             end as payload_summary,
+             delivery_status,
+             delivered_at::text,
+             null::text as error_summary,
+             created_at::text
+      from hermes_notify.delivery_events
+      where report_run_id in (select id from latest_id)
+        and channel = 'dry_run'
+        and delivery_status = 'dry_run'
+      order by created_at
+    ) d
+  ), '[]'::jsonb),
+  'audit_events', coalesce((
+    select jsonb_agg(to_jsonb(a) order by a.created_at)
+    from (
+      select event_type, subject_ref, actor_ref, source_refs, artifact_refs,
+             summary, verification_status, created_at::text
+      from hermes_audit.audit_events
+      where event_type = 'canary_insert'
+      order by created_at desc
+      limit 5
+    ) a
+  ), '[]'::jsonb),
+  'counts', (select payload from counts),
+  'boundaries', jsonb_build_object(
+    'writes_enabled', false,
+    'telegram_send_enabled', false,
+    'obsidian_authority_edit_enabled', false,
+    'cron_change_enabled', false
+  )
+) as payload;
+"""
+
+
+def _get_control_plane_morning_brief_payload() -> Dict[str, Any]:
+    rows, disabled = _run_supabase_control_plane_read(_control_plane_payload_query())
+    if disabled is not None:
+        return disabled
+    if not rows:
+        return {
+            "enabled": False,
+            "reason": "control_plane_empty_response",
+            "message": "Control-plane read query returned no rows",
+        }
+    payload = rows[0].get("payload") if isinstance(rows[0], dict) else None
+    if not isinstance(payload, dict):
+        return {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+    return payload
+
+
+def _first_dry_run_target_ref(delivery_events: Any) -> str:
+    if not isinstance(delivery_events, list):
+        return "telegram://dry-run/hera-198"
+    for event in delivery_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("channel") == "dry_run" and event.get("delivery_status") == "dry_run":
+            target_ref = event.get("target_ref")
+            if (
+                isinstance(target_ref, str)
+                and target_ref.strip().startswith("telegram://dry-run/")
+            ):
+                return target_ref.strip()
+    return "telegram://dry-run/hera-198"
+
+
+def _build_morning_brief_telegram_preview(canary: Dict[str, Any]) -> Dict[str, Any]:
+    run = canary.get("run") if isinstance(canary.get("run"), dict) else {}
+    counts = canary.get("counts") if isinstance(canary.get("counts"), dict) else {}
+    boundaries = canary.get("boundaries") if isinstance(canary.get("boundaries"), dict) else {}
+    delivery_events = canary.get("delivery_events")
+
+    title = str(run.get("title") or "Morning Brief Canary")
+    status = str(run.get("status") or canary.get("status") or "unknown")
+    project = str(canary.get("project") or "hermes-control-plane")
+    target_ref = _first_dry_run_target_ref(delivery_events)
+    report_sections = counts.get("report_sections", len(canary.get("sections") or []))
+    source_anchors = counts.get("source_anchors", len(canary.get("sources") or []))
+    delivery_status = "dry_run"
+    if isinstance(delivery_events, list) and delivery_events:
+        first = delivery_events[0] if isinstance(delivery_events[0], dict) else {}
+        delivery_status = str(first.get("delivery_status") or "dry_run")
+
+    message_text = "\n".join([
+        f"[HERA-198] {title} 준비됨",
+        "",
+        f"상태: {status}",
+        f"대상: {project} read-only canary",
+        f"섹션: {report_sections}",
+        f"소스: {source_anchors}",
+        f"전달상태: {delivery_status}",
+        "",
+        "처리 이유: Supabase control-plane → WebUI cockpit readback 통과 후 Telegram 알림 계약을 실제 발송 전 dry-run으로 검증.",
+    ])
+
+    max_length = 600
+    return {
+        "enabled": True,
+        "status": "ok",
+        "mode": "dry_run_preview",
+        "project": project,
+        "target_ref": target_ref,
+        "channel": "telegram",
+        "send_enabled": False,
+        "write_enabled": False,
+        "message_text": message_text,
+        "message_length": len(message_text),
+        "validation": {
+            "length_ok": len(message_text) <= max_length,
+            "max_length": max_length,
+            "requires_approval_before_send": True,
+            "no_telegram_send_performed": True,
+            "no_supabase_write_performed": True,
+            "no_cron_change_performed": True,
+            "no_obsidian_authority_edit_performed": True,
+        },
+        "source": {
+            "run_ref": run.get("run_ref"),
+            "report_status": status,
+            "control_plane_mode": canary.get("mode"),
+        },
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            **boundaries,
+        },
+    }
+
+
+@app.get("/api/control-plane/morning-brief-canary")
+def get_control_plane_morning_brief_canary():
+    return _get_control_plane_morning_brief_payload()
+
+
+@app.get("/api/control-plane/morning-brief-canary/telegram-preview")
+def get_control_plane_morning_brief_telegram_preview():
+    canary = _get_control_plane_morning_brief_payload()
+    if not canary.get("enabled"):
+        return canary
+    return _build_morning_brief_telegram_preview(canary)
 
 
 @app.get("/api/status")

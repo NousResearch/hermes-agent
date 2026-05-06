@@ -191,6 +191,303 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+
+    def test_control_plane_canary_requires_session_token(self):
+        import hermes_cli.web_server as web_server
+
+        resp = self.client.get(
+            "/api/control-plane/morning-brief-canary",
+            headers={web_server._SESSION_HEADER_NAME: "invalid-token"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_control_plane_canary_disabled_when_supabase_missing(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: None)
+        resp = self.client.get("/api/control-plane/morning-brief-canary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        assert data["reason"] == "supabase_cli_missing"
+
+
+    def test_control_plane_error_message_does_not_leak_cli_secrets(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        class Completed:
+            returncode = 1
+            stdout = ""
+            stderr = "failed postgresql://user:secret@db.example.com:5432/postgres service_role eyJabc"
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: "/usr/bin/supabase")
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "run",
+            lambda *args, **kwargs: Completed(),
+        )
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        assert data["reason"] == "control_plane_query_failed"
+        message = data["message"].lower()
+        assert "secret" not in message
+        assert "postgresql://" not in message
+        assert "service_role" not in message
+        assert "eyj" not in message
+
+    def test_control_plane_exception_message_does_not_leak_cli_command(self, monkeypatch, tmp_path):
+        import subprocess
+        import hermes_cli.web_server as web_server
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=[
+                    "/usr/bin/supabase",
+                    "db",
+                    "query",
+                    "--linked",
+                    "select * from hermes_notify.delivery_events where target_ref = 'telegram:7048346032'",
+                ],
+                timeout=30,
+            )
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: "/usr/bin/supabase")
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        assert data["reason"] == "control_plane_query_failed"
+        message = data["message"].lower()
+        assert "supabase" not in message
+        assert "hermes_notify" not in message
+        assert "7048346032" not in message
+        assert "delivery_events" not in message
+
+    def test_control_plane_cli_query_uses_serialization_lock(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps([{"payload": {"enabled": True, "mode": "read_only"}}])
+
+        class FakeLock:
+            entered = False
+            exited = False
+
+            def __enter__(self):
+                self.entered = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.exited = True
+                return False
+
+        fake_lock = FakeLock()
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: "/usr/bin/supabase")
+        monkeypatch.setattr(web_server, "_CONTROL_PLANE_CLI_LOCK", fake_lock)
+        monkeypatch.setattr(web_server.subprocess, "run", lambda *args, **kwargs: Completed())
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary")
+
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is True
+        assert fake_lock.entered is True
+        assert fake_lock.exited is True
+
+    def test_control_plane_canary_returns_read_only_payload(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps([
+                {
+                    "payload": {
+                        "enabled": True,
+                        "status": "ok",
+                        "mode": "read_only",
+                        "project": "hermes-control-plane",
+                        "run": {
+                            "title": "HERA-198 Morning Brief Canary",
+                            "run_ref": "hermes://canary/HERA-198/morning-brief/phase1",
+                            "status": "generated",
+                        },
+                        "sections": [{"section_key": "summary", "section_order": 1}],
+                        "sources": [{"source_ref": "hermes://design/HERA-198/schema-domain-map"}],
+                        "delivery_events": [{"channel": "dry_run", "delivery_status": "dry_run"}],
+                        "audit_events": [{"event_type": "canary_insert"}],
+                        "counts": {"report_runs": 1},
+                        "boundaries": {
+                            "writes_enabled": False,
+                            "telegram_send_enabled": False,
+                            "obsidian_authority_edit_enabled": False,
+                            "cron_change_enabled": False,
+                        },
+                    }
+                }
+            ])
+
+        calls = []
+
+        def fake_run(cmd, cwd, check, capture_output, text, timeout):
+            calls.append({"cmd": cmd, "cwd": cwd, "check": check, "timeout": timeout})
+            return Completed()
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: "/usr/bin/supabase")
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["mode"] == "read_only"
+        assert data["run"]["title"] == "HERA-198 Morning Brief Canary"
+        assert data["boundaries"]["writes_enabled"] is False
+        assert calls
+        assert calls[0]["cmd"][:5] == ["/usr/bin/supabase", "db", "query", "--linked", "-o"]
+        sql = calls[0]["cmd"][-1].lower()
+        assert "insert into" not in sql
+        assert "update " not in sql
+        assert "delete from" not in sql
+        assert "target_ref like 'telegram://dry-run/%'" in sql
+        assert "and channel = 'dry_run'" in sql
+        assert "null::text as error_summary" in sql
+
+    def test_control_plane_telegram_preview_requires_session_token(self):
+        import hermes_cli.web_server as web_server
+
+        resp = self.client.get(
+            "/api/control-plane/morning-brief-canary/telegram-preview",
+            headers={web_server._SESSION_HEADER_NAME: "invalid-token"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_control_plane_telegram_preview_is_dry_run_and_read_only(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps([
+                {
+                    "payload": {
+                        "enabled": True,
+                        "status": "ok",
+                        "mode": "read_only",
+                        "project": "hermes-control-plane",
+                        "run": {
+                            "title": "HERA-198 Morning Brief Canary",
+                            "run_ref": "hermes://canary/HERA-198/morning-brief/phase1",
+                            "status": "generated",
+                            "summary_kr": "Supabase control-plane readback 통과.",
+                        },
+                        "sections": [{"section_key": "summary", "section_order": 1}],
+                        "sources": [{"source_ref": "hermes://design/HERA-198/schema-domain-map"}],
+                        "delivery_events": [
+                            {
+                                "channel": "dry_run",
+                                "delivery_status": "dry_run",
+                                "target_ref": "telegram://dry-run/hera-198",
+                            }
+                        ],
+                        "audit_events": [{"event_type": "canary_insert"}],
+                        "counts": {
+                            "report_runs": 1,
+                            "report_sections": 1,
+                            "source_anchors": 1,
+                            "delivery_events": 1,
+                            "audit_events": 1,
+                        },
+                        "boundaries": {
+                            "writes_enabled": False,
+                            "telegram_send_enabled": False,
+                            "obsidian_authority_edit_enabled": False,
+                            "cron_change_enabled": False,
+                        },
+                    }
+                }
+            ])
+
+        calls = []
+
+        def fake_run(cmd, cwd, check, capture_output, text, timeout):
+            calls.append({"cmd": cmd, "cwd": cwd, "check": check, "timeout": timeout})
+            return Completed()
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: "/usr/bin/supabase")
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary/telegram-preview")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["mode"] == "dry_run_preview"
+        assert data["send_enabled"] is False
+        assert data["write_enabled"] is False
+        assert data["target_ref"] == "telegram://dry-run/hera-198"
+        assert data["validation"]["length_ok"] is True
+        assert data["validation"]["requires_approval_before_send"] is True
+        assert "처리 이유:" in data["message_text"]
+        assert "HERA-198 Morning Brief Canary" in data["message_text"]
+        assert "dry_run" in data["message_text"]
+        assert calls
+        sql = calls[0]["cmd"][-1].lower()
+        assert "insert into" not in sql
+        assert "update " not in sql
+        assert "delete from" not in sql
+
+    def test_control_plane_telegram_preview_propagates_disabled_state(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: None)
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary/telegram-preview")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        assert data["reason"] == "supabase_cli_missing"
+
+    def test_control_plane_telegram_preview_rejects_non_dry_run_target_refs(self):
+        import hermes_cli.web_server as web_server
+
+        preview = web_server._build_morning_brief_telegram_preview({
+            "enabled": True,
+            "project": "hermes-control-plane",
+            "run": {"title": "Canary", "status": "generated"},
+            "delivery_events": [
+                {
+                    "channel": "telegram",
+                    "delivery_status": "sent",
+                    "target_ref": "telegram:7048346032",
+                }
+            ],
+            "counts": {},
+            "boundaries": {},
+        })
+
+        assert preview["target_ref"] == "telegram://dry-run/hera-198"
+        assert "7048346032" not in preview["message_text"]
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

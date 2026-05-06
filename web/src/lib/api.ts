@@ -63,6 +63,12 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getMorningBriefCanary: () =>
+    fetchJSON<MorningBriefCanaryResponse>("/api/control-plane/morning-brief-canary"),
+  getMorningBriefTelegramPreview: () =>
+    fetchJSON<MorningBriefTelegramPreviewResponse>(
+      "/api/control-plane/morning-brief-canary/telegram-preview",
+    ),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -592,6 +598,115 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+
+export interface MorningBriefRun {
+  id?: string;
+  report_type?: string;
+  run_ref?: string;
+  status?: string;
+  report_date?: string;
+  title?: string;
+  summary_kr?: string | null;
+  obsidian_ref?: string | null;
+  paperclip_parent_ref?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MorningBriefSection {
+  section_key?: string;
+  section_order?: number;
+  title?: string;
+  body_md?: string;
+  judgment_label?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefSourceAnchor {
+  source_ref?: string;
+  source_title?: string | null;
+  publisher?: string | null;
+  published_at?: string | null;
+  observed_at?: string | null;
+  timing_label?: string | null;
+  quality_label?: string | null;
+  claim_ref?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefDeliveryEvent {
+  channel?: string;
+  target_ref?: string | null;
+  payload_summary?: string;
+  delivery_status?: string;
+  delivered_at?: string | null;
+  error_summary?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefAuditEvent {
+  event_type?: string;
+  subject_ref?: string | null;
+  actor_ref?: string;
+  source_refs?: unknown[];
+  artifact_refs?: unknown[];
+  summary?: string;
+  verification_status?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefCanaryResponse {
+  enabled: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  mode?: "read_only" | string;
+  project?: string;
+  updated_at?: string;
+  run?: MorningBriefRun | null;
+  sections?: MorningBriefSection[];
+  sources?: MorningBriefSourceAnchor[];
+  delivery_events?: MorningBriefDeliveryEvent[];
+  audit_events?: MorningBriefAuditEvent[];
+  counts?: Record<string, number>;
+  boundaries?: {
+    writes_enabled?: boolean;
+    telegram_send_enabled?: boolean;
+    obsidian_authority_edit_enabled?: boolean;
+    cron_change_enabled?: boolean;
+  };
+}
+
+export interface MorningBriefTelegramPreviewResponse {
+  enabled: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  mode?: "dry_run_preview" | string;
+  project?: string;
+  target_ref?: string;
+  channel?: "telegram" | string;
+  send_enabled?: boolean;
+  write_enabled?: boolean;
+  message_text?: string;
+  message_length?: number;
+  validation?: {
+    length_ok?: boolean;
+    max_length?: number;
+    requires_approval_before_send?: boolean;
+    no_telegram_send_performed?: boolean;
+    no_supabase_write_performed?: boolean;
+    no_cron_change_performed?: boolean;
+    no_obsidian_authority_edit_performed?: boolean;
+  };
+  source?: {
+    run_ref?: string | null;
+    report_status?: string;
+    control_plane_mode?: string;
+  };
+  boundaries?: MorningBriefCanaryResponse["boundaries"];
 }
 
 // ── Model info types ──────────────────────────────────────────────────

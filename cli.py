@@ -1774,6 +1774,20 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 )
 
 
+def _bind_prompt_submit_keys(kb, handler) -> None:
+    """Bind both CR and LF terminal Enter forms to the submit handler."""
+    for key in ("enter", "c-j"):
+        kb.add(key)(handler)
+
+
+def _disable_prompt_toolkit_cpr_warning(app) -> None:
+    """Let prompt_toolkit fall back from CPR without printing into the prompt."""
+    try:
+        app.renderer.cpr_not_supported_callback = None
+    except Exception:
+        pass
+
+
 def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     """Strip leaked terminal control-response sequences from user input.
 
@@ -10338,7 +10352,6 @@ class HermesCLI:
         # Key bindings for the input area
         kb = KeyBindings()
         
-        @kb.add('enter')
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -10497,15 +10510,12 @@ class HermesCLI:
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
+
+        _bind_prompt_submit_keys(kb, handle_enter)
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input."""
-            event.current_buffer.insert_text('\n')
-
-        @kb.add('c-j')
-        def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
         # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
@@ -11106,7 +11116,7 @@ class HermesCLI:
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
-        # Create the input area with multiline (shift+enter), autocomplete, and paste handling
+        # Create the input area with multiline (Alt+Enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
 
@@ -11848,6 +11858,7 @@ class HermesCLI:
             mouse_support=False,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
+        _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────

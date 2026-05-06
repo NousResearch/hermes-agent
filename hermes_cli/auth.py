@@ -418,7 +418,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
 # providers/ that is not already declared above.  New providers only need a
-# providers/*.py file — no edits to this file required.
+# plugins/model-providers/<name>/ plugin — no edits to this file required.
 try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
@@ -1229,7 +1229,7 @@ def resolve_provider(
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
-    # Extend with aliases declared in providers/*.py that aren't already mapped.
+    # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
     # This keeps providers/ as the single source for new aliases while the
     # hardcoded dict above remains authoritative for existing ones.
     try:

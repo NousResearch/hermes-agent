@@ -25,7 +25,7 @@ Primary implementation:
 
 `get_provider_profile()` in `providers/` returns a `ProviderProfile` for a given provider id. `runtime_provider.py` calls this at resolution time to get the canonical `base_url`, `env_vars` priority list, `api_mode`, and `fallback_models` without needing to duplicate that data in multiple files. Adding a new plugin under `plugins/model-providers/<your-provider>/` (or `$HERMES_HOME/plugins/model-providers/<your-provider>/`) that calls `register_provider()` is enough for `runtime_provider.py` to pick it up — no branch needed in the resolver itself.
 
-If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
+If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) and the [Model Provider Plugin guide](./model-provider-plugin.md) alongside this page.
 
 ## Resolution precedence
 

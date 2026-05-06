@@ -1380,7 +1380,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
@@ -1389,7 +1389,17 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
-        conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+        if row["assignee"] != profile:
+            # The retry guard is scoped to the task/profile combination. A
+            # human reassigning the task is an explicit recovery action, so the
+            # new profile should not inherit the previous profile's streak.
+            conn.execute(
+                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ?",
+                (profile, task_id),
+            )
+        else:
+            conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
         return True
 
@@ -2569,11 +2579,11 @@ def set_workspace_path(
 # Dispatcher (one-shot pass)
 # ---------------------------------------------------------------------------
 
-# After this many consecutive `spawn_failed` events on a task, the dispatcher
-# stops retrying and parks the task in ``blocked`` with a reason so a human
-# can investigate. Prevents the dispatcher from thrashing forever on a task
-# whose profile doesn't exist, whose workspace is unmountable, etc.
-DEFAULT_FAILURE_LIMIT = 5
+# After this many consecutive non-success attempts on a task/profile, the
+# dispatcher stops retrying and parks the task in ``blocked`` with a reason so
+# a human can investigate. Prevents retry storms when a worker repeatedly times
+# out, crashes, or cannot spawn.
+DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 

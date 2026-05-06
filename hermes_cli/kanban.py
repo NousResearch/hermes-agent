@@ -443,8 +443,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Cap number of spawns this pass")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
-                        help=f"Auto-block a task after this many consecutive spawn failures "
-                             f"(default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
+                        help=f"Auto-block a task after this many consecutive non-success attempts "
+                             f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
 
     # --- daemon (deprecated) ---
@@ -1657,6 +1657,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "    kanban:\n"
             "      dispatch_in_gateway: true      # default\n"
             "      dispatch_interval_seconds: 60\n"
+            "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
             "race for claims. If you truly need the old standalone\n"

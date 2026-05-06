@@ -87,6 +87,59 @@ def test_custom_endpoint_anthropic_messages_falls_back_when_sdk_missing():
     # OpenAI client, not AnthropicAuxiliaryClient.
     from agent.auxiliary_client import AnthropicAuxiliaryClient
     assert not isinstance(client, AnthropicAuxiliaryClient)
+    # The fallback OpenAI client must point at the /v1 surface — without the
+    # rewrite, requests would hit /anthropic/chat/completions and 404.
+    assert "/anthropic" not in str(client.base_url)
+    assert str(client.base_url).rstrip("/").endswith("/v1")
+
+
+def test_custom_endpoint_no_api_mode_rewrites_anthropic_url_for_openai_fallback():
+    """No api_mode + /anthropic URL: when wrap fails, OpenAI client must use /v1.
+
+    Reproduces #20514 — `auxiliary.*.provider: auto` with main_provider=minimax-cn
+    fell through to the custom endpoint path, where the OpenAI client was built
+    with the raw /anthropic base URL and 404'd on /anthropic/chat/completions.
+    """
+    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+
+    with patch(
+        "agent.auxiliary_client._resolve_custom_runtime",
+        return_value=("https://api.minimaxi.com/anthropic", "minimax-cn-key", None),
+    ), patch(
+        "agent.auxiliary_client._read_main_model",
+        return_value="MiniMax-M2.7",
+    ), patch(
+        "agent.auxiliary_client._maybe_wrap_anthropic",
+        side_effect=lambda client_obj, *_args, **_kwargs: client_obj,
+    ):
+        client, model = _try_custom_endpoint()
+
+    assert client is not None
+    assert model == "MiniMax-M2.7"
+    assert not isinstance(client, AnthropicAuxiliaryClient)
+    # The OpenAI client must be pointed at /v1, not /anthropic.
+    assert "/anthropic" not in str(client.base_url)
+    assert str(client.base_url).rstrip("/").endswith("/v1")
+
+
+def test_custom_endpoint_codex_responses_rewrites_anthropic_url():
+    """codex_responses + /anthropic URL: underlying OpenAI client uses /v1."""
+    from agent.auxiliary_client import _try_custom_endpoint, CodexAuxiliaryClient
+
+    with patch(
+        "agent.auxiliary_client._resolve_custom_runtime",
+        return_value=("https://api.minimaxi.com/anthropic", "k", "codex_responses"),
+    ), patch(
+        "agent.auxiliary_client._read_main_model",
+        return_value="gpt-5-codex",
+    ):
+        client, model = _try_custom_endpoint()
+
+    assert isinstance(client, CodexAuxiliaryClient)
+    assert model == "gpt-5-codex"
+    inner_base = str(client.base_url)
+    assert "/anthropic" not in inner_base
+    assert inner_base.rstrip("/").endswith("/v1")
 
 
 def test_custom_endpoint_chat_completions_still_uses_openai_wire():

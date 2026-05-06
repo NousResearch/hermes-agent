@@ -926,6 +926,8 @@ def discord_skill_commands_by_category(
 _SLACK_MAX_SLASH_COMMANDS = 50
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_SLACK_DEFAULT_ENTRY_COMMAND = "hermes"
+_SLACK_DEFAULT_APP_NAME = "Hermes"
 _SLACK_RESERVED_COMMANDS = frozenset({
     # Built-in Slack slash commands that cannot be registered by apps.
     # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
@@ -947,6 +949,98 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
+def _load_slack_config_value(*keys: str) -> Any:
+    """Read a top-level ``slack:`` value from the active profile config.
+
+    This module is imported by both the CLI and gateway, so keep config reads
+    lightweight and best-effort instead of importing the full setup stack.
+    """
+    try:
+        import yaml
+        from hermes_constants import get_hermes_home
+
+        cfg_path = get_hermes_home() / "config.yaml"
+        if not cfg_path.exists():
+            return None
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        slack_cfg = data.get("slack") if isinstance(data, dict) else None
+        if not isinstance(slack_cfg, dict):
+            return None
+        for key in keys:
+            if key in slack_cfg:
+                return slack_cfg.get(key)
+    except Exception:
+        return None
+    return None
+
+
+def slack_entry_command() -> str:
+    """Return the configurable Slack catch-all slash command name.
+
+    Defaults to ``hermes`` for backward compatibility. Profiles can override
+    with ``SLACK_ENTRY_COMMAND`` or ``slack.entry_command`` / ``slack.command``
+    in config.yaml, e.g. ``steve`` to make ``/steve`` the free-form entrypoint.
+    """
+    raw = os.environ.get("SLACK_ENTRY_COMMAND") or _load_slack_config_value("entry_command", "command")
+    name = _sanitize_slack_name(str(raw or _SLACK_DEFAULT_ENTRY_COMMAND))
+    if not name or name in _SLACK_RESERVED_COMMANDS:
+        return _SLACK_DEFAULT_ENTRY_COMMAND
+    return name
+
+
+def slack_app_name() -> str:
+    """Return the configured Slack app/bot display name for manifests."""
+    raw = os.environ.get("SLACK_APP_NAME") or _load_slack_config_value("app_name", "bot_name")
+    name = str(raw or _SLACK_DEFAULT_APP_NAME).strip()
+    return name or _SLACK_DEFAULT_APP_NAME
+
+
+def slack_app_description() -> str:
+    """Return the configured Slack app description for manifests."""
+    raw = os.environ.get("SLACK_APP_DESCRIPTION") or _load_slack_config_value("app_description", "description")
+    desc = str(raw or f"Your {slack_app_name()} agent on Slack").strip()
+    return desc or f"Your {slack_app_name()} agent on Slack"
+
+
+def slack_command_request_url() -> str:
+    """Return the request URL required by Slack manifest slash commands.
+
+    Socket Mode ignores this URL at runtime, but Slack's manifest schema still
+    requires it. Keep the old placeholder by default while allowing branded
+    profiles to avoid hardcoded Hermes names.
+    """
+    raw = os.environ.get("SLACK_COMMAND_REQUEST_URL") or _load_slack_config_value("command_request_url", "request_url")
+    url = str(raw or "https://hermes-agent.local/slack/commands").strip()
+    return url or "https://hermes-agent.local/slack/commands"
+
+
+def slack_entry_description() -> str:
+    """Description for the catch-all Slack slash command."""
+    return f"Talk to {slack_app_name()} or run a subcommand"
+
+
+def slack_assistant_description() -> str:
+    """Slack Assistant app-home description."""
+    return f"Chat with {slack_app_name()} in threads and DMs."
+
+
+def slack_brand_text(text: str) -> str:
+    """Apply Slack app branding to Slack-visible command text.
+
+    The command registry keeps framework-facing defaults, but generated Slack
+    manifests should use the configured per-profile app name. When unset, the
+    default app name is Hermes, so this is a no-op for existing deployments.
+    """
+    app_name = slack_app_name()
+    if app_name == _SLACK_DEFAULT_APP_NAME:
+        return text
+    return (
+        text.replace("Hermes Agent", app_name)
+        .replace(_SLACK_DEFAULT_APP_NAME, app_name)
+        .replace("~/.hermes/skills/", "the skills directory")
+    )
+
+
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
@@ -961,20 +1055,22 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
 
     Commands whose sanitized name collides with a Slack built-in
     (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
-    can still reach them via ``/hermes <command>``.
+    can still reach them via the configured catch-all command.
 
     Results are clamped to Slack's 50-command limit with duplicate-name
-    avoidance. ``/hermes`` is always reserved as the first entry so the
-    legacy ``/hermes <subcommand>`` form keeps working for anything that
-    gets dropped by the clamp or for free-form questions.
+    avoidance. The configured entry command (default ``/hermes``) is always
+    reserved as the first entry so the legacy ``/<entry> <subcommand>`` form
+    keeps working for anything that gets dropped by the clamp or for
+    free-form questions.
     """
     overrides = _resolve_config_gates()
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
-    # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
-    seen.add("hermes")
+    # Reserve the configured catch-all top-level command.
+    entry_command = slack_entry_command()
+    entries.append((entry_command, slack_entry_description(), "[subcommand] [args]"))
+    seen.add(entry_command)
 
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)
@@ -985,7 +1081,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
             return
         # Slack description cap is 2000 chars; keep it short.
-        entries.append((slack_name, desc[:140], hint[:100]))
+        entries.append((slack_name, slack_brand_text(desc)[:140], slack_brand_text(hint)[:100]))
         seen.add(slack_name)
 
     # First pass: canonical names (so they win slots if we hit the cap).
@@ -1010,12 +1106,13 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
-def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
+def slack_app_manifest(request_url: str | None = None) -> dict[str, Any]:
     """Generate a Slack app manifest with all gateway commands as slashes.
 
     ``request_url`` is required by Slack's manifest schema for every slash
     command, but in Socket Mode (which we use) Slack ignores it and routes
-    the command event through the WebSocket. A placeholder URL is fine.
+    the command event through the WebSocket. A placeholder URL is fine, and
+    branded profiles can override it with ``slack.command_request_url``.
 
     The returned dict is the ``features.slash_commands`` portion only —
     callers compose it into a full manifest (or merge into an existing
@@ -1023,6 +1120,7 @@ def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/comm
     schema (display_information, oauth_config, settings, etc.) which users
     set up once in the Slack UI and rarely change.
     """
+    request_url = request_url or slack_command_request_url()
     slashes = []
     for name, desc, usage in slack_native_slashes():
         entry = {
@@ -1038,12 +1136,12 @@ def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/comm
 
 
 def slack_subcommand_map() -> dict[str, str]:
-    """Return subcommand -> /command mapping for Slack /hermes handler.
+    """Return subcommand -> /command mapping for Slack catch-all handler.
 
-    Maps both canonical names and aliases so /hermes bg do stuff works
-    the same as /hermes background do stuff.
+    Maps both canonical names and aliases so ``/<entry> bg do stuff`` works
+    the same as ``/<entry> background do stuff``.
 
-    Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
+    Plugin-registered slash commands are included so ``/<entry> <plugin-cmd>``
     routes through the plugin handler.
     """
     overrides = _resolve_config_gates()

@@ -760,6 +760,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if plat == Platform.SLACK and "entry_command" in platform_cfg:
+                    bridged["entry_command"] = platform_cfg["entry_command"]
+                if plat == Platform.SLACK and "command" in platform_cfg:
+                    bridged["entry_command"] = platform_cfg["command"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
@@ -815,6 +819,18 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ac, list):
                         ac = ",".join(str(v) for v in ac)
                     os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+                entry_command = slack_cfg.get("entry_command", slack_cfg.get("command"))
+                if entry_command is not None and not os.getenv("SLACK_ENTRY_COMMAND"):
+                    os.environ["SLACK_ENTRY_COMMAND"] = str(entry_command)
+                app_name = slack_cfg.get("app_name", slack_cfg.get("bot_name"))
+                if app_name is not None and not os.getenv("SLACK_APP_NAME"):
+                    os.environ["SLACK_APP_NAME"] = str(app_name)
+                app_description = slack_cfg.get("app_description", slack_cfg.get("description"))
+                if app_description is not None and not os.getenv("SLACK_APP_DESCRIPTION"):
+                    os.environ["SLACK_APP_DESCRIPTION"] = str(app_description)
+                request_url = slack_cfg.get("command_request_url", slack_cfg.get("request_url"))
+                if request_url is not None and not os.getenv("SLACK_COMMAND_REQUEST_URL"):
+                    os.environ["SLACK_COMMAND_REQUEST_URL"] = str(request_url)
 
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})

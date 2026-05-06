@@ -73,6 +73,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |
 | `groups:history` | Read messages in private channels the bot is invited to |
+| `groups:read` | List private channels/conversations the bot is in |
 | `im:history` | Read direct message history |
 | `im:read` | View basic DM info |
 | `im:write` | Open and manage DMs |
@@ -346,6 +347,15 @@ slack:
   # the Slack adapter enforces @mention gating in channels regardless,
   # but you can set this explicitly for consistency with other platforms)
   require_mention: true
+
+  # Customize the catch-all slash command and generated app manifest for
+  # branded/profile-specific agents. Defaults keep backward compatibility:
+  # /hermes, app/bot name "Hermes".
+  entry_command: "steve"
+  app_name: "Steve"
+  app_description: "Steve, your team assistant on Slack"
+  # Optional; Socket Mode ignores this but Slack requires a URL in manifests.
+  command_request_url: "https://steve.local/slack/commands"
 
   # Prevent thread auto-engagement: only reply to channel messages that
   # contain an explicit @mention. With this OFF (default), Slack can

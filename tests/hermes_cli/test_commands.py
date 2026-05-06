@@ -287,12 +287,35 @@ class TestSlackNativeSlashes:
             assert isinstance(desc, str)
             assert isinstance(hint, str)
 
-    def test_hermes_catchall_is_first(self):
-        """``/hermes`` must be reserved as the first slot so the legacy
-        ``/hermes <subcommand>`` form keeps working after we add new
-        commands and hit the 50-slash cap."""
+    def test_entry_catchall_is_first(self, monkeypatch):
+        """The configured catch-all must be first so ``/<entry> <subcommand>``
+        keeps working after we add new commands and hit the 50-slash cap."""
+        monkeypatch.delenv("SLACK_ENTRY_COMMAND", raising=False)
         slashes = slack_native_slashes()
         assert slashes[0][0] == "hermes"
+
+    def test_entry_catchall_can_be_configured_from_env(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ENTRY_COMMAND", "Steve")
+        monkeypatch.setenv("SLACK_APP_NAME", "Steve")
+        slashes = slack_native_slashes()
+        assert slashes[0] == ("steve", "Talk to Steve or run a subcommand", "[subcommand] [args]")
+
+    def test_entry_catchall_can_be_configured_from_profile(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  entry_command: steve\n"
+            "  app_name: Steve\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SLACK_ENTRY_COMMAND", raising=False)
+        monkeypatch.delenv("SLACK_APP_NAME", raising=False)
+
+        slashes = slack_native_slashes()
+
+        assert slashes[0] == ("steve", "Talk to Steve or run a subcommand", "[subcommand] [args]")
 
     def test_names_respect_slack_limits(self):
         for name, _desc, _hint in slack_native_slashes():
@@ -384,10 +407,43 @@ class TestSlackAppManifest:
 
     def test_btw_is_in_manifest(self):
         """Regression: /btw must be a native Slack slash, not just a
-        /hermes subcommand."""
+        catch-all subcommand."""
         m = slack_app_manifest()
         commands = [c["command"] for c in m["features"]["slash_commands"]]
         assert "/btw" in commands
+
+    def test_entry_command_is_in_manifest(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ENTRY_COMMAND", "steve")
+        monkeypatch.setenv("SLACK_APP_NAME", "Steve")
+        monkeypatch.setenv("SLACK_COMMAND_REQUEST_URL", "https://steve.local/slack/commands")
+        m = slack_app_manifest()
+        first = m["features"]["slash_commands"][0]
+        assert first["command"] == "/steve"
+        assert first["description"] == "Talk to Steve or run a subcommand"
+        assert first["url"] == "https://steve.local/slack/commands"
+
+    def test_branded_manifest_rewrites_hermes_command_descriptions(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ENTRY_COMMAND", "steve")
+        monkeypatch.setenv("SLACK_APP_NAME", "Steve")
+        m = slack_app_manifest()
+        descriptions = {
+            entry["command"]: entry["description"]
+            for entry in m["features"]["slash_commands"]
+        }
+        assert descriptions["/goal"] == "Set a standing goal Steve works on across turns until achieved"
+        assert descriptions["/update"] == "Update Steve to the latest version"
+        assert "hermes" not in "\n".join(descriptions.values()).lower()
+
+    def test_default_manifest_keeps_hermes_branding(self, monkeypatch):
+        monkeypatch.delenv("SLACK_ENTRY_COMMAND", raising=False)
+        monkeypatch.delenv("SLACK_APP_NAME", raising=False)
+        m = slack_app_manifest()
+        descriptions = {
+            entry["command"]: entry["description"]
+            for entry in m["features"]["slash_commands"]
+        }
+        assert m["features"]["slash_commands"][0]["command"] == "/hermes"
+        assert descriptions["/goal"] == "Set a standing goal Hermes works on across turns until achieved"
 
     def test_custom_request_url(self):
         m = slack_app_manifest(request_url="https://example.com/slack")

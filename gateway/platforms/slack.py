@@ -622,16 +622,19 @@ class SlackAdapter(BasePlatformAdapter):
             # routes the command event through the socket regardless of the
             # manifest's request URL, but it will not deliver an event for
             # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
+            from hermes_cli.commands import slack_entry_command, slack_native_slashes
             import re as _re
 
             _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            entry_command = slack_entry_command()
+            if entry_command not in _slash_names:
+                _slash_names.insert(0, entry_command)
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
                 )
             else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
+                _slash_pattern = _re.compile(rf"^/{_re.escape(entry_command)}$")
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
@@ -2697,13 +2700,16 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
+        from hermes_cli.commands import _SLACK_DEFAULT_ENTRY_COMMAND, slack_entry_command
+        entry_command = slack_entry_command()
 
         # Track which workspace owns this channel
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in ("hermes", ""):
-            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+        if slash_name in (entry_command, _SLACK_DEFAULT_ENTRY_COMMAND, ""):
+            # Configurable catch-all entrypoint (default /hermes) for
+            # <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map
@@ -2744,7 +2750,7 @@ class SlackAdapter(BasePlatformAdapter):
         # channel+user can be routed ephemerally (replaces the initial
         # "Running /cmd…" ack shown by handle_hermes_command).
         # Only stash for COMMAND events (text starts with "/") — free-form
-        # questions via "/hermes <question>" must produce public replies so
+        # questions via the catch-all entrypoint must produce public replies so
         # the whole channel can see the agent's answer.
         response_url = command.get("response_url", "")
         if response_url and user_id and channel_id and text.startswith("/"):

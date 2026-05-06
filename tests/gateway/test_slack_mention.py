@@ -380,6 +380,57 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
 
 
+def test_config_bridges_slack_entry_command_and_branding(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  entry_command: steve\n"
+        "  app_name: Steve\n"
+        "  app_description: Steve handles OCM dev/QA\n"
+        "  command_request_url: https://steve.local/slack/commands\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_ENTRY_COMMAND", raising=False)
+    monkeypatch.delenv("SLACK_APP_NAME", raising=False)
+    monkeypatch.delenv("SLACK_APP_DESCRIPTION", raising=False)
+    monkeypatch.delenv("SLACK_COMMAND_REQUEST_URL", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    slack_extra = config.platforms[Platform.SLACK].extra
+    assert slack_extra.get("entry_command") == "steve"
+    import os as _os
+    assert _os.environ["SLACK_ENTRY_COMMAND"] == "steve"
+    assert _os.environ["SLACK_APP_NAME"] == "Steve"
+    assert _os.environ["SLACK_APP_DESCRIPTION"] == "Steve handles OCM dev/QA"
+    assert _os.environ["SLACK_COMMAND_REQUEST_URL"] == "https://steve.local/slack/commands"
+
+
+def test_slack_entry_command_env_takes_precedence_over_config(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  entry_command: steve\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_ENTRY_COMMAND", "existing")
+
+    load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_ENTRY_COMMAND"] == "existing"
+
 def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
     from gateway.config import load_gateway_config
 

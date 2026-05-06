@@ -32,7 +32,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
     for a Hermes deployment — users can tweak them in the Slack UI after
     pasting.
     """
-    from hermes_cli.commands import slack_app_manifest
+    from hermes_cli.commands import slack_app_manifest, slack_assistant_description
 
     partial = slack_app_manifest()
     slashes = partial["features"]["slash_commands"]
@@ -54,7 +54,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
             },
             "slash_commands": slashes,
             "assistant_view": {
-                "assistant_description": "Chat with Hermes in threads and DMs.",
+                "assistant_description": slack_assistant_description(),
             },
         },
         "oauth_config": {
@@ -69,6 +69,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "files:read",
                     "files:write",
                     "groups:history",
+                    "groups:read",
                     "im:history",
                     "im:read",
                     "im:write",
@@ -103,13 +104,16 @@ def slack_manifest_command(args) -> int:
     Flags (all parsed in ``hermes_cli/main.py``):
       --write [PATH]  Write to file instead of stdout (default path:
                       ``$HERMES_HOME/slack-manifest.json``)
-      --name NAME     Override the bot display name (default: "Hermes")
+      --name NAME     Override the bot display name (default: config
+                      ``slack.app_name`` or "Hermes")
       --description DESC  Override the bot description
       --slashes-only  Emit only the ``features.slash_commands`` array (for
                       merging into an existing manifest manually)
     """
-    name = getattr(args, "name", None) or "Hermes"
-    description = getattr(args, "description", None) or "Your Hermes agent on Slack"
+    from hermes_cli.commands import slack_app_description, slack_app_name
+
+    name = getattr(args, "name", None) or slack_app_name()
+    description = getattr(args, "description", None) or slack_app_description()
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest

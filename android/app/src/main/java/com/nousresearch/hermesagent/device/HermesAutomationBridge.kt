@@ -49,6 +49,10 @@ object HermesAutomationBridge {
                 context = context,
                 arguments = arguments,
             )
+            "run_sensor_trigger", "trigger_sensor", "sensor_event", "sensor" -> runSensorTriggerJson(
+                context = context,
+                arguments = arguments,
+            )
             "run_shizuku_state_trigger", "trigger_shizuku_state", "check_shizuku_trigger", "shizuku_state" -> runShizukuStateTriggerJson(
                 context = context,
                 requestedState = stringArgument(arguments, "shizuku_state", "state", "expected_state", "trigger_state").orEmpty(),
@@ -474,6 +478,9 @@ object HermesAutomationBridge {
         if (normalizedTrigger == TRIGGER_LOCATION) {
             return errorJson("location trigger requires run_location_trigger with latitude and longitude")
         }
+        if (normalizedTrigger == TRIGGER_SENSOR) {
+            return errorJson("sensor trigger requires run_sensor_trigger with sensor_type or sensor_name")
+        }
         if (normalizedTrigger == TRIGGER_SHIZUKU_AVAILABLE || normalizedTrigger == TRIGGER_SHIZUKU_UNAVAILABLE) {
             return runShizukuStateTriggerJson(context, normalizedTrigger)
         }
@@ -694,6 +701,78 @@ object HermesAutomationBridge {
             .put("accuracy_meters", accuracyMeters ?: JSONObject.NULL)
             .put("location_provider", provider.take(MAX_EVENT_VALUE_CHARS))
             .put("location_name", name.take(MAX_EVENT_VALUE_CHARS))
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runSensorTriggerJson(context: Context, arguments: JSONObject): String {
+        val sensorType = stringArgument(
+            arguments,
+            "sensor_type",
+            "sensor",
+            "sensor_name",
+            "sensorType",
+        )?.trim() ?: return errorJson("sensor trigger requires sensor_type or sensor_name")
+        val sensorEvent = stringArgument(
+            arguments,
+            "sensor_event",
+            "event",
+            "event_type",
+            "gesture",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val valueName = stringArgument(
+            arguments,
+            "value_name",
+            "sensor_value_name",
+            "axis",
+            "sensor_axis",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val value = optionalDoubleArgument(
+            arguments,
+            "sensor_value",
+            "value",
+            "reading",
+        )
+        val unit = stringArgument(
+            arguments,
+            "sensor_unit",
+            "unit",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val accuracy = stringArgument(
+            arguments,
+            "sensor_accuracy",
+            "accuracy",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        sensorEventNulError(sensorType, sensorEvent, valueName, unit, accuracy)?.let { error ->
+            return errorJson(error)
+        }
+        val store = HermesAutomationStore(context)
+        setSensorEventVariables(store, sensorType, sensorEvent, valueName, value, unit, accuracy)
+        val variables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_SENSOR &&
+                    sensorEventMatches(record.triggerData, variables, sensorType, sensorEvent, valueName, value)
+            }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_SENSOR))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_SENSOR)
+            .put("sensor_type", sensorType.take(MAX_EVENT_VALUE_CHARS))
+            .put("sensor_event", sensorEvent.take(MAX_EVENT_VALUE_CHARS))
+            .put("value_name", valueName.take(MAX_EVENT_VALUE_CHARS))
+            .put("sensor_value", value ?: JSONObject.NULL)
+            .put("sensor_unit", unit.take(MAX_EVENT_VALUE_CHARS))
+            .put("sensor_accuracy", accuracy.take(MAX_EVENT_VALUE_CHARS))
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -1018,6 +1097,7 @@ object HermesAutomationBridge {
         return when (triggerType) {
             TRIGGER_CALENDAR_EVENT -> buildCalendarTriggerData(arguments)
             TRIGGER_LOCATION -> buildLocationTriggerData(arguments)
+            TRIGGER_SENSOR -> buildSensorTriggerData(arguments)
             else -> TriggerDataResult("")
         }
     }
@@ -1165,6 +1245,70 @@ object HermesAutomationBridge {
             if (maxAccuracy < 0.0) {
                 return "location trigger max_accuracy_meters must be zero or greater"
             }
+        }
+        return null
+    }
+
+    private fun buildSensorTriggerData(arguments: JSONObject): TriggerDataResult {
+        val payload = JSONObject()
+        listOf(
+            copyCalendarTriggerFilter(
+                payload,
+                "sensor_type",
+                arguments,
+                "sensor_type",
+                "sensor",
+                "sensor_name",
+                "sensorType",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "sensor_event",
+                arguments,
+                "sensor_event",
+                "event",
+                "event_type",
+                "gesture",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "value_name",
+                arguments,
+                "value_name",
+                "sensor_value_name",
+                "axis",
+                "sensor_axis",
+            ),
+            copyLocationNumericTriggerFilter(
+                payload,
+                "min_value",
+                arguments,
+                "min_value",
+                "sensor_min_value",
+                "value_min",
+            ),
+            copyLocationNumericTriggerFilter(
+                payload,
+                "max_value",
+                arguments,
+                "max_value",
+                "sensor_max_value",
+                "value_max",
+            ),
+        ).firstOrNull { it != null }?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        validateSensorTriggerNumericPayload(payload)?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        return TriggerDataResult(payload.toString())
+    }
+
+    private fun validateSensorTriggerNumericPayload(payload: JSONObject): String? {
+        val minValue = literalDoubleFilter(payload, "min_value")
+        val maxValue = literalDoubleFilter(payload, "max_value")
+        if (minValue != null && maxValue != null && minValue > maxValue) {
+            return "sensor trigger min_value must be less than or equal to max_value"
         }
         return null
     }
@@ -1342,6 +1486,38 @@ object HermesAutomationBridge {
         return distanceMeters(savedLatitude, savedLongitude, latitude, longitude) <= radiusMeters
     }
 
+    private fun sensorEventMatches(
+        triggerData: String,
+        variables: JSONObject,
+        sensorType: String,
+        sensorEvent: String,
+        valueName: String,
+        value: Double?,
+    ): Boolean {
+        val filters = runCatching { JSONObject(triggerData.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        if (!textFilterMatches(filters.optString("sensor_type"), sensorType, variables)) {
+            return false
+        }
+        if (!textFilterMatches(filters.optString("sensor_event"), sensorEvent, variables)) {
+            return false
+        }
+        if (!textFilterMatches(filters.optString("value_name"), valueName, variables)) {
+            return false
+        }
+        val minValue = expandedDoubleFilter(filters, "min_value", variables)
+        val maxValue = expandedDoubleFilter(filters, "max_value", variables)
+        if ((minValue != null || maxValue != null) && value == null) {
+            return false
+        }
+        if (minValue != null && value != null && value < minValue) {
+            return false
+        }
+        if (maxValue != null && value != null && value > maxValue) {
+            return false
+        }
+        return true
+    }
+
     private fun expandedDoubleFilter(filters: JSONObject, key: String, variables: JSONObject): Double? {
         if (!filters.has(key) || filters.isNull(key)) {
             return null
@@ -1382,6 +1558,23 @@ object HermesAutomationBridge {
         return when {
             provider.indexOf('\u0000') >= 0 -> "location_provider must not contain NUL bytes"
             name.indexOf('\u0000') >= 0 -> "location_name must not contain NUL bytes"
+            else -> null
+        }
+    }
+
+    private fun sensorEventNulError(
+        sensorType: String,
+        sensorEvent: String,
+        valueName: String,
+        unit: String,
+        accuracy: String,
+    ): String? {
+        return when {
+            sensorType.indexOf('\u0000') >= 0 -> "sensor_type must not contain NUL bytes"
+            sensorEvent.indexOf('\u0000') >= 0 -> "sensor_event must not contain NUL bytes"
+            valueName.indexOf('\u0000') >= 0 -> "sensor_value_name must not contain NUL bytes"
+            unit.indexOf('\u0000') >= 0 -> "sensor_unit must not contain NUL bytes"
+            accuracy.indexOf('\u0000') >= 0 -> "sensor_accuracy must not contain NUL bytes"
             else -> null
         }
     }
@@ -1506,6 +1699,26 @@ object HermesAutomationBridge {
         store.setVariable("LOCATION_NAME", name.take(MAX_EVENT_VALUE_CHARS))
     }
 
+    private fun setSensorEventVariables(
+        store: HermesAutomationStore,
+        sensorType: String,
+        sensorEvent: String,
+        valueName: String,
+        value: Double?,
+        unit: String,
+        accuracy: String,
+    ) {
+        val valueText = value?.let { formatLocationNumber(it) }.orEmpty()
+        store.setVariable("SENSOR", sensorType.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SENSOR_TYPE", sensorType.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SENSOR_NAME", sensorType.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SENSOR_EVENT", sensorEvent.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SENSOR_VALUE", valueText)
+        store.setVariable("SENSOR_VALUE_NAME", valueName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SENSOR_UNIT", unit.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SENSOR_ACCURACY", accuracy.take(MAX_EVENT_VALUE_CHARS))
+    }
+
     private fun setShizukuEventVariables(
         store: HermesAutomationStore,
         status: HermesPrivilegedAccessStatus,
@@ -1592,6 +1805,7 @@ object HermesAutomationBridge {
         "run_notification_posted_trigger",
         "run_calendar_event_trigger",
         "run_location_trigger",
+        "run_sensor_trigger",
         "run_shizuku_state_trigger",
         "run_time_trigger",
         "delete",
@@ -1615,6 +1829,7 @@ object HermesAutomationBridge {
         TRIGGER_TIME,
         TRIGGER_CALENDAR_EVENT,
         TRIGGER_LOCATION,
+        TRIGGER_SENSOR,
         TRIGGER_SHIZUKU_AVAILABLE,
         TRIGGER_SHIZUKU_UNAVAILABLE,
     )
@@ -1654,6 +1869,14 @@ object HermesAutomationBridge {
         "location_trigger" to TRIGGER_LOCATION,
         "place" to TRIGGER_LOCATION,
         "geofence" to TRIGGER_LOCATION,
+        "sensor" to TRIGGER_SENSOR,
+        "sensor_event" to TRIGGER_SENSOR,
+        "sensor_profile" to TRIGGER_SENSOR,
+        "sensor_trigger" to TRIGGER_SENSOR,
+        "sensor_state" to TRIGGER_SENSOR,
+        "shake" to TRIGGER_SENSOR,
+        "orientation" to TRIGGER_SENSOR,
+        "motion" to TRIGGER_SENSOR,
         "clock" to TRIGGER_TIME,
         "clock_time" to TRIGGER_TIME,
         "daily_time" to TRIGGER_TIME,

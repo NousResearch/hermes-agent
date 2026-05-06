@@ -344,6 +344,95 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsSensorTriggerRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_app_launch_task",
+                org.json.JSONObject()
+                    .put("id", "auto-sensor")
+                    .put("package_name", "com.nousresearch.hermesagent.missing")
+                    .put("trigger", "sensor")
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_event", "shake")
+                    .put("value_name", "x")
+                    .put("min_value", 1.5)
+                    .put("max_value", 9.8),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = org.json.JSONObject(automation.getString("trigger_data"))
+        assertEquals(TRIGGER_SENSOR, automation.getString("trigger_type"))
+        assertEquals("accelerometer", triggerData.getString("sensor_type"))
+        assertEquals("shake", triggerData.getString("sensor_event"))
+        assertEquals("x", triggerData.getString("value_name"))
+        assertEquals("1.5", triggerData.getString("min_value"))
+        assertEquals("9.8", triggerData.getString("max_value"))
+
+        val missed = org.json.JSONObject(
+            HermesAutomationBridge.runSensorTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_event", "shake")
+                    .put("value_name", "x")
+                    .put("sensor_value", 0.5),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+
+        val matched = org.json.JSONObject(
+            HermesAutomationBridge.runSensorTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_event", "shake")
+                    .put("value_name", "x")
+                    .put("sensor_value", 2.25)
+                    .put("sensor_unit", "m/s^2")
+                    .put("sensor_accuracy", "high"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertFalse(matched.getJSONArray("results").getJSONObject(0).getBoolean("success"))
+        assertEquals("accelerometer", store.getVariable("SENSOR_TYPE"))
+        assertEquals("shake", store.getVariable("SENSOR_EVENT"))
+        assertEquals("2.25", store.getVariable("SENSOR_VALUE"))
+        assertEquals("x", store.getVariable("SENSOR_VALUE_NAME"))
+        assertEquals("m/s^2", store.getVariable("SENSOR_UNIT"))
+        assertEquals("high", store.getVariable("SENSOR_ACCURACY"))
+
+        val generic = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "sensor"),
+            ),
+        )
+        assertFalse(generic.toString(), generic.getBoolean("success"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shell_task",
+                org.json.JSONObject()
+                    .put("command", "printf no")
+                    .put("trigger", "sensor")
+                    .put("min_value", 5)
+                    .put("max_value", 1),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+    }
+
+    @Test
     fun bridgeCreatesFileAndSystemActionRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

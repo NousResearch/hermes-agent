@@ -780,6 +780,78 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun sensorTriggerRunsMatchingAutomationAndExposesVariables() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-sensor-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Sensor trigger smoke")
+                    .put("path", "hermes-sensor-trigger.txt")
+                    .put("content", "%SENSOR_TYPE:%SENSOR_EVENT:%SENSOR_VALUE_NAME:%SENSOR_VALUE:%SENSOR_UNIT:%SENSOR_ACCURACY")
+                    .put("trigger", "sensor")
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_event", "shake")
+                    .put("value_name", "x")
+                    .put("min_value", 1.5)
+                    .put("max_value", 9.8),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = JSONObject(automation.getString("trigger_data"))
+        assertEquals("sensor", automation.getString("trigger_type"))
+        assertEquals("accelerometer", triggerData.getString("sensor_type"))
+        assertEquals("shake", triggerData.getString("sensor_event"))
+        assertEquals("x", triggerData.getString("value_name"))
+
+        val missed = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_sensor_trigger",
+                JSONObject()
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_event", "shake")
+                    .put("value_name", "x")
+                    .put("sensor_value", 0.5),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+        assertFalse("Expected ${target.absolutePath} to stay absent", target.exists())
+
+        val matched = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_sensor_trigger",
+                JSONObject()
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_event", "shake")
+                    .put("value_name", "x")
+                    .put("sensor_value", 2.25)
+                    .put("sensor_unit", "m/s^2")
+                    .put("sensor_accuracy", "high"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals("sensor", matched.getString("trigger"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("accelerometer:shake:x:2.25:m/s^2:high", target.readText())
+
+        val variables = JSONObject(HermesAutomationBridge.performActionJson(app, "list_variables"))
+            .getJSONObject("variables")
+        assertEquals("accelerometer", variables.getString("SENSOR_TYPE"))
+        assertEquals("shake", variables.getString("SENSOR_EVENT"))
+        assertEquals("2.25", variables.getString("SENSOR_VALUE"))
+        assertEquals("x", variables.getString("SENSOR_VALUE_NAME"))
+    }
+
+    @Test
     fun timeTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

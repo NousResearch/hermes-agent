@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -159,6 +160,35 @@ class TestBusyInputMode:
             cli._interrupt_queue.put(text)
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
+
+
+class TestPromptToolkitTerminalCompatibility:
+    def test_lf_enter_binds_to_submit_handler(self):
+        """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter."""
+        from prompt_toolkit.key_binding import KeyBindings
+
+        from cli import _bind_prompt_submit_keys
+
+        kb = KeyBindings()
+
+        def submit_handler(event):
+            return None
+
+        _bind_prompt_submit_keys(kb, submit_handler)
+
+        bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+        assert bindings[("c-m",)] is submit_handler
+        assert bindings[("c-j",)] is submit_handler
+
+    def test_cpr_warning_callback_is_disabled(self):
+        from cli import _disable_prompt_toolkit_cpr_warning
+
+        renderer = SimpleNamespace(cpr_not_supported_callback=lambda: None)
+        app = SimpleNamespace(renderer=renderer)
+
+        _disable_prompt_toolkit_cpr_warning(app)
+
+        assert renderer.cpr_not_supported_callback is None
 
 
 class TestSingleQueryState:

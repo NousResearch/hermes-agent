@@ -1666,10 +1666,20 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+            # Match by slug OR by endpoint URL. Fixes the case where
+            # ``current_provider`` is the bare ``"custom"`` string but the
+            # slug has been resolved to ``"custom:<name>"`` (e.g.
+            # ``"custom:llama-swap"``). The URL-based fallback guarantees the
+            # active endpoint is highlighted as current in the picker even
+            # when the slug comparison misses.
+            _cur_base_norm = (current_base_url or "").strip().rstrip("/").lower()
+            _is_current = slug == current_provider or bool(
+                _cur_base_norm and _grp_url_norm == _cur_base_norm
+            )
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider,
+                "is_current": _is_current,
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

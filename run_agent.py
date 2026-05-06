@@ -9223,6 +9223,14 @@ class AIAgent:
         ``gateway/run.py``), so this restoration IS needed there too.
         """
         if not self._fallback_activated:
+            # Reset the chain index even when no fallback was activated this
+            # turn.  Without this, a turn where _try_activate_fallback() was
+            # called but returned False (chain exhausted or provider not
+            # configured) leaves _fallback_index >= len(_fallback_chain) while
+            # _fallback_activated stays False.  The next turn skips this block
+            # entirely, stranding the index and silently blocking all future
+            # fallback attempts for the session.  Fixes #20465.
+            self._fallback_index = 0
             return False
 
         if getattr(self, "_rate_limited_until", 0) > time.monotonic():

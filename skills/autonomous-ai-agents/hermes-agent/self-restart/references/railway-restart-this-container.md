@@ -2,8 +2,8 @@
 
 ## IDs (correct as of May 2026)
 
-- **SERVICE_ID**: `f3d97619-1493-4fb6-b3e7-59bcac051db3`
-- **ENVIRONMENT_ID**: `766e95dc-fac1-4185-a3b7-1b2d285214d4`
+- **SERVICE_ID**: `c32be0a9-9d43-49a8-bf43-764915360dfb`
+- **ENVIRONMENT_ID**: `38eea0f3-0bd3-48f4-abaf-ec3de09174de`
 - **PROJECT_ID**: `c49b3e8b-a36d-4d24-a972-eab5e05b881d`
 
 ## How to Restart
@@ -11,9 +11,16 @@
 Python only — no `curl` or `wget` in this container:
 
 ```python
-import urllib.request, json, os
+import json, os, urllib.request
 
-mutation = 'mutation { serviceInstanceRedeploy(serviceId: "f3d97619-1493-4fb6-b3e7-59bcac051db3", environmentId: "766e95dc-fac1-4185-a3b7-1b2d285214d4") }'
+# Create flag file so new container sends "👋 I'm back!" via _send_restart_notification
+data = {'platform': 'telegram', 'chat_id': '8746106424'}
+path = os.path.join(os.environ.get('HERMES_HOME', '/opt/data'), '.restart_notify.json')
+with open(path, 'w') as f:
+    json.dump(data, f)
+
+# Restart this container
+mutation = 'mutation { serviceInstanceRedeploy(serviceId: "c32be0a9-9d43-49a8-bf43-764915360dfb", environmentId: "38eea0f3-0bd3-48f4-abaf-ec3de09174de") }'
 body = json.dumps({'query': mutation}).encode()
 req = urllib.request.Request(
     'https://backboard.railway.app/graphql/v2',

@@ -29,7 +29,7 @@ Trigger a Railway redeploy of the hermes-agent service. The container exits and 
 
 POST the `serviceInstanceRedeploy` mutation to Railway's GraphQL API.
 
-Before triggering, create the flag file so the startup message fires:
+**Caution:** The gateway process exits when the container is told to redeploy — the current conversation will be cut short mid-reply. Do NOT send any pre-restart message to the user. Create the flag file, call the API, and let the new container send the notification.
 
 Pending uncommitted edits in `/opt/data/repo` survive the restart (entrypoint preserves them); the watcher commits them on next boot. You can trigger restart immediately after editing without waiting for the watcher.
 

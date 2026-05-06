@@ -294,14 +294,24 @@ class PlatformConfig:
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+
+        extra = dict(data.get("extra", {}))
+
+        # api_server-specific top-level fields that are commonly set via
+        # `hermes config set platforms.api_server.<field>`.  Without this
+        # migration, those values are silently ignored because only fields
+        # inside ``extra`` are consumed by ApiServerPlatform.__init__.
+        for field_name in ("port", "host", "key", "cors_origins"):
+            if field_name in data and field_name not in extra:
+                extra[field_name] = data[field_name]
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 

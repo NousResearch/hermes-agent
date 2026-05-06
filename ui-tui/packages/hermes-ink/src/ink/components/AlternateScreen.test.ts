@@ -97,7 +97,7 @@ describe('AlternateScreen', () => {
     instance.unmount()
   })
 
-  it('exits alt screen through React cleanup during normal unmount', () => {
+  it('exits alt screen synchronously during normal unmount', () => {
     const instance = renderAltScreen()
 
     stdoutWrite.mockClear()
@@ -112,8 +112,8 @@ describe('AlternateScreen', () => {
 
     const streamWrites = stdoutWrite.mock.calls.map(([chunk]) => String(chunk)).join('')
 
-    expect(syncWrites).not.toContain(EXIT_ALT_SCREEN)
-    expect(count(streamWrites, EXIT_ALT_SCREEN)).toBe(1)
+    expect(count(syncWrites, EXIT_ALT_SCREEN)).toBe(1)
+    expect(streamWrites).not.toContain(EXIT_ALT_SCREEN)
   })
 
   it('does not double-exit alt screen during process-exit cleanup', () => {

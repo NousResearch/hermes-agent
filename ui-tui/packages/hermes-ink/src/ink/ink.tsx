@@ -2165,9 +2165,7 @@ export default class Ink {
     // terminals that don't support them.
 
     if (this.options.stdout.isTTY) {
-      const processExitCleanup = typeof error === 'number' || error === null
-
-      if (this.altScreenActive && processExitCleanup) {
+      if (this.altScreenActive) {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
         writeSync(1, EXIT_ALT_SCREEN)

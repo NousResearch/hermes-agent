@@ -21,6 +21,7 @@ private val ENABLED_TOOLS = listOf(
     "android_automation_task",
     "android_automation_variable",
     "android_automation_trigger",
+    "android_automation_time_trigger",
     "android_automation_app_foreground_trigger",
     "android_automation_notification_trigger",
     "android_automation_file_action",

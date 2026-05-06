@@ -3,6 +3,8 @@ package com.nousresearch.hermesagent.device
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Calendar
+import java.util.Locale
 import java.util.UUID
 
 object HermesAutomationBridge {
@@ -30,6 +32,7 @@ object HermesAutomationBridge {
                 title = stringArgument(arguments, "notification_title", "title", allowEmpty = true).orEmpty(),
                 text = stringArgument(arguments, "notification_text", "text", "content", allowEmpty = true).orEmpty(),
             )
+            "run_time_trigger", "trigger_time", "time" -> runTriggerJson(context, TRIGGER_TIME)
             "delete", "remove" -> deleteJson(context, arguments.optString("id"))
             "enable" -> setEnabledJson(context, arguments.optString("id"), true)
             "disable", "pause" -> setEnabledJson(context, arguments.optString("id"), false)
@@ -214,11 +217,22 @@ object HermesAutomationBridge {
         if (intervalMinutes != null && intervalMinutes < HermesAutomationScheduler.MIN_INTERVAL_MINUTES) {
             return errorJson("interval_minutes must be at least ${HermesAutomationScheduler.MIN_INTERVAL_MINUTES}")
         }
-        val triggerType = resolveTriggerType(arguments, intervalMinutes) ?: return errorJson(
+        val triggerTime = parseTimeArgument(arguments)
+        if (triggerTime.error != null) {
+            return errorJson(triggerTime.error)
+        }
+        val triggerDays = parseDaysOfWeekArgument(arguments)
+        if (triggerDays.error != null) {
+            return errorJson(triggerDays.error)
+        }
+        val triggerType = resolveTriggerType(arguments, intervalMinutes, triggerTime.minutes) ?: return errorJson(
             "Unsupported trigger. Use one of: ${AUTOMATION_TRIGGERS.joinToString()}",
         )
         if (triggerType == TRIGGER_INTERVAL && intervalMinutes == null) {
             return errorJson("interval trigger requires interval_minutes")
+        }
+        if (triggerType == TRIGGER_TIME && triggerTime.minutes == null) {
+            return errorJson("time trigger requires a time argument such as 08:30")
         }
         val triggerPackageName = stringArgument(
             arguments,
@@ -246,6 +260,8 @@ object HermesAutomationBridge {
             useShizuku = arguments.optBoolean("use_shizuku", false),
             triggerType = triggerType,
             triggerPackageName = triggerPackageName,
+            triggerTimeMinutes = triggerTime.minutes.takeIf { triggerType == TRIGGER_TIME },
+            triggerDaysOfWeek = triggerDays.daysCsv.takeIf { triggerType == TRIGGER_TIME }.orEmpty(),
             intervalMinutes = intervalMinutes,
             enabled = arguments.optBoolean("enabled", true),
             createdAtEpochMs = now,
@@ -261,6 +277,7 @@ object HermesAutomationBridge {
                 "message",
                 when {
                     record.triggerType == TRIGGER_INTERVAL && record.enabled -> "Created and scheduled Android automation"
+                    record.triggerType == TRIGGER_TIME && record.enabled -> "Created Android automation for ${formatTime(record.triggerTimeMinutes)}"
                     record.triggerType == TRIGGER_MANUAL -> "Created manual Android automation"
                     else -> "Created Android automation for ${record.triggerType}"
                 },
@@ -376,6 +393,9 @@ object HermesAutomationBridge {
         record: HermesAutomationRecord,
         trigger: String,
     ): JSONObject {
+        if (trigger == TRIGGER_TIME) {
+            setTimeEventVariables(store)
+        }
         val variables = store.listVariables()
         val rawResult = when (record.actionType) {
             ACTION_TYPE_SHELL -> runShellRecord(context, record, variables)
@@ -584,9 +604,12 @@ object HermesAutomationBridge {
         }
     }
 
-    private fun resolveTriggerType(arguments: JSONObject, intervalMinutes: Int?): String? {
+    private fun resolveTriggerType(arguments: JSONObject, intervalMinutes: Int?, triggerTimeMinutes: Int?): String? {
         if (intervalMinutes != null) {
             return TRIGGER_INTERVAL
+        }
+        if (triggerTimeMinutes != null && !arguments.has("trigger_type") && !arguments.has("trigger")) {
+            return TRIGGER_TIME
         }
         val rawTrigger = arguments.optString("trigger_type")
             .ifBlank { arguments.optString("trigger") }
@@ -602,6 +625,92 @@ object HermesAutomationBridge {
     private fun triggerPackageMatches(savedPackageName: String, foregroundPackageName: String, variables: JSONObject): Boolean {
         val expanded = expandVariables(savedPackageName, variables).trim()
         return expanded.isNotBlank() && expanded.equals(foregroundPackageName, ignoreCase = true)
+    }
+
+    private fun parseTimeArgument(arguments: JSONObject): TimeParseResult {
+        val key = TIME_ARGUMENT_KEYS.firstOrNull { candidate -> arguments.has(candidate) && !arguments.isNull(candidate) }
+            ?: return TimeParseResult(null)
+        val raw = arguments.opt(key) ?: return TimeParseResult(null)
+        val minutes = when (raw) {
+            is Number -> raw.toInt()
+            else -> parseTimeString(raw.toString())
+        }
+        if (minutes == null || minutes !in 0..1439) {
+            return TimeParseResult(null, "time trigger requires HH:mm, H:mm, HH.mm, or minutes from 0 to 1439")
+        }
+        return TimeParseResult(minutes)
+    }
+
+    private fun parseTimeString(raw: String): Int? {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) {
+            return null
+        }
+        val separator = when {
+            ":" in trimmed -> ":"
+            "." in trimmed -> "."
+            else -> null
+        }
+        if (separator == null) {
+            return trimmed.toIntOrNull()
+        }
+        val parts = trimmed.split(separator)
+        if (parts.size != 2) {
+            return null
+        }
+        val hour = parts[0].toIntOrNull() ?: return null
+        val minute = parts[1].toIntOrNull() ?: return null
+        if (hour !in 0..23 || minute !in 0..59) {
+            return null
+        }
+        return hour * 60 + minute
+    }
+
+    private fun parseDaysOfWeekArgument(arguments: JSONObject): DaysParseResult {
+        val key = DAYS_ARGUMENT_KEYS.firstOrNull { candidate -> arguments.has(candidate) && !arguments.isNull(candidate) }
+            ?: return DaysParseResult("")
+        val raw = arguments.opt(key) ?: return DaysParseResult("")
+        val tokens = when (raw) {
+            is JSONArray -> (0 until raw.length()).mapNotNull { index -> raw.optString(index).takeIf { it.isNotBlank() } }
+            else -> raw.toString().split(',', ';', '|', ' ', '\n', '\t')
+        }
+        val selected = linkedSetOf<String>()
+        tokens.forEach { token ->
+            val normalized = token.trim().lowercase().replace("-", "_")
+            if (normalized.isBlank()) {
+                return@forEach
+            }
+            when (normalized) {
+                "any", "all", "daily", "everyday", "every_day" -> return DaysParseResult("")
+                "weekday", "weekdays", "workday", "workdays" -> selected.addAll(WEEKDAYS)
+                "weekend", "weekends" -> selected.addAll(WEEKEND_DAYS)
+                else -> {
+                    val day = DAY_SYNONYMS[normalized]
+                        ?: return DaysParseResult("", "Unsupported day of week: $token")
+                    selected += day
+                }
+            }
+        }
+        val canonical = DAY_ORDER.filter { day -> day in selected }.joinToString(",")
+        return DaysParseResult(canonical)
+    }
+
+    private fun setTimeEventVariables(store: HermesAutomationStore) {
+        val calendar = Calendar.getInstance()
+        val hour = calendar.get(Calendar.HOUR_OF_DAY)
+        val minute = calendar.get(Calendar.MINUTE)
+        val day = CALENDAR_DAY_CODES[calendar.get(Calendar.DAY_OF_WEEK)].orEmpty()
+        store.setVariable("TIME", String.format(Locale.US, "%02d:%02d", hour, minute))
+        store.setVariable("TIME_HOUR", String.format(Locale.US, "%02d", hour))
+        store.setVariable("TIME_MINUTE", String.format(Locale.US, "%02d", minute))
+        store.setVariable("TIME_DAY", day)
+    }
+
+    private fun formatTime(minutes: Int?): String {
+        if (minutes == null) {
+            return "time trigger"
+        }
+        return String.format(Locale.US, "%02d:%02d", minutes / 60, minutes % 60)
     }
 
     private fun normalizeUiAction(action: String): String {
@@ -645,6 +754,7 @@ object HermesAutomationBridge {
         "run_trigger",
         "run_app_foreground_trigger",
         "run_notification_posted_trigger",
+        "run_time_trigger",
         "delete",
         "enable",
         "disable",
@@ -663,6 +773,7 @@ object HermesAutomationBridge {
         TRIGGER_BATTERY_OKAY,
         TRIGGER_APP_FOREGROUND,
         TRIGGER_NOTIFICATION_POSTED,
+        TRIGGER_TIME,
     )
     private val TRIGGER_SYNONYMS = mapOf(
         "boot_completed" to TRIGGER_BOOT,
@@ -688,6 +799,64 @@ object HermesAutomationBridge {
         "notification_received" to TRIGGER_NOTIFICATION_POSTED,
         "posted_notification" to TRIGGER_NOTIFICATION_POSTED,
         "notify" to TRIGGER_NOTIFICATION_POSTED,
+        "clock" to TRIGGER_TIME,
+        "clock_time" to TRIGGER_TIME,
+        "daily_time" to TRIGGER_TIME,
+        "scheduled_time" to TRIGGER_TIME,
+        "time_context" to TRIGGER_TIME,
+        "time_of_day" to TRIGGER_TIME,
+        "at_time" to TRIGGER_TIME,
+    )
+    private data class TimeParseResult(val minutes: Int?, val error: String? = null)
+    private data class DaysParseResult(val daysCsv: String, val error: String? = null)
+
+    private val TIME_ARGUMENT_KEYS = listOf(
+        "time",
+        "time_of_day",
+        "at_time",
+        "at",
+        "clock_time",
+        "trigger_time",
+        "trigger_time_minutes",
+    )
+    private val DAYS_ARGUMENT_KEYS = listOf(
+        "days",
+        "days_of_week",
+        "weekdays",
+        "trigger_days",
+        "trigger_days_of_week",
+    )
+    private val DAY_ORDER = listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+    private val WEEKDAYS = listOf("MON", "TUE", "WED", "THU", "FRI")
+    private val WEEKEND_DAYS = listOf("SAT", "SUN")
+    private val DAY_SYNONYMS = mapOf(
+        "mon" to "MON",
+        "monday" to "MON",
+        "tue" to "TUE",
+        "tues" to "TUE",
+        "tuesday" to "TUE",
+        "wed" to "WED",
+        "weds" to "WED",
+        "wednesday" to "WED",
+        "thu" to "THU",
+        "thur" to "THU",
+        "thurs" to "THU",
+        "thursday" to "THU",
+        "fri" to "FRI",
+        "friday" to "FRI",
+        "sat" to "SAT",
+        "saturday" to "SAT",
+        "sun" to "SUN",
+        "sunday" to "SUN",
+    )
+    private val CALENDAR_DAY_CODES = mapOf(
+        Calendar.MONDAY to "MON",
+        Calendar.TUESDAY to "TUE",
+        Calendar.WEDNESDAY to "WED",
+        Calendar.THURSDAY to "THU",
+        Calendar.FRIDAY to "FRI",
+        Calendar.SATURDAY to "SAT",
+        Calendar.SUNDAY to "SUN",
     )
     private val PRIVILEGED_SHELL_ACTIONS = setOf("run_privileged_shell", "shizuku_shell", "privileged_shell")
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")

@@ -355,4 +355,41 @@ class HermesAutomationInstrumentedTest {
         assertTrue("Expected ${target.absolutePath}", target.isFile)
         assertEquals("${app.packageName}:Hermes title:Hermes text", target.readText())
     }
+
+    @Test
+    fun timeTriggerRunsMatchingAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-time-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Time trigger smoke")
+                    .put("path", "hermes-time-trigger.txt")
+                    .put("content", "%TIME:%TIME_DAY")
+                    .put("trigger", "time")
+                    .put("time", "00:01")
+                    .put("days_of_week", "weekday"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("time", created.getJSONObject("automation").getString("trigger_type"))
+        assertEquals(1, created.getJSONObject("automation").getInt("trigger_time_minutes"))
+        assertEquals("MON,TUE,WED,THU,FRI", created.getJSONObject("automation").getString("trigger_days_of_week"))
+
+        val triggered = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_trigger",
+                JSONObject().put("trigger", "time"),
+            ),
+        )
+        assertTrue(triggered.toString(), triggered.getBoolean("success"))
+        assertEquals(1, triggered.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertTrue(target.readText().matches(Regex("\\d{2}:\\d{2}:(MON|TUE|WED|THU|FRI|SAT|SUN)")))
+    }
 }

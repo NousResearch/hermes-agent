@@ -12,6 +12,8 @@ data class HermesAutomationRecord(
     val useShizuku: Boolean,
     val triggerType: String,
     val triggerPackageName: String = "",
+    val triggerTimeMinutes: Int? = null,
+    val triggerDaysOfWeek: String = "",
     val intervalMinutes: Int?,
     val enabled: Boolean,
     val createdAtEpochMs: Long,
@@ -30,6 +32,8 @@ data class HermesAutomationRecord(
             .put("use_shizuku", useShizuku)
             .put("trigger_type", triggerType)
             .put("trigger_package_name", triggerPackageName)
+            .put("trigger_time_minutes", triggerTimeMinutes ?: JSONObject.NULL)
+            .put("trigger_days_of_week", triggerDaysOfWeek)
             .put("interval_minutes", intervalMinutes ?: JSONObject.NULL)
             .put("enabled", enabled)
             .put("created_at_epoch_ms", createdAtEpochMs)
@@ -50,6 +54,8 @@ data class HermesAutomationRecord(
                 useShizuku = json.optBoolean("use_shizuku", false),
                 triggerType = json.optString("trigger_type").ifBlank { TRIGGER_MANUAL },
                 triggerPackageName = json.optString("trigger_package_name"),
+                triggerTimeMinutes = if (json.isNull("trigger_time_minutes")) null else json.optInt("trigger_time_minutes"),
+                triggerDaysOfWeek = json.optString("trigger_days_of_week"),
                 intervalMinutes = if (json.isNull("interval_minutes")) null else json.optInt("interval_minutes"),
                 enabled = json.optBoolean("enabled", true),
                 createdAtEpochMs = json.optLong("created_at_epoch_ms", 0L),
@@ -179,3 +185,4 @@ const val TRIGGER_BATTERY_LOW = "battery_low"
 const val TRIGGER_BATTERY_OKAY = "battery_okay"
 const val TRIGGER_APP_FOREGROUND = "app_foreground"
 const val TRIGGER_NOTIFICATION_POSTED = "notification_posted"
+const val TRIGGER_TIME = "time"

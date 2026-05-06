@@ -81,6 +81,10 @@ JSON object with:
 - Some routes return no "best_flights" — the script falls back to "other_flights"
 - `curl` is not available in this container — use the script (Python urllib) for all HTTP calls
 
+## Hawaii Price Tracker
+
+Ongoing monitoring for cheap SFO → Hawaii (OGG/HNL/KOA/LIH) round-trip United fares. Script: `/opt/data/scripts/hawaii-price-checker.py`, tokens via wrapper at `/opt/data/scripts/hawaii-price-checker-wrapper.py`. Cron: daily 2 PM PT (`0 21 * * *`), job ID `0189c547e497`. State: `/opt/data/hawaii-price-tracker/state.json`. Only fires Telegram on new low. See `references/hawaii-price-tracker-impl.md` for implementation detail.
+
 ## Route Intelligence (California Short-Haul)
 
 **OAK ↔ SBA (Southwest only):** Only ~1 flight/day, departures mid-afternoon to evening (earliest ~14:25). NOT a morning-departure route. Route reportedly ends October 2026.

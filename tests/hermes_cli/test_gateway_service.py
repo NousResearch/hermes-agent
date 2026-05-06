@@ -190,6 +190,8 @@ class TestGeneratedSystemdUnits:
         return f"TimeoutStopSec={timeout}"
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
         monkeypatch.setattr(
             gateway_cli,
             "_get_restart_drain_timeout",
@@ -251,6 +253,8 @@ class TestGeneratedSystemdUnits:
         assert "/mnt/c/WINDOWS/system32" in unit
 
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
         monkeypatch.setattr(
             gateway_cli,
             "_get_restart_drain_timeout",
@@ -267,7 +271,6 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
-
 
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):

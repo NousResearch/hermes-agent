@@ -44,19 +44,21 @@ def plugin_api(tmp_path, monkeypatch):
     Reloading gives each test a clean world.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    original_hermes_state = sys.modules.get("hermes_state")
+    had_hermes_state = "hermes_state" in sys.modules
 
     spec = importlib.util.spec_from_file_location(
         f"plugin_api_test_{id(tmp_path)}", PLUGIN_MODULE_PATH
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # Stash monkeypatch so ``_install_fake_session_db`` can use it to
-    # swap ``sys.modules['hermes_state']`` with auto-restoration. Without
-    # this, a raw ``sys.modules[...] = fake`` assignment would leak the
-    # fake into later tests in the same xdist worker — breaking every
-    # test that does ``from hermes_state import SessionDB``.
-    module._test_monkeypatch = monkeypatch
-    yield module
+    try:
+        yield module
+    finally:
+        if had_hermes_state:
+            sys.modules["hermes_state"] = original_hermes_state
+        else:
+            sys.modules.pop("hermes_state", None)
 
 
 class _FakeSessionDB:
@@ -113,15 +115,10 @@ class _FakeSessionDB:
 
 
 def _install_fake_session_db(plugin_api, fake_db):
-    """Inject a fake SessionDB so ``scan_sessions`` finds it via its local import.
-
-    Uses the monkeypatch stashed on ``plugin_api`` by the fixture, so the
-    ``sys.modules['hermes_state']`` swap is auto-restored at test teardown
-    and cannot leak into unrelated tests in the same xdist worker.
-    """
+    """Inject a fake SessionDB so ``scan_sessions`` finds it via its local import."""
     fake_module = type(sys)("hermes_state")
-    fake_module.SessionDB = lambda: fake_db
-    plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
+    fake_module.SessionDB = lambda *args, **kwargs: fake_db
+    sys.modules["hermes_state"] = fake_module
 
 
 def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):

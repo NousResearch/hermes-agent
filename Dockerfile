@@ -29,6 +29,8 @@ WORKDIR /opt/hermes
 # Copy only package manifests first so npm install + Playwright are cached
 # unless the lockfiles themselves change.
 #
+# ui-tui/packages/hermes-ink/package-lock.json is intentionally part of the
+# cached TUI dependency layer.
 # ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
 # because it is referenced as a `file:` workspace dependency from
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
@@ -54,6 +56,22 @@ RUN npm install --prefer-offline --no-audit && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
+
+# Materialize the local @hermes/ink workspace as a concrete runtime package so
+# the container keeps working even when npm resolves file: deps via links.
+RUN cd ui-tui && \
+    rm -rf packages/hermes-ink/node_modules && \
+    mkdir -p node_modules/@hermes && \
+    if [ -L node_modules/@hermes/ink ]; then \
+        _ink_target="$(readlink node_modules/@hermes/ink)" && \
+        rm node_modules/@hermes/ink && \
+        cp -R "${_ink_target}" node_modules/@hermes/ink; \
+    elif [ ! -d node_modules/@hermes/ink ]; then \
+        cp -R packages/hermes-ink node_modules/@hermes/ink; \
+    fi && \
+    npm install --omit=dev --prefix node_modules/@hermes/ink --prefer-offline --no-audit && \
+    rm -rf node_modules/@hermes/ink/node_modules/react && \
+    node --input-type=module -e "await import('@hermes/ink')"
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

@@ -6,6 +6,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.tool_guardrails import ToolCallGuardrailController
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +54,7 @@ def _make_agent(monkeypatch):
             self._tool_worker_threads: set = set()
             self._tool_worker_threads_lock = threading.Lock()
             self._active_children_lock = threading.Lock()
+            self._tool_guardrails = ToolCallGuardrailController()
 
         def _touch_activity(self, desc):
             self._last_activity = time.time()
@@ -71,6 +73,9 @@ def _make_agent(monkeypatch):
 
         def _has_stream_consumers(self):
             return False
+
+        def _append_guardrail_observation(self, function_name, function_args, function_result, failed=False):
+            return function_result
 
     stub = _Stub()
     # Bind the real methods under test
@@ -107,7 +112,7 @@ def test_concurrent_interrupt_cancels_pending(monkeypatch):
 
     original_invoke = agent._invoke_tool
 
-    def slow_tool(name, args, task_id, call_id=None):
+    def slow_tool(name, args, task_id, call_id=None, **kwargs):
         if name == "slow_one":
             # Block until the test sets the interrupt
             barrier.wait(timeout=10)
@@ -184,7 +189,7 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
     observed = {"saw_true": False, "poll_count": 0, "worker_tid": None}
     worker_started = threading.Event()
 
-    def polling_tool(name, args, task_id, call_id=None, messages=None):
+    def polling_tool(name, args, task_id, call_id=None, messages=None, **kwargs):
         observed["worker_tid"] = threading.current_thread().ident
         worker_started.set()
         deadline = time.monotonic() + 5.0

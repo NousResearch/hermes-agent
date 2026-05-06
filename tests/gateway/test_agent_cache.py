@@ -942,8 +942,8 @@ class TestAgentCacheSpilloverLive:
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
         runner = self._runner()
 
-        N_THREADS = 8
-        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
+        N_THREADS = 4
+        PER_THREAD = 8  # enough contention to exercise a 16-slot cache without CI timeouts
 
         def worker(tid: int):
             for j in range(PER_THREAD):

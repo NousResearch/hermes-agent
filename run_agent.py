@@ -9463,6 +9463,7 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            detail_level=function_args.get("detail_level"),
             parent_agent=self,
         )
 

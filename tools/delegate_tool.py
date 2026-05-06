@@ -321,6 +321,46 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _normalize_detail_level(level: Optional[str]) -> str:
+    """Normalise result detail level to 'slim' (default) or 'detailed'."""
+    if level is None or not str(level).strip():
+        return "slim"
+    normalized = str(level).strip().lower()
+    if normalized in {"slim", "detailed"}:
+        return normalized
+    logger.warning(
+        "Unknown delegate_task detail_level=%r, defaulting to 'slim'", level
+    )
+    return "slim"
+
+
+def _shape_parent_result_entry(entry: Dict[str, Any], detail_level: str) -> Dict[str, Any]:
+    """Shape parent-facing result entries.
+
+    slim (default): concise execution summary + traceability fields.
+    detailed: preserve existing rich payload for debug/instrumentation.
+    """
+    if detail_level == "detailed":
+        return dict(entry)
+
+    slim = {
+        "task_index": entry.get("task_index"),
+        "status": entry.get("status"),
+        "summary": entry.get("summary"),
+        "exit_reason": entry.get("exit_reason"),
+        "duration_seconds": entry.get("duration_seconds"),
+    }
+    if entry.get("error"):
+        slim["error"] = entry.get("error")
+
+    for key in ("delegation_id", "child_session_id", "child_role", "depth"):
+        value = entry.get(key)
+        if value is not None and value != "":
+            slim[key] = value
+
+    return slim
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -1842,6 +1882,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    detail_level: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1870,8 +1911,9 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
-    # Normalise the top-level role once; per-task overrides re-normalise.
+    # Normalise top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    effective_detail_level = _normalize_detail_level(detail_level)
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2163,7 +2205,23 @@ def delegate_task(
     # subagent_stop hook loop so we don't walk `results` twice.
     _children_cost_total = 0.0
     for entry in results:
+        _idx = entry.get("task_index")
+        if isinstance(_idx, int) and 0 <= _idx < len(children):
+            _child = children[_idx][2]
+            _delegation_id = getattr(_child, "_subagent_id", None)
+            _child_session_id = getattr(_child, "session_id", None)
+            _child_depth = getattr(_child, "_delegate_depth", None)
+            if isinstance(_delegation_id, str):
+                entry["delegation_id"] = _delegation_id
+            if isinstance(_child_session_id, str):
+                entry["child_session_id"] = _child_session_id
+            if isinstance(_child_depth, (int, float)):
+                entry["depth"] = int(_child_depth)
+
         child_role = entry.pop("_child_role", None)
+        if isinstance(child_role, str):
+            entry["child_role"] = child_role
+
         child_cost = entry.pop("_child_cost_usd", 0.0)
         try:
             if child_cost:
@@ -2207,10 +2265,13 @@ def delegate_task(
             logger.debug("Subagent cost rollup failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
+    shaped_results = [
+        _shape_parent_result_entry(entry, effective_detail_level) for entry in results
+    ]
 
     return json.dumps(
         {
-            "results": results,
+            "results": shaped_results,
             "total_duration_seconds": total_duration,
         },
         ensure_ascii=False,
@@ -2533,6 +2594,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "detail_level": {
+                "type": "string",
+                "enum": ["slim", "detailed"],
+                "description": (
+                    "Parent-facing result verbosity. Default 'slim' returns concise task outcomes "
+                    "(status/summary/exit/duration/error + traceability fields when available). "
+                    "Set 'detailed' to include full debug/instrumentation payload "
+                    "(api_calls/model/tokens/tool_trace, etc.)."
+                ),
+            },
         },
         "required": [],
     },
@@ -2555,6 +2626,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        detail_level=args.get("detail_level"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

@@ -69,6 +69,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("detail_level", props)
+        self.assertEqual(props["detail_level"]["enum"], ["slim", "detailed"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -433,7 +435,13 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test observability",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
             entry = result["results"][0]
 
             # Core observability fields
@@ -448,6 +456,74 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("args_bytes", entry["tool_trace"][0])
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_default_results_are_slim_with_traceability(self):
+        """Default parent-facing payload is slim and omits heavy instrumentation fields."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_id = "child-session-123"
+            mock_child._subagent_id = "sa-0-test1234"
+            mock_child._delegate_depth = 1
+            mock_child.session_prompt_tokens = 123
+            mock_child.session_completion_tokens = 45
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 3,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="slim please", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["summary"], "done")
+            self.assertEqual(entry["exit_reason"], "completed")
+            self.assertIn("duration_seconds", entry)
+            self.assertTrue(entry["delegation_id"].startswith("sa-0-"))
+            self.assertEqual(entry["child_session_id"], "child-session-123")
+            self.assertEqual(entry["depth"], 1)
+            self.assertIn("child_role", entry)
+            self.assertNotIn("api_calls", entry)
+            self.assertNotIn("model", entry)
+            self.assertNotIn("tokens", entry)
+            self.assertNotIn("tool_trace", entry)
+
+    def test_detailed_results_keep_instrumentation(self):
+        """detail_level='detailed' preserves rich instrumentation payload."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 10
+            mock_child.session_completion_tokens = 20
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    goal="verbose please",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
+            entry = result["results"][0]
+            self.assertEqual(entry["api_calls"], 2)
+            self.assertIn("model", entry)
+            self.assertIn("tokens", entry)
+            self.assertIn("tool_trace", entry)
 
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""
@@ -472,7 +548,13 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test error trace",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(trace[0]["status"], "error")
 
@@ -504,7 +586,13 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test parallel", parent_agent=parent))
+            result = json.loads(
+                delegate_task(
+                    goal="Test parallel",
+                    detail_level="detailed",
+                    parent_agent=parent,
+                )
+            )
             trace = result["results"][0]["tool_trace"]
 
             # All three tool calls should have results
@@ -784,7 +872,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(creds["api_key"], "sk-or-test-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
-        mock_resolve.assert_called_once_with(requested="openrouter")
+        mock_resolve.assert_called_once_with(
+            requested="openrouter", target_model="google/gemini-3-flash-preview"
+        )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
@@ -804,7 +894,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["model"], "server-default-model")
         self.assertEqual(creds["provider"], "custom")
         self.assertEqual(creds["base_url"], "https://my-server.example/v1")
-        mock_resolve.assert_called_once_with(requested="custom:my-server")
+        mock_resolve.assert_called_once_with(requested="custom:my-server", target_model=None)
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -868,7 +958,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "nous")
         self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
         self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
-        mock_resolve.assert_called_once_with(requested="nous")
+        mock_resolve.assert_called_once_with(
+            requested="nous", target_model="hermes-3-llama-3.1-8b"
+        )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1571,8 +1663,9 @@ class TestDelegateHeartbeat(unittest.TestCase):
         def slow_run(**kwargs):
             # Long enough to exceed the OLD idle threshold (5 cycles) at
             # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # threshold. Use a little headroom so scheduling jitter does not
+            # make the new behavior look like the old ~5-cycle cap.
+            time.sleep(0.8)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1581,8 +1674,9 @@ class TestDelegateHeartbeat(unittest.TestCase):
         # the in-tool branch takes effect: with a 0.05s interval and the
         # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
         # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # continuing through the full 0.8s run.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+             patch("tools.delegate_tool.logger.warning") as warning_mock:
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1590,13 +1684,15 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
-        self.assertGreater(
-            len(touch_calls), 6,
-            f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+        self.assertGreater(len(touch_calls), 0)
+        stale_warnings = [
+            call for call in warning_mock.call_args_list
+            if "appears stale" in str(call)
+        ]
+        self.assertEqual(
+            stale_warnings,
+            [],
+            "Heartbeat should not mark an in-tool child stale at the idle threshold",
         )
 
     def test_heartbeat_still_trips_idle_stale_when_no_tool(self):

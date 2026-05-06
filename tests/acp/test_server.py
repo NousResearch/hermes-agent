@@ -903,7 +903,6 @@ class TestSlashCommands:
         ]
         state.agent.compression_enabled = True
         state.agent._cached_system_prompt = "system"
-        state.agent.tools = None
         original_session_db = object()
         state.agent._session_db = original_session_db
 

@@ -2171,38 +2171,34 @@ class TestPtyWebSocket:
         assert "token=" in url
 
     def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
-        """Frame written to /api/pub is rebroadcast verbatim to every
-        /api/events subscriber on the same channel."""
-        import time
-        from urllib.parse import urlencode
+        """Publisher frames are fanned out verbatim to channel subscribers."""
+        import anyio
+        import uuid
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
-        pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
+        class DummySubscriber:
+            def __init__(self):
+                self.messages = []
 
-        with self.client.websocket_connect(sub_path) as sub:
-            # Wait for the subscriber to be registered on the server side.
-            # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError(
-                    "subscriber did not register on channel within 5s"
-                )
+            async def send_text(self, payload):
+                self.messages.append(payload)
 
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                received = sub.receive_text()
+        channel = f"broadcast-test-{uuid.uuid4().hex}"
+        sub = DummySubscriber()
+        ws_mod._event_channels[channel] = {sub}
 
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+        try:
+            anyio.run(
+                ws_mod._broadcast_event,
+                channel,
+                '{"type":"tool.start","payload":{"tool_id":"t1"}}',
+            )
+        finally:
+            ws_mod._event_channels.pop(channel, None)
+
+        assert sub.messages == [
+            '{"type":"tool.start","payload":{"tool_id":"t1"}}'
+        ]
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect

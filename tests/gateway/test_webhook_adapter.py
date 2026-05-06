@@ -15,6 +15,7 @@ Covers:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -100,6 +101,31 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _svix_secret(raw_secret: bytes = b"svix-secret-42") -> str:
+    """Build a Svix-style whsec_ signing secret for tests."""
+    return "whsec_" + base64.b64encode(raw_secret).decode("ascii")
+
+
+def _svix_signature(
+    body: bytes,
+    secret: str,
+    msg_id: str = "msg_test",
+    timestamp: str = "1700000000",
+) -> str:
+    """Compute Svix v1 signature for *body* using *secret*."""
+    secret_value = secret.removeprefix("whsec_")
+    key = base64.b64decode(secret_value)
+    signed_content = (
+        msg_id.encode("utf-8")
+        + b"."
+        + timestamp.encode("utf-8")
+        + b"."
+        + body
+    )
+    digest = hmac.new(key, signed_content, hashlib.sha256).digest()
+    return "v1," + base64.b64encode(digest).decode("ascii")
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -137,6 +163,67 @@ class TestValidateSignature:
         adapter = _make_adapter()
         req = _mock_request(headers={"X-Gitlab-Token": "wrong"})
         assert adapter._validate_signature(req, b"{}", "correct") is False
+
+    def test_validate_svix_signature_valid(self):
+        """Valid Svix v1 signature is accepted."""
+        adapter = _make_adapter()
+        body = b'{"type": "email.received"}'
+        secret = _svix_secret()
+        msg_id = "msg_2kYQ0V7q9Xc"
+        timestamp = "1700000000"
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_accepts_matching_signature_from_list(self):
+        """Svix retries may include multiple signatures; accept any matching v1."""
+        adapter = _make_adapter()
+        body = b'{"type": "email.received"}'
+        secret = _svix_secret()
+        msg_id = "msg_2kYQ0V7q9Xc"
+        timestamp = "1700000000"
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": "v1,invalid " + sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_invalid(self):
+        """Wrong Svix v1 signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"type": "email.received"}'
+        secret = _svix_secret()
+        req = _mock_request(
+            headers={
+                "svix-id": "msg_2kYQ0V7q9Xc",
+                "svix-timestamp": "1700000000",
+                "svix-signature": "v1,deadbeef",
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_svix_signature_missing_required_header_rejects(self):
+        """Partial Svix headers are not allowed to fall through."""
+        adapter = _make_adapter()
+        body = b'{"type": "email.received"}'
+        secret = _svix_secret()
+        req = _mock_request(
+            headers={
+                "svix-id": "msg_2kYQ0V7q9Xc",
+                "svix-signature": _svix_signature(body, secret),
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
 
     def test_validate_no_signature_with_secret_rejects(self):
         """Secret configured but no recognised signature header → reject."""

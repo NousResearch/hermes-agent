@@ -27,6 +27,8 @@ Security:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -555,7 +557,11 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
+        """Validate webhook signature.
+
+        Supports GitHub, GitLab, Svix-compatible providers, and a generic
+        HMAC-SHA256 header.
+        """
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
         if gh_sig:
@@ -568,6 +574,44 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Svix: svix-signature = v1,<base64>; signed content is
+        # "{svix-id}.{svix-timestamp}.{raw_body}" and whsec_ secrets contain
+        # the base64-encoded HMAC key after the prefix.
+        svix_sig = request.headers.get("svix-signature", "")
+        svix_id = request.headers.get("svix-id", "")
+        svix_timestamp = request.headers.get("svix-timestamp", "")
+        if svix_sig or svix_id or svix_timestamp:
+            if not (svix_sig and svix_id and svix_timestamp):
+                return False
+            secret_value = (
+                secret[len("whsec_") :]
+                if secret.startswith("whsec_")
+                else secret
+            )
+            try:
+                key = base64.b64decode(secret_value, validate=True)
+            except (binascii.Error, ValueError):
+                logger.debug("[webhook] Invalid Svix signing secret format")
+                return False
+
+            signed_content = (
+                svix_id.encode("utf-8")
+                + b"."
+                + svix_timestamp.encode("utf-8")
+                + b"."
+                + body
+            )
+            expected = base64.b64encode(
+                hmac.new(key, signed_content, hashlib.sha256).digest()
+            ).decode("ascii")
+            for part in svix_sig.split():
+                if not part.startswith("v1,"):
+                    continue
+                candidate = part[3:]
+                if hmac.compare_digest(candidate, expected):
+                    return True
+            return False
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

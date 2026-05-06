@@ -208,3 +208,81 @@ def test_kanban_not_gateway_only():
     cmd = next(c for c in COMMAND_REGISTRY if c.name == "kanban")
     assert not cmd.cli_only
     assert not cmd.gateway_only
+
+
+# ---------------------------------------------------------------------------
+# reclaim + reassign CLI smoke tests
+# ---------------------------------------------------------------------------
+
+def test_run_slash_reclaim_running_task(kanban_home):
+    import re
+    import time
+    import secrets
+    from hermes_cli import kanban_db as kb
+
+    out1 = kc.run_slash("create 'stuck worker task' --assignee broken-model")
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    assert m
+    tid = m.group(1)
+
+    # Simulate a running claim outside TTL.
+    conn = kb.connect()
+    try:
+        lock = secrets.token_hex(4)
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, int(time.time()) + 3600, 4242, tid),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (tid, lock, int(time.time()) + 3600, 4242, int(time.time())),
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kc.run_slash(f"reclaim {tid} --reason 'test'")
+    assert "Reclaimed" in out, out
+    # Status back to ready.
+    out2 = kc.run_slash(f"show {tid}")
+    assert "ready" in out2.lower()
+
+
+def test_run_slash_reassign_with_reclaim_flag(kanban_home):
+    import re
+    import time
+    import secrets
+    from hermes_cli import kanban_db as kb
+
+    out1 = kc.run_slash("create 'switch model' --assignee orig")
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    tid = m.group(1)
+
+    # Simulate a running claim.
+    conn = kb.connect()
+    try:
+        lock = secrets.token_hex(4)
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, int(time.time()) + 3600, 4242, tid),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (tid, lock, int(time.time()) + 3600, 4242, int(time.time())),
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kc.run_slash(f"reassign {tid} newbie --reclaim --reason 'switch'")
+    assert "Reassigned" in out, out
+    out2 = kc.run_slash(f"show {tid}")
+    assert "newbie" in out2

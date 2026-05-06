@@ -182,6 +182,52 @@ def test_stale_claim_reclaimed(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
+    """A retry should get a fresh max-runtime window.
+
+    ``tasks.started_at`` intentionally records the first time the task ever
+    started. Runtime enforcement must therefore use the active
+    ``task_runs.started_at`` row; otherwise every retry of an old task is
+    immediately timed out again.
+    """
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        t = kb.create_task(
+            conn, title="retry", assignee="a", max_runtime_seconds=10,
+        )
+
+        kb.claim_task(conn, t, claimer=f"{host}:first")
+        first_run_id = kb.latest_run(conn, t).id
+        old_started = int(time.time()) - 20
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 999999, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 999999, first_run_id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == [t]
+        assert kb.get_task(conn, t).status == "ready"
+
+        kb.claim_task(conn, t, claimer=f"{host}:retry")
+        retry_run = kb.latest_run(conn, t)
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (999999, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+            (999999, retry_run.id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == []
+        assert kb.get_task(conn, t).status == "running"
+
+
 def test_heartbeat_extends_claim(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -252,6 +298,22 @@ def test_assign_reassigns_when_not_running(kanban_home):
         assert kb.get_task(conn, t).assignee == "b"
 
 
+def test_assignee_normalized_to_lowercase_on_create_and_assign(kanban_home):
+    """Dashboard/CLI may pass title-cased profile labels; DB + spawn use canonical id."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cased", assignee="Jules")
+        assert kb.get_task(conn, tid).assignee == "jules"
+        assert kb.assign_task(conn, tid, "Librarian")
+        assert kb.get_task(conn, tid).assignee == "librarian"
+
+
+def test_list_tasks_assignee_filter_case_insensitive(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="q", assignee="jules")
+        found = kb.list_tasks(conn, assignee="Jules")
+        assert len(found) == 1 and found[0].id == tid
+
+
 def test_archive_hides_from_default_list(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x")
@@ -311,7 +373,7 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-def test_dispatch_dry_run_does_not_claim(kanban_home):
+def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
     with kb.connect() as conn:
         t1 = kb.create_task(conn, title="a", assignee="alice")
         t2 = kb.create_task(conn, title="b", assignee="bob")
@@ -328,10 +390,58 @@ def test_dispatch_skips_unassigned(kanban_home):
         t = kb.create_task(conn, title="floater")
         res = kb.dispatch_once(conn, dry_run=True)
     assert t in res.skipped_unassigned
+    assert t not in res.skipped_nonspawnable
     assert not res.spawned
 
 
-def test_dispatch_promotes_ready_and_spawns(kanban_home):
+def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):
+    """Tasks whose assignee fails profile_exists() must NOT land in
+    ``skipped_unassigned`` (which is operator-actionable) — they go in
+    the dedicated ``skipped_nonspawnable`` bucket so health telemetry
+    can suppress false-positive "stuck" warnings."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="for-terminal", assignee="orion-cc")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert t in res.skipped_nonspawnable
+    assert t not in res.skipped_unassigned
+    assert not res.spawned
+
+
+def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns False when every ready task is
+    assigned to a control-plane lane — used by gateway/CLI dispatchers
+    to silence the stuck-warn while terminals still have queued work."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="t1", assignee="orion-cc")
+        kb.create_task(conn, title="t2", assignee="orion-research")
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns True as soon as ANY ready task
+    has an assignee that maps to a real Hermes profile — preserves the
+    real "stuck" signal when a daily/agent task is queued."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "daily"
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="terminal-task", assignee="orion-cc")
+        kb.create_task(conn, title="hermes-task", assignee="daily")
+        assert kb.has_spawnable_ready(conn) is True
+
+
+def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
+    """Empty queue is the trivial false case — no ready tasks at all."""
+    with kb.connect() as conn:
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
 
     def fake_spawn(task, workspace):
@@ -352,7 +462,7 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home):
         assert kb.get_task(conn, c).status == "running"
 
 
-def test_dispatch_spawn_failure_releases_claim(kanban_home):
+def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")
 
@@ -436,3 +546,356 @@ def test_tenant_propagates_to_events(kanban_home):
     # The "created" event should have tenant in its payload.
     created = [e for e in events if e.kind == "created"]
     assert created and created[0].payload.get("tenant") == "biz-a"
+
+
+# ---------------------------------------------------------------------------
+# Shared-board path resolution (issue #19348)
+#
+# The kanban board is a cross-profile coordination primitive: a worker
+# spawned with `hermes -p <profile>` must read/write the same kanban.db
+# as the dispatcher that claimed the task. These tests exercise the
+# path-resolution layer directly and would have caught the regression
+# where `kanban_db_path()` resolved to the active profile's HERMES_HOME.
+# ---------------------------------------------------------------------------
+
+class TestSharedBoardPaths:
+    """`kanban_home`/`kanban_db_path`/`workspaces_root`/`worker_log_path`
+    must anchor at the **shared root**, not the active profile's HERMES_HOME."""
+
+    def _set_home(self, monkeypatch, tmp_path, hermes_home):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+
+    def test_default_install_anchors_at_home_dot_hermes(
+        self, tmp_path, monkeypatch
+    ):
+        # Standard install: HERMES_HOME == ~/.hermes, no profile active.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        assert kb.kanban_home() == default_home
+        assert kb.kanban_db_path() == default_home / "kanban.db"
+        assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
+        assert (
+            kb.worker_log_path("t_demo")
+            == default_home / "kanban" / "logs" / "t_demo.log"
+        )
+
+    def test_profile_worker_resolves_to_shared_root(
+        self, tmp_path, monkeypatch
+    ):
+        # Reproduces the bug: dispatcher uses ~/.hermes/kanban.db,
+        # worker spawned with -p <profile> previously resolved to
+        # ~/.hermes/profiles/<profile>/kanban.db. After the fix both
+        # converge on ~/.hermes/kanban.db.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        profile_home = default_home / "profiles" / "nehemiahkanban"
+        profile_home.mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        # All four resolvers must anchor at the shared root, not the
+        # profile-local HERMES_HOME.
+        assert kb.kanban_home() == default_home
+        assert kb.kanban_db_path() == default_home / "kanban.db"
+        assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
+        assert (
+            kb.worker_log_path("t_0d214f19")
+            == default_home / "kanban" / "logs" / "t_0d214f19.log"
+        )
+
+        # Sanity: the profile-local path that used to be returned is
+        # explicitly NOT what we resolve to anymore.
+        assert kb.kanban_db_path() != profile_home / "kanban.db"
+
+    def test_dispatcher_and_profile_worker_converge(
+        self, tmp_path, monkeypatch
+    ):
+        # End-to-end convergence: resolve the path under each side's
+        # HERMES_HOME and confirm equality. This is the property the
+        # dispatcher/worker handoff actually depends on.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        profile_home = default_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        # Dispatcher's perspective.
+        self._set_home(monkeypatch, tmp_path, default_home)
+        dispatcher_db = kb.kanban_db_path()
+        dispatcher_ws = kb.workspaces_root()
+        dispatcher_log = kb.worker_log_path("t_handoff")
+
+        # Worker's perspective (profile activated by `hermes -p coder`).
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        worker_db = kb.kanban_db_path()
+        worker_ws = kb.workspaces_root()
+        worker_log = kb.worker_log_path("t_handoff")
+
+        assert dispatcher_db == worker_db
+        assert dispatcher_ws == worker_ws
+        assert dispatcher_log == worker_log
+
+    def test_docker_custom_hermes_home_uses_env_path_directly(
+        self, tmp_path, monkeypatch
+    ):
+        # Docker / custom deployment: HERMES_HOME points outside ~/.hermes.
+        # `get_default_hermes_root()` returns env_home directly when it
+        # is not a `<root>/profiles/<name>` shape and not under
+        # `Path.home() / ".hermes"`.
+        custom_root = tmp_path / "opt" / "hermes"
+        custom_root.mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, custom_root)
+
+        assert kb.kanban_home() == custom_root
+        assert kb.kanban_db_path() == custom_root / "kanban.db"
+
+    def test_docker_profile_layout_uses_grandparent(
+        self, tmp_path, monkeypatch
+    ):
+        # Docker profile shape: HERMES_HOME=/opt/hermes/profiles/coder;
+        # `get_default_hermes_root()` walks up to /opt/hermes because
+        # the immediate parent dir is named "profiles".
+        custom_root = tmp_path / "opt" / "hermes"
+        profile = custom_root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, profile)
+
+        assert kb.kanban_home() == custom_root
+        assert kb.kanban_db_path() == custom_root / "kanban.db"
+
+    def test_explicit_override_via_hermes_kanban_home(
+        self, tmp_path, monkeypatch
+    ):
+        # Explicit override: HERMES_KANBAN_HOME beats every other
+        # resolution rule.
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "any"
+        profile_home.mkdir(parents=True)
+        override = tmp_path / "shared-board"
+        override.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(override))
+
+        assert kb.kanban_home() == override
+        assert kb.kanban_db_path() == override / "kanban.db"
+        assert kb.workspaces_root() == override / "kanban" / "workspaces"
+
+    def test_empty_override_falls_through(self, tmp_path, monkeypatch):
+        # Empty/whitespace override is treated as unset.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", "   ")
+
+        assert kb.kanban_home() == default_home
+
+    def test_dispatcher_and_worker_share_a_real_database(
+        self, tmp_path, monkeypatch
+    ):
+        # Belt-and-suspenders: round-trip a task across the two
+        # HERMES_HOME perspectives via a real SQLite file. Without the
+        # fix the worker would open a different file and see no rows.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        profile_home = default_home / "profiles" / "nehemiahkanban"
+        profile_home.mkdir(parents=True)
+
+        # Dispatcher creates the board and a task.
+        self._set_home(monkeypatch, tmp_path, default_home)
+        kb.init_db()
+        with kb.connect() as conn:
+            task_id = kb.create_task(conn, title="cross-profile")
+
+        # Worker switches to the profile HERMES_HOME and reads.
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        with kb.connect() as conn:
+            task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.title == "cross-profile"
+
+    def test_hermes_kanban_db_pin_beats_kanban_home(
+        self, tmp_path, monkeypatch
+    ):
+        # HERMES_KANBAN_DB pins the file path directly and beats both
+        # HERMES_KANBAN_HOME and the `get_default_hermes_root()` path.
+        # This is the env the dispatcher injects into workers.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        umbrella = tmp_path / "umbrella"
+        umbrella.mkdir()
+        pinned_db = tmp_path / "pinned" / "board.db"
+        pinned_db.parent.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(umbrella))
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned_db))
+
+        assert kb.kanban_db_path() == pinned_db
+        # workspaces_root still follows HERMES_KANBAN_HOME -- the pins
+        # are independent.
+        assert kb.workspaces_root() == umbrella / "kanban" / "workspaces"
+
+    def test_hermes_kanban_workspaces_root_pin_beats_kanban_home(
+        self, tmp_path, monkeypatch
+    ):
+        # HERMES_KANBAN_WORKSPACES_ROOT pins the workspaces root directly.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        umbrella = tmp_path / "umbrella"
+        umbrella.mkdir()
+        pinned_ws = tmp_path / "pinned-workspaces"
+        pinned_ws.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(umbrella))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(pinned_ws))
+
+        assert kb.workspaces_root() == pinned_ws
+        # kanban_db_path still follows HERMES_KANBAN_HOME.
+        assert kb.kanban_db_path() == umbrella / "kanban.db"
+
+    def test_empty_per_path_overrides_fall_through(
+        self, tmp_path, monkeypatch
+    ):
+        # Empty/whitespace pins are treated as unset, same as
+        # HERMES_KANBAN_HOME.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_DB", "   ")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", "")
+
+        assert kb.kanban_db_path() == default_home / "kanban.db"
+        assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
+
+    def test_dispatcher_spawn_injects_kanban_db_and_workspaces_root(
+        self, tmp_path, monkeypatch
+    ):
+        # The dispatcher's `_default_spawn` must inject HERMES_KANBAN_DB
+        # and HERMES_KANBAN_WORKSPACES_ROOT into the worker env so the
+        # worker converges on the dispatcher's paths even when the
+        # `-p <profile>` flag rewrites HERMES_HOME.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_dispatch_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
+        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
+            default_home / "kanban" / "workspaces"
+        )
+        assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+
+
+# ---------------------------------------------------------------------------
+# latest_summary / latest_summaries — surface task_runs.summary handoffs
+# ---------------------------------------------------------------------------
+
+def test_latest_summary_returns_none_when_no_runs(kanban_home):
+    """A freshly-created task has no runs and therefore no summary."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="alice")
+        assert kb.latest_summary(conn, t) is None
+
+
+def test_latest_summary_returns_summary_after_complete(kanban_home):
+    """``complete_task(summary=...)`` is the canonical kanban-worker
+    handoff; ``latest_summary`` must surface it so dashboards/CLI can
+    render what the worker actually did."""
+    handoff = "shipped 3 files, ran tests, opened PR #42"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="work", assignee="alice")
+        kb.complete_task(conn, t, summary=handoff)
+        assert kb.latest_summary(conn, t) == handoff
+
+
+def test_latest_summary_picks_newest_when_multiple_runs(kanban_home):
+    """When a task has been re-run (block → unblock → complete), the
+    newest run's summary wins. We unblock to take the task back to
+    ``ready``, then complete a second time and verify the second
+    summary surfaces."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="retry", assignee="alice")
+        kb.complete_task(conn, t, summary="first attempt")
+        # Move back to ready by direct SQL — block_task / unblock_task
+        # paths require an active claim, but we just want a second run
+        # row to exist with a later ended_at.
+        conn.execute(
+            "UPDATE tasks SET status='ready', completed_at=NULL WHERE id=?",
+            (t,),
+        )
+        # Sleep 1s so the second run's ended_at is provably later than
+        # the first (complete_task uses int(time.time())).
+        time.sleep(1.05)
+        kb.complete_task(conn, t, summary="second attempt — final")
+        assert kb.latest_summary(conn, t) == "second attempt — final"
+
+
+def test_latest_summary_skips_empty_string(kanban_home):
+    """A run with an empty-string summary should not mask an earlier
+    populated one — empty strings carry no information."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="t", assignee="alice")
+        kb.complete_task(conn, t, summary="real handoff")
+        # Inject a later run with empty summary directly. Workers
+        # writing "" instead of None is a real shape we want to ignore.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, started_at, ended_at, "
+            "outcome, summary) VALUES (?, 'done', ?, ?, 'completed', ?)",
+            (t, int(time.time()) + 1, int(time.time()) + 2, ""),
+        )
+        conn.commit()
+        assert kb.latest_summary(conn, t) == "real handoff"
+
+
+def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
+    """``latest_summaries`` is the dashboard's N+1 escape hatch — it
+    must return only entries for tasks that actually have a summary,
+    keep the per-task latest, and accept an empty input gracefully."""
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        t2 = kb.create_task(conn, title="b", assignee="bob")
+        t3 = kb.create_task(conn, title="c", assignee="carol")
+        kb.complete_task(conn, t1, summary="alpha")
+        kb.complete_task(conn, t3, summary="charlie")
+        out = kb.latest_summaries(conn, [t1, t2, t3])
+        assert out == {t1: "alpha", t3: "charlie"}
+        # Empty input → empty dict, no SQL syntax error from "IN ()".
+        assert kb.latest_summaries(conn, []) == {}

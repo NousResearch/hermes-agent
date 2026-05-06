@@ -1038,14 +1038,43 @@ class MCPServerTask:
                         with a fresh signal.
 
         Shutdown takes precedence if both events are set simultaneously.
+
+        Periodically sends a lightweight keepalive (``list_tools``) to
+        prevent TCP connections from going stale during long idle
+        periods (#17003).  If the keepalive fails, triggers a reconnect.
         """
+        # Keepalive interval in seconds.  Must be shorter than typical
+        # LB / NAT idle-timeout (commonly 300-600s).
+        _KEEPALIVE_INTERVAL = 180  # 3 minutes
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:
-            await asyncio.wait(
-                {shutdown_task, reconnect_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            while True:
+                done, _pending = await asyncio.wait(
+                    {shutdown_task, reconnect_task},
+                    timeout=_KEEPALIVE_INTERVAL,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if done:
+                    break
+
+                # Timeout — no lifecycle event fired.  Send a keepalive
+                # to exercise the connection and detect stale sockets.
+                if self.session:
+                    try:
+                        await asyncio.wait_for(
+                            self.session.list_tools(),
+                            timeout=30.0,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "MCP server '%s' keepalive failed, "
+                            "triggering reconnect: %s",
+                            self.name, exc,
+                        )
+                        self._reconnect_event.set()
+                        break
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
@@ -1667,6 +1696,7 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "session expired",
     "session not found",
     "unknown session",
+    "session terminated",
 )
 
 

@@ -1333,6 +1333,15 @@ class WeixinAdapter(BasePlatformAdapter):
         if message_id and self._dedup.is_duplicate(message_id):
             return
 
+        # Secondary content-fingerprint dedup for text messages
+        item_list = message.get("item_list") or []
+        text = _extract_text(item_list)
+        if text:
+            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            if self._dedup.is_duplicate(content_key):
+                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+                return
+
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if self._group_policy == "disabled":
@@ -1347,8 +1356,6 @@ class WeixinAdapter(BasePlatformAdapter):
             self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
-        item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
         media_paths: List[str] = []
         media_types: List[str] = []
 

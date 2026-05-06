@@ -109,6 +109,12 @@ class TestResolveCommand:
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("tasks").name == "agents"
 
+    def test_topic_is_gateway_command(self):
+        topic = resolve_command("topic")
+        assert topic is not None
+        assert topic.name == "topic"
+        assert "topic" in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
@@ -235,6 +241,13 @@ class TestTelegramBotCommands:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
+
+    def test_excludes_commands_with_required_args(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "background" not in names
+        assert "queue" not in names
+        assert "steer" not in names
+        assert "background" in GATEWAY_KNOWN_COMMANDS
 
 
 class TestSlackSubcommandMap:
@@ -1660,6 +1673,19 @@ class TestPluginCommandEnumeration:
         })
         names = {name for name, _desc in telegram_bot_commands()}
         assert "metricas" in names
+
+    def test_plugin_command_with_required_args_excluded_from_telegram_menu(self, monkeypatch):
+        """Telegram BotCommand selections cannot supply required arguments."""
+        self._patch_plugin_commands(monkeypatch, {
+            "background-job": {
+                "handler": lambda _a: "ok",
+                "description": "Run a background job",
+                "args_hint": "<prompt>",
+                "plugin": "jobs-plugin",
+            }
+        })
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "background_job" not in names
 
     def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
         """/hermes metricas must route through the Slack subcommand map."""

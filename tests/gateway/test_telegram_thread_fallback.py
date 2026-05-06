@@ -13,6 +13,7 @@ WITHOUT message_thread_id so the message still reaches the chat.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -271,6 +272,55 @@ async def test_send_without_thread_id_unaffected():
     assert result.success is True
     assert len(call_log) == 1
     assert call_log[0]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_kanban_blocked_delegates_to_send_with_metadata():
+    """The blocked-notifier compatibility API should use the normal sender."""
+    adapter = _make_adapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="kanban-msg"))
+
+    result = await adapter.send_kanban_blocked(
+        "123",
+        "KAN-7",
+        "waiting for owner",
+        assignee="ada",
+        metadata={"thread_id": "42"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "kanban-msg"
+    adapter.send.assert_awaited_once_with(
+        "123",
+        "⏸ @ada Kanban KAN-7 blocked: waiting for owner",
+        reply_to=None,
+        metadata={"thread_id": "42"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_kanban_blocked_accepts_task_mapping():
+    """Downstream guardrails may pass task payloads instead of separate fields."""
+    adapter = _make_adapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="kanban-msg"))
+
+    result = await adapter.send_kanban_blocked(
+        "123",
+        {
+            "task_id": "KAN-8",
+            "blocked_reason": "needs maintainer answer",
+            "assignee": "leon",
+            "title": "Clarify gateway hook contract",
+        },
+    )
+
+    assert result.success is True
+    adapter.send.assert_awaited_once_with(
+        "123",
+        "⏸ @leon Kanban KAN-8 blocked: needs maintainer answer - Clarify gateway hook contract",
+        reply_to=None,
+        metadata=None,
+    )
 
 
 @pytest.mark.asyncio

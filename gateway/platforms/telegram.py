@@ -1340,6 +1340,47 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             return SendResult(success=False, error=str(e), retryable=not is_timeout)
 
+    async def send_kanban_blocked(
+        self,
+        chat_id: str,
+        task_id: Any,
+        reason: Optional[str] = None,
+        *,
+        assignee: Optional[str] = None,
+        title: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Send a kanban blocked notification through the standard Telegram sender."""
+        task = task_id if isinstance(task_id, dict) else {}
+        resolved_task_id = (
+            task.get("task_id")
+            or task.get("id")
+            or kwargs.get("task_id")
+            or kwargs.get("id")
+            or task_id
+        )
+        resolved_reason = (
+            reason
+            or task.get("blocked_reason")
+            or task.get("block_reason")
+            or task.get("reason")
+            or kwargs.get("blocked_reason")
+            or kwargs.get("block_reason")
+            or kwargs.get("reason")
+            or ""
+        )
+        resolved_assignee = assignee or task.get("assignee") or kwargs.get("assignee") or ""
+        resolved_title = title or task.get("title") or kwargs.get("title") or ""
+
+        tag = f"@{resolved_assignee} " if resolved_assignee else ""
+        reason_suffix = f": {str(resolved_reason)[:160]}" if resolved_reason else ""
+        title_suffix = f" - {str(resolved_title)[:120]}" if resolved_title else ""
+        message = f"⏸ {tag}Kanban {resolved_task_id} blocked{reason_suffix}{title_suffix}"
+
+        return await self.send(chat_id, message, reply_to=reply_to, metadata=metadata)
+
     async def edit_message(
         self,
         chat_id: str,

@@ -125,10 +125,39 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _toolsets_disabled_on_every_platform() -> set[str]:
+    """Return toolset keys the user has removed from every configured platform.
+
+    A toolset registered in code but absent from every entry in
+    ``platform_toolsets`` is one the user has opted out of via
+    ``hermes tools disable``. Doctor should not nag about its missing API
+    keys — the user has stated they don't intend to use it.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return set()
+    pts = cfg.get("platform_toolsets") or {}
+    if not isinstance(pts, dict) or not pts:
+        return set()
+    enabled_anywhere: set[str] = set()
+    for platform_list in pts.values():
+        if isinstance(platform_list, list):
+            enabled_anywhere.update(str(ts) for ts in platform_list)
+    try:
+        from tools.registry import registry as _reg
+        all_toolsets = set(_reg.get_registered_toolset_names())
+    except Exception:
+        return set()
+    return all_toolsets - enabled_anywhere
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
     updated_unavailable = []
+    user_disabled = _toolsets_disabled_on_every_platform()
     for item in unavailable:
         name = item.get("name")
         if _is_kanban_worker_env_gate(item):
@@ -138,6 +167,10 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
         if name == "honcho" and _honcho_is_configured_for_doctor():
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
+            continue
+        if name in user_disabled:
+            # User opted out via `hermes tools disable <name>`. Skip the
+            # missing-API-key warning entirely.
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable

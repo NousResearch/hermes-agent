@@ -1687,9 +1687,11 @@ def list_authenticated_providers(
 
 def list_picker_providers(
     current_provider: str = "",
+    current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
+    current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -1714,9 +1716,11 @@ def list_picker_providers(
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
+        current_base_url=current_base_url,
         user_providers=user_providers,
         custom_providers=custom_providers,
         max_models=max_models,
+        current_model=current_model,
     )
 
     filtered: List[dict] = []

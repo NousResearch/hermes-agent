@@ -247,10 +247,20 @@ class ToolRegistry:
                     and toolset.startswith("mcp-")
                 )
                 if both_mcp:
-                    logger.debug(
-                        "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
-                        name, toolset, existing.toolset,
-                    )
+                    # P0-fix: detect handler changes (MCP server refresh with changed tool)
+                    handler_changed = existing.handler != handler
+                    if handler_changed:
+                        logger.warning(
+                            "Tool '%s': MCP toolset '%s' overwriting '%s' with NEW HANDLER "
+                            "(behavior may have changed). Old handler id: %s, new: %s",
+                            name, toolset, existing.toolset,
+                            id(existing.handler), id(handler),
+                        )
+                    else:
+                        logger.debug(
+                            "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s' (same handler)",
+                            name, toolset, existing.toolset,
+                        )
                 else:
                     # Reject shadowing — prevent plugins/MCP from overwriting
                     # built-in tools or vice versa.

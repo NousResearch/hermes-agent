@@ -753,21 +753,48 @@ def handle_function_call(
         # to wrap every tool manually.  We use monotonic() so the value is
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                enabled_tools=sandbox_enabled,
+
+        # P0-fix: Wrap dispatch in ThreadPoolExecutor so a single tool hang
+        # cannot block the entire agent loop forever.
+        # See: https://github.com/NousResearch/hermes-agent/issues/timeout
+        import concurrent.futures
+        _TOOL_DISPATCH_TIMEOUT = 120  # seconds — tools slower than this are killed
+
+        def _dispatch_sync():
+            if function_name == "execute_code":
+                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                return registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    enabled_tools=sandbox_enabled,
+                )
+            else:
+                return registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    user_task=user_task,
+                )
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(_dispatch_sync)
+            result = future.result(timeout=_TOOL_DISPATCH_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            pool.shutdown(wait=False)
+            duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+            logger.error(
+                "Tool timeout: name=%s elapsed_ms=%d limit=%ds — killing dispatch",
+                function_name,
+                duration_ms,
+                _TOOL_DISPATCH_TIMEOUT,
             )
-        else:
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                user_task=user_task,
+            return json.dumps(
+                {"error": f"Tool '{function_name}' timed out after {_TOOL_DISPATCH_TIMEOUT}s (killed)"},
+                ensure_ascii=False,
             )
+        finally:
+            pool.shutdown(wait=False)
+
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         try:

@@ -1440,8 +1440,16 @@ class SessionDB:
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
+                except (json.JSONDecodeError, TypeError) as _e:
+                    raw = msg["tool_calls"]
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_messages, "
+                        "falling back to []. Raw (first 200 chars): %r ... (error: %s)",
+                        raw[:200] if isinstance(raw, str) else repr(raw)[:200],
+                        _e,
+                    )
+                    # P0-fix: preserve raw data so it can be inspected later
+                    msg["tool_calls_raw"] = raw
                     msg["tool_calls"] = []
             result.append(msg)
         return result
@@ -1545,8 +1553,15 @@ class SessionDB:
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
+                except (json.JSONDecodeError, TypeError) as _e:
+                    raw = row["tool_calls"]
+                    logger.warning(
+                        "Failed to deserialize tool_calls in conversation replay, "
+                        "falling back to []. Raw (first 200 chars): %r ... (error: %s)",
+                        raw[:200] if isinstance(raw, str) else repr(raw)[:200],
+                        _e,
+                    )
+                    msg["tool_calls_raw"] = raw
                     msg["tool_calls"] = []
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive

@@ -509,7 +509,9 @@ def _handle_create(args: dict, **kw) -> str:
     priority = args.get("priority")
     workspace_kind = args.get("workspace_kind") or "scratch"
     workspace_path = args.get("workspace_path")
-    triage = bool(args.get("triage"))
+    triage, bool_error = _parse_bool_arg(args, "triage")
+    if bool_error:
+        return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     skills = args.get("skills")

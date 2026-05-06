@@ -482,6 +482,52 @@ def test_create_rejects_non_list_parents(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_create_parses_triage_string_false(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "not triage",
+        "assignee": "peer",
+        "triage": "false",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_create_parses_triage_string_true(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "needs triage",
+        "assignee": "peer",
+        "triage": "true",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task.status == "triage"
+    finally:
+        conn.close()
+
+
+def test_create_rejects_bad_triage(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "bad triage",
+        "assignee": "peer",
+        "triage": "sometimes",
+    })
+    assert "triage must be" in json.loads(out).get("error", "")
+
+
 def test_create_accepts_string_parent(worker_env):
     """Convenience: a single parent id as string is coerced to [id]."""
     from tools import kanban_tools as kt

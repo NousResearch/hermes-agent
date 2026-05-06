@@ -6322,6 +6322,10 @@ class GatewayRunner:
                                                 _werr,
                                             )
                                 finally:
+                                    # Evict the cached agent so the next turn
+                                    # rebuilds its system prompt from current
+                                    # SOUL.md, memory, and skills.
+                                    self._evict_cached_agent(session_key)
                                     self._cleanup_agent_resources(_hyg_agent)
 
                     except Exception as e:
@@ -9505,6 +9509,9 @@ class GatewayRunner:
                 _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
                 _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
             finally:
+                # Evict cached agent so next turn rebuilds system prompt
+                # from current files (SOUL.md, memory, etc.).
+                self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
             lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:

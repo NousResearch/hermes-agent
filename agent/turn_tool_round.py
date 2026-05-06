@@ -175,6 +175,23 @@ def run_tool_round(
                     agent.stream_delta_callback(None)
         return _verdict("break")
 
+    if getattr(agent, "_last_tool_calls_all_end_turn", False):
+        _turn_exit_reason = "end_turn_tool_batch"
+        turn_content = assistant_message.content or ""
+        clean = agent._strip_think_blocks(turn_content).strip()
+        closing = agent._build_empty_assistant_placeholder()
+        if clean:
+            closing["content"] = clean
+        append_message(messages, closing)
+        if clean and getattr(agent, "interim_assistant_callback", None) is not None:
+            agent._response_was_previewed = True
+        final_response = clean
+        agent._last_content_with_tools = None
+        agent._last_content_tools_all_housekeeping = False
+        agent._last_tool_calls_all_end_turn = False
+        agent._empty_content_retries = 0
+        return _verdict("break")
+
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
@@ -279,6 +296,9 @@ def stage_tool_call_message(
     # recovers any dropped-tool-call stall, so refresh that budget per stall.
     agent._post_tool_empty_retried = False
     agent._dropped_toolcall_retries = 0
+    agent._last_tool_calls_all_end_turn = agent._tool_batch_has_end_turn(
+        assistant_message.tool_calls
+    )
 
     previous_msg = messages[-1] if messages else None
     current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)

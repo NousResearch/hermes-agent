@@ -17,6 +17,7 @@ object HermesAutomationBridge {
             "create_system_action_task", "create_system_action", "system_action_task" -> createSystemActionTaskJson(context, arguments)
             "create_ui_action_task", "create_ui_action", "ui_action_task" -> createUiActionTaskJson(context, arguments)
             "create_app_launch_task", "create_app_launch", "launch_app_task" -> createAppLaunchTaskJson(context, arguments)
+            "create_shizuku_action_task", "create_shizuku_action", "create_privileged_action_task", "privileged_action_task" -> createShizukuActionTaskJson(context, arguments)
             "run", "run_now", "trigger" -> runAutomationJson(context, arguments.optString("id"), "manual")
             "run_trigger", "trigger_event", "run_event" -> runTriggerJson(
                 context,
@@ -205,12 +206,91 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createShizukuActionTaskJson(context: Context, arguments: JSONObject): String {
+        val rawAction = stringArgument(
+            arguments,
+            "shizuku_action",
+            "privileged_action",
+            "system_action",
+            "target_action",
+            "device_action",
+            "action_name",
+            "command",
+        )?.trim() ?: return errorJson("create_shizuku_action_task requires a shizuku_action argument")
+        val shizukuAction = HermesPrivilegedAccessBridge.normalizeStructuredAction(rawAction)
+            ?: return errorJson("Unsupported saved Shizuku action: $rawAction. Use one of: ${SHIZUKU_AUTOMATION_ACTIONS.joinToString()}")
+        if (shizukuAction.indexOf('\u0000') >= 0) {
+            return errorJson("create_shizuku_action_task shizuku_action must not contain NUL bytes")
+        }
+
+        val packageName = stringArgument(
+            arguments,
+            "package_name",
+            "packageName",
+            "package",
+            "app_package",
+            "application_id",
+        )?.trim() ?: return errorJson("create_shizuku_action_task requires a package_name argument")
+        if (packageName.indexOf('\u0000') >= 0) {
+            return errorJson("create_shizuku_action_task package_name must not contain NUL bytes")
+        }
+
+        val payload = JSONObject()
+            .put("shizuku_action", shizukuAction)
+            .put("package_name", packageName)
+        if (shizukuAction in SHIZUKU_PERMISSION_ACTIONS) {
+            val permission = stringArgument(arguments, "permission", "permission_name", "permissionName", "android_permission")
+                ?.trim()
+                ?: return errorJson("create_shizuku_action_task $shizukuAction requires a permission argument")
+            if (permission.indexOf('\u0000') >= 0) {
+                return errorJson("create_shizuku_action_task permission must not contain NUL bytes")
+            }
+            payload.put("permission", permission)
+        }
+        if (shizukuAction == "set_app_enabled") {
+            when {
+                arguments.has("target_enabled") && !arguments.isNull("target_enabled") ->
+                    payload.put("target_enabled", arguments.optBoolean("target_enabled"))
+                arguments.has("app_enabled") && !arguments.isNull("app_enabled") ->
+                    payload.put("target_enabled", arguments.optBoolean("app_enabled"))
+                arguments.has("desired_enabled") && !arguments.isNull("desired_enabled") ->
+                    payload.put("target_enabled", arguments.optBoolean("desired_enabled"))
+                arguments.has("enabled") && !arguments.isNull("enabled") ->
+                    payload.put("target_enabled", arguments.optBoolean("enabled"))
+                else -> stringArgument(arguments, "state", "enabled_state")?.trim()?.let { state ->
+                    if (state.indexOf('\u0000') >= 0) {
+                        return errorJson("create_shizuku_action_task enabled state must not contain NUL bytes")
+                    }
+                    payload.put("state", state)
+                }
+            }
+        }
+        optionalPositiveInt(arguments, "timeout_seconds")?.let { timeout ->
+            payload.put("timeout_seconds", timeout)
+        }
+
+        val recordArguments = JSONObject(arguments.toString())
+            .put("use_shizuku", true)
+        if (shizukuAction == "set_app_enabled" && !recordArguments.has("automation_enabled")) {
+            recordArguments.put("automation_enabled", true)
+        }
+        return createRecordJson(
+            context = context,
+            arguments = recordArguments,
+            actionType = ACTION_TYPE_SHIZUKU_ACTION,
+            payload = payload.toString(),
+            defaultLabel = "Hermes Shizuku app automation",
+            forceUseShizuku = true,
+        )
+    }
+
     private fun createRecordJson(
         context: Context,
         arguments: JSONObject,
         actionType: String,
         payload: String,
         defaultLabel: String,
+        forceUseShizuku: Boolean = false,
     ): String {
         val intervalMinutes = optionalPositiveInt(arguments, "interval_minutes")
             ?: optionalPositiveInt(arguments, "every_minutes")
@@ -257,13 +337,13 @@ object HermesAutomationBridge {
             label = arguments.optString("label").ifBlank { defaultLabel }.take(80),
             actionType = actionType,
             command = payload,
-            useShizuku = arguments.optBoolean("use_shizuku", false),
+            useShizuku = forceUseShizuku || arguments.optBoolean("use_shizuku", false),
             triggerType = triggerType,
             triggerPackageName = triggerPackageName,
             triggerTimeMinutes = triggerTime.minutes.takeIf { triggerType == TRIGGER_TIME },
             triggerDaysOfWeek = triggerDays.daysCsv.takeIf { triggerType == TRIGGER_TIME }.orEmpty(),
             intervalMinutes = intervalMinutes,
-            enabled = arguments.optBoolean("enabled", true),
+            enabled = recordEnabled(arguments),
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
         )
@@ -404,6 +484,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_SYSTEM_ACTION -> runSystemActionRecord(context, record, variables)
             ACTION_TYPE_UI_ACTION -> runUiActionRecord(record, variables)
             ACTION_TYPE_APP_LAUNCH -> HermesAppControlBridge.launchPackage(context, expandVariables(record.command, variables))
+            ACTION_TYPE_SHIZUKU_ACTION -> runShizukuActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -490,6 +571,29 @@ object HermesAutomationBridge {
         )
     }
 
+    private fun runShizukuActionRecord(context: Context, record: HermesAutomationRecord, variables: JSONObject): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved shizuku_action automation payload is invalid"))
+        val rawAction = expandVariables(payload.optString("shizuku_action"), variables)
+        val shizukuAction = HermesPrivilegedAccessBridge.normalizeStructuredAction(rawAction)
+            ?: return JSONObject(errorJson("Unsupported saved Shizuku action: $rawAction"))
+        val actionArguments = JSONObject()
+            .put("package_name", expandVariables(payload.optString("package_name"), variables))
+        if (shizukuAction in SHIZUKU_PERMISSION_ACTIONS && payload.has("permission")) {
+            actionArguments.put("permission", expandVariables(payload.optString("permission"), variables))
+        }
+        if (payload.has("target_enabled") && !payload.isNull("target_enabled")) {
+            actionArguments.put("enabled", payload.optBoolean("target_enabled"))
+        }
+        if (payload.has("state") && !payload.isNull("state")) {
+            actionArguments.put("state", expandVariables(payload.optString("state"), variables))
+        }
+        if (payload.has("timeout_seconds") && !payload.isNull("timeout_seconds")) {
+            actionArguments.put("timeout_seconds", payload.optInt("timeout_seconds", AUTOMATION_TIMEOUT_SECONDS))
+        }
+        return JSONObject(HermesPrivilegedAccessBridge.performStructuredActionJson(context, shizukuAction, actionArguments))
+    }
+
     fun deleteJson(context: Context, id: String): String {
         if (id.isBlank()) {
             return errorJson("delete requires an automation id")
@@ -574,6 +678,16 @@ object HermesAutomationBridge {
         }
         val value = arguments.optInt(key, 0)
         return value.takeIf { it > 0 }
+    }
+
+    private fun recordEnabled(arguments: JSONObject): Boolean {
+        return when {
+            arguments.has("automation_enabled") && !arguments.isNull("automation_enabled") ->
+                arguments.optBoolean("automation_enabled", true)
+            arguments.has("record_enabled") && !arguments.isNull("record_enabled") ->
+                arguments.optBoolean("record_enabled", true)
+            else -> arguments.optBoolean("enabled", true)
+        }
     }
 
     private fun stringArgument(arguments: JSONObject, vararg keys: String, allowEmpty: Boolean = false): String? {
@@ -750,6 +864,7 @@ object HermesAutomationBridge {
         "create_system_action_task",
         "create_ui_action_task",
         "create_app_launch_task",
+        "create_shizuku_action_task",
         "run",
         "run_trigger",
         "run_app_foreground_trigger",
@@ -859,6 +974,15 @@ object HermesAutomationBridge {
         Calendar.SUNDAY to "SUN",
     )
     private val PRIVILEGED_SHELL_ACTIONS = setOf("run_privileged_shell", "shizuku_shell", "privileged_shell")
+    private val SHIZUKU_AUTOMATION_ACTIONS = listOf(
+        "grant_runtime_permission",
+        "revoke_runtime_permission",
+        "force_stop_app",
+        "enable_app",
+        "disable_app",
+        "set_app_enabled",
+    )
+    private val SHIZUKU_PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")
     private val UI_SELECTOR_ACTIONS = setOf("click", "long_click", "focus", "set_text", "scroll_forward", "scroll_backward")
     private val UI_AUTOMATION_ACTIONS = UI_GLOBAL_ACTIONS + UI_SELECTOR_ACTIONS

@@ -87,6 +87,7 @@ AUTHOR_MAP = {
     "happy5318@users.noreply.github.com": "happy5318",
     "chengoak@users.noreply.github.com": "chengoak",
     "mrhanoi@outlook.com": "qxxaa",
+    "guillaume.meyer@outlook.com": "guillaumemeyer",
     "emelyanenko.kirill@gmail.com": "EmelyanenkoK",
     "lazycat.manatee@gmail.com": "manateelazycat",
     "bzarnitz13@gmail.com": "Beandon13",

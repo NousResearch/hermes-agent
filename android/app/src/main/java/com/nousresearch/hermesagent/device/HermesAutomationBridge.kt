@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.device
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
@@ -60,6 +61,10 @@ object HermesAutomationBridge {
                 arguments = arguments,
             )
             "run_sensor_trigger", "trigger_sensor", "sensor_event", "sensor" -> runSensorTriggerJson(
+                context = context,
+                arguments = arguments,
+            )
+            "run_external_trigger", "trigger_external", "external_trigger", "extra_trigger", "run_trigger_app" -> runExternalTriggerJson(
                 context = context,
                 arguments = arguments,
             )
@@ -599,6 +604,9 @@ object HermesAutomationBridge {
         if (normalizedTrigger == TRIGGER_SENSOR) {
             return errorJson("sensor trigger requires run_sensor_trigger with sensor_type or sensor_name")
         }
+        if (normalizedTrigger == TRIGGER_EXTERNAL) {
+            return errorJson("external_trigger requires run_external_trigger with trigger_id and external_token")
+        }
         if (normalizedTrigger == TRIGGER_SHIZUKU_AVAILABLE || normalizedTrigger == TRIGGER_SHIZUKU_UNAVAILABLE) {
             return runShizukuStateTriggerJson(context, normalizedTrigger)
         }
@@ -891,6 +899,67 @@ object HermesAutomationBridge {
             .put("sensor_value", value ?: JSONObject.NULL)
             .put("sensor_unit", unit.take(MAX_EVENT_VALUE_CHARS))
             .put("sensor_accuracy", accuracy.take(MAX_EVENT_VALUE_CHARS))
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runExternalTriggerJson(context: Context, arguments: JSONObject): String {
+        val triggerId = stringArgument(
+            arguments,
+            "trigger_id",
+            "external_trigger_id",
+            "event_id",
+            "triggerId",
+        )?.trim() ?: return errorJson("external_trigger requires trigger_id")
+        val externalToken = stringArgument(
+            arguments,
+            "external_token",
+            "trigger_token",
+            "token",
+            "auth_token",
+        )?.trim() ?: return errorJson("external_trigger requires external_token")
+        val packageName = stringArgument(
+            arguments,
+            "trigger_package_name",
+            "package_name",
+            "packageName",
+            "package",
+            "caller_package",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val referrer = stringArgument(
+            arguments,
+            "referrer",
+            "source",
+            "caller",
+            "uri",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val extrasText = externalExtrasText(arguments)
+        externalEventNulError(triggerId, externalToken, packageName, referrer, extrasText)?.let { error ->
+            return errorJson(error)
+        }
+        val store = HermesAutomationStore(context)
+        val savedVariables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_EXTERNAL &&
+                    externalTriggerMatches(record, savedVariables, triggerId, externalToken, packageName, referrer)
+            }
+        setExternalTriggerVariables(store, triggerId, packageName, referrer, extrasText)
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_EXTERNAL))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_EXTERNAL)
+            .put("trigger_id", triggerId.take(MAX_EVENT_VALUE_CHARS))
+            .put("trigger_package_name", packageName.take(MAX_EVENT_VALUE_CHARS))
+            .put("referrer", referrer.take(MAX_EVENT_VALUE_CHARS))
+            .put("extras", extrasText.take(MAX_VARIABLE_VALUE_CHARS))
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -1232,6 +1301,7 @@ object HermesAutomationBridge {
             TRIGGER_CALENDAR_EVENT -> buildCalendarTriggerData(arguments)
             TRIGGER_LOCATION -> buildLocationTriggerData(arguments)
             TRIGGER_SENSOR -> buildSensorTriggerData(arguments)
+            TRIGGER_EXTERNAL -> buildExternalTriggerData(arguments)
             else -> TriggerDataResult("")
         }
     }
@@ -1445,6 +1515,45 @@ object HermesAutomationBridge {
             return "sensor trigger min_value must be less than or equal to max_value"
         }
         return null
+    }
+
+    private fun buildExternalTriggerData(arguments: JSONObject): TriggerDataResult {
+        val triggerId = stringArgument(
+            arguments,
+            "trigger_id",
+            "external_trigger_id",
+            "event_id",
+            "triggerId",
+        )?.trim()
+        if (triggerId.isNullOrBlank()) {
+            return TriggerDataResult("", "external_trigger requires trigger_id")
+        }
+        val externalToken = stringArgument(
+            arguments,
+            "external_token",
+            "trigger_token",
+            "token",
+            "auth_token",
+        )?.trim()
+        if (externalToken.isNullOrBlank()) {
+            return TriggerDataResult("", "external_trigger requires external_token")
+        }
+        val payload = JSONObject()
+            .put("trigger_id", triggerId)
+            .put("external_token", externalToken)
+        copyCalendarTriggerFilter(
+            payload,
+            "referrer_contains",
+            arguments,
+            "referrer_contains",
+            "referrer",
+            "source_contains",
+            "caller_contains",
+        )?.let { error -> return TriggerDataResult("", error) }
+        validateExternalTriggerData(payload.toString())?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        return TriggerDataResult(payload.toString())
     }
 
     private fun literalDoubleFilter(payload: JSONObject, key: String): Double? {
@@ -2022,6 +2131,9 @@ object HermesAutomationBridge {
         rejectNul(triggerDaysOfWeek, "trigger_days_of_week")
         validateImportedDaysOfWeek(triggerDaysOfWeek)
         val triggerData = importedTriggerData(json)
+        if (triggerType == TRIGGER_EXTERNAL) {
+            validateExternalTriggerData(triggerData)?.let { error -> throw IllegalArgumentException(error) }
+        }
         val createdAt = json.optLong("created_at_epoch_ms", now).takeIf { it > 0L } ?: now
         return HermesAutomationRecord(
             id = id,
@@ -2199,6 +2311,38 @@ object HermesAutomationBridge {
         return true
     }
 
+    private fun externalTriggerMatches(
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+        triggerId: String,
+        externalToken: String,
+        packageName: String,
+        referrer: String,
+    ): Boolean {
+        val filters = runCatching { JSONObject(record.triggerData.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        val savedTriggerId = expandVariables(filters.optString("trigger_id"), variables).trim()
+        val savedToken = expandVariables(
+            filters.optString("external_token").ifBlank { filters.optString("token") },
+            variables,
+        ).trim()
+        if (savedTriggerId.isBlank() || savedToken.isBlank()) {
+            return false
+        }
+        if (savedTriggerId.indexOf('\u0000') >= 0 || savedToken.indexOf('\u0000') >= 0) {
+            return false
+        }
+        if (!savedTriggerId.equals(triggerId, ignoreCase = true)) {
+            return false
+        }
+        if (!constantTimeEquals(savedToken, externalToken)) {
+            return false
+        }
+        if (record.triggerPackageName.isNotBlank() && !triggerPackageMatches(record.triggerPackageName, packageName, variables)) {
+            return false
+        }
+        return textFilterMatches(filters.optString("referrer_contains"), referrer, variables)
+    }
+
     private fun expandedDoubleFilter(filters: JSONObject, key: String, variables: JSONObject): Double? {
         if (!filters.has(key) || filters.isNull(key)) {
             return null
@@ -2328,6 +2472,51 @@ object HermesAutomationBridge {
         return DaysParseResult(canonical)
     }
 
+    private fun validateExternalTriggerData(triggerData: String): String? {
+        val payload = runCatching { JSONObject(triggerData.ifBlank { "{}" }) }.getOrElse {
+            return "external_trigger trigger_data must be a JSON object"
+        }
+        val triggerId = payload.optString("trigger_id").trim()
+        val token = payload.optString("external_token").ifBlank { payload.optString("token") }.trim()
+        return when {
+            triggerId.isBlank() -> "external_trigger trigger_data requires trigger_id"
+            token.isBlank() -> "external_trigger trigger_data requires external_token"
+            triggerId.indexOf('\u0000') >= 0 -> "external_trigger trigger_id must not contain NUL bytes"
+            token.indexOf('\u0000') >= 0 -> "external_trigger external_token must not contain NUL bytes"
+            payload.optString("referrer_contains").indexOf('\u0000') >= 0 -> "external_trigger referrer_contains must not contain NUL bytes"
+            else -> null
+        }
+    }
+
+    private fun externalExtrasText(arguments: JSONObject): String {
+        val raw = listOf("extras", "trigger_extras", "event_extras", "data")
+            .firstNotNullOfOrNull { key ->
+                if (arguments.has(key) && !arguments.isNull(key)) arguments.opt(key) else null
+            } ?: return ""
+        return when (raw) {
+            is JSONObject -> raw.toString()
+            is JSONArray -> raw.toString()
+            else -> raw.toString()
+        }.take(MAX_VARIABLE_VALUE_CHARS)
+    }
+
+    private fun externalEventNulError(
+        triggerId: String,
+        externalToken: String,
+        packageName: String,
+        referrer: String,
+        extras: String,
+    ): String? {
+        return when {
+            triggerId.indexOf('\u0000') >= 0 -> "external_trigger trigger_id must not contain NUL bytes"
+            externalToken.indexOf('\u0000') >= 0 -> "external_trigger external_token must not contain NUL bytes"
+            packageName.indexOf('\u0000') >= 0 -> "external_trigger package name must not contain NUL bytes"
+            referrer.indexOf('\u0000') >= 0 -> "external_trigger referrer must not contain NUL bytes"
+            extras.indexOf('\u0000') >= 0 -> "external_trigger extras must not contain NUL bytes"
+            else -> null
+        }
+    }
+
     private fun setTimeEventVariables(store: HermesAutomationStore) {
         val calendar = Calendar.getInstance()
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
@@ -2400,6 +2589,23 @@ object HermesAutomationBridge {
         store.setVariable("SENSOR_ACCURACY", accuracy.take(MAX_EVENT_VALUE_CHARS))
     }
 
+    private fun setExternalTriggerVariables(
+        store: HermesAutomationStore,
+        triggerId: String,
+        packageName: String,
+        referrer: String,
+        extras: String,
+    ) {
+        store.setVariable("SA_TRIGGER_ID", triggerId.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SA_TRIGGER_PACKAGE_NAME", packageName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SA_REFERRER", referrer.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("SA_EXTRAS", extras.take(MAX_VARIABLE_VALUE_CHARS))
+        store.setVariable("EXTERNAL_TRIGGER_ID", triggerId.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("EXTERNAL_TRIGGER_PACKAGE", packageName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("EXTERNAL_TRIGGER_REFERRER", referrer.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("EXTERNAL_TRIGGER_EXTRAS", extras.take(MAX_VARIABLE_VALUE_CHARS))
+    }
+
     private fun setShizukuEventVariables(
         store: HermesAutomationStore,
         status: HermesPrivilegedAccessStatus,
@@ -2470,6 +2676,10 @@ object HermesAutomationBridge {
         }
     }
 
+    private fun constantTimeEquals(left: String, right: String): Boolean {
+        return MessageDigest.isEqual(left.toByteArray(Charsets.UTF_8), right.toByteArray(Charsets.UTF_8))
+    }
+
     private fun errorJson(message: String): String {
         return JSONObject()
             .put("success", false)
@@ -2500,6 +2710,7 @@ object HermesAutomationBridge {
         "run_calendar_event_trigger",
         "run_location_trigger",
         "run_sensor_trigger",
+        "run_external_trigger",
         "run_shizuku_state_trigger",
         "run_time_trigger",
         "delete",
@@ -2554,6 +2765,7 @@ object HermesAutomationBridge {
         TRIGGER_CALENDAR_EVENT,
         TRIGGER_LOCATION,
         TRIGGER_SENSOR,
+        TRIGGER_EXTERNAL,
         TRIGGER_SHIZUKU_AVAILABLE,
         TRIGGER_SHIZUKU_UNAVAILABLE,
     )
@@ -2601,6 +2813,14 @@ object HermesAutomationBridge {
         "shake" to TRIGGER_SENSOR,
         "orientation" to TRIGGER_SENSOR,
         "motion" to TRIGGER_SENSOR,
+        "external" to TRIGGER_EXTERNAL,
+        "external_event" to TRIGGER_EXTERNAL,
+        "external_trigger" to TRIGGER_EXTERNAL,
+        "extra_trigger" to TRIGGER_EXTERNAL,
+        "trigger_app" to TRIGGER_EXTERNAL,
+        "external_app" to TRIGGER_EXTERNAL,
+        "third_party_trigger" to TRIGGER_EXTERNAL,
+        "tasker_trigger_app" to TRIGGER_EXTERNAL,
         "clock" to TRIGGER_TIME,
         "clock_time" to TRIGGER_TIME,
         "daily_time" to TRIGGER_TIME,

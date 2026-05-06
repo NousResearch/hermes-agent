@@ -1,10 +1,12 @@
 package com.nousresearch.hermesagent
 
 import android.app.Application
+import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesAutomationStore
+import com.nousresearch.hermesagent.device.HermesExternalTriggerReceiver
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import org.json.JSONObject
 import org.junit.After
@@ -121,6 +123,41 @@ class HermesAutomationInstrumentedTest {
         assertEquals(1, triggered.getInt("matched_count"))
         assertTrue("Expected ${target.absolutePath}", target.isFile)
         assertEquals("trigger-ok", target.readText())
+    }
+
+    @Test
+    fun externalTriggerBroadcastRunsMatchingAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-external-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "External trigger smoke")
+                    .put("path", "hermes-external-trigger.txt")
+                    .put("content", "%SA_TRIGGER_ID|%SA_REFERRER|%SA_EXTRAS")
+                    .put("trigger", "external_trigger")
+                    .put("trigger_id", "broadcast-smoke")
+                    .put("external_token", "token-smoke")
+                    .put("referrer_contains", "smoke"),
+            )
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+
+        app.sendBroadcast(
+            Intent(HermesExternalTriggerReceiver.ACTION_EXTERNAL_TRIGGER)
+                .setPackage(app.packageName)
+                .putExtra(HermesExternalTriggerReceiver.EXTRA_TRIGGER_ID, "broadcast-smoke")
+                .putExtra(HermesExternalTriggerReceiver.EXTRA_TOKEN, "token-smoke")
+                .putExtra(HermesExternalTriggerReceiver.EXTRA_REFERRER, "smoke://test")
+                .putExtra("mode", "broadcast")
+        )
+
+        assertTrue("Expected ${target.absolutePath}", eventually { target.isFile })
+        assertEquals("""broadcast-smoke|smoke://test|{"mode":"broadcast"}""", target.readText())
     }
 
     @Test
@@ -946,5 +983,16 @@ class HermesAutomationInstrumentedTest {
         assertTrue(run.toString(), run.getBoolean("success"))
         assertTrue("Expected ${target.absolutePath}", target.isFile)
         assertEquals("import:bundle-restored", target.readText())
+    }
+
+    private fun eventually(timeoutMs: Long = 5_000L, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) {
+                return true
+            }
+            Thread.sleep(100L)
+        }
+        return condition()
     }
 }

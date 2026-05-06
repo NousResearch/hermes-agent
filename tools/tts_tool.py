@@ -1033,6 +1033,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     if custom_base_url:
         base_url = custom_base_url
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
+    instructions = oai_config.get("instructions", "").strip() or None
 
     # The managed OpenAI audio gateway only proxies MANAGED_OPENAI_TTS_MODELS.
     # A model set for direct OpenAI (e.g. "tts-1-hd") 400s there with
@@ -1065,6 +1066,8 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        if instructions:
+            create_kwargs["instructions"] = instructions
         response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)

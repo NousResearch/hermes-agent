@@ -2,7 +2,7 @@
 
 Verifies:
   - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
-    zero kanban tools in its schema; a worker session sees all seven.
+    zero kanban tools in its schema; a worker session sees the kanban set.
   - Each handler's happy path.
   - Error paths (missing required args, bad metadata type, etc).
 """
@@ -27,9 +27,10 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
-    from tools.registry import registry
+    from tools.registry import invalidate_check_fn_cache, registry
     from toolsets import resolve_toolset
 
+    invalidate_check_fn_cache()
     schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
@@ -39,24 +40,49 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 
 
 def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
-    """Worker sessions (HERMES_KANBAN_TASK set) must have all 7 tools."""
+    """Worker sessions (HERMES_KANBAN_TASK set) must have kanban tools."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
-    from tools.registry import registry
+    from tools.registry import invalidate_check_fn_cache, registry
     from toolsets import resolve_toolset
 
+    invalidate_check_fn_cache()
     schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
+        "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_unblock",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
+
+
+def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
+    """Orchestrator profiles with toolsets: [kanban] see the same tools."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    kanban = {n for n in names if n and n.startswith("kanban_")}
+    assert {
+        "kanban_list",
+        "kanban_unblock",
+    }.issubset(kanban)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +136,48 @@ def test_show_explicit_task_id(worker_env):
     out = kt._handle_show({"task_id": other})
     d = json.loads(out)
     assert d["task"]["id"] == other
+
+
+def test_list_filters_tasks(worker_env):
+    """kanban_list gives orchestrators filtered board discovery."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        a = kb.create_task(conn, title="alpha", assignee="factory", priority=5)
+        b = kb.create_task(conn, title="beta", assignee="reviewer")
+        c = kb.create_task(conn, title="gamma", assignee="factory", tenant="other")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_list({"assignee": "factory", "status": "ready", "limit": 10})
+    d = json.loads(out)
+    ids = [t["id"] for t in d["tasks"]]
+    assert ids == [a, c]
+    assert d["count"] == 2
+    assert d["tasks"][0]["title"] == "alpha"
+    assert d["tasks"][0]["parent_count"] == 0
+    assert b not in ids
+
+    tenant_out = kt._handle_list({
+        "assignee": "factory",
+        "status": "ready",
+        "tenant": "other",
+    })
+    tenant_ids = [t["id"] for t in json.loads(tenant_out)["tasks"]]
+    assert tenant_ids == [c]
+
+
+def test_list_rejects_invalid_status(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_list({"status": "not-a-state"})
+    assert "status must be one of" in json.loads(out).get("error", "")
+
+
+def test_list_rejects_bad_limit(worker_env):
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_list({"limit": "nope"})).get("error")
+    assert json.loads(kt._handle_list({"limit": 0})).get("error")
 
 
 def test_complete_happy_path(worker_env):
@@ -458,9 +526,34 @@ def test_link_rejects_cycle(worker_env):
     assert json.loads(out).get("error")
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: simulate a full worker lifecycle through the tools
-# ---------------------------------------------------------------------------
+def test_unblock_happy_path(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="blocked", assignee="worker")
+        kb.block_task(conn, tid, reason="waiting")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": tid})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "ready"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_unblock_rejects_non_blocked_task(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": worker_env})
+    assert json.loads(out).get("error")
+
 
 def test_worker_lifecycle_through_tools(worker_env):
     """Drive the full claim -> heartbeat -> comment -> complete lifecycle
@@ -599,11 +692,12 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 #
 # A worker process has HERMES_KANBAN_TASK set to its own task id. The
-# destructive tools (kanban_complete, kanban_block, kanban_heartbeat)
-# must refuse to operate on any OTHER task id, even if the caller
-# supplies an explicit `task_id` argument. Workers legitimately call
-# kanban_show / kanban_comment / kanban_create / kanban_link on other
-# tasks, so those are unrestricted.
+# destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
+# kanban_unblock) must refuse to operate
+# on any OTHER task id, even if the caller supplies an explicit `task_id`
+# argument. Workers legitimately call kanban_show / kanban_list /
+# kanban_comment / kanban_create / kanban_link on other tasks, so those
+# are unrestricted.
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child
@@ -708,6 +802,28 @@ def test_worker_can_comment_on_foreign_task(worker_env):
         assert len(comments) == 1
         assert comments[0].author == "test-worker"
         assert comments[0].body.startswith("handoff:")
+    finally:
+        conn.close()
+
+
+def test_worker_unblock_rejects_foreign_task_id(worker_env):
+    """A worker cannot unblock a task that isn't its own."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="blocked sibling", assignee="peer")
+        kb.block_task(conn, other, reason="waiting")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": other})
+    d = json.loads(out)
+    assert "refusing to mutate" in d.get("error", "")
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "blocked"
     finally:
         conn.close()
 

@@ -116,6 +116,29 @@ You are a CLI AI Agent. Try not to use markdown but simple text
 renderable inside a terminal.
 ```
 
+
+## Context-engine API-call-time transforms
+
+After Hermes assembles the canonical conversation into provider-bound
+`api_messages`, the active context engine may transform that API-call copy. This
+keeps persisted session history separate from ephemeral model-facing context.
+
+DCP-style engines use this layer to add:
+
+- stable message refs such as `m0001`
+- compression block refs such as `b1`
+- compact placeholders for compressed ranges
+- context-pressure nudges that teach the model when to call a context tool
+- cheap outbound-only pruning such as duplicate tool output placeholders
+
+The transform must not rewrite the canonical transcript. If a session is saved,
+it should still contain the full original conversation unless a user explicitly
+invokes a separate transcript-mutating command.
+
+Because this layer changes what the provider sees, it should run before prompt
+cache-control markers are applied. Engines should keep the transformed stable
+prefix deterministic and avoid moving counters or timestamps in old context.
+
 ## How SOUL.md appears in the prompt
 
 `SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:

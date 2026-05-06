@@ -97,6 +97,46 @@ These have sensible defaults in the ABC. Override as needed:
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
+| `transform_api_messages(api_messages, **kwargs)` | Returns `api_messages` unchanged | You need to alter the provider-bound copy without mutating stored history |
+
+
+## API-call-time transforms
+
+Context engines that need DCP-style behavior can override
+`transform_api_messages()` to transform the outbound API-call copy of the
+conversation:
+
+```python
+def transform_api_messages(
+    self,
+    api_messages: list[dict],
+    *,
+    canonical_messages: list[dict],
+    system_prompt: str,
+    tools: list[dict] | None,
+    api_call_count: int,
+    model: str,
+    provider: str | None,
+    session_id: str | None,
+) -> list[dict]:
+    return api_messages
+```
+
+This hook is for ephemeral, model-facing context changes such as message refs,
+compression block placeholders, and context-pressure nudges. It must not mutate
+`canonical_messages`, because those messages are the authoritative session
+transcript.
+
+Transform implementations must preserve provider-valid message order:
+
+- keep assistant `tool_calls` messages adjacent to their tool results
+- do not orphan tool results
+- do not create consecutive roles that the provider rejects
+- return OpenAI-format messages that still pass Hermes sanitization
+
+The hook should run before provider-specific cache-control placement. Engines
+should avoid churn in the stable prompt prefix because unnecessary changes lower
+prompt-cache hit rates.
 
 ## Engine tools
 

@@ -636,6 +636,80 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun calendarEventTriggerRunsMatchingAutomationAndExposesVariables() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-calendar-trigger.txt").apply { delete() }
+
+        val variable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%WORK_CAL")
+                    .put("value", "Hermes Work"),
+            ),
+        )
+        assertTrue(variable.toString(), variable.getBoolean("success"))
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Calendar event smoke")
+                    .put("path", "hermes-calendar-trigger.txt")
+                    .put("content", "%CALENDAR_NAME:%CALTITLE:%CALDESCR:%CALLOC")
+                    .put("trigger", "calendar_event")
+                    .put("calendar_name", "%WORK_CAL")
+                    .put("title_contains", "Flight"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = JSONObject(automation.getString("trigger_data"))
+        assertEquals("calendar_event", automation.getString("trigger_type"))
+        assertEquals("%WORK_CAL", triggerData.getString("calendar_name"))
+        assertEquals("Flight", triggerData.getString("title_contains"))
+
+        val missed = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_calendar_event_trigger",
+                JSONObject()
+                    .put("calendar_name", "Hermes Work")
+                    .put("calendar_title", "Lunch"),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+        assertFalse("Expected ${target.absolutePath} to stay absent", target.exists())
+
+        val matched = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_calendar_event_trigger",
+                JSONObject()
+                    .put("calendar_name", "Hermes Work")
+                    .put("calendar_title", "Flight to SF")
+                    .put("calendar_description", "Boarding")
+                    .put("calendar_location", "SFO"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals("calendar_event", matched.getString("trigger"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("Hermes Work:Flight to SF:Boarding:SFO", target.readText())
+
+        val variables = JSONObject(HermesAutomationBridge.performActionJson(app, "list_variables"))
+            .getJSONObject("variables")
+        assertEquals("Flight to SF", variables.getString("CALTITLE"))
+        assertEquals("Boarding", variables.getString("CALDESCR"))
+        assertEquals("SFO", variables.getString("CALLOC"))
+    }
+
+    @Test
     fun timeTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

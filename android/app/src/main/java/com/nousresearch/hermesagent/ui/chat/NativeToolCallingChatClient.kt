@@ -317,7 +317,7 @@ class NativeToolCallingChatClient(
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
                     "For Tasker-style Shizuku actions, android_system_tool can run grant_runtime_permission, revoke_runtime_permission, force_stop_app, enable_app, disable_app, and set_app_enabled with explicit package_name, permission, or enabled arguments. " +
-                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, Shizuku availability trigger, saved file action, safe saved Android settings action, saved visible-UI action, saved Android intent, broadcast, URI, activity launch, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku package-permission tasks, run them manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted/Shizuku-state triggers, and expand saved variables in commands, file content, UI selectors, intent fields, package names, trigger packages, Shizuku state fields, and notification or time event fields. " +
+                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, calendar event trigger, Shizuku availability trigger, saved file action, safe saved Android settings action, saved visible-UI action, saved Android intent, broadcast, URI, activity launch, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku package-permission tasks, run them manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted/calendar-event/Shizuku-state triggers, and expand saved variables in commands, file content, UI selectors, intent fields, package names, trigger packages, Shizuku state fields, and notification, calendar, or time event fields. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -364,7 +364,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku/Sui package-permission tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted/Shizuku-state phone triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access. Shizuku-state triggers expose %SHIZUKU_AVAILABLE, %SHIZUKU_INSTALLED, %SUI_INSTALLED, %SHIZUKU_RUNNING, %SHIZUKU_PERMISSION_GRANTED, %SHIZUKU_PRIVILEGE_LABEL, and %SHIZUKU_UID.",
+                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku/Sui package-permission tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted/calendar-event/Shizuku-state phone triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access. Calendar-event triggers are explicit event dispatches and expose %CALNAME, %CALTITLE, %CALDESCR, and %CALLOC. Shizuku-state triggers expose %SHIZUKU_AVAILABLE, %SHIZUKU_INSTALLED, %SUI_INSTALLED, %SHIZUKU_RUNNING, %SHIZUKU_PERMISSION_GRANTED, %SHIZUKU_PRIVILEGE_LABEL, and %SHIZUKU_UID.",
                             )
                             .put(
                                 "parameters",
@@ -377,7 +377,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_shizuku_action_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_shizuku_state_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
+                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_shizuku_action_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_calendar_event_trigger, run_shizuku_state_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "id",
@@ -522,7 +522,7 @@ class NativeToolCallingChatClient(
                                                 "trigger",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, notification_posted, shizuku_available, or shizuku_unavailable. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission."),
+                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, notification_posted, calendar_event, shizuku_available, or shizuku_unavailable. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission. calendar_event can filter by calendar_name, title_contains, description_contains, or location_contains."),
                                             )
                                             .put(
                                                 "trigger_package_name",
@@ -541,6 +541,48 @@ class NativeToolCallingChatClient(
                                                 JSONObject()
                                                     .put("type", "string")
                                                     .put("description", "Optional notification text for run_notification_posted_trigger tests. Real listener events also expose %NOTIFICATION_TEXT."),
+                                            )
+                                            .put(
+                                                "calendar_name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar name for create_*_task calendar_event filters or run_calendar_event_trigger. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "calendar_title",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar event title for run_calendar_event_trigger. Calendar-event runs expose %CALTITLE and %CALENDAR_TITLE."),
+                                            )
+                                            .put(
+                                                "calendar_description",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar event description for run_calendar_event_trigger. Calendar-event runs expose %CALDESCR and %CALENDAR_DESCRIPTION."),
+                                            )
+                                            .put(
+                                                "calendar_location",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar event location for run_calendar_event_trigger. Calendar-event runs expose %CALLOC and %CALENDAR_LOCATION."),
+                                            )
+                                            .put(
+                                                "title_contains",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar-event trigger title filter for create_*_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "description_contains",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar-event trigger description filter for create_*_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "location_contains",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Calendar-event trigger location filter for create_*_task. Saved variables can be referenced as %NAME or {{NAME}}."),
                                             )
                                             .put(
                                                 "shizuku_state",

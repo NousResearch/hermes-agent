@@ -2272,6 +2272,54 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 # ============================================================================
+# Display-width helpers (CJK / emoji aware)
+# ============================================================================
+
+def _display_width(text: str) -> int:
+    """Return terminal display width (columns) accounting for CJK and emoji."""
+    try:
+        from prompt_toolkit.utils import get_cwidth
+        return get_cwidth(text or "")
+    except Exception:
+        return len(text or "")
+
+
+def _display_ljust(text: str, width: int) -> str:
+    """Left-justify *text* to *width* terminal columns."""
+    pad = max(0, width - _display_width(text))
+    return text + " " * pad
+
+
+def _display_wrap(text: str, width: int, subsequent_indent: str = "") -> list[str]:
+    """Word-wrap *text* to *width* terminal columns (CJK-aware)."""
+    if not text:
+        return [""]
+    width = max(8, width)
+    lines: list[str] = []
+    current = ""
+    current_width = 0
+    indent = ""
+
+    for word in text.split():
+        word_w = _display_width(word)
+        sep = " " if current else indent
+        sep_w = _display_width(sep)
+
+        if current and current_width + sep_w + word_w > width:
+            lines.append(current)
+            indent = subsequent_indent
+            current = indent + word
+            current_width = _display_width(indent) + word_w
+        else:
+            current += sep + word
+            current_width += sep_w + word_w
+
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+# ============================================================================
 # HermesCLI Class
 # ============================================================================
 
@@ -10002,24 +10050,17 @@ class HermesCLI:
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([_display_width(title_text)] + [_display_width(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+            return _display_wrap(text, width, subsequent_indent)
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((content_style, _display_ljust(text, inner_width)))
             lines.append((border_style, " │\n"))
 
         def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
@@ -10032,7 +10073,7 @@ class HermesCLI:
         show_full = state.get("show_full", False)
 
         title = "⚠️  Dangerous Command"
-        cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
+        cmd_display = command if show_full or _display_width(command) <= 70 else command[:70] + '...'
         choice_labels = {
             "once": "Allow once",
             "session": "Allow for this session",
@@ -12342,24 +12383,17 @@ class HermesCLI:
         def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             """Choose a stable panel width wide enough for the title and content."""
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([_display_width(title)] + [_display_width(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2  # account for the single leading/trailing spaces inside borders
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                break_long_words=False,
-                break_on_hyphens=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+            return _display_wrap(text, width, subsequent_indent)
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((content_style, _display_ljust(text, inner_width)))
             lines.append((border_style, " │\n"))
 
         def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
@@ -12484,7 +12518,7 @@ class HermesCLI:
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - _display_width("Hermes needs your input") - 3)) + '╮\n'))
             if not use_compact_chrome:
                 _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
@@ -12551,7 +12585,7 @@ class HermesCLI:
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', title))
-            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - _display_width(title) - 3)) + '╮\n'))
             _append_blank_panel_line(lines, 'class:sudo-border', box_width)
             _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
             _append_blank_panel_line(lines, 'class:sudo-border', box_width)
@@ -12583,7 +12617,7 @@ class HermesCLI:
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', title))
-            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - _display_width(title) - 3)) + '╮\n'))
             _append_blank_panel_line(lines, 'class:sudo-border', box_width)
             _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', prompt, box_width)
             if help_text:
@@ -12675,7 +12709,7 @@ class HermesCLI:
             lines = []
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', title))
-            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - _display_width(title) - 3)) + '╮\n'))
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)

@@ -19,6 +19,8 @@ routing:
 
 Telemetry is best-effort and must never block user-visible message handling. It is stored inside the existing `.usage.json` sidecar under `_route_usage`, capped per route, and summarized by `summarize_route_usage(window_days=30)` for ROI scoring.
 
+`difficult_web_extract` is registered as a task-named `/bg` route for selector/batch/session-aware fallback extraction after ordinary `web_extract` fails. The optional Scrapling backend may satisfy this route, but `scrapling` is not a route name and the route does not replace browser tools or ordinary `web_extract`.
+
 ## Guardrails
 
 - `feishu_auto_dispatch_enabled: false` downgrades high-ROI decisions to wrapper suggestions.

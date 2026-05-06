@@ -79,6 +79,18 @@ def wake_skills_home(monkeypatch, tmp_path):
     write_skill("powerpoint", "ppt")
     write_skill("github-auth", "repo")
     write_skill("github-code-review", "repo")
+    write_skill(
+        "scrapling",
+        "difficult_web_extract",
+        aliases=("difficult-web-extract", "selector-web-extract"),
+        keywords=(
+            "web_extract failed",
+            "selector extraction",
+            "css selector",
+            "batch homogeneous pages",
+            "light anti-bot fallback",
+        ),
+    )
 
     clear_background_wake_manifest_cache()
     yield
@@ -117,6 +129,48 @@ def test_feishu_scan_route_adds_web():
         "web",
     }
     assert plan.skill_names == ()
+
+
+def test_difficult_web_extract_route_is_task_named_not_library_named():
+    catalog = get_background_route_catalog("feishu")
+
+    assert "difficult_web_extract" in catalog
+    assert "scrapling" not in catalog
+    assert catalog["difficult_web_extract"]["display_command"] == "/bg"
+    assert "scrapling" in catalog["difficult_web_extract"]["skills"]
+
+
+def test_difficult_web_extract_routes_selector_batch_fallback_without_browser():
+    plan = resolve_background_wakeup(
+        "web_extract failed on these 50 announcement pages; use CSS selector .article-title and batch homogeneous pages, browser is too heavy",
+        platform="feishu",
+        default_toolsets=["feishu_doc"],
+    )
+
+    assert "difficult_web_extract" in plan.route_names
+    assert "scrapling" in plan.skill_names
+    assert "/bg" in plan.wrapper_commands
+    assert "web" in plan.enabled_toolsets
+    assert "terminal" in plan.enabled_toolsets
+    assert "file" in plan.enabled_toolsets
+    assert "browser" not in plan.enabled_toolsets
+    assert any("difficult_web_extract" in detail for detail in plan.match_details)
+
+
+def test_difficult_web_extract_does_not_replace_ordinary_web_extract_or_browser():
+    ordinary = resolve_background_wakeup(
+        "请用 web_extract 总结 https://example.com 这篇普通文章",
+        platform="feishu",
+        default_toolsets=["hermes-feishu-work"],
+    )
+    browser_task = resolve_background_wakeup(
+        "打开网页截图并检查 console，需要登录交互",
+        platform="feishu",
+        default_toolsets=["hermes-feishu-work"],
+    )
+
+    assert "difficult_web_extract" not in ordinary.route_names
+    assert "difficult_web_extract" not in browser_task.route_names
 
 
 def test_feishu_research_multi_agent_upgrades_lane():

@@ -581,6 +581,8 @@ routing:
   feishu_route_shadow_hints_enabled: true   # Inject RouteDecision shadow hints into Feishu foreground turns
 ```
 
+The `difficult_web_extract` route is a narrow `/bg` fallback for selector/batch/session-aware web extraction after ordinary `web_extract` fails. It is task-named on purpose: Scrapling may be one optional backend, but the route is not named `scrapling` and does not replace `web_extract` or browser tools.
+
 Telemetry is written best-effort to the route telemetry sidecar and is never allowed to break message handling. The event registry is:
 
 - `route_decision_resolved` — ROI decision computed for one prompt.

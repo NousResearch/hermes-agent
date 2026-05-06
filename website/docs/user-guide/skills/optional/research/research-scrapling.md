@@ -66,7 +66,7 @@ Default acquisition ladder:
 3. Browser tools for interaction, visual inspection, screenshots, login flows, or complex JavaScript workflows.
 4. Scrapling only as a difficult extraction fallback when the caller can provide a narrow target, selector, or homogeneous batch pattern.
 
-Do not add Scrapling to `_HERMES_CORE_TOOLS`, do not change the public `web_extract` schema, and do not register a new top-level tool until a separate adapter/route design has been accepted.
+Do not add Scrapling to `_HERMES_CORE_TOOLS`, do not change the public `web_extract` schema, and do not register a new top-level tool. The only accepted route exposure is the task-named `difficult_web_extract` `/bg` fallback.
 
 ## Runtime Setup
 

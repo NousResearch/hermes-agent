@@ -103,6 +103,12 @@ ROUTE_CONTRACTS: Mapping[str, RouteContract] = {
         ("orchestration_summary",),
         0.75,
     ),
+    "difficult_web_extract": RouteContract(
+        "difficult_web_extract",
+        "Difficult web extraction worker must return an auditable selector/fallback receipt.",
+        ("difficult_web_extract_receipt",),
+        0.75,
+    ),
 }
 
 
@@ -146,6 +152,20 @@ def _has_orchestration_summary(text: str) -> bool:
     )) and any(token in text for token in ("synthesis", "merge", "summary", "汇总", "综合"))
 
 
+def _has_difficult_web_extract_receipt(text: str) -> bool:
+    has_backend = "backend=scrapling" in text or '"backend": "scrapling"' in text or "'backend': 'scrapling'" in text
+    has_url = "url=" in text or '"url"' in text or "https://" in text or "http://" in text
+    has_selector_or_reason = (
+        "selector=" in text
+        or '"selector"' in text
+        or "fallback_reason=" in text
+        or '"fallback_reason"' in text
+        or "web_extract_empty" in text
+    )
+    has_errors = "errors=" in text or '"errors"' in text
+    return has_backend and has_url and has_selector_or_reason and has_errors
+
+
 def _issue_for_route(route: str, response_lc: str) -> str | None:
     if route == "research":
         if "http://" not in response_lc and "https://" not in response_lc and "source" not in response_lc and "来源" not in response_lc:
@@ -170,6 +190,9 @@ def _issue_for_route(route: str, response_lc: str) -> str | None:
     elif route == "multi_agent":
         if not _has_orchestration_summary(response_lc):
             return "missing_orchestration_summary"
+    elif route == "difficult_web_extract":
+        if not _has_difficult_web_extract_receipt(response_lc):
+            return "missing_difficult_web_extract_receipt"
     elif route == "scan":
         if not any(token in response_lc for token in ("scope", "scanned", "findings", "发现", "扫描")):
             return "missing_scan_findings"

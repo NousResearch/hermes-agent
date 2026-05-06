@@ -650,6 +650,29 @@ _OSS_BENCHMARK_RESEARCH_KEYWORDS = (
     "开源社区", "社区先进", "先进案例", "最佳实践", "best practice", "best practices",
     "benchmark", "benchmarks", "oss", "open source", "开源案例", "对照案例",
 )
+_DIFFICULT_WEB_EXTRACT_CONTEXT_KEYWORDS = (
+    "web extract", "web_extract", "extract", "抽取", "抓取", "采集", "scrape", "scraping",
+)
+_DIFFICULT_WEB_EXTRACT_CONTROL_KEYWORDS = (
+    "selector", "css selector", "xpath", "regex", "正则", ".article", ".content", ".job", ".price",
+    "批量", "batch", "homogeneous", "同构", "公告页", "列表页", "职位页", "产品页", "价格",
+    "session", "cookie", "light anti bot", "anti bot", "轻反爬", "blocked", "block", "空", "empty",
+    "boilerplate", "wrong main content", "正文错", "抽错", "抽空", "失败", "failed",
+)
+_DIFFICULT_WEB_EXTRACT_BROWSER_ONLY_MARKERS = (
+    "screenshot", "截图", "console", "登录", "login", "交互", "click", "点击", "visual", "视觉",
+)
+
+
+def _matches_difficult_web_extract(normalized_prompt: str) -> bool:
+    has_context = _contains_any(normalized_prompt, _DIFFICULT_WEB_EXTRACT_CONTEXT_KEYWORDS)
+    has_control = _contains_any(normalized_prompt, _DIFFICULT_WEB_EXTRACT_CONTROL_KEYWORDS)
+    if not (has_context and has_control):
+        return False
+    browser_only = _contains_any(normalized_prompt, _DIFFICULT_WEB_EXTRACT_BROWSER_ONLY_MARKERS)
+    if browser_only and not _contains_any(normalized_prompt, ("selector", "web extract", "web_extract", "too heavy", "太重")):
+        return False
+    return True
 
 
 def _matches_self_governance_repo_work(normalized_prompt: str) -> bool:
@@ -763,6 +786,7 @@ _ROUTE_FAMILY_BY_ROUTE: dict[str, str] = {
     "multi_agent": "multi_agent",
     "repo": "repo",
     "automation": "automation",
+    "difficult_web_extract": "research",
     "doc_feishu": "doc",
     "doc_google": "doc",
     "doc_pdf": "doc",
@@ -817,6 +841,17 @@ _BASE_ROUTE_CATALOG: dict[str, dict[str, object]] = {
         "display_command": "/bg",
         "skills": (),
         "append_toolsets": ("cronjob",),
+    },
+    "difficult_web_extract": {
+        "command": "background",
+        "display_command": "/bg",
+        "skills": (),
+        "append_toolsets": ("terminal", "file", "web", "skills"),
+        "route_examples": (
+            "web_extract returned empty content and CSS selector extraction is needed",
+            "batch homogeneous announcement pages need selector-driven extraction without browser automation",
+            "light anti-bot fallback after ordinary extract fails",
+        ),
     },
     "doc_feishu": {
         "command": "doc",
@@ -1453,6 +1488,19 @@ def resolve_background_wakeup(
             )
             applied_routes.add("automation")
 
+        if _matches_difficult_web_extract(normalized) and "difficult_web_extract" not in applied_routes:
+            _apply_route(
+                "difficult_web_extract",
+                normalized,
+                route_names,
+                toolsets,
+                skills,
+                route_catalog=route_catalog,
+                match_details=match_details,
+                match_reason="heuristic:difficult_web_extract",
+            )
+            applied_routes.add("difficult_web_extract")
+
         if _contains_any(normalized, _FEISHU_DOC_KEYWORDS) and "doc_feishu" not in applied_routes:
             _apply_route(
                 "doc_feishu",
@@ -1554,7 +1602,7 @@ def record_background_plan_usage(
         return
 
     try:
-        from agent.skill_usage import log_route_usage_event, log_skill_usage_event
+        from tools.skill_usage import bump_use, log_route_usage_event
     except Exception:
         return
 
@@ -1584,11 +1632,7 @@ def record_background_plan_usage(
 
     for skill_name in plan.skill_names:
         try:
-            log_skill_usage_event(
-                skill_name=str(skill_name),
-                event="skill_selected_by_router",
-                details=base_details,
-            )
+            bump_use(str(skill_name))
         except Exception:
             continue
 

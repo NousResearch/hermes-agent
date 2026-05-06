@@ -167,15 +167,23 @@ tools/website_policy.py
 
 ### Phase 4: route-linked fallback, only after pilot proof
 
-Only after real pilot evidence should Hermes consider a task-named route such as:
+Implemented route gate:
 
 ```text
 difficult_web_extract
 ```
 
+The route is task-named and resolves to `/bg`. It wakes the optional Scrapling skill only when installed or provided through wake metadata, appends `terminal`, `file`, `web`, and `skills`, and deliberately does not add the browser toolset.
+
+Trigger policy:
+
+- requires an extraction context such as `web_extract`, `extract`, `scrape`, `抽取`, or `抓取`;
+- also requires a control/fallback signal such as selector/XPath/regex, batch homogeneous pages, `web_extract` empty/wrong content, session/cookie, or light anti-bot fallback;
+- ordinary article summarization and browser-only tasks must not trigger it.
+
 Do not name the route `scrapling`; routes should describe work, not vendor/library choices.
 
-Do not add this route to skill metadata until the wake route catalog and tests support it. Unknown routes can be rejected by wake-manifest validation.
+Do not add Scrapling to the Hermes main virtualenv, global MCP, public tool registry, or default toolsets.
 
 ## Kill gates
 

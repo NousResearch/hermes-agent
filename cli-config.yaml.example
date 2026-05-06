@@ -658,9 +658,11 @@ platform_toolsets:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 
 # Feishu thin-cockpit routing controls. Auto-dispatch only applies to safe
-# read-only/internal work that clears the ROI gate; route telemetry events are
-# best-effort: route_decision_resolved, route_selected_for_background,
-# route_worker_outcome, and worker_evaluation details.
+# read-only/internal work that clears the ROI gate. `difficult_web_extract` is
+# a narrow /bg fallback for selector/batch/session-aware extraction after
+# ordinary web_extract fails; it is not a browser or web_extract replacement.
+# Route telemetry events are best-effort: route_decision_resolved,
+# route_selected_for_background, route_worker_outcome, and worker_evaluation details.
 routing:
   feishu_auto_dispatch_enabled: true
   feishu_route_shadow_hints_enabled: true

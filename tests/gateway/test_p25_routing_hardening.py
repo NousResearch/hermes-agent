@@ -84,6 +84,7 @@ def test_route_contract_registry_covers_live_worker_routes():
         "ppt",
         "automation",
         "multi_agent",
+        "difficult_web_extract",
     }
 
     assert expected_routes <= set(ROUTE_CONTRACTS)
@@ -103,6 +104,7 @@ def test_route_contract_registry_covers_live_worker_routes():
         (("ppt",), "Looks fine, no slides needed.", "missing_presentation_artifact"),
         (("automation",), "I would automate it conceptually.", "missing_automation_evidence"),
         (("multi_agent",), "One worker result only, no synthesis needed.", "missing_orchestration_summary"),
+        (("difficult_web_extract",), "Could not fetch it; maybe use browser later.", "missing_difficult_web_extract_receipt"),
     ],
 )
 def test_worker_evaluator_enforces_route_specific_artifact_contracts(route_names, response, expected_issue):
@@ -137,6 +139,21 @@ def test_worker_evaluator_accepts_route_specific_evidence_when_present():
     assert set(evaluation.route_contracts) == {"research", "repo"}
 
 
+def test_worker_evaluator_accepts_difficult_web_extract_receipt():
+    evaluation = evaluate_background_worker_outcome(
+        prompt="Use selector extraction fallback.",
+        route_names=("difficult_web_extract",),
+        response=(
+            "Receipt: backend=scrapling mode=static url=https://example.com "
+            "selector=.article fallback_reason=web_extract_empty errors=[]"
+        ),
+    )
+
+    assert evaluation.passed is True
+    assert evaluation.issues == ()
+    assert evaluation.score >= 0.9
+
+
 def test_config_docs_and_example_document_routing_controls():
     configuration_doc = (REPO_ROOT / "website/docs/user-guide/configuration.md").read_text(encoding="utf-8")
     config_example = (REPO_ROOT / "cli-config.yaml.example").read_text(encoding="utf-8")
@@ -146,6 +163,7 @@ def test_config_docs_and_example_document_routing_controls():
         assert "routing:" in text
         assert "feishu_auto_dispatch_enabled" in text
         assert "feishu_route_shadow_hints_enabled" in text
+        assert "difficult_web_extract" in text
         assert "route_decision_resolved" in text
         assert "route_selected_for_background" in text
         assert "route_worker_outcome" in text

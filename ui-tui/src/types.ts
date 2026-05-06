@@ -150,6 +150,7 @@ export interface SessionInfo {
   release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
+  system_prompt?: string
   tools: Record<string, string[]>
   update_behind?: number | null
   update_command?: string

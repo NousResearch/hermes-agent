@@ -1414,6 +1414,10 @@ def _session_info(agent) -> dict:
     except Exception:
         info["mcp_servers"] = []
     try:
+        info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
+    except Exception:
+        pass
+    try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
 

@@ -128,8 +128,8 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        with patch("builtins.input", return_value="n") as mock_input, patch(
-            "hermes_cli.main.sys"
+        with patch("builtins.input", return_value="n") as mock_input, patch.object(
+            hermes_main, "sys"
         ) as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
@@ -143,11 +143,6 @@ class TestUpdateYesConfigMigration:
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
-    @patch("hermes_cli.main._restore_stashed_changes")
-    @patch(
-        "hermes_cli.main._stash_local_changes_if_needed",
-        return_value="stash@{0}",
-    )
     @patch("hermes_cli.config.check_config_version", return_value=(1, 1))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=[])
@@ -160,8 +155,6 @@ class TestUpdateYesStashRestore:
         _mock_missing_env,
         _mock_missing_cfg,
         _mock_version,
-        _mock_stash,
-        mock_restore,
         capsys,
     ):
         # Not on main → cmd_update switches to main → autostash fires.
@@ -171,7 +164,10 @@ class TestUpdateYesStashRestore:
 
         args = SimpleNamespace(yes=True)
 
-        hermes_main.cmd_update(args)
+        with patch.object(
+            hermes_main, "_stash_local_changes_if_needed", return_value="stash@{0}"
+        ), patch.object(hermes_main, "_restore_stashed_changes") as mock_restore:
+            hermes_main.cmd_update(args)
 
         # _restore_stashed_changes was called, and called with prompt_user=False
         # every time (so the user never sees "Restore local changes now?").

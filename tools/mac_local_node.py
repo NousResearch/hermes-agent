@@ -752,12 +752,16 @@ def _extract_action(args: dict[str, Any] | None) -> str | None:
     return action if isinstance(action, str) else None
 
 
-def _policy_error_for_path(action: str, path: str, verdict: PolicyVerdict) -> str | None:
+def _policy_error_for_tool_path(tool: str, action: str, path: str, verdict: PolicyVerdict) -> str | None:
     if verdict.decision == "allow":
         return None
-    code = "SECRET_DENIED" if verdict.reason == "SECRET_DENIED" else "PATH_DENIED"
-    message = "Secret/auth paths are denied by default." if code == "SECRET_DENIED" else "Path is outside trusted Mac roots."
-    return _error_payload("mac_fs", action, code, message, path=path, scope=verdict.scope)
+    if verdict.reason == "SECRET_DENIED":
+        return _error_payload(tool, action, "SECRET_DENIED", "Secret/auth paths are denied by default.", path=path, scope=verdict.scope)
+    return _error_payload(tool, action, "PATH_DENIED", "Path is outside trusted Mac roots.", path=path, scope=verdict.scope)
+
+
+def _policy_error_for_path(action: str, path: str, verdict: PolicyVerdict) -> str | None:
+    return _policy_error_for_tool_path("mac_fs", action, path, verdict)
 
 
 def _bounded_limit(value: Any, default: int, maximum: int) -> int:
@@ -1310,6 +1314,309 @@ def handle_mac_terminal_local(args: dict[str, Any] | None = None, *, policy: Mac
     return _invalid_action_result("mac_terminal", action, TERMINAL_ACTIONS)
 
 
+PROJECT_CONTEXT_FILENAMES = (
+    "README.md",
+    "README.rst",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pyproject.toml",
+    "requirements.txt",
+    "uv.lock",
+    "Cargo.toml",
+    "go.mod",
+    "docker-compose.yml",
+    "Dockerfile",
+)
+PROJECT_SOURCE_EXTENSIONS = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+}
+
+
+def _relative_project_path(root: Path, file_path: Path) -> str | None:
+    try:
+        return file_path.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def _project_type_for_files(relative_files: list[str]) -> list[str]:
+    kinds: list[str] = []
+    if "package.json" in relative_files:
+        kinds.append("node")
+    if any(name in relative_files for name in ("pyproject.toml", "requirements.txt")) or any(
+        name.endswith(".py") for name in relative_files
+    ):
+        kinds.append("python")
+    if "go.mod" in relative_files:
+        kinds.append("go")
+    if "Cargo.toml" in relative_files:
+        kinds.append("rust")
+    return kinds or ["unknown"]
+
+
+def _suggest_project_commands(root: Path, relative_files: list[str]) -> list[str]:
+    commands: list[str] = []
+    package_json = root / "package.json"
+    if "package.json" in relative_files:
+        try:
+            package_data = json.loads(package_json.read_text(encoding="utf-8"))
+            scripts = package_data.get("scripts") if isinstance(package_data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            scripts = {}
+        if isinstance(scripts, dict):
+            if "test" in scripts:
+                commands.append("npm test")
+            if "build" in scripts:
+                commands.append("npm run build")
+            if "lint" in scripts:
+                commands.append("npm run lint")
+    if "pyproject.toml" in relative_files or "requirements.txt" in relative_files:
+        commands.append("python -m pytest")
+    if "go.mod" in relative_files:
+        commands.append("go test ./...")
+    if "Cargo.toml" in relative_files:
+        commands.append("cargo test")
+    return commands[:8]
+
+
+def _collect_project_files(root: Path, policy: MacLocalPolicy, limit: int) -> tuple[list[str], bool, list[str]]:
+    files: list[str] = []
+    languages: set[str] = set()
+    truncated = False
+    try:
+        walker = os.walk(root)
+        for current_root, dirs, filenames in walker:
+            dirs[:] = sorted(dirname for dirname in dirs if dirname not in NOISY_SEARCH_DIRS)
+            for filename in sorted(filenames):
+                file_path = Path(current_root, filename)
+                canonical = _canonical_for_payload(str(file_path))
+                verdict = policy.classify_path(canonical, "read")
+                if verdict.decision != "allow":
+                    continue
+                relative = _relative_project_path(root, Path(canonical))
+                if relative is None:
+                    continue
+                ext = Path(relative).suffix
+                if ext in PROJECT_SOURCE_EXTENSIONS:
+                    languages.add(PROJECT_SOURCE_EXTENSIONS[ext])
+                is_top_level = "/" not in relative
+                is_important = is_top_level and filename in PROJECT_CONTEXT_FILENAMES
+                is_source = ext in PROJECT_SOURCE_EXTENSIONS and not any(part in NOISY_SEARCH_DIRS for part in relative.split("/"))
+                if is_important or is_source:
+                    files.append(relative)
+                    if len(files) >= limit:
+                        truncated = True
+                        return _rank_project_files(files, root), truncated, sorted(languages)
+    except OSError:
+        truncated = False
+    return _rank_project_files(files, root), truncated, sorted(languages)
+
+
+def _rank_project_files(files: list[str], root: Path) -> list[str]:
+    priority = {name: index for index, name in enumerate(PROJECT_CONTEXT_FILENAMES)}
+
+    def sort_key(relative: str) -> tuple[int, int, str]:
+        filename = Path(relative).name
+        top_level = "/" not in relative
+        if top_level and filename in priority:
+            return (0, priority[filename], relative)
+        return (1, len(Path(relative).parts), relative)
+
+    return sorted(dict.fromkeys(files), key=sort_key)
+
+
+def _project_git_summary(root: Path) -> dict[str, Any] | None:
+    if not (root / ".git").exists():
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "status", "--short", "--branch"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=_safe_terminal_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = (completed.stdout or "").splitlines()
+    return {"branch": lines[0].removeprefix("## ") if lines else None, "dirty_entries": max(0, len(lines) - 1)}
+
+
+def handle_mac_project_context_local(args: dict[str, Any] | None = None, *, policy: MacLocalPolicy | None = None) -> str:
+    """Return a compact, secret-safe preflight summary for a trusted Mac project."""
+
+    action = _extract_action(args)
+    if action not in PROJECT_CONTEXT_ACTIONS:
+        return _invalid_action_result("mac_project_context", action, PROJECT_CONTEXT_ACTIONS)
+    safe_args = args if isinstance(args, dict) else {}
+    active_policy = policy or MacLocalPolicy.default()
+    canonical = _canonical_for_payload(str(safe_args.get("path") or ""))
+    verdict = active_policy.classify_path(canonical, "search")
+    policy_error = _policy_error_for_tool_path("mac_project_context", "summarize", canonical, verdict)
+    if policy_error:
+        return policy_error
+    root = Path(canonical)
+    if not root.exists() or not root.is_dir():
+        return _error_payload("mac_project_context", "summarize", "PATH_DENIED", "Project path must be an existing directory.", path=canonical)
+    limit = _bounded_limit(safe_args.get("limit"), 80, 250)
+    files, truncated, languages = _collect_project_files(root, active_policy, limit)
+    payload: dict[str, Any] = {
+        "ok": True,
+        "action": "summarize",
+        "path": canonical,
+        "scope": verdict.scope,
+        "project_type": _project_type_for_files(files),
+        "languages": languages,
+        "important_files": files,
+        "suggested_commands": _suggest_project_commands(root, files),
+        "truncated": truncated,
+        "secret_paths_omitted": True,
+    }
+    git_summary = _project_git_summary(root)
+    if git_summary:
+        payload["git"] = git_summary
+    return json.dumps(payload)
+
+
+def _ui_policy_error(action: str, verdict: PolicyVerdict, *, target: str | None = None) -> str | None:
+    if verdict.decision == "allow":
+        return None
+    code = "SECRET_DENIED" if verdict.reason == "SECRET_DENIED" else "APPROVAL_REQUIRED"
+    message = "Secret/auth paths are denied by default." if code == "SECRET_DENIED" else "Mac UI action requires approval by local-node policy."
+    return _error_payload("mac_ui", action, code, message, target=target, scope=verdict.scope, policy_reason=verdict.reason)
+
+
+def _is_url_target(target: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target))
+
+
+def _has_url_scheme(target: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target))
+
+
+def _is_safe_open_url(target: str) -> bool:
+    return target.startswith(("https://", "http://"))
+
+
+def _mac_ui_screenshot(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "screenshot"
+    target = _canonical_for_payload(str(args.get("target") or ""))
+    if not target:
+        return _error_payload("mac_ui", action, "ACTION_DENIED", "Screenshot target path is required.")
+    verdict = policy.classify_path(target, "screenshot")
+    policy_error = _ui_policy_error(action, verdict, target=target)
+    if policy_error:
+        return policy_error
+    try:
+        completed = subprocess.run(["screencapture", "-x", target], capture_output=True, text=True, env=_safe_terminal_env(), timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _error_payload("mac_ui", action, "ACTION_DENIED", f"Screenshot command failed: {exc}", target=target)
+    return json.dumps(
+        {
+            "ok": completed.returncode == 0,
+            "action": action,
+            "path": target,
+            "exit_code": completed.returncode,
+            "stderr": _truncate_text(completed.stderr or "", 4000)[0],
+            "policy_reason": verdict.reason,
+            "scope": verdict.scope,
+        }
+    )
+
+
+def _mac_ui_open(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "open"
+    raw_target = str(args.get("target") or "")
+    if not raw_target:
+        return _error_payload("mac_ui", action, "ACTION_DENIED", "Open target is required.")
+    if _is_safe_open_url(raw_target):
+        target = raw_target
+        verdict = PolicyVerdict("allow", "LOCAL_UI_ALLOWED", "url")
+    elif _has_url_scheme(raw_target):
+        return _error_payload(
+            "mac_ui",
+            action,
+            "APPROVAL_REQUIRED",
+            "Only http(s) URLs can be opened without approval; custom/file URL schemes are guarded.",
+            target=raw_target,
+            policy_reason="GUARDED_URL_SCHEME",
+        )
+    else:
+        target = _canonical_for_payload(raw_target)
+        verdict = policy.classify_path(target, "open")
+        policy_error = _ui_policy_error(action, verdict, target=target)
+        if policy_error:
+            return policy_error
+    try:
+        process = subprocess.Popen(["open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_safe_terminal_env())
+    except OSError as exc:
+        return _error_payload("mac_ui", action, "ACTION_DENIED", f"Open command failed: {exc}", target=target)
+    return json.dumps({"ok": True, "action": action, "target": target, "pid": process.pid, "policy_reason": verdict.reason, "scope": verdict.scope})
+
+
+def _mac_ui_clipboard(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "clipboard"
+    target = str(args.get("target") or "write").lower()
+    if target in {"read", "get", "paste"}:
+        return _error_payload(
+            "mac_ui",
+            action,
+            "APPROVAL_REQUIRED",
+            "Clipboard reads can expose secrets and require approval.",
+            target=target,
+            policy_reason="SECRET_SENSITIVE_UI_READ",
+        )
+    data = str(args.get("data") or "")
+    default_cwd = policy.trusted_roots[0].canonical if policy.trusted_roots else os.getcwd()
+    verdict = policy.classify_exec_code(data, cwd=str(args.get("cwd") or default_cwd))
+    policy_error = _ui_policy_error(action, verdict, target="write")
+    if policy_error:
+        return policy_error
+    try:
+        completed = subprocess.run(["pbcopy"], input=data, capture_output=True, text=True, env=_safe_terminal_env(), timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _error_payload("mac_ui", action, "ACTION_DENIED", f"Clipboard write failed: {exc}", target="write")
+    return json.dumps({"ok": completed.returncode == 0, "action": action, "target": "write", "bytes_written": len(data.encode("utf-8")), "exit_code": completed.returncode})
+
+
+def _mac_ui_osascript(args: dict[str, Any]) -> str:
+    return _error_payload(
+        "mac_ui",
+        "osascript",
+        "APPROVAL_REQUIRED",
+        "AppleScript/JXA automation is guarded and requires approval.",
+        policy_reason="GUARDED_MAC_SURFACE",
+    )
+
+
+def handle_mac_ui_local(args: dict[str, Any] | None = None, *, policy: MacLocalPolicy | None = None) -> str:
+    """Run conservative Mac UI primitives with local-node policy checks."""
+
+    action = _extract_action(args)
+    if action not in UI_ACTIONS:
+        return _invalid_action_result("mac_ui", action, UI_ACTIONS)
+    safe_args = args if isinstance(args, dict) else {}
+    active_policy = policy or MacLocalPolicy.default()
+    if action == "screenshot":
+        return _mac_ui_screenshot(safe_args, active_policy)
+    if action == "open":
+        return _mac_ui_open(safe_args, active_policy)
+    if action == "clipboard":
+        return _mac_ui_clipboard(safe_args, active_policy)
+    if action == "osascript":
+        return _mac_ui_osascript(safe_args)
+    return _invalid_action_result("mac_ui", action, UI_ACTIONS)
+
+
 def _handle_placeholder(tool: str, args: dict[str, Any] | None, allowed_actions: list[str]) -> str:
     action = _extract_action(args)
     if action not in allowed_actions:
@@ -1336,10 +1643,14 @@ def handle_mac_terminal(args: dict[str, Any] | None = None, **_: Any) -> str:
 
 
 def handle_mac_project_context(args: dict[str, Any] | None = None, **_: Any) -> str:
+    if os.getenv("HERMES_MAC_LOCAL_NODE_EXECUTE_LOCAL", "").lower() in {"1", "true", "yes", "on"}:
+        return handle_mac_project_context_local(args)
     return _handle_placeholder("mac_project_context", args, PROJECT_CONTEXT_ACTIONS)
 
 
 def handle_mac_ui(args: dict[str, Any] | None = None, **_: Any) -> str:
+    if os.getenv("HERMES_MAC_LOCAL_NODE_EXECUTE_LOCAL", "").lower() in {"1", "true", "yes", "on"}:
+        return handle_mac_ui_local(args)
     return _handle_placeholder("mac_ui", args, UI_ACTIONS)
 
 

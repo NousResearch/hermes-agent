@@ -1288,3 +1288,174 @@ def test_mac_terminal_local_run_bounds_unterminated_output_lines(tmp_path):
     assert payload["stdout_truncated"] is True
     assert payload["output_limit_exceeded"] is True
     assert len(payload["stdout"]) <= 50_000
+
+
+def test_mac_project_context_local_summarizes_repo_without_secret_or_noisy_paths(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_project_context_local
+
+    trusted = tmp_path / "trusted"
+    project = trusted / "app"
+    (project / "src").mkdir(parents=True)
+    (project / "node_modules").mkdir()
+    (project / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (project / "package.json").write_text('{"scripts":{"test":"vitest","build":"tsc"}}', encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    (project / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (project / "node_modules" / "pkg.js").write_text("ignored\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(handle_mac_project_context_local({"action": "summarize", "path": str(project)}, policy=policy))
+
+    assert payload["ok"] is True
+    assert payload["action"] == "summarize"
+    assert payload["path"] == str(project.resolve())
+    assert payload["scope"] == "test"
+    assert payload["project_type"] == ["node", "python"]
+    assert payload["important_files"] == ["README.md", "package.json", "pyproject.toml", "src/app.py"]
+    assert payload["suggested_commands"] == ["npm test", "npm run build", "python -m pytest"]
+    assert ".env" not in json.dumps(payload)
+    assert "node_modules" not in json.dumps(payload)
+    assert "TOKEN" not in json.dumps(payload)
+
+
+def test_mac_project_context_local_denies_outside_or_secret_paths(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_project_context_local
+
+    trusted = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    trusted.mkdir()
+    outside.mkdir()
+    (trusted / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    outside_payload = json.loads(handle_mac_project_context_local({"action": "summarize", "path": str(outside)}, policy=policy))
+    secret_payload = json.loads(handle_mac_project_context_local({"action": "summarize", "path": str(trusted / ".env")}, policy=policy))
+
+    assert outside_payload["ok"] is False
+    assert outside_payload["error_code"] == "PATH_DENIED"
+    assert secret_payload["ok"] is False
+    assert secret_payload["error_code"] == "SECRET_DENIED"
+    assert "TOKEN" not in json.dumps(secret_payload)
+
+
+def test_mac_project_context_local_skips_symlink_escape_without_crashing(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_project_context_local
+
+    trusted = tmp_path / "trusted"
+    project = trusted / "app"
+    sibling = trusted / "sibling"
+    project.mkdir(parents=True)
+    sibling.mkdir()
+    (project / "README.md").write_text("# App\n", encoding="utf-8")
+    (sibling / "outside.py").write_text("print('outside')\n", encoding="utf-8")
+    (project / "outside_link.py").symlink_to(sibling / "outside.py")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(handle_mac_project_context_local({"action": "summarize", "path": str(project)}, policy=policy))
+
+    assert payload["ok"] is True
+    assert payload["important_files"] == ["README.md"]
+    assert "outside" not in json.dumps(payload)
+
+
+def test_mac_ui_local_screenshot_and_open_use_mac_commands_after_policy(monkeypatch, tmp_path):
+    import subprocess
+
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_ui_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    target = trusted / "screen.png"
+    opened = trusted / "README.md"
+    opened.write_text("docs\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(("run", argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def fake_popen(argv, **kwargs):
+        calls.append(("popen", argv, kwargs))
+
+        class FakeProcess:
+            pid = 123
+
+        return FakeProcess()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    screenshot = json.loads(handle_mac_ui_local({"action": "screenshot", "target": str(target)}, policy=policy))
+    opened_payload = json.loads(handle_mac_ui_local({"action": "open", "target": str(opened)}, policy=policy))
+
+    assert screenshot["ok"] is True
+    assert screenshot["path"] == str(target.resolve())
+    assert opened_payload["ok"] is True
+    assert opened_payload["target"] == str(opened.resolve())
+    assert calls[0][1] == ["screencapture", "-x", str(target.resolve())]
+    assert calls[1][1] == ["open", str(opened.resolve())]
+    assert "HOME" not in calls[0][2]["env"]
+
+
+def test_mac_ui_local_open_allows_only_http_urls_without_approval(monkeypatch, tmp_path):
+    import subprocess
+
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_ui_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    calls = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+
+        class FakeProcess:
+            pid = 123
+
+        return FakeProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    https_payload = json.loads(handle_mac_ui_local({"action": "open", "target": "https://example.com/docs"}, policy=policy))
+    custom_payload = json.loads(handle_mac_ui_local({"action": "open", "target": "x-apple.systempreferences:Security"}, policy=policy))
+    file_payload = json.loads(handle_mac_ui_local({"action": "open", "target": f"file://{trusted / 'README.md'}"}, policy=policy))
+
+    assert https_payload["ok"] is True
+    assert calls == [["open", "https://example.com/docs"]]
+    assert custom_payload["ok"] is False
+    assert custom_payload["error_code"] == "APPROVAL_REQUIRED"
+    assert file_payload["ok"] is False
+    assert file_payload["error_code"] == "APPROVAL_REQUIRED"
+
+
+def test_mac_ui_local_clipboard_write_is_allowed_but_read_and_osascript_require_approval(monkeypatch, tmp_path):
+    import subprocess
+
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_ui_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    written = json.loads(handle_mac_ui_local({"action": "clipboard", "target": "write", "data": "hello"}, policy=policy))
+    read = json.loads(handle_mac_ui_local({"action": "clipboard", "target": "read"}, policy=policy))
+    osascript = json.loads(handle_mac_ui_local({"action": "osascript", "data": "return the clipboard"}, policy=policy))
+
+    assert written["ok"] is True
+    assert calls[0][0] == ["pbcopy"]
+    assert calls[0][1]["input"] == "hello"
+    assert read["ok"] is False
+    assert read["error_code"] == "APPROVAL_REQUIRED"
+    assert osascript["ok"] is False
+    assert osascript["error_code"] == "APPROVAL_REQUIRED"
+    assert len(calls) == 1

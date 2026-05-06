@@ -59,6 +59,28 @@ class TestCLIQuickCommands:
         # stderr fallback — should print something
         cli.console.print.assert_called_once()
 
+    def test_exec_command_appends_args_when_enabled(self):
+        cli = self._make_cli({"say": {"type": "exec", "command": "printf %s", "append_args": True}})
+        result = cli.process_command("/say hello tensor")
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "hello tensor"
+
+    def test_exec_command_shell_quotes_appended_args(self):
+        cli = self._make_cli({"say": {"type": "exec", "command": "printf %s", "append_args": True}})
+        result = cli.process_command("/say hello; echo injected")
+        assert result is True
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "hello; echo injected"
+
+    def test_exec_command_does_not_append_args_by_default(self):
+        cli = self._make_cli({"say": {"type": "exec", "command": "printf fixed"}})
+        result = cli.process_command("/say ignored")
+        assert result is True
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "fixed"
+
     def test_exec_command_no_output_shows_fallback(self):
         cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
         cli.process_command("/empty")
@@ -158,6 +180,45 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_appends_args_when_enabled(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"say": {"type": "exec", "command": "printf %s", "append_args": True}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("say", "hello tensor")
+        result = await runner._handle_message(event)
+        assert result == "hello tensor"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_shell_quotes_appended_args(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"say": {"type": "exec", "command": "printf %s", "append_args": True}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("say", "hello; echo injected")
+        result = await runner._handle_message(event)
+        assert result == "hello; echo injected"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_does_not_append_args_by_default(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"say": {"type": "exec", "command": "printf fixed"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("say", "ignored")
+        result = await runner._handle_message(event)
+        assert result == "fixed"
 
     @pytest.mark.asyncio
     async def test_unsupported_type_returns_error(self):

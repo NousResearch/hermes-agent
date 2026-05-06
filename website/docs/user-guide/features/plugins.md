@@ -90,6 +90,8 @@ Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the m
 
 The model-facing tool description belongs in `schema["description"]`. The optional `ctx.register_tool(description=...)` value is separate `ToolEntry` registry metadata: when omitted, it defaults to the schema description, but Hermes does not copy it back into a schema that lacks `description`. Prefer defining the text once in the schema. If you provide both values, keep them synchronized; the model sees the schema value.
 
+`end_turn=True` is optional and only for tools whose successful side effect may legitimately finish the turn without any further model text. Hermes still keeps provider-safe history internally, but it skips the normal empty-after-tools nudge path for those tools.
+
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
 ## What plugins can do
@@ -98,7 +100,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 
 | Capability | How |
 |-----------|-----|
-| Add tools | `ctx.register_tool(name=..., toolset=..., schema=..., handler=...)` |
+| Add tools | `ctx.register_tool(name=..., toolset=..., schema=..., handler=..., end_turn=False)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |

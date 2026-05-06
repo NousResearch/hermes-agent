@@ -433,6 +433,100 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsExternalTriggerRecordsWithTokenGate() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_file_write_task",
+                org.json.JSONObject()
+                    .put("id", "auto-external")
+                    .put("path", "external-trigger.txt")
+                    .put("content", "%SA_TRIGGER_ID|%SA_TRIGGER_PACKAGE_NAME|%SA_REFERRER|%SA_EXTRAS")
+                    .put("trigger", "external_trigger")
+                    .put("trigger_id", "quick_tile")
+                    .put("external_token", "secret-token")
+                    .put("trigger_package_name", "com.example.trigger")
+                    .put("referrer_contains", "tile"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = org.json.JSONObject(automation.getString("trigger_data"))
+        assertEquals(TRIGGER_EXTERNAL, automation.getString("trigger_type"))
+        assertEquals("quick_tile", triggerData.getString("trigger_id"))
+        assertEquals("secret-token", triggerData.getString("external_token"))
+        assertEquals("tile", triggerData.getString("referrer_contains"))
+
+        val missed = org.json.JSONObject(
+            HermesAutomationBridge.runExternalTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("trigger_id", "quick_tile")
+                    .put("external_token", "wrong-token")
+                    .put("trigger_package_name", "com.example.trigger")
+                    .put("referrer", "tile://settings")
+                    .put("extras", org.json.JSONObject().put("mode", "wrong")),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+
+        val matched = org.json.JSONObject(
+            HermesAutomationBridge.runExternalTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("trigger_id", "quick_tile")
+                    .put("external_token", "secret-token")
+                    .put("trigger_package_name", "com.example.trigger")
+                    .put("referrer", "tile://settings")
+                    .put("extras", org.json.JSONObject().put("mode", "focus")),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue(matched.getJSONArray("results").getJSONObject(0).getBoolean("success"))
+        assertEquals("quick_tile", store.getVariable("SA_TRIGGER_ID"))
+        assertEquals("com.example.trigger", store.getVariable("SA_TRIGGER_PACKAGE_NAME"))
+        assertEquals("tile://settings", store.getVariable("SA_REFERRER"))
+        assertEquals("""{"mode":"focus"}""", store.getVariable("SA_EXTRAS"))
+        val filePath = matched
+            .getJSONArray("results")
+            .getJSONObject(0)
+            .getJSONObject("result")
+            .getString("path")
+        assertEquals(
+            """quick_tile|com.example.trigger|tile://settings|{"mode":"focus"}""",
+            java.io.File(filePath).readText(),
+        )
+
+        val generic = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "external_trigger"),
+            ),
+        )
+        assertFalse(generic.toString(), generic.getBoolean("success"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shell_task",
+                org.json.JSONObject()
+                    .put("command", "printf no")
+                    .put("trigger", "external_trigger")
+                    .put("trigger_id", "quick_tile"),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+        assertTrue(rejected.getString("error").contains("external_token"))
+    }
+
+    @Test
     fun bridgeCreatesFileAndSystemActionRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

@@ -364,7 +364,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, delete, export, or import saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, Shizuku/Sui package-permission, and offline sunrise/sunset tasks; direct sunrise/sunset calculation; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted/calendar-event/location/sensor/Shizuku-state phone triggers; Tasker-style %VARIABLE expansion; and Hermes automation bundle backup/restore. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access. Calendar-event, location, and sensor triggers are explicit event dispatches. Location triggers can match latitude/longitude/radius, provider, name, and accuracy, and expose %LOC, %LAT, %LON, %LOCACC, %LOCPROVIDER, %LOCNAME, and LOCATION_* aliases. Sunrise/sunset actions accept latitude, longitude, optional date, and optional timezone, and expose %SUNRISE, %SUNSET, %SUN_DAWN, %SUN_DUSK, %SOLAR_NOON, %SUN_DAYLIGHT_MINUTES, %SUN_STATE, %SUN_DATE, %SUN_TIMEZONE, %SUN_LAT, and %SUN_LON. Sensor triggers can match type/name, event, value name, and min/max value, and expose %SENSOR, %SENSOR_EVENT, %SENSOR_VALUE, %SENSOR_VALUE_NAME, %SENSOR_UNIT, and %SENSOR_ACCURACY. Shizuku-state triggers expose %SHIZUKU_AVAILABLE, %SHIZUKU_INSTALLED, %SUI_INSTALLED, %SHIZUKU_RUNNING, %SHIZUKU_PERMISSION_GRANTED, %SHIZUKU_PRIVILEGE_LABEL, and %SHIZUKU_UID.",
+                                "Create, list, run, enable, disable, delete, export, or import saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, Shizuku/Sui package-permission, and offline sunrise/sunset tasks; direct sunrise/sunset calculation; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted/calendar-event/location/sensor/Shizuku-state/external-trigger phone triggers; Tasker-style %VARIABLE expansion; and Hermes automation bundle backup/restore. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access. Calendar-event, location, sensor, and external triggers are explicit event dispatches; external triggers also have an exported broadcast receiver guarded by a required shared token. Location triggers can match latitude/longitude/radius, provider, name, and accuracy, and expose %LOC, %LAT, %LON, %LOCACC, %LOCPROVIDER, %LOCNAME, and LOCATION_* aliases. Sunrise/sunset actions accept latitude, longitude, optional date, and optional timezone, and expose %SUNRISE, %SUNSET, %SUN_DAWN, %SUN_DUSK, %SOLAR_NOON, %SUN_DAYLIGHT_MINUTES, %SUN_STATE, %SUN_DATE, %SUN_TIMEZONE, %SUN_LAT, and %SUN_LON. Sensor triggers can match type/name, event, value name, and min/max value, and expose %SENSOR, %SENSOR_EVENT, %SENSOR_VALUE, %SENSOR_VALUE_NAME, %SENSOR_UNIT, and %SENSOR_ACCURACY. External triggers can match trigger_id, external_token, optional trigger_package_name, and optional referrer_contains, and expose %SA_TRIGGER_ID, %SA_TRIGGER_PACKAGE_NAME, %SA_REFERRER, and %SA_EXTRAS. Shizuku-state triggers expose %SHIZUKU_AVAILABLE, %SHIZUKU_INSTALLED, %SUI_INSTALLED, %SHIZUKU_RUNNING, %SHIZUKU_PERMISSION_GRANTED, %SHIZUKU_PRIVILEGE_LABEL, and %SHIZUKU_UID.",
                             )
                             .put(
                                 "parameters",
@@ -377,7 +377,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_shizuku_action_task, create_sunrise_sunset_task, calculate_sunrise_sunset, export_automations, import_automations, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_calendar_event_trigger, run_location_trigger, run_sensor_trigger, run_shizuku_state_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
+                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_shizuku_action_task, create_sunrise_sunset_task, calculate_sunrise_sunset, export_automations, import_automations, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_calendar_event_trigger, run_location_trigger, run_sensor_trigger, run_external_trigger, run_shizuku_state_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "bundle",
@@ -534,7 +534,7 @@ class NativeToolCallingChatClient(
                                                 "extras",
                                                 JSONObject()
                                                     .put("type", "object")
-                                                    .put("description", "Optional primitive string, number, or boolean extras for create_intent_task. String values can reference saved variables as %NAME or {{NAME}}."),
+                                                    .put("description", "Optional primitive string, number, or boolean extras for create_intent_task or run_external_trigger. String values can reference saved variables as %NAME or {{NAME}} when saved in intent tasks."),
                                             )
                                             .put(
                                                 "permission",
@@ -552,13 +552,31 @@ class NativeToolCallingChatClient(
                                                 "trigger",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, notification_posted, calendar_event, location, sensor, shizuku_available, or shizuku_unavailable. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission. calendar_event can filter by calendar_name, title_contains, description_contains, or location_contains. location can filter by latitude, longitude, radius_meters, location_provider, location_name, or max_accuracy_meters and must be run with run_location_trigger. sensor can filter by sensor_type, sensor_event, value_name, min_value, or max_value and must be run with run_sensor_trigger."),
+                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, notification_posted, calendar_event, location, sensor, external_trigger, shizuku_available, or shizuku_unavailable. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission. calendar_event can filter by calendar_name, title_contains, description_contains, or location_contains. location can filter by latitude, longitude, radius_meters, location_provider, location_name, or max_accuracy_meters and must be run with run_location_trigger. sensor can filter by sensor_type, sensor_event, value_name, min_value, or max_value and must be run with run_sensor_trigger. external_trigger requires trigger_id and external_token and must be run with run_external_trigger or the exported Hermes external-trigger broadcast."),
                                             )
                                             .put(
                                                 "trigger_package_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Package name that must become foreground for app_foreground trigger records or post a notification for notification_posted trigger records, such as com.android.settings. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                                    .put("description", "Package name that must become foreground for app_foreground trigger records, post a notification for notification_posted trigger records, or identify an external_trigger caller, such as com.android.settings. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "trigger_id",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "External trigger id for external_trigger saved records or run_external_trigger events. Saved variables can be referenced as %NAME or {{NAME}} in saved external_trigger records."),
+                                            )
+                                            .put(
+                                                "external_token",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Required shared secret for external_trigger saved records and run_external_trigger events. A saved external trigger does not run unless this token matches."),
+                                            )
+                                            .put(
+                                                "referrer",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional referrer/source value for run_external_trigger, or saved referrer filter for external_trigger records. Runs expose %SA_REFERRER."),
                                             )
                                             .put(
                                                 "notification_title",

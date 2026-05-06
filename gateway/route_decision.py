@@ -120,7 +120,7 @@ def _history_gain_components(routes: Sequence[str]) -> dict[str, float]:
         return {"route_history_gain": 0.0, "worker_outcome_gain": 0.0}
 
     try:
-        from agent.skill_usage import summarize_route_usage
+        from tools.skill_usage import summarize_route_usage
 
         summary = summarize_route_usage(window_days=_HISTORY_WINDOW_DAYS)
     except Exception:
@@ -325,7 +325,7 @@ def _record_route_decision_usage(
         return
 
     try:
-        from agent.skill_usage import log_route_usage_event
+        from tools.skill_usage import log_route_usage_event
     except Exception:
         return
 

@@ -256,7 +256,7 @@ def _route_history_sort_signal(summary: Mapping[str, Mapping[str, Any]], route_n
 
 def _route_history_summary() -> Mapping[str, Mapping[str, Any]]:
     try:
-        from agent.skill_usage import summarize_route_usage
+        from tools.skill_usage import summarize_route_usage
 
         return summarize_route_usage(window_days=_WRAPPER_HISTORY_WINDOW_DAYS)
     except Exception:

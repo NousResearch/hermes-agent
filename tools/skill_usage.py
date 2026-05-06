@@ -547,3 +547,165 @@ def agent_created_report() -> List[Dict[str, Any]]:
         row["activity_count"] = activity_count(row)
         rows.append(row)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Route telemetry — route/wrapper outcomes live beside skill telemetry
+# ---------------------------------------------------------------------------
+
+_ROUTE_USAGE_KEY = "_route_usage"
+_ROUTE_EVENT_HISTORY_LIMIT = 200
+_ROUTE_DECISION_EVENTS = {"route_decision_resolved", "route_selected_for_background"}
+_ROUTE_OUTCOME_EVENTS = {"route_worker_outcome"}
+_ALLOWED_ROUTE_EVENTS = _ROUTE_DECISION_EVENTS | _ROUTE_OUTCOME_EVENTS
+
+
+def _normalize_route_name(route_name: str) -> str:
+    return str(route_name or "").strip().lower().replace("-", "_")
+
+
+def _route_usage_map(data: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    routes = data.get(_ROUTE_USAGE_KEY)
+    if not isinstance(routes, dict):
+        routes = {}
+        data[_ROUTE_USAGE_KEY] = routes
+    return routes
+
+
+def log_route_usage_event(
+    *,
+    route_name: str,
+    event: str,
+    details: Dict[str, Any] | None = None,
+) -> None:
+    """Persist one best-effort route telemetry event.
+
+    Route telemetry intentionally reuses the existing `.usage.json` sidecar so
+    rollout has no new database, daemon, or migration. Events are bounded per
+    route and all writes are best-effort: routing must never fail because
+    telemetry storage is unavailable.
+    """
+
+    route = _normalize_route_name(route_name)
+    event_key = str(event or "").strip().lower()
+    if not route or event_key not in _ALLOWED_ROUTE_EVENTS:
+        return
+    try:
+        data = load_usage()
+        routes = _route_usage_map(data)
+        rec = routes.get(route)
+        if not isinstance(rec, dict):
+            rec = {"event_count": 0, "events": []}
+        events = rec.get("events")
+        if not isinstance(events, list):
+            events = []
+        timestamp = _now_iso()
+        event_record = {
+            "at": timestamp,
+            "event": event_key,
+            "details": dict(details or {}),
+        }
+        events.append(event_record)
+        if len(events) > _ROUTE_EVENT_HISTORY_LIMIT:
+            events = events[-_ROUTE_EVENT_HISTORY_LIMIT:]
+        rec["event_count"] = int(rec.get("event_count") or 0) + 1
+        rec["last_event_at"] = timestamp
+        rec["events"] = events
+        routes[route] = rec
+        data[_ROUTE_USAGE_KEY] = routes
+        save_usage(data)
+    except Exception as e:
+        logger.debug("log_route_usage_event(%s, %s) failed: %s", route_name, event, e, exc_info=True)
+
+
+def _event_is_recent(event_record: Dict[str, Any], *, window_days: int) -> bool:
+    if window_days <= 0:
+        return True
+    parsed = _parse_iso_timestamp(event_record.get("at"))
+    if parsed is None:
+        return False
+    age = datetime.now(timezone.utc) - parsed
+    return age.days <= window_days
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _decision_signal(details: Dict[str, Any]) -> float:
+    decision_type = str(details.get("decision_type") or "").strip().lower()
+    score = _coerce_float(details.get("score"))
+    confidence = _coerce_float(details.get("confidence"))
+    signal = 0.0
+    if score is not None:
+        signal += max(-1.0, min(1.0, score / 5.0))
+    if confidence is not None:
+        signal += max(0.0, min(1.0, confidence)) * 0.25
+    if decision_type == "auto_dispatch":
+        signal += 0.25
+    elif decision_type == "approval_required":
+        signal -= 0.5
+    elif decision_type == "foreground_only":
+        signal -= 0.25
+    return max(-1.0, min(1.0, signal))
+
+
+def _worker_outcome_signal(details: Dict[str, Any]) -> float:
+    score = _coerce_float(details.get("score"))
+    passed = bool(details.get("passed"))
+    if score is None:
+        score = 1.0 if passed else 0.0
+    signal = (max(0.0, min(1.0, score)) - 0.5) * 2.0
+    signal += 0.15 if passed else -0.15
+    return max(-1.0, min(1.0, signal))
+
+
+def _average(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / float(len(values))
+
+
+def summarize_route_usage(*, window_days: int = 30) -> Dict[str, Dict[str, Any]]:
+    """Return per-route telemetry summary for ROI scoring and wrapper ordering."""
+
+    try:
+        data = load_usage()
+        routes = data.get(_ROUTE_USAGE_KEY)
+        if not isinstance(routes, dict):
+            return {}
+        summary: Dict[str, Dict[str, Any]] = {}
+        for route, rec in routes.items():
+            if not isinstance(rec, dict):
+                continue
+            decision_signals: List[float] = []
+            worker_signals: List[float] = []
+            events = rec.get("events") if isinstance(rec.get("events"), list) else []
+            for raw_event in events:
+                if not isinstance(raw_event, dict) or not _event_is_recent(raw_event, window_days=window_days):
+                    continue
+                event_key = str(raw_event.get("event") or "").strip().lower()
+                details = raw_event.get("details") if isinstance(raw_event.get("details"), dict) else {}
+                if event_key in _ROUTE_DECISION_EVENTS:
+                    decision_signals.append(_decision_signal(details))
+                elif event_key in _ROUTE_OUTCOME_EVENTS:
+                    worker_signals.append(_worker_outcome_signal(details))
+            route_key = _normalize_route_name(str(route))
+            if not route_key:
+                continue
+            summary[route_key] = {
+                "history_sample_count_30d": len(decision_signals),
+                "history_effective_sample_count_30d": len(decision_signals),
+                "route_signal_score_30d": round(_average(decision_signals), 3),
+                "worker_outcome_count_30d": len(worker_signals),
+                "worker_outcome_effective_sample_count_30d": len(worker_signals),
+                "worker_outcome_signal_30d": round(_average(worker_signals), 3),
+                "last_event_at": rec.get("last_event_at"),
+            }
+        return summary
+    except Exception as e:
+        logger.debug("summarize_route_usage failed: %s", e, exc_info=True)
+        return {}

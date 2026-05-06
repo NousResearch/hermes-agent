@@ -571,6 +571,25 @@ the `hermes tools` UI.
 
 Leaving the list empty, or omitting the key, is a no-op.
 
+## Feishu Routing Controls
+
+Feishu can remain a thin cockpit while routing high-ROI work to background wrappers. These kill switches live under `routing:`:
+
+```yaml
+routing:
+  feishu_auto_dispatch_enabled: true        # Safe read-only/internal work may start /background automatically
+  feishu_route_shadow_hints_enabled: true   # Inject RouteDecision shadow hints into Feishu foreground turns
+```
+
+Telemetry is written best-effort to the route telemetry sidecar and is never allowed to break message handling. The event registry is:
+
+- `route_decision_resolved` — ROI decision computed for one prompt.
+- `route_selected_for_background` — a route was actually selected for background execution.
+- `route_worker_outcome` — worker result was scored against route contracts.
+- `worker_evaluation` — structured route-contract evidence embedded in `route_worker_outcome` details.
+
+Disable `feishu_auto_dispatch_enabled` when you want suggestions only; disable `feishu_route_shadow_hints_enabled` to suppress foreground system hints while leaving explicit wrappers available.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

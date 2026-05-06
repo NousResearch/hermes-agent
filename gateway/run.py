@@ -8950,12 +8950,31 @@ class GatewayRunner:
             platform="feishu",
             active_toolsets=tuple(active_toolsets or ()),
             feishu_auto_dispatch_enabled=auto_dispatch_enabled,
+            telemetry_source="feishu_auto_dispatch",
         )
         if not should_auto_dispatch_feishu(
             decision,
             feishu_auto_dispatch_enabled=auto_dispatch_enabled,
         ):
             return None
+
+        for route in decision.forced_routes:
+            try:
+                from tools.skill_usage import log_route_usage_event
+
+                log_route_usage_event(
+                    route_name=route,
+                    event="route_selected_for_background",
+                    details={
+                        "source": "feishu_auto_dispatch",
+                        "decision_type": decision.decision_type,
+                        "score": decision.score.total,
+                        "confidence": decision.confidence,
+                        "routes": list(decision.forced_routes),
+                    },
+                )
+            except Exception:
+                pass
 
         result = await self._handle_background_command(
             event,
@@ -9112,6 +9131,31 @@ class GatewayRunner:
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+
+            if forced_routes:
+                try:
+                    from gateway.worker_evaluator import evaluate_background_worker_outcome
+                    from tools.skill_usage import log_route_usage_event
+
+                    evaluation = evaluate_background_worker_outcome(
+                        prompt=prompt,
+                        route_names=tuple(forced_routes),
+                        response=response,
+                    )
+                    for route in tuple(forced_routes):
+                        log_route_usage_event(
+                            route_name=route,
+                            event="route_worker_outcome",
+                            details={
+                                "task_id": task_id,
+                                "passed": evaluation.passed,
+                                "score": evaluation.score,
+                                "issues": list(evaluation.issues),
+                                "worker_evaluation": evaluation.to_dict(),
+                            },
+                        )
+                except Exception:
+                    logger.debug("Background worker route evaluation skipped", exc_info=True)
 
             # Extract media files from the response
             if response:

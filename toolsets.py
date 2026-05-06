@@ -255,6 +255,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "napcat": {
+        "description": "NapCat / OneBot 11 generic action proxy for QQ operations",
+        "tools": ["napcat_call"],
+        "includes": [],
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],

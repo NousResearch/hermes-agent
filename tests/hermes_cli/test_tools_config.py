@@ -83,6 +83,29 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     assert "messaging" in enabled
 
 
+
+def test_get_platform_tools_napcat_includes_napcat_toolset():
+    """NapCat platform sessions must expose napcat_call.
+
+    Regression guard: hermes-napcat included napcat_call, but _get_platform_tools
+    returned only configurable/core leaf toolsets, so gateway-created NapCat
+    agents never got the NapCat leaf toolset and napcat_call was filtered out.
+    """
+    enabled = _get_platform_tools({}, "napcat")
+
+    assert "napcat" in enabled
+
+
+def test_get_platform_tools_napcat_keeps_napcat_toolset_after_explicit_save():
+    """Saving via `hermes tools` should not silently drop napcat_call."""
+    config = {"platform_toolsets": {"napcat": ["web", "terminal"]}}
+
+    enabled = _get_platform_tools(config, "napcat")
+
+    assert "napcat" in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
 def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
     enabled = _get_platform_tools({}, "homeassistant")
 

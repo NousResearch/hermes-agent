@@ -255,6 +255,10 @@ def get_nous_subscription_features(
     terminal_cfg = config.get("terminal") if isinstance(config.get("terminal"), dict) else {}
 
     web_backend = str(web_cfg.get("backend") or "").strip().lower()
+    # Per-capability overrides: if set, they determine which backend is active for
+    # search/extract independently of web.backend.
+    web_search_backend = str(web_cfg.get("search_backend") or "").strip().lower()
+    web_extract_backend = str(web_cfg.get("extract_backend") or "").strip().lower()
     tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
     browser_provider_explicit = "cloud_provider" in browser_cfg
     browser_provider = normalize_browser_cloud_provider(
@@ -280,6 +284,7 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
+    direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
@@ -323,10 +328,18 @@ def get_nous_subscription_features(
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
+            or (web_backend == "searxng" and direct_searxng)
+            # Per-capability overrides: search_backend or extract_backend may be set
+            # without web.backend (using the new split config from #20061)
+            or (web_search_backend == "searxng" and direct_searxng)
+            or (web_search_backend == "exa" and direct_exa)
+            or (web_search_backend == "firecrawl" and direct_firecrawl)
+            or (web_search_backend == "parallel" and direct_parallel)
+            or (web_search_backend == "tavily" and direct_tavily)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily
+        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
@@ -412,8 +425,8 @@ def get_nous_subscription_features(
             managed_by_nous=web_managed,
             direct_override=web_active and not web_managed,
             toolset_enabled=web_tool_enabled,
-            current_provider=web_backend or "",
-            explicit_configured=bool(web_backend),
+            current_provider=web_backend or web_search_backend or "",
+            explicit_configured=bool(web_backend or web_search_backend),
         ),
         "image_gen": NousFeatureState(
             key="image_gen",

@@ -824,6 +824,114 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     return str(filepath)
 
 
+# ---------------------------------------------------------------------------
+# Per-chat inbound attachment cache
+#
+# In addition to the type-specific caches above (images / documents / audio /
+# video), every inbound media file is also mirrored into a chat-scoped
+# attachment directory so:
+#
+#   * The agent receives a stable, tool-accessible local file path even when
+#     the native vision path swallows the URL into pixels (issue #20899).
+#   * Two users in different chats can never read each other's cached media
+#     via shared paths (cross-tenant safety): the path is keyed on
+#     ``platform / chat_id / message_id``.
+#
+# Layout (profile-aware via get_hermes_dir):
+#   <HERMES_HOME>/cache/attachments/<platform>/<chat_id>/<message_id>/<filename>
+#
+# Retention: files are left in place. A periodic GC hook can be added later
+# (mirroring ``cleanup_document_cache``); we deliberately do not silently
+# delete user-provided media here.
+# ---------------------------------------------------------------------------
+
+ATTACHMENT_CACHE_DIR = get_hermes_dir("cache/attachments", "attachment_cache")
+
+
+def get_attachment_cache_dir() -> Path:
+    """Return the inbound-attachment cache directory, creating it if needed."""
+    ATTACHMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return ATTACHMENT_CACHE_DIR
+
+
+_ATTACHMENT_PATH_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_attachment_segment(segment: Any, fallback: str = "unknown") -> str:
+    """Sanitize a path segment for use under the attachment cache.
+
+    Strips directory separators, control characters, and anything outside the
+    ``[A-Za-z0-9._-]`` charset. Empty / dot-only results fall back to *fallback*.
+    """
+    if segment is None:
+        return fallback
+    seg = str(segment).strip().replace("\x00", "")
+    seg = _ATTACHMENT_PATH_SAFE_RE.sub("_", seg)
+    seg = seg.strip("._-")
+    if not seg or seg in (".", ".."):
+        return fallback
+    # Cap length so deeply nested IDs don't blow past filesystem limits.
+    return seg[:128]
+
+
+def cache_inbound_attachment(
+    data: bytes,
+    *,
+    platform: str,
+    chat_id: Any,
+    message_id: Any,
+    filename: str,
+) -> str:
+    """Persist inbound media into a per-chat attachment directory.
+
+    Args:
+        data: Raw file bytes.
+        platform: Platform name (``"telegram"``, ``"discord"``, ...).
+        chat_id: Platform-specific chat / room / DM id.
+        message_id: Platform-specific message id (or update id) to scope the
+            attachment so multiple messages from the same chat can't collide.
+        filename: Original / human-readable filename. Sanitized; directory
+            components are stripped.
+
+    Returns:
+        Absolute path to the cached file.
+
+    Raises:
+        ValueError: If the resolved path would escape the attachment cache root.
+    """
+    base = get_attachment_cache_dir()
+    plat_seg = _sanitize_attachment_segment(platform, "unknown_platform")
+    chat_seg = _sanitize_attachment_segment(chat_id, "unknown_chat")
+    msg_seg = _sanitize_attachment_segment(message_id, "unknown_msg")
+
+    # Filename sanitation: keep only the basename, then make it filesystem-safe.
+    raw_name = Path(filename).name if filename else "attachment"
+    safe_name = _ATTACHMENT_PATH_SAFE_RE.sub("_", raw_name).strip("._-")
+    if not safe_name or safe_name in (".", ".."):
+        safe_name = "attachment"
+    safe_name = safe_name[:160]
+
+    target_dir = base / plat_seg / chat_seg / msg_seg
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    filepath = target_dir / safe_name
+    # If the same message id ships multiple files with identical names (rare,
+    # but possible for albums where the client supplies no filename),
+    # disambiguate with a short uuid suffix.
+    if filepath.exists():
+        stem, dot, ext = safe_name.partition(".")
+        suffix = uuid.uuid4().hex[:8]
+        disambig = f"{stem}_{suffix}{dot}{ext}" if dot else f"{safe_name}_{suffix}"
+        filepath = target_dir / disambig
+
+    # Final containment check (defence in depth against weird unicode etc.).
+    if not filepath.resolve().is_relative_to(base.resolve()):
+        raise ValueError(f"Path traversal rejected for attachment: {filename!r}")
+
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
 def cleanup_document_cache(max_age_hours: int = 24) -> int:
     """
     Delete cached documents older than *max_age_hours*.
@@ -897,6 +1005,17 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+
+    # Tool-accessible inbound attachments (issue #20899). One dict per inbound
+    # file. Each dict has at minimum:
+    #   {"path": str, "filename": str, "mime_type": str,
+    #    "size": int, "platform": str, "message_id": str | None,
+    #    "chat_id": str | None}
+    # These paths live under <HERMES_HOME>/cache/attachments/<platform>/<chat>/<msg>/
+    # and are safe to hand directly to file/terminal tools. Distinct from
+    # ``media_urls`` (which targets the vision pipeline and may collapse to a
+    # single shared image cache) so cross-chat isolation is preserved here.
+    attachments: List[Dict[str, Any]] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None

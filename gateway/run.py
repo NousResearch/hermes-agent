@@ -5755,6 +5755,42 @@ class GatewayRunner:
                         except Exception:
                             pass
 
+        # Surface tool-accessible attachment paths to the agent (issue #20899).
+        # Native vision routing hides image file paths inside multimodal pixel
+        # payloads, so file/terminal tools can't see them. Prepend a structured
+        # ATTACHMENT block listing local cached paths for every inbound file.
+        # The Telegram document branch below adds richer per-doc context for
+        # documents specifically; this block ensures *every* attachment
+        # (especially photos) is at least discoverable as a file path.
+        attachments_meta = list(getattr(event, "attachments", None) or [])
+        if attachments_meta:
+            lines = []
+            for att in attachments_meta:
+                path = att.get("path")
+                if not path:
+                    continue
+                fname = att.get("filename") or os.path.basename(path)
+                mime = att.get("mime_type") or ""
+                size = att.get("size")
+                size_str = ""
+                if isinstance(size, int) and size > 0:
+                    if size >= 1024 * 1024:
+                        size_str = f", {size / (1024 * 1024):.1f} MB"
+                    elif size >= 1024:
+                        size_str = f", {size / 1024:.1f} KB"
+                    else:
+                        size_str = f", {size} B"
+                meta = f" ({mime}{size_str})" if mime or size_str else ""
+                lines.append(f"- {fname}{meta}: {path}")
+            if lines:
+                header = (
+                    "[Inbound attachments cached locally — use file/terminal "
+                    "tools (read, copy, move) on these absolute paths if the "
+                    "user asks you to save, organize, or process them]:"
+                )
+                attachment_note = header + "\n" + "\n".join(lines)
+                message_text = f"{attachment_note}\n\n{message_text}" if message_text else attachment_note
+
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
 

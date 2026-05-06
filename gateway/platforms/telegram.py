@@ -73,6 +73,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    cache_inbound_attachment,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -3111,6 +3112,10 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            try:
+                existing.attachments.extend(event.attachments)
+            except AttributeError:
+                pass
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
@@ -3177,6 +3182,36 @@ class TelegramAdapter(BasePlatformAdapter):
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}" ]
+
+                # Also mirror into the per-chat attachment cache so the agent
+                # has a tool-accessible local path even when the model routes
+                # this image into native vision (which otherwise hides the
+                # path from file/terminal tools). See issue #20899.
+                try:
+                    raw_bytes = bytes(image_bytes)
+                    attach_filename = f"photo_{msg.message_id}{ext}"
+                    attach_path = cache_inbound_attachment(
+                        raw_bytes,
+                        platform="telegram",
+                        chat_id=msg.chat.id,
+                        message_id=msg.message_id,
+                        filename=attach_filename,
+                    )
+                    event.attachments.append({
+                        "path": attach_path,
+                        "filename": attach_filename,
+                        "mime_type": f"image/{ext.lstrip('.')}",
+                        "size": len(raw_bytes),
+                        "platform": "telegram",
+                        "message_id": str(msg.message_id) if msg.message_id is not None else None,
+                        "chat_id": str(msg.chat.id) if msg.chat and msg.chat.id is not None else None,
+                    })
+                except Exception:
+                    logger.warning(
+                        "[Telegram] Failed to mirror photo into attachment cache",
+                        exc_info=True,
+                    )
+
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
@@ -3289,6 +3324,36 @@ class TelegramAdapter(BasePlatformAdapter):
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
+
+                # Also mirror into the per-chat attachment cache (issue #20899).
+                # Documents already reach the agent via the message-text
+                # injection in gateway/run.py, but pinning a chat-scoped copy
+                # here keeps audit trails per-chat and makes cross-tenant
+                # leakage structurally impossible.
+                try:
+                    attach_filename = original_filename or f"document{ext}"
+                    attach_path = cache_inbound_attachment(
+                        raw_bytes,
+                        platform="telegram",
+                        chat_id=msg.chat.id,
+                        message_id=msg.message_id,
+                        filename=attach_filename,
+                    )
+                    event.attachments.append({
+                        "path": attach_path,
+                        "filename": attach_filename,
+                        "mime_type": mime_type,
+                        "size": len(raw_bytes),
+                        "platform": "telegram",
+                        "message_id": str(msg.message_id) if msg.message_id is not None else None,
+                        "chat_id": str(msg.chat.id) if msg.chat and msg.chat.id is not None else None,
+                    })
+                except Exception:
+                    logger.warning(
+                        "[Telegram] Failed to mirror document into attachment cache",
+                        exc_info=True,
+                    )
+
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
@@ -3333,6 +3398,12 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            # Merge tool-accessible attachment metadata too (issue #20899) so
+            # albums surface every file to the agent, not just the first.
+            try:
+                existing.attachments.extend(event.attachments)
+            except AttributeError:
+                pass
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 

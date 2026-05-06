@@ -967,6 +967,27 @@ class UserSystemdUnavailableError(RuntimeError):
     """
 
 
+class SystemScopeRequiresRootError(RuntimeError):
+    """Raised when a system-scope gateway operation is attempted as non-root.
+
+    System-scope units live in ``/etc/systemd/system/`` and require root for
+    install / uninstall / start / stop / restart via ``systemctl``. The
+    previous behavior was ``sys.exit(1)`` which blew past the wizard's
+    ``except Exception`` guards and dumped the user at a bare shell prompt
+    with no guidance. Raising a typed exception lets callers that can
+    recover (the setup wizard) print actionable remediation instead, while
+    ``gateway_command`` still exits 1 with the same message for the direct
+    CLI path.
+
+    ``args[0]`` carries the user-facing message, ``args[1]`` the action name.
+    ``str(e)`` returns only the message (not the tuple repr) so format
+    strings like ``f"Failed: {e}"`` render cleanly.
+    """
+
+    def __str__(self) -> str:
+        return self.args[0] if self.args else ""
+
+
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
     xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
@@ -1382,8 +1403,10 @@ def print_systemd_scope_conflict_warning() -> None:
 
 def _require_root_for_system_service(action: str) -> None:
     if os.geteuid() != 0:
-        print(f"System gateway {action} requires root. Re-run with sudo.")
-        sys.exit(1)
+        raise SystemScopeRequiresRootError(
+            f"System gateway {action} requires root. Re-run with sudo.",
+            action,
+        )
 
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str]:
@@ -1928,6 +1951,47 @@ def _select_systemd_scope(system: bool = False) -> bool:
     if system:
         return True
     return get_systemd_unit_path(system=True).exists() and not get_systemd_unit_path(system=False).exists()
+
+
+def _system_scope_wizard_would_need_root(system: bool = False) -> bool:
+    """True when the setup wizard is about to trigger a system-scope operation
+    as a non-root user.
+
+    Replicates the decision ``_select_systemd_scope`` makes inside
+    ``systemd_start`` / ``systemd_restart`` / ``systemd_stop`` so the wizard
+    can detect the dead-end BEFORE prompting, rather than letting
+    ``SystemScopeRequiresRootError`` propagate out and leave the user
+    staring at a bare shell.
+    """
+    if os.geteuid() == 0:
+        return False
+    return _select_systemd_scope(system=system)
+
+
+def _print_system_scope_remediation(action: str) -> None:
+    """Print actionable remediation when the wizard skips a system-scope
+    prompt because the user isn't root. Keeps the wizard flowing instead of
+    aborting.
+    """
+    svc = get_service_name()
+    print_warning(
+        f"Gateway is installed as a system-wide service — "
+        f"{action} requires root."
+    )
+    print_info("  Options:")
+    print_info(f"    1. {action.capitalize()} it this time:")
+    if action == "start":
+        print_info(f"         sudo systemctl start {svc}")
+    elif action == "stop":
+        print_info(f"         sudo systemctl stop {svc}")
+    elif action == "restart":
+        print_info(f"         sudo systemctl restart {svc}")
+    else:
+        print_info(f"         sudo systemctl {action} {svc}")
+    print_info("    2. Switch to a per-user service (recommended for personal use):")
+    print_info("         sudo hermes gateway uninstall --system")
+    print_info("         hermes gateway install")
+    print_info("         hermes gateway start")
 
 
 def _get_restart_drain_timeout() -> float:
@@ -4115,7 +4179,9 @@ def gateway_setup():
         print_success("Gateway service is installed and running.")
     elif service_installed:
         print_warning("Gateway service is installed but not running.")
-        if prompt_yes_no("  Start it now?", True):
+        if supports_systemd_services() and _system_scope_wizard_would_need_root():
+            _print_system_scope_remediation("start")
+        elif prompt_yes_no("  Start it now?", True):
             try:
                 if supports_systemd_services():
                     systemd_start()
@@ -4125,6 +4191,12 @@ def gateway_setup():
                 print_error("  Failed to start — user systemd not reachable:")
                 for line in str(e).splitlines():
                     print(f"  {line}")
+            except SystemScopeRequiresRootError as e:
+                # Defense in depth: the pre-check above should have caught
+                # this, but handle the race/edge case gracefully instead of
+                # letting the exception escape the wizard.
+                print_error(f"  Failed to start: {e}")
+                _print_system_scope_remediation("start")
             except subprocess.CalledProcessError as e:
                 print_error(f"  Failed to start: {e}")
     else:
@@ -4174,7 +4246,9 @@ def gateway_setup():
         service_running = _is_service_running()
 
         if service_running:
-            if prompt_yes_no("  Restart the gateway to pick up changes?", True):
+            if supports_systemd_services() and _system_scope_wizard_would_need_root():
+                _print_system_scope_remediation("restart")
+            elif prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
                     if supports_systemd_services():
                         systemd_restart()
@@ -4187,10 +4261,15 @@ def gateway_setup():
                     print_error("  Restart failed — user systemd not reachable:")
                     for line in str(e).splitlines():
                         print(f"  {line}")
+                except SystemScopeRequiresRootError as e:
+                    print_error(f"  Restart failed: {e}")
+                    _print_system_scope_remediation("restart")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
-            if prompt_yes_no("  Start the gateway service?", True):
+            if supports_systemd_services() and _system_scope_wizard_would_need_root():
+                _print_system_scope_remediation("start")
+            elif prompt_yes_no("  Start the gateway service?", True):
                 try:
                     if supports_systemd_services():
                         systemd_start()
@@ -4200,6 +4279,9 @@ def gateway_setup():
                     print_error("  Start failed — user systemd not reachable:")
                     for line in str(e).splitlines():
                         print(f"  {line}")
+                except SystemScopeRequiresRootError as e:
+                    print_error(f"  Start failed: {e}")
+                    _print_system_scope_remediation("start")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Start failed: {e}")
         else:
@@ -4272,6 +4354,14 @@ def gateway_command(args):
         print_error("User systemd not reachable:")
         for line in str(e).splitlines():
             print(f"  {line}")
+        sys.exit(1)
+    except SystemScopeRequiresRootError as e:
+        # The direct ``hermes gateway install|uninstall|start|stop|restart``
+        # path lands here when the user typed a system-scope action without
+        # sudo. Same exit code as before — just gives the wizard a way to
+        # intercept the same condition with friendlier guidance before the
+        # error is raised.
+        print(str(e))
         sys.exit(1)
 
 

@@ -1063,13 +1063,19 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
-    cat > "$command_link_dir/hermes" <<EOF
+    # Write via a temp file first: some installs symlink ~/.local/bin/hermes
+    # back into the venv, and redirecting straight to the link would clobber
+    # the real console entry point.
+    local launcher_tmp
+    launcher_tmp="$(mktemp "$command_link_dir/.hermes-launcher.XXXXXX")"
+    cat > "$launcher_tmp" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
-    chmod +x "$command_link_dir/hermes"
+    chmod +x "$launcher_tmp"
+    mv -f "$launcher_tmp" "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then

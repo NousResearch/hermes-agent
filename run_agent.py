@@ -1215,6 +1215,37 @@ class AIAgent(
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")
     _build_api_kwargs = _forward("agent.chat_completion_helpers", "build_api_kwargs")
 
+    @staticmethod
+    def _build_empty_assistant_placeholder() -> dict:
+        """Return a persistable assistant closer for an end_turn tool batch.
+
+        After tool results the next user turn must not land as ``tool → user``.
+        This closer keeps that sequence valid. It is not the empty-response
+        failure sentinel: do not set ``_empty_terminal_sentinel``, which
+        ``_drop_trailing_empty_response_scaffolding`` strips and then rewinds
+        the tool batch. Visible handoff text overwrites ``content`` before
+        append; silent batches keep the provider-safe ``(empty)`` body.
+        """
+        return {
+            "role": "assistant",
+            "content": "(empty)",
+            "finish_reason": "stop",
+        }
+
+    @staticmethod
+    def _tool_batch_has_end_turn(tool_calls) -> bool:
+        """Return True when any tool in the batch can legally end the turn."""
+        if not tool_calls:
+            return False
+        from tools.registry import registry
+
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", None)
+            if name and registry.is_end_turn(name):
+                return True
+        return False
+
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:

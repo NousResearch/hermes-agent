@@ -162,6 +162,17 @@ def _import_piper():
     return PiperVoice
 
 
+def _import_pocket_tts():
+    """Lazy import pocket-tts (Kyutai Labs).
+
+    Compact 100M-parameter multilingual TTS that runs real-time on CPU.
+    Six languages: English, French, German, Spanish, Portuguese, Italian.
+    ``pip install pocket-tts`` plus scipy for WAV output.
+    """
+    from pocket_tts import TTSModel
+    return TTSModel
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -221,6 +232,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "pocket_tts": 5000,
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -384,6 +396,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "pocket_tts",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -2012,6 +2025,80 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     return output_path
 
 
+# --- Pocket TTS (Kyutai Labs, multilingual) ---
+
+_pocket_tts_model_cache: Dict[str, Any] = {}
+
+
+def _check_pocket_tts_available() -> bool:
+    """Check whether the pocket-tts package is importable."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("pocket_tts") is not None
+    except Exception:
+        return False
+
+
+def _generate_pocket_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using local Pocket TTS (Kyutai Labs).
+
+    Supports 6 languages with optional 24-layer high-quality variants for
+    non-English.  Voice cloning from a WAV file is supported via the
+    ``voice_file`` config key.
+    """
+    import scipy.io.wavfile
+
+    TTSModel = _import_pocket_tts()
+    pt_config = tts_config.get("pocket_tts", {}) if isinstance(tts_config, dict) else {}
+
+    language = (pt_config.get("language") or "english").lower().strip()
+    voice = pt_config.get("voice") or "alba"
+    use_24l = bool(pt_config.get("use_24l", False))
+    temp = float(pt_config.get("temp", 0.7))
+    voice_file = pt_config.get("voice_file")
+
+    if use_24l and language != "english" and not language.endswith("_24l"):
+        language = f"{language}_24l"
+
+    cache_key = language
+    if cache_key not in _pocket_tts_model_cache:
+        logger.info("Loading Pocket TTS model for language=%s ...", language)
+        _pocket_tts_model_cache[cache_key] = TTSModel.load_model(language=language, temp=temp)
+    model = _pocket_tts_model_cache[cache_key]
+
+    if voice_file:
+        voice_state = model.get_state_for_audio_prompt(voice_file)
+    else:
+        voice_state = model.get_state_for_audio_prompt(voice)
+
+    audio = model.generate_audio(voice_state, text)
+
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    scipy.io.wavfile.write(wav_path, model.sample_rate, audio.numpy())
+
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            try:
+                subprocess.run(
+                    [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path],
+                    check=True,
+                    timeout=30,
+                )
+                os.remove(wav_path)
+            except Exception as exc:
+                logger.warning("ffmpeg conversion failed (%s), keeping WAV", exc)
+                if os.path.exists(wav_path) and wav_path != output_path:
+                    os.rename(wav_path, output_path)
+        else:
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
 # ===========================================================================
 # Main tool function
 # ===========================================================================
@@ -2219,6 +2306,18 @@ def text_to_speech_tool(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
+        elif provider == "pocket_tts":
+            try:
+                _import_pocket_tts()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Pocket TTS provider selected but 'pocket-tts' package not installed. "
+                             "Run: pip install pocket-tts scipy"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Pocket TTS (local, multilingual)...")
+            _generate_pocket_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -2284,13 +2383,13 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "pocket_tts"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
-                voice_compatible = True
+            voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
@@ -2383,6 +2482,8 @@ def check_tts_requirements() -> bool:
     if _check_kittentts_available():
         return True
     if _check_piper_available():
+        return True
+    if _check_pocket_tts_available():
         return True
     return False
 

@@ -510,6 +510,15 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "pocket_tts":
+        try:
+            pt_ok = importlib.util.find_spec("pocket_tts") is not None
+        except Exception:
+            pt_ok = False
+        if pt_ok:
+            tool_status.append(("Text-to-Speech (Pocket TTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (Pocket TTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -901,6 +910,7 @@ def _setup_tts_provider(config: dict):
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
+        "pocket_tts": "Pocket TTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -925,9 +935,10 @@ def _setup_tts_provider(config: dict):
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "Pocket TTS (local multilingual, free, 6 languages, voice cloning, ~500MB)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "pocket_tts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1112,6 +1123,25 @@ def _setup_tts_provider(config: dict):
             else:
                 print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
                 selected = "edge"
+
+    elif selected == "pocket_tts":
+        try:
+            already_installed = importlib.util.find_spec("pocket_tts") is not None
+        except Exception:
+            already_installed = False
+        if already_installed:
+            print_success("Pocket TTS is already installed")
+        else:
+            if prompt_yes_no("Install Pocket TTS dependencies now? (requires ~500MB for model on first use)", True):
+                try:
+                    subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "pocket-tts", "scipy"],
+                        check=True,
+                    )
+                    print_success("Pocket TTS installed successfully")
+                except Exception as e:
+                    print_error(f"Failed to install Pocket TTS: {e}")
+                    selected = "edge"
 
     # Save the selection
     if "tts" not in config:

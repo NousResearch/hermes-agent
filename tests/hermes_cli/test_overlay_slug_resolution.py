@@ -85,18 +85,26 @@ def test_kilo_overlay_uses_hermes_slug():
 
 
 def test_mapped_provider_credential_pool_visibility(monkeypatch):
-    """Mapped providers should appear when credentials live only in auth-store credential_pool."""
+    """Mapped providers should appear when the credential pool reports real creds.
+
+    Updated for the section-1 fix that requires real credentials (via
+    ``load_pool(...).has_credentials()``) rather than bare key-presence in
+    the auth store's ``credential_pool`` dict.  Empty values used to leak
+    through; they no longer do.
+    """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {"google-ai-studio": {"env": ["GEMINI_API_KEY"]}})
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {"gemini": "google-ai-studio"})
-    monkeypatch.setattr(
-        "hermes_cli.auth._load_auth_store",
-        lambda: {"providers": {}, "credential_pool": {"gemini": {"token": "fake"}}},
-    )
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    class _StubPool:
+        def has_credentials(self):
+            return True
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda slug, *a, **kw: _StubPool())
 
     providers = list_authenticated_providers(current_provider="gemini")
 
     gemini = next((p for p in providers if p["slug"] == "gemini"), None)
-    assert gemini is not None, "gemini should appear when auth-store credential_pool has creds"
+    assert gemini is not None, "gemini should appear when credential pool has real creds"
     assert gemini["is_current"] is True
     assert gemini["total_models"] > 0

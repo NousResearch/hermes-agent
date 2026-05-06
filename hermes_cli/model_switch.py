@@ -1217,13 +1217,19 @@ def list_authenticated_providers(
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
+            # Check the credential pool for real credentials. Mirrors the
+            # pattern used in section 2 (overlays). The previous test —
+            # ``hermes_id in store.get("credential_pool", {})`` — gave false
+            # positives for entries with empty list values, surfacing
+            # providers (e.g. huggingface, opencode-go, minimax(-cn), zai)
+            # in the /model picker that the user never authenticated to.
             try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                if store and hermes_id in store.get("credential_pool", {}):
+                from agent.credential_pool import load_pool
+                pool = load_pool(hermes_id)
+                if pool.has_credentials():
                     has_creds = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Credential pool check failed for %s: %s", hermes_id, exc)
         if not has_creds:
             continue
 

@@ -19,6 +19,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
+from agent.context_includes import expand_includes
 from agent.prompt_builder import _scan_context_content
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,14 @@ class SubdirectoryHintTracker:
                 content = hint_path.read_text(encoding="utf-8").strip()
                 if not content:
                     continue
+                # Expand @<path> includes so subdirectory hints honor the
+                # same single-source-of-truth pattern as startup context
+                # files.  See agent.context_includes for semantics.
+                content = expand_includes(
+                    content,
+                    hint_path.parent,
+                    scanner=_scan_context_content,
+                )
                 # Same security scan as startup context loading
                 content = _scan_context_content(content, filename)
                 if len(content) > _MAX_HINT_CHARS:

@@ -1341,7 +1341,10 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
+        # Count disabled tools with API key requirements.
+        # NOTE: `unavailable` has already been filtered by
+        # `_apply_doctor_tool_availability_overrides`, which drops toolsets the
+        # user disabled on every platform. No second filter is needed here.
         api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")

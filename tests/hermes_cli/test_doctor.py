@@ -168,6 +168,140 @@ class TestDoctorToolAvailabilityOverrides:
         assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
 
 
+class TestToolsetsDisabledOnEveryPlatform:
+    """Tests for the helper that identifies user-disabled toolsets so
+    doctor doesn't nag about their missing API keys."""
+
+    def _patch_config_and_registry(
+        self,
+        monkeypatch,
+        *,
+        config: dict | None,
+        registered: list[str] | None,
+        config_raises: bool = False,
+        registry_raises: bool = False,
+    ) -> None:
+        import hermes_cli.config as cli_config
+        import tools.registry as registry_mod
+
+        if config_raises:
+            def _boom(*_a, **_kw):
+                raise RuntimeError("config blew up")
+            monkeypatch.setattr(cli_config, "load_config", _boom)
+        else:
+            monkeypatch.setattr(cli_config, "load_config", lambda: config)
+
+        class _FakeRegistry:
+            def get_registered_toolset_names(self):
+                if registry_raises:
+                    raise RuntimeError("registry blew up")
+                return list(registered or [])
+
+        monkeypatch.setattr(registry_mod, "registry", _FakeRegistry())
+
+    def test_returns_toolsets_absent_from_every_platform(self, monkeypatch):
+        self._patch_config_and_registry(
+            monkeypatch,
+            config={"platform_toolsets": {"cli": ["terminal"], "tui": ["terminal"]}},
+            registered=["terminal", "web", "honcho"],
+        )
+
+        disabled = doctor._toolsets_disabled_on_every_platform()
+
+        assert disabled == {"web", "honcho"}
+
+    def test_keeps_toolset_enabled_on_at_least_one_platform(self, monkeypatch):
+        # `web` is on tui but not cli — still considered enabled.
+        self._patch_config_and_registry(
+            monkeypatch,
+            config={"platform_toolsets": {"cli": ["terminal"], "tui": ["terminal", "web"]}},
+            registered=["terminal", "web"],
+        )
+
+        assert doctor._toolsets_disabled_on_every_platform() == set()
+
+    def test_fails_open_when_load_config_raises(self, monkeypatch):
+        self._patch_config_and_registry(
+            monkeypatch,
+            config=None,
+            registered=["terminal", "web"],
+            config_raises=True,
+        )
+
+        assert doctor._toolsets_disabled_on_every_platform() == set()
+
+    def test_fails_open_when_registry_raises(self, monkeypatch):
+        self._patch_config_and_registry(
+            monkeypatch,
+            config={"platform_toolsets": {"cli": ["terminal"]}},
+            registered=None,
+            registry_raises=True,
+        )
+
+        assert doctor._toolsets_disabled_on_every_platform() == set()
+
+    def test_returns_empty_when_platform_toolsets_missing(self, monkeypatch):
+        self._patch_config_and_registry(
+            monkeypatch,
+            config={},
+            registered=["terminal", "web"],
+        )
+
+        assert doctor._toolsets_disabled_on_every_platform() == set()
+
+
+class TestDoctorOverridesRespectDisabledToolsets:
+    """Integration-style tests proving _apply_doctor_tool_availability_overrides
+    drops user-disabled toolsets from the unavailable list."""
+
+    def test_drops_user_disabled_toolset_from_unavailable(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor, "_toolsets_disabled_on_every_platform", lambda: {"web"}
+        )
+
+        web_entry = {"name": "web", "env_vars": ["EXA_API_KEY"], "tools": ["web_search"]}
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [], [web_entry]
+        )
+
+        assert available == []
+        assert unavailable == []
+
+    def test_keeps_warning_for_enabled_toolset(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor, "_toolsets_disabled_on_every_platform", lambda: set()
+        )
+
+        web_entry = {"name": "web", "env_vars": ["EXA_API_KEY"], "tools": ["web_search"]}
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [], [web_entry]
+        )
+
+        assert available == []
+        assert unavailable == [web_entry]
+
+    def test_honcho_and_kanban_overrides_run_before_disabled_check(self, monkeypatch):
+        # honcho is "user_disabled" in this fake set, but the honcho-configured
+        # branch should fire first and mark it available.
+        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)
+        monkeypatch.setattr(
+            doctor, "_toolsets_disabled_on_every_platform", lambda: {"honcho", "kanban"}
+        )
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [
+                {"name": "honcho", "env_vars": [], "tools": ["query_user_context"]},
+                {"name": "kanban", "env_vars": [], "tools": ["kanban_show"]},
+            ],
+        )
+
+        assert "honcho" in available
+        assert "kanban" in available
+        assert unavailable == []
+
+
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")

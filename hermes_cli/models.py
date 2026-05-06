@@ -69,6 +69,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-nano",             ""),
 ]
 
+# OpenRouter transcription models (audio-to-text). These are NOT chat/completion
+# models — they are passed to the audio transcription endpoint, not /chat/completions.
+OPENROUTER_TRANSCRIPTION_MODELS: list[tuple[str, str]] = [
+    ("openai/whisper-1", "transcription"),
+]
+
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 

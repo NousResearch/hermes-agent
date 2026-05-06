@@ -50,6 +50,8 @@ const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'docume
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
+const PAIR_PHONE = String(getArg('pair-phone', process.env.WHATSAPP_PAIR_PHONE || '') || '').replace(/\D/g, '');
+const CUSTOM_PAIRING_CODE = String(getArg('pair-code', process.env.WHATSAPP_PAIR_CODE || process.env.WHATSAPP_CUSTOM_PAIRING_CODE || '') || '').trim().toUpperCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
@@ -67,6 +69,18 @@ function formatOutgoingMessage(message) {
 function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');
+}
+
+// Convert a phone number (optionally with leading +) to a full WhatsApp JID.
+// Handles: +351932234809 → 351932234809@s.whatsapp.net
+//          351932234809@s.whatsapp.net → 351932234809@s.whatsapp.net (no-op)
+function phoneToJid(value) {
+  if (!value) return '';
+  const str = String(value).trim();
+  // Already a JID — return as-is
+  if (str.includes('@')) return str;
+  // Strip leading + and append @s.whatsapp.net
+  return str.replace(/^\+/, '') + '@s.whatsapp.net';
 }
 
 function getMessageContent(msg) {
@@ -121,6 +135,8 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let pendingPairingCode = '';
+let pairingCodeRequested = false;
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -131,7 +147,7 @@ async function startSocket() {
     auth: state,
     logger,
     printQRInTerminal: false,
-    browser: ['Hermes Agent', 'Chrome', '120.0'],
+    browser: PAIR_PHONE ? ['Ubuntu', 'Chrome', '20.0.04'] : ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
@@ -145,13 +161,40 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
-  sock.ev.on('connection.update', (update) => {
+  let pairingCodeRequestInFlight = false;
+
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
+    if (PAIR_PHONE && !state.creds.registered && !pairingCodeRequested && !pairingCodeRequestInFlight && !!qr) {
+      pairingCodeRequestInFlight = true;
+      try {
+        const rawCode = await sock.requestPairingCode(PAIR_PHONE, CUSTOM_PAIRING_CODE || undefined);
+        pendingPairingCode = String(rawCode || '').trim().toUpperCase();
+        pairingCodeRequested = true;
+        connectionState = 'pairing_code';
+        const groupedCode = pendingPairingCode.match(/.{1,4}/g)?.join('-') || pendingPairingCode;
+        console.log(`\n🔑 Pairing code for +${PAIR_PHONE}: ${pendingPairingCode}`);
+        if (groupedCode !== pendingPairingCode) {
+          console.log(`   Readable format: ${groupedCode}`);
+        }
+        console.log('📲 In WhatsApp: Linked Devices → Link with phone number instead');
+        console.log('⌨️  Enter the 8 characters only — no hyphen, no spaces.');
+        console.log('⏳ Waiting for phone confirmation...\n');
+      } catch (err) {
+        pairingCodeRequestInFlight = false;
+        console.error(`❌ Failed to request pairing code: ${err.message}`);
+      }
+    }
+
     if (qr) {
-      console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
-      qrcode.generate(qr, { small: true });
-      console.log('\nWaiting for scan...\n');
+      if (PAIR_PHONE) {
+        console.log('\n🔑 Pairing-code mode enabled — waiting to issue code...\n');
+      } else {
+        console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
+        qrcode.generate(qr, { small: true });
+        console.log('\nWaiting for scan...\n');
+      }
     }
 
     if (connection === 'close') {
@@ -172,6 +215,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      pendingPairingCode = '';
       console.log('✅ WhatsApp connected!');
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
@@ -422,8 +466,11 @@ app.post('/send', async (req, res) => {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
 
+  // Normalize phone-number chatIds to full JIDs before sending
+  const resolvedChatId = phoneToJid(chatId);
+
   try {
-    const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
+    const sent = await sock.sendMessage(resolvedChatId, { text: formatOutgoingMessage(message) });
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -450,9 +497,10 @@ app.post('/edit', async (req, res) => {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
 
+  const resolvedChatId = phoneToJid(chatId);
   try {
-    const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    await sock.sendMessage(chatId, { text: formatOutgoingMessage(message), edit: key });
+    const key = { id: messageId, fromMe: true, remoteJid: resolvedChatId };
+    await sock.sendMessage(resolvedChatId, { text: formatOutgoingMessage(message), edit: key });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -545,7 +593,7 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sock.sendMessage(chatId, msgPayload);
+    const sent = await sock.sendMessage(phoneToJid(chatId), msgPayload);
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -571,7 +619,7 @@ app.post('/typing', async (req, res) => {
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
+    await sock.sendPresenceUpdate('composing', phoneToJid(chatId));
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
@@ -609,14 +657,22 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+    pairingPhone: PAIR_PHONE || null,
+    pairingCode: pendingPairingCode || null,
   });
 });
 
 // Start
 if (PAIR_ONLY) {
-  // Pair-only mode: just connect, show QR, save creds, exit. No HTTP server.
+  // Pair-only mode: just connect, show QR or pairing code, save creds, exit. No HTTP server.
   console.log('📱 WhatsApp pairing mode');
   console.log(`📁 Session: ${SESSION_DIR}`);
+  if (PAIR_PHONE) {
+    console.log(`📞 Pairing phone: +${PAIR_PHONE}`);
+    if (CUSTOM_PAIRING_CODE) {
+      console.log(`🔢 Custom pairing code requested: ${CUSTOM_PAIRING_CODE}`);
+    }
+  }
   console.log();
   startSocket();
 } else {

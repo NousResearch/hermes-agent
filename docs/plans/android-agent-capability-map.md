@@ -1,6 +1,6 @@
 # Android Agent Capability Map
 
-This note maps Shizuku and Tinker-style mobile automation features to Hermes
+This note maps Shizuku and Tasker-style Android automation features to Hermes
 Agent Android implementation work.
 
 ## Source Findings
@@ -18,14 +18,25 @@ Agent Android implementation work.
 - ADB shell can start activities, run package-manager commands, issue input
   commands, take screenshots with `screencap`, and record video with
   `screenrecord`.
-- Tinker by Shopify is a closed-source mobile AI creative-workflow app. Public
-  product pages and Shopify Help describe mobile-first access to 100+ AI tools,
-  including image, text, video, logo, product-photo, marketing-video, 3D model,
-  website, virtual try-on, social ad, artifact versioning, projects, sharing,
-  remixing, and tool-chaining workflows. Sources:
-  https://www.shopify.com/news/introducing-tinker,
-  https://www.tinker.com/, and
-  https://help.shopify.com/en/manual/promoting-marketing/tinker
+- Tasker is a closed-source Android automation app. Its official user guide
+  centers the app around four building blocks: Profiles, Tasks, Scenes, and
+  Variables. Sources: https://tasker.joaoapps.com/userguide_summary.html and
+  https://tasker.joaoapps.com/userguide/en/
+- Tasker actions cover app launch/listing, file listing/image loading, variable
+  manipulation, plugins, Java/JavaScript execution, UI scenes, system tests, and
+  many Android setting/device actions, with permissions or root/Shizuku required
+  for restricted operations. Source:
+  https://tasker.joaoapps.com/userguide/en/help/ah_index.html
+- Tasker v6.6.18 added Shizuku integration, Shizuku-backed shell execution,
+  permission management, a Shizuku state, a Check Shizuku function, arbitrary
+  Java Code action support, import-from-clipboard support, extra trigger apps,
+  and Shizuku adoption for actions such as Airplane Mode, Wi-Fi, Bluetooth,
+  Kill App, Mobile Data, End Call, Custom Setting, global accessibility actions,
+  Wi-Fi tethering, and Logcat Entry. Source:
+  https://tasker.joaoapps.com/changes/changes6.6.html
+- Tasker App Factory can export Tasker tasks or projects as Android apps, with
+  linked resources included. Source:
+  https://tasker.joaoapps.com/userguide/en/appcreation.html
 
 ## Hermes Support Map
 
@@ -39,8 +50,14 @@ Agent Android implementation work.
 | Shizuku/Sui privileged shell execution | Present through `android_system_tool` action `run_privileged_shell` after the user starts Shizuku/Sui and grants Hermes permission. |
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
-| Tinker-style creative workflows | Partially present as tool-call architecture. Image/video/3D generation remains deferred in the Android build unless a local or user-configured remote provider is added. |
-| Project/share/remix workflow | Conversations and files exist; dedicated creative project UX remains future work. |
+| Tasker-style manual tasks/actions | Partially present through chat-triggered terminal, file, UI, and Android system tool calls. |
+| Tasker-style profiles/triggers | Not yet present as a durable native profile engine. Hermes has background runtime persistence, but not user-defined event/time/location/app-state triggers. |
+| Tasker-style variables | Partially present through conversation state and files; there is no dedicated variable table exposed as an Android automation primitive yet. |
+| Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
+| Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
+| Tasker Java/JavaScript code action | Partially present through app-workspace shell/Python and Shizuku shell. Arbitrary in-app Java execution is not exposed and should stay permission-gated. |
+| Tasker XML/Data URI import | Not yet present. |
+| Tasker App Factory app export | Not present and out of scope for F-Droid Hermes APK review unless explicitly designed as a separate export feature. |
 
 ## Implementation Boundary
 
@@ -54,3 +71,16 @@ device actions must either:
 
 This keeps the app reviewable for F-Droid while still making advanced phone
 control available to consenting users.
+
+## Next Tasker-Parity Work
+
+The next credible Tasker-parity feature should be a small native automation
+engine with explicit user-visible records:
+
+- saved task/action definitions for shell, file, UI, and system actions,
+- a durable variable store,
+- time-based triggers using Android-supported scheduling,
+- manual run and delete controls,
+- Shizuku-only actions clearly marked as requiring user-granted Shizuku/Sui, and
+- tests proving scheduled/manual actions cannot write outside the Hermes app
+  workspace unless Shizuku is explicitly selected and available.

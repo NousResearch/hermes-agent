@@ -250,6 +250,36 @@ class TestConfigIntegration:
         assert entry["advanced"] is True
 
 
+
+
+class TestLightpandaRequirements:
+    """Lightpanda should expose browser tools without local Chromium."""
+
+    def test_lightpanda_local_mode_does_not_require_chromium(self):
+        import tools.browser_tool as bt
+
+        with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch("tools.browser_tool._get_cdp_override", return_value=""), \
+             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool._requires_real_termux_browser_install", return_value=False), \
+             patch("tools.browser_tool._get_cloud_provider", return_value=None), \
+             patch("tools.browser_tool._get_browser_engine", return_value="lightpanda"), \
+             patch("tools.browser_tool._chromium_installed", return_value=False):
+            assert bt.check_browser_requirements() is True
+
+    def test_chrome_local_mode_still_requires_chromium(self):
+        import tools.browser_tool as bt
+
+        with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch("tools.browser_tool._get_cdp_override", return_value=""), \
+             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool._requires_real_termux_browser_install", return_value=False), \
+             patch("tools.browser_tool._get_cloud_provider", return_value=None), \
+             patch("tools.browser_tool._get_browser_engine", return_value="auto"), \
+             patch("tools.browser_tool._chromium_installed", return_value=False):
+            assert bt.check_browser_requirements() is False
+
+
 # ---------------------------------------------------------------------------
 # cleanup_all_browsers resets engine cache
 # ---------------------------------------------------------------------------
@@ -406,6 +436,57 @@ class TestLightpandaFallbackWarning:
         assert "messages" in captured_kwargs
         assert "images" not in captured_kwargs
         assert captured_kwargs["task"] == "vision"
+
+
+    def test_browser_get_images_preserves_fallback_warning(self):
+        import json
+        import tools.browser_tool as bt
+
+        result = bt._annotate_lightpanda_fallback(
+            {"success": True, "data": {"result": "[]"}},
+            "Lightpanda 'eval' failed (timeout); retried with Chrome.",
+        )
+        bt._last_active_session_key["warn-images"] = "warn-images"
+        with patch("tools.browser_tool._run_browser_command", return_value=result):
+            response = json.loads(bt.browser_get_images(task_id="warn-images"))
+
+        assert response["success"] is True
+        assert response["browser_engine"] == "chrome"
+        assert "Lightpanda fallback" in response["fallback_warning"]
+        bt._last_active_session_key.pop("warn-images", None)
+
+    def test_browser_vision_lightpanda_response_has_structured_fallback(self, tmp_path):
+        import json
+        import tools.browser_tool as bt
+
+        chrome_shot = tmp_path / "chrome-structured.png"
+        chrome_shot.write_bytes(b"\x89PNG" + b"0" * 128)
+
+        class _Msg:
+            content = "Example Domain screenshot"
+
+        class _Choice:
+            message = _Msg()
+
+        class _Response:
+            choices = [_Choice()]
+
+        with patch("tools.browser_tool._get_browser_engine", return_value="lightpanda"), \
+             patch("tools.browser_tool._should_inject_engine", return_value=True), \
+             patch("tools.browser_tool._chrome_fallback_screenshot", return_value={
+                 "success": True, "data": {"path": str(chrome_shot)}
+             }), \
+             patch("hermes_constants.get_hermes_dir", return_value=tmp_path), \
+             patch("tools.browser_tool.call_llm", return_value=_Response()):
+            response = json.loads(bt.browser_vision("what is this?", task_id="vision-structured"))
+
+        assert response["success"] is True
+        assert response["browser_engine"] == "chrome"
+        assert response["browser_engine_fallback"] == {
+            "from": "lightpanda",
+            "to": "chrome",
+            "reason": "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture.",
+        }
 
 # ---------------------------------------------------------------------------
 # _engine_override parameter

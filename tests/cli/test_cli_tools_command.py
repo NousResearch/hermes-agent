@@ -98,11 +98,12 @@ class TestToolsSlashDisableWithReset:
             cli_obj._handle_tools_command("/tools disable web")
         mock_reset.assert_called_once()
 
-    def test_disable_missing_name_prints_usage(self, capsys):
+    def test_disable_missing_name_prints_usage(self):
         cli_obj = _make_cli()
-        cli_obj._handle_tools_command("/tools disable")
-        out = capsys.readouterr().out
-        assert "Usage" in out
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj._handle_tools_command("/tools disable")
+        output = " ".join(str(args) for args, _ in mock_cprint.call_args_list)
+        assert "Usage" in output
 
 
 # ── /tools enable (session reset) ───────────────────────────────────────────
@@ -123,8 +124,9 @@ class TestToolsSlashEnableWithReset:
         mock_reset.assert_called_once()
         assert "web" in cli_obj.enabled_toolsets
 
-    def test_enable_missing_name_prints_usage(self, capsys):
+    def test_enable_missing_name_prints_usage(self):
         cli_obj = _make_cli()
-        cli_obj._handle_tools_command("/tools enable")
-        out = capsys.readouterr().out
-        assert "Usage" in out
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj._handle_tools_command("/tools enable")
+        output = " ".join(str(args) for args, _ in mock_cprint.call_args_list)
+        assert "Usage" in output

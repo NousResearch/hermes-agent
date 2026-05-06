@@ -197,7 +197,7 @@ def _build_apikey_providers_list() -> list:
 
     Tuple format: (name, env_vars, default_url, base_env, supports_models_endpoint)
     Base list augmented with any ProviderProfile with auth_type="api_key" not
-    already present — adding providers/*.py is sufficient to get into doctor.
+    already present — adding plugins/model-providers/<name>/ is sufficient to get into doctor.
     """
     _static = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),

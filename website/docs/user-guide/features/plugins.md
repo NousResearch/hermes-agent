@@ -164,15 +164,16 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 
 ## Plugin types
 
-Hermes has three kinds of plugins:
+Hermes has four kinds of plugins:
 
 | Type | What it does | Selection | Location |
 |------|-------------|-----------|----------|
 | **General plugins** | Add tools, hooks, slash commands, CLI commands | Multi-select (enable/disable) | `~/.hermes/plugins/` |
 | **Memory providers** | Replace or augment built-in memory | Single-select (one active) | `plugins/memory/` |
 | **Context engines** | Replace the built-in context compressor | Single-select (one active) | `plugins/context_engine/` |
+| **Model providers** | Declare an inference backend (OpenRouter, Anthropic, …) | Multi-register, picked by `--provider` / `config.yaml` | `plugins/model-providers/` |
 
-Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. General plugins can be enabled in any combination.
+Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. Model providers are also plugins, but many load simultaneously; the user picks one at a time via `--provider` or `config.yaml`. General plugins can be enabled in any combination.
 
 ## NixOS declarative plugins
 

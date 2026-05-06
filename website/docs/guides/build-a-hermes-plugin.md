@@ -671,6 +671,7 @@ This is the public, stable interface for tool dispatch from plugin commands. Plu
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). For specialized plugin types, see:
 - [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
 - [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
+- [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) — inference backends (add or override any LLM provider)
 :::
 
 ### Distribute via pip

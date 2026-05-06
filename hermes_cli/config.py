@@ -833,7 +833,7 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "fish" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -856,6 +856,11 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
+        "fish": {
+            "model": "s2-pro",
+            "reference_id": "",  # Optional Fish Audio voice/model ID
+            "latency": "normal",
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
@@ -1878,6 +1883,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "FISH_AUDIO_API_KEY": {
+        "description": "Fish Audio API key for Fish Audio text-to-speech voices",
+        "prompt": "Fish Audio API key",
+        "url": "https://fish.audio/app/api-keys",
         "password": True,
         "category": "tool",
     },

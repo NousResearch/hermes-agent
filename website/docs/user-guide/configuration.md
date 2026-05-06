@@ -1109,7 +1109,7 @@ agent:
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "fish" | "neutts"
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -1137,6 +1137,10 @@ tts:
     sample_rate: 24000
     bit_rate: 128000            # MP3 bitrate
     # base_url: "https://api.x.ai/v1"
+  fish:
+    model: "s2-pro"
+    reference_id: ""            # Optional Fish Audio voice/model ID
+    latency: "normal"
   neutts:
     ref_audio: ''
     ref_text: ''

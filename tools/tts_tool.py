@@ -10,6 +10,7 @@ Built-in TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, needs XAI_API_KEY
+- Fish Audio TTS: Expressive Fish Audio voices, needs FISH_AUDIO_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
@@ -149,6 +150,9 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_FISH_AUDIO_MODEL = "s2-pro"
+DEFAULT_FISH_AUDIO_BASE_URL = "https://api.fish.audio/v1"
+DEFAULT_FISH_AUDIO_LATENCY = "normal"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -174,6 +178,8 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "fish": 5000,         # conservative; Fish Audio chunks internally
+    "fish_audio": 5000,   # alias for fish
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -321,6 +327,8 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "fish",
+    "fish_audio",
     "neutts",
     "kittentts",
     "piper",
@@ -913,6 +921,120 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         timeout=60,
     )
     response.raise_for_status()
+
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+    return output_path
+
+
+# ===========================================================================
+# Provider: Fish Audio TTS
+# ===========================================================================
+def _get_fish_audio_config(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return Fish Audio config, accepting fish_audio as a provider alias."""
+    fish_config = _get_provider_section(tts_config, "fish")
+    if fish_config:
+        return fish_config
+    return _get_provider_section(tts_config, "fish_audio")
+
+
+def _fish_audio_format_for_path(output_path: str) -> str:
+    suffix = Path(output_path).suffix.lower()
+    if suffix == ".ogg":
+        return "opus"
+    if suffix == ".wav":
+        return "wav"
+    if suffix == ".pcm":
+        return "pcm"
+    return "mp3"
+
+
+def _generate_fish_audio_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using the Fish Audio HTTP TTS API.
+
+    Fish Audio uses raw binary responses from POST /v1/tts with the selected
+    model in a request header, so Hermes can integrate it without the SDK.
+    """
+    import requests
+
+    api_key = (
+        get_env_value("FISH_AUDIO_API_KEY")
+        or get_env_value("FISH_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise ValueError(
+            "FISH_AUDIO_API_KEY not set. Get one at https://fish.audio/app/api-keys"
+        )
+
+    fish_config = _get_fish_audio_config(tts_config)
+    model = (
+        str(fish_config.get("model", DEFAULT_FISH_AUDIO_MODEL)).strip()
+        or DEFAULT_FISH_AUDIO_MODEL
+    )
+    base_url = str(
+        fish_config.get("base_url")
+        or get_env_value("FISH_AUDIO_BASE_URL")
+        or DEFAULT_FISH_AUDIO_BASE_URL
+    ).strip().rstrip("/")
+    output_format = str(
+        fish_config.get("format") or _fish_audio_format_for_path(output_path)
+    ).strip().lower()
+
+    payload: Dict[str, Any] = {
+        "text": text,
+        "format": output_format,
+    }
+
+    reference_id = str(fish_config.get("reference_id", "")).strip()
+    if reference_id:
+        payload["reference_id"] = reference_id
+
+    latency = str(
+        fish_config.get("latency", DEFAULT_FISH_AUDIO_LATENCY)
+    ).strip()
+    if latency:
+        payload["latency"] = latency
+
+    speed = float(fish_config.get("speed", tts_config.get("speed", 1.0)))
+    if speed != 1.0:
+        payload["prosody"] = {"speed": max(0.5, min(2.0, speed))}
+
+    for key in (
+        "temperature",
+        "top_p",
+        "chunk_length",
+        "normalize",
+        "sample_rate",
+        "mp3_bitrate",
+        "opus_bitrate",
+        "max_new_tokens",
+        "repetition_penalty",
+    ):
+        if key in fish_config:
+            payload[key] = fish_config[key]
+
+    response = requests.post(
+        f"{base_url}/tts",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "model": model,
+        },
+        json=payload,
+        timeout=60,
+    )
+
+    if response.status_code != 200:
+        try:
+            detail = response.json().get("message") or response.text[:300]
+        except Exception:
+            detail = response.text[:300]
+        raise RuntimeError(
+            f"Fish Audio TTS API error (HTTP {response.status_code}): {detail}"
+        )
 
     with open(output_path, "wb") as f:
         f.write(response.content)
@@ -1600,7 +1722,14 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        elif want_opus and provider in (
+            "openai",
+            "elevenlabs",
+            "mistral",
+            "gemini",
+            "fish",
+            "fish_audio",
+        ):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1664,6 +1793,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider in ("fish", "fish_audio"):
+            logger.info("Generating speech with Fish Audio TTS...")
+            _generate_fish_audio_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -1755,7 +1888,14 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in (
+            "elevenlabs",
+            "openai",
+            "mistral",
+            "gemini",
+            "fish",
+            "fish_audio",
+        ):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -1830,6 +1970,8 @@ def check_tts_requirements() -> bool:
     if get_env_value("XAI_API_KEY"):
         return True
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+        return True
+    if get_env_value("FISH_AUDIO_API_KEY") or get_env_value("FISH_API_KEY"):
         return True
     try:
         _import_mistral_client()

@@ -32,10 +32,10 @@ class _RecordingStore:
         self.runs.append(run)
 
 
-def test_classify_topic_type_current_events():
+def test_classify_topic_type_sports_precedes_current_events():
     assert (
         classify_topic_type("latest Detroit Pistons current starting five")
-        == "current_events"
+        == "sports"
     )
 
 
@@ -79,6 +79,34 @@ def test_generate_query_plan_adds_technical_source_packs():
     assert any("GitHub issues" in query for query in queries)
     assert "official" in plan["source_requirements"]
     assert "adversarial" in plan["source_requirements"]
+
+
+def test_generate_query_plan_adds_finance_source_packs():
+    plan = generate_query_plan(
+        "Apple earnings guidance SEC filing latest",
+        topic_type="auto",
+        depth="thorough",
+    )
+    kinds = {item["kind"] for item in plan["queries"]}
+
+    assert plan["topic_type"] == "finance"
+    assert {"filings", "company_ir", "market_data", "news"} <= kinds
+    assert "filings" in plan["source_requirements"]
+    assert "market_data" in plan["source_requirements"]
+
+
+def test_generate_query_plan_adds_sports_source_packs():
+    plan = generate_query_plan(
+        "latest Detroit Pistons starting five",
+        topic_type="auto",
+        depth="thorough",
+    )
+    kinds = {item["kind"] for item in plan["queries"]}
+
+    assert plan["topic_type"] == "sports"
+    assert {"official", "stats", "news"} <= kinds
+    assert "stats" in plan["source_requirements"]
+    assert "current" in plan["source_requirements"]
 
 
 def test_research_gather_returns_evidence_bundle_without_duckdb(monkeypatch):

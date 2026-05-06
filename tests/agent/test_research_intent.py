@@ -1,3 +1,5 @@
+import pytest
+
 from agent.research_search import classify_research_intent
 
 
@@ -6,7 +8,7 @@ def test_research_intent_classifies_current_fact_requests():
 
     assert intent["is_research"] is True
     assert intent["redirect_web_search"] is True
-    assert intent["topic_type"] == "current_events"
+    assert intent["topic_type"] == "sports"
     assert intent["freshness"] == "latest"
     assert "latest" in intent["matched"]["latest"]
 
@@ -44,3 +46,25 @@ def test_research_intent_does_not_treat_pipeline_alone_as_pharma():
 
     assert intent["topic_type"] == "technical"
     assert intent["redirect_web_search"] is False
+
+
+@pytest.mark.parametrize(
+    ("query", "topic_type"),
+    [
+        ("Nvidia Blackwell GPU launch latest news", "technology"),
+        ("Apple earnings guidance SEC filing", "finance"),
+        ("ASME pressure vessel standard failure analysis", "engineering"),
+        ("Elden Ring DLC patch notes performance issues", "gaming"),
+        ("TikTok viral trend report with sources", "social_trends"),
+        ("Billboard chart history for the latest Kendrick album", "music"),
+        ("best OLED monitor deals and reviews", "shopping"),
+        ("White House domestic news latest policy statement", "domestic_news"),
+        ("NATO Ukraine ceasefire negotiations latest", "geopolitics"),
+    ],
+)
+def test_research_intent_classifies_additional_topic_profiles(query, topic_type):
+    intent = classify_research_intent(query)
+
+    assert intent["topic_type"] == topic_type
+    assert intent["is_research"] is True
+    assert intent["redirect_web_search"] is True

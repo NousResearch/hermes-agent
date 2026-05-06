@@ -126,14 +126,41 @@ def generate_query_plan(
     queries: list[dict[str, str]] = [_query(base, "base")]
     source_requirements = ["independent"]
 
-    if topic in {"current_events", "company_market", "product", "medical_pharma"} or freshness in {
-        "latest",
-        "recent",
-    }:
+    current_source_topics = {
+        "company_market",
+        "current_events",
+        "domestic_news",
+        "finance",
+        "gaming",
+        "geopolitics",
+        "medical_pharma",
+        "music",
+        "product",
+        "shopping",
+        "social_trends",
+        "sports",
+        "technology",
+    }
+    official_source_topics = {
+        "company_market",
+        "domestic_news",
+        "engineering",
+        "finance",
+        "gaming",
+        "geopolitics",
+        "legal_regulatory",
+        "product",
+        "shopping",
+        "sports",
+        "technical",
+        "technology",
+    }
+
+    if topic in current_source_topics or freshness in {"latest", "recent"}:
         queries.append(_query(f"{base} latest {now_year}", "recent"))
         source_requirements.append("current")
 
-    if topic in {"technical", "legal_regulatory", "company_market", "product"}:
+    if topic in official_source_topics:
         queries.append(_query(f"{base} official", "official"))
         source_requirements.append("official")
 
@@ -159,6 +186,103 @@ def generate_query_plan(
                 _query(f"{base} GitHub issues breaking change", "community"),
             ]
         )
+    elif topic == "technology":
+        queries.extend(
+            [
+                _query(f"{base} official announcement blog documentation", "official"),
+                _query(f"{base} TechCrunch The Verge Ars Technica Wired latest {now_year}", "news"),
+                _query(f"{base} Hacker News Reddit developer community", "community"),
+            ]
+        )
+        source_requirements.extend(["official", "news"])
+    elif topic == "finance":
+        queries.extend(
+            [
+                _query(f"{base} SEC EDGAR 10-K 10-Q 8-K filing", "filings"),
+                _query(f"{base} investor relations earnings transcript guidance", "company_ir"),
+                _query(f"{base} Federal Reserve BLS BEA Treasury data", "market_data"),
+                _query(f"{base} Reuters Bloomberg CNBC Financial Times latest {now_year}", "news"),
+            ]
+        )
+        source_requirements.extend(["filings", "company_ir", "market_data", "news"])
+    elif topic == "engineering":
+        queries.extend(
+            [
+                _query(f"{base} ISO IEEE ASME ASTM standard", "standards"),
+                _query(f"{base} NIST NASA OSHA technical report", "primary"),
+                _query(f"{base} engineering paper case study failure analysis", "academic"),
+            ]
+        )
+        source_requirements.extend(["official", "primary"])
+    elif topic == "gaming":
+        queries.extend(
+            [
+                _query(f"{base} official patch notes publisher announcement", "official"),
+                _query(f"{base} Steam PlayStation Xbox Nintendo store page", "platform"),
+                _query(f"{base} IGN GameSpot PC Gamer Digital Foundry review", "review"),
+                _query(f"{base} Reddit Steam community issues", "community"),
+            ]
+        )
+        source_requirements.extend(["official", "review", "community"])
+    elif topic in {"social_trends", "social"}:
+        queries.extend(
+            [
+                _query(f"{base} TikTok Instagram YouTube X Reddit trend", "social_platform"),
+                _query(f"{base} Google Trends latest {now_year}", "trend_data"),
+                _query(f"{base} Know Your Meme social media trend explainer", "orientation"),
+                _query(f"{base} news coverage verification", "news"),
+            ]
+        )
+        source_requirements.extend(["social_platform", "news"])
+    elif topic == "music":
+        queries.extend(
+            [
+                _query(f"{base} official artist label release", "official"),
+                _query(f"{base} Billboard Official Charts chart history", "charts"),
+                _query(f"{base} Spotify Apple Music YouTube Music", "platform"),
+                _query(f"{base} Pitchfork Rolling Stone NME review", "review"),
+            ]
+        )
+        source_requirements.extend(["official", "charts", "review"])
+    elif topic == "shopping":
+        queries.extend(
+            [
+                _query(f"{base} official product page specifications", "official"),
+                _query(f"{base} retailer price availability Amazon Walmart Best Buy", "retail"),
+                _query(f"{base} professional review Wirecutter Consumer Reports RTINGS", "review"),
+                _query(f"{base} complaints defects recall problems", "adversarial"),
+            ]
+        )
+        source_requirements.extend(["official", "retail", "review", "adversarial"])
+    elif topic == "domestic_news":
+        queries.extend(
+            [
+                _query(f"{base} official statement government agency", "official"),
+                _query(f"{base} AP Reuters local news latest {now_year}", "news"),
+                _query(f"{base} primary documents transcript court filing", "primary"),
+            ]
+        )
+        source_requirements.extend(["official", "primary", "news"])
+    elif topic == "geopolitics":
+        queries.extend(
+            [
+                _query(f"{base} government foreign ministry official statement", "official"),
+                _query(f"{base} United Nations NATO EU official", "primary"),
+                _query(f"{base} Reuters AP BBC Al Jazeera latest {now_year}", "news"),
+                _query(f"{base} CSIS CFR Brookings think tank analysis", "analysis"),
+                _query(f"{base} conflicting reports verification", "contradiction"),
+            ]
+        )
+        source_requirements.extend(["official", "primary", "news", "contradiction"])
+    elif topic == "sports":
+        queries.extend(
+            [
+                _query(f"{base} official league team roster injury report", "official"),
+                _query(f"{base} box score stats standings ESPN Sports Reference", "stats"),
+                _query(f"{base} AP ESPN The Athletic latest {now_year}", "news"),
+            ]
+        )
+        source_requirements.extend(["official", "stats", "news"])
     elif topic == "academic":
         queries.extend(
             [
@@ -272,7 +396,22 @@ def _source_type(url: str, query_kind: str = "") -> str:
         )
     ):
         return "company_ir"
-    if query_kind in {"regulatory", "clinical_trials", "pubmed", "company_ir"}:
+    if query_kind in {
+        "analysis",
+        "charts",
+        "filings",
+        "market_data",
+        "platform",
+        "regulatory",
+        "retail",
+        "social_platform",
+        "standards",
+        "stats",
+        "trend_data",
+        "clinical_trials",
+        "pubmed",
+        "company_ir",
+    }:
         return query_kind
     if query_kind == "orientation":
         return "orientation"
@@ -282,7 +421,20 @@ def _source_type(url: str, query_kind: str = "") -> str:
         return "primary"
     if any(k in host for k in ("github.com", "docs.", "developer.", "readthedocs")):
         return "docs"
-    if any(k in host for k in ("reddit", "stackoverflow", "news.ycombinator")):
+    if any(
+        k in host
+        for k in (
+            "reddit",
+            "stackoverflow",
+            "news.ycombinator",
+            "steamcommunity",
+            "tiktok",
+            "instagram",
+            "youtube",
+            "x.com",
+            "twitter",
+        )
+    ):
         return "community"
     if any(
         k in host
@@ -301,6 +453,8 @@ def _source_type(url: str, query_kind: str = "") -> str:
         return "news"
     if query_kind in {"adversarial", "contradiction"}:
         return "adversarial"
+    if query_kind in {"review", "academic"}:
+        return query_kind
     return "unknown"
 
 
@@ -312,8 +466,20 @@ def _quality_score(source_type: str, status: str) -> float:
         "pubmed": 0.93,
         "official": 0.9,
         "company_ir": 0.88,
+        "filings": 0.92,
+        "market_data": 0.9,
+        "standards": 0.89,
+        "stats": 0.88,
+        "charts": 0.86,
+        "platform": 0.78,
+        "retail": 0.72,
+        "review": 0.7,
+        "analysis": 0.7,
+        "trend_data": 0.68,
+        "academic": 0.86,
         "docs": 0.82,
         "news": 0.75,
+        "social_platform": 0.58,
         "community": 0.55,
         "adversarial": 0.6,
         "orientation": 0.35,
@@ -378,8 +544,13 @@ def _rank_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "clinical_trials",
                 "pubmed",
                 "company_ir",
+                "filings",
+                "market_data",
                 "official",
                 "primary",
+                "standards",
+                "stats",
+                "charts",
                 "docs",
             }
             else 0,
@@ -452,7 +623,20 @@ def _analyze_gaps(
     if "adversarial" in requirements and "adversarial" not in source_types:
         gaps.append("No adversarial/contradiction source was gathered.")
         next_queries.append(_query(f"{question} problems criticism outdated incorrect", "adversarial"))
-    if plan.get("topic_type") in {"current_events", "company_market"} and not any(
+    current_gap_topics = {
+        "company_market",
+        "current_events",
+        "domestic_news",
+        "finance",
+        "gaming",
+        "geopolitics",
+        "music",
+        "shopping",
+        "social_trends",
+        "sports",
+        "technology",
+    }
+    if plan.get("topic_type") in current_gap_topics and not any(
         s.get("query_kind") == "recent" for s in usable
     ):
         gaps.append("No explicitly recent source lane was gathered.")
@@ -492,19 +676,80 @@ def _apply_gap_pass(bundle: dict[str, Any]) -> list[str]:
 
 
 def _source_quality_recipe(topic_type: str) -> dict[str, Any]:
-    if topic_type == "medical_pharma":
-        return {
-            "profile": "medical_pharma",
-            "priority_order": [
-                "regulatory: FDA/EMA/NMPA or national regulator pages, labels, EPARs, advisory documents",
-                "company_ir: company investor relations, press releases, pipeline pages, SEC filings",
-                "clinical_trials: ClinicalTrials.gov/EU CTR/ChiCTR records for phase/status/endpoints",
-                "pubmed: PubMed-indexed papers and major journals for trial results",
-                "news: Reuters/STAT/Fierce Biotech/Endpoints/BioPharma Dive for recency and context",
-                "orientation: Wikipedia or encyclopedic pages only for orientation, never as primary evidence",
-            ],
-            "wikipedia_policy": "orientation_only",
+    recipes = {
+        "medical_pharma": [
+            "regulatory: FDA/EMA/NMPA or national regulator pages, labels, EPARs, advisory documents",
+            "company_ir: company investor relations, press releases, pipeline pages, SEC filings",
+            "clinical_trials: ClinicalTrials.gov/EU CTR/ChiCTR records for phase/status/endpoints",
+            "pubmed: PubMed-indexed papers and major journals for trial results",
+            "news: Reuters/STAT/Fierce Biotech/Endpoints/BioPharma Dive for recency and context",
+            "orientation: Wikipedia or encyclopedic pages only for orientation, never as primary evidence",
+        ],
+        "finance": [
+            "filings: SEC EDGAR/company reports and earnings materials for company claims",
+            "market_data: Federal Reserve/BLS/BEA/Treasury/exchange data for macro or market facts",
+            "company_ir: investor relations, earnings transcripts, and guidance",
+            "news: Reuters/Bloomberg/CNBC/Financial Times for recency and market context",
+        ],
+        "engineering": [
+            "standards: ISO/IEEE/ASME/ASTM/NIST or equivalent standards bodies",
+            "primary: agency, lab, manufacturer, or technical report documentation",
+            "academic: peer-reviewed papers, case studies, and failure analyses",
+        ],
+        "technology": [
+            "official: vendor announcements, docs, changelogs, security advisories",
+            "news: reputable technology reporting for launch/market context",
+            "community: developer/user reports only as corroborating or adversarial evidence",
+        ],
+        "gaming": [
+            "official: publisher/developer announcements and patch notes",
+            "platform: Steam/PlayStation/Xbox/Nintendo store and release pages",
+            "review: professional reviews and technical analyses",
+            "community: player reports for issues, sentiment, and edge cases",
+        ],
+        "social_trends": [
+            "social_platform: platform-native posts, trend pages, hashtags, and creator sources",
+            "trend_data: Google Trends or platform analytics when available",
+            "news: independent reporting for verification and context",
+            "orientation: explainers only for background, not primary trend evidence",
+        ],
+        "music": [
+            "official: artist, label, venue, or distributor announcements",
+            "charts: Billboard/Official Charts or other chart authorities",
+            "platform: Spotify/Apple/YouTube Music pages for release/platform facts",
+            "review: reputable music criticism for reception/context",
+        ],
+        "shopping": [
+            "official: manufacturer specifications and support/recall pages",
+            "retail: retailer pages for price, availability, and variants",
+            "review: professional reviews and lab tests",
+            "adversarial: complaints, recalls, defects, and reliability reports",
+        ],
+        "domestic_news": [
+            "official: government, agency, court, or campaign statements and records",
+            "primary: transcripts, filings, bills, local records, and source documents",
+            "news: AP/Reuters/local outlets for recency and independent reporting",
+        ],
+        "geopolitics": [
+            "official: government and foreign-ministry statements",
+            "primary: UN/NATO/EU/IGO records, treaties, and sanctions documents",
+            "news: Reuters/AP/BBC/Al Jazeera or local credible outlets for event reporting",
+            "analysis: think tanks only after primary/news sources establish facts",
+        ],
+        "sports": [
+            "official: league/team roster, injury, transaction, and schedule pages",
+            "stats: box scores, standings, and stats databases",
+            "news: AP/ESPN/The Athletic/local beat reporting for latest lineup context",
+        ],
+    }
+    if topic_type in recipes:
+        result = {
+            "profile": topic_type,
+            "priority_order": recipes[topic_type],
         }
+        if topic_type == "medical_pharma":
+            result["wikipedia_policy"] = "orientation_only"
+        return result
     return {
         "profile": topic_type or "general",
         "priority_order": [
@@ -528,6 +773,26 @@ def _report_requirements(topic_type: str) -> dict[str, Any]:
         requirements["medical_pharma_instruction"] = (
             "Distinguish regulator status, clinical-trial status, company claims, "
             "published trial evidence, and news context. Treat Wikipedia as orientation only."
+        )
+    elif topic_type == "finance":
+        requirements["finance_instruction"] = (
+            "Separate primary filings/data from market commentary. Include dates for "
+            "prices, earnings, macro indicators, and guidance."
+        )
+    elif topic_type == "geopolitics":
+        requirements["geopolitics_instruction"] = (
+            "Separate official statements, verified event reporting, and analysis. "
+            "Call out contested or single-source claims."
+        )
+    elif topic_type == "sports":
+        requirements["sports_instruction"] = (
+            "Prefer official league/team and stats sources for rosters, injuries, "
+            "lineups, standings, and schedules; include the relevant date."
+        )
+    elif topic_type == "social_trends":
+        requirements["social_trends_instruction"] = (
+            "Distinguish platform-native evidence from commentary, and avoid treating "
+            "screenshots or anecdotes as verified trend data without corroboration."
         )
     return requirements
 
@@ -947,8 +1212,8 @@ def research_help(topic_type: str = "auto") -> dict[str, Any]:
             "or citation_metadata."
         ),
     }
-    if topic == "medical_pharma":
-        result["source_quality_recipe"] = _source_quality_recipe("medical_pharma")
+    if topic != "general":
+        result["source_quality_recipe"] = _source_quality_recipe(topic)
     return result
 
 

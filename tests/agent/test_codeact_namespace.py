@@ -127,7 +127,7 @@ def test_research_recipe_is_injected_and_calls_research_gather():
             "research_gather",
             {
                 "question": "current Detroit Pistons starting five",
-                "topic_type": "current_events",
+                "topic_type": "sports",
                 "freshness": "latest",
                 "depth": "thorough",
                 "max_pages": 3,

@@ -47,8 +47,10 @@ RESEARCH_GATHER_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search profile: auto, current_events, technical, academic, "
-                    "medical_pharma, legal_regulatory, company_market, product, "
-                    "local, social, obscure_lookup, or general."
+                    "medical_pharma, finance, engineering, technology, gaming, "
+                    "social_trends, music, shopping, domestic_news, geopolitics, "
+                    "sports, legal_regulatory, company_market, product, local, "
+                    "obscure_lookup, or general."
                 ),
                 "default": "auto",
             },

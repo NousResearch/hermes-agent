@@ -107,7 +107,9 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    WEB_VIA_HTTP_SSE = "web_via_http_sse"
     YUANBAO = "yuanbao"
+
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -1586,6 +1588,34 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # Web chat via HTTP+SSE — embeds Hermes in any web app via a generic
+    # POST /{path}/{session_id} endpoint that streams responses as SSE.
+    # The consumer (web app) supplies bank_id per request to scope the
+    # Hindsight cascade; this platform stays vendor-neutral.
+    web_sse_secret = os.getenv("WEB_VIA_HTTP_SSE_AUTH_SECRET")
+    web_sse_host = os.getenv("WEB_VIA_HTTP_SSE_HOST")
+    web_sse_port = os.getenv("WEB_VIA_HTTP_SSE_PORT")
+    web_sse_path = os.getenv("WEB_VIA_HTTP_SSE_PATH")
+    web_sse_origins = os.getenv("WEB_VIA_HTTP_SSE_ALLOWED_ORIGINS")
+    if web_sse_secret or web_sse_host or web_sse_port or web_sse_path or web_sse_origins:
+        if Platform.WEB_VIA_HTTP_SSE not in config.platforms:
+            config.platforms[Platform.WEB_VIA_HTTP_SSE] = PlatformConfig()
+        config.platforms[Platform.WEB_VIA_HTTP_SSE].enabled = True
+        web_extra = config.platforms[Platform.WEB_VIA_HTTP_SSE].extra
+        if web_sse_secret:
+            web_extra["auth_secret"] = web_sse_secret
+        if web_sse_host:
+            web_extra["host"] = web_sse_host
+        if web_sse_port:
+            web_extra["port"] = int(web_sse_port)
+        if web_sse_path:
+            web_extra["path"] = web_sse_path
+        if web_sse_origins:
+            web_extra["allowed_origins"] = web_sse_origins
+        web_default_bank = os.getenv("WEB_VIA_HTTP_SSE_DEFAULT_BANK_ID")
+        if web_default_bank:
+            web_extra["default_bank_id"] = web_default_bank
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

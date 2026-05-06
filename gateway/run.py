@@ -4333,6 +4333,16 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.WEB_VIA_HTTP_SSE:
+            from gateway.platforms.web_via_http_sse import (
+                WebViaHttpSsePlatformAdapter,
+                check_web_via_http_sse_requirements,
+            )
+            if not check_web_via_http_sse_requirements():
+                logger.warning("Web via HTTP+SSE: aiohttp missing")
+                return None
+            return WebViaHttpSsePlatformAdapter(config)
+
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
             if not WEBSOCKETS_AVAILABLE:
@@ -4381,6 +4391,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.WEB_VIA_HTTP_SSE: "WEB_VIA_HTTP_SSE_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
@@ -4407,6 +4418,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.WEB_VIA_HTTP_SSE: "WEB_VIA_HTTP_SSE_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).

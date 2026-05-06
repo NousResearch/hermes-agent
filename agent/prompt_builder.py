@@ -490,6 +490,15 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "web_via_http_sse": (
+        "You are embedded in a web application via an HTTP+SSE bridge. The consumer is the "
+        "user's web app (a SaaS dashboard, an internal tool, anything). The chat surface is a "
+        "sidesheet or modal — assume the user is concentrating on something else (their actual "
+        "work) and prefers concise, structured replies. Markdown IS rendered (the consumer is "
+        "responsible for client-side rendering). Sessions are scoped to a tenant via bank_id "
+        "supplied by the consumer; do not leak data across bank_id boundaries. Multimodal: "
+        "text + image input (other media may follow). No phone number, no group chats."
+    ),
     "yuanbao": (
         "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
         "Markdown formatting is supported (code blocks, tables, bold/italic). "

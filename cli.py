@@ -11934,8 +11934,8 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393)
             # and I/O errors from broken stdout during interrupt (#13710).
-            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
-                pass  # suppress broken-stdout I/O errors on interrupt (#13710)
+            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) in (errno.EIO, errno.EINVAL):
+                pass  # suppress broken-stdout/kqueue EINVAL errors on macOS uv-python (#13710)
             elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"

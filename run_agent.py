@@ -128,6 +128,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -833,7 +834,9 @@ def _routermint_headers() -> dict:
     }
 
 
-def _pool_may_recover_from_rate_limit(pool) -> bool:
+def _pool_may_recover_from_rate_limit(
+    pool, *, provider: str | None = None, base_url: str | None = None
+) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
     The existing pool-rotation path requires the pool to (1) exist and (2) have
@@ -846,14 +849,22 @@ def _pool_may_recover_from_rate_limit(pool) -> bool:
     cooldown to expire means retrying against the same exhausted quota — the
     daily-quota 429 will recur immediately, and the retry budget is burned.
 
-    In that case we must fall back to the configured ``fallback_model``
+    Additionally, Google CloudCode / Gemini CLI rate limits are ACCOUNT-level
+    throttles — even a multi-entry pool shares the same quota window, so
+    rotation won't recover.  Skip straight to the fallback for those (#13636).
+
+    In those cases we must fall back to the configured ``fallback_model``
     instead.  Returns True only when rotation has somewhere to go.
 
-    See issue #11314.
+    See issues #11314 and #13636.
     """
     if pool is None:
         return False
     if not pool.has_available():
+        return False
+    # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
+    # the same throttle window, so rotation can't recover.  Prefer fallback.
+    if provider == "google-gemini-cli" or str(base_url or "").startswith("cloudcode-pa://"):
         return False
     return len(pool.entries()) > 1
 
@@ -1297,6 +1308,13 @@ class AIAgent:
         # deltas (#5719).  sanitize_context() alone can't survive chunk
         # boundaries because the block regex needs both tags in one string.
         self._stream_context_scrubber = StreamingContextScrubber()
+        # Stateful scrubber for reasoning/thinking tags in streamed deltas
+        # (#17924).  Replaces the per-delta _strip_think_blocks regex that
+        # destroyed downstream state (e.g. MiniMax-M2.7 streaming
+        # '<think>' as delta1 and 'Let me check' as delta2 — the regex
+        # erased delta1, so downstream state machines never learned a
+        # block was open and leaked delta2 as content).
+        self._stream_think_scrubber = StreamingThinkScrubber()
         # Visible assistant text already delivered through live token callbacks
         # during the current model response. Used to avoid re-sending the same
         # commentary when the provider later returns it as a completed interim
@@ -1443,6 +1461,17 @@ class AIAgent:
                 elif base_url_host_matches(effective_base, "chatgpt.com"):
                     from agent.auxiliary_client import _codex_cloudflare_headers
                     client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+                elif "default_headers" not in client_kwargs:
+                    # Fall back to profile.default_headers for providers that
+                    # declare custom headers (e.g. Vercel AI Gateway attribution,
+                    # Kimi User-Agent on non-kimi.com endpoints).
+                    try:
+                        from providers import get_provider_profile as _gpf
+                        _ph = _gpf(self.provider)
+                        if _ph and _ph.default_headers:
+                            client_kwargs["default_headers"] = dict(_ph.default_headers)
+                    except Exception:
+                        pass
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -1839,6 +1868,13 @@ class AIAgent:
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        try:
+            from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
+            _model_cthresh = _cthresh_fn(self.model)
+            if _model_cthresh is not None:
+                compression_threshold = _model_cthresh
+        except Exception:
+            pass
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -2659,7 +2695,10 @@ class AIAgent:
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
-                provider=getattr(self, "provider", ""),
+                # Each model must be resolved with its own provider so that
+                # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
+                # are invoked for the correct client, not inherited from the main model.
+                provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
             )
 
             # Hard floor: the auxiliary compression model must have at least
@@ -6240,7 +6279,19 @@ class AIAgent:
                 self._client_kwargs.get("api_key", "")
             )
         else:
-            self._client_kwargs.pop("default_headers", None)
+            # No URL-specific headers — check profile.default_headers before clearing.
+            _ph_headers = None
+            try:
+                from providers import get_provider_profile as _gpf2
+                _ph2 = _gpf2(self.provider)
+                if _ph2 and _ph2.default_headers:
+                    _ph_headers = dict(_ph2.default_headers)
+            except Exception:
+                pass
+            if _ph_headers:
+                self._client_kwargs["default_headers"] = _ph_headers
+            else:
+                self._client_kwargs.pop("default_headers", None)
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -6355,6 +6406,21 @@ class AIAgent:
                 return True, False
 
         return False, has_retried_429
+
+    def _credential_pool_may_recover_rate_limit(self) -> bool:
+        """Whether a rate-limit retry should wait for same-provider credentials."""
+        pool = self._credential_pool
+        if pool is None:
+            return False
+        if (
+            self.provider == "google-gemini-cli"
+            or str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
+        ):
+            # CloudCode/Gemini quota windows are usually account-level throttles.
+            # Prefer the configured fallback immediately instead of waiting out
+            # Retry-After while a pooled OAuth credential may still appear usable.
+            return False
+        return pool.has_available()
 
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
@@ -6543,6 +6609,29 @@ class AIAgent:
 
     def _reset_stream_delivery_tracking(self) -> None:
         """Reset tracking for text delivered during the current model response."""
+        # Flush any benign partial-tag tail held by the think scrubber
+        # first (#17924): an innocent '<' at the end of the stream that
+        # turned out not to be a tag prefix should reach the UI.  Then
+        # flush the context scrubber.  Order matters — the think
+        # scrubber's output feeds into the context scrubber's state.
+        think_scrubber = getattr(self, "_stream_think_scrubber", None)
+        if think_scrubber is not None:
+            think_tail = think_scrubber.flush()
+            if think_tail:
+                # Route the tail through the context scrubber too so a
+                # memory-context span straddling the final boundary is
+                # still caught.
+                ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+                if ctx_scrubber is not None:
+                    think_tail = ctx_scrubber.feed(think_tail)
+                if think_tail:
+                    callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+                    for cb in callbacks:
+                        try:
+                            cb(think_tail)
+                        except Exception:
+                            pass
+                    self._record_streamed_assistant_text(think_tail)
         # Flush any benign partial-tag tail held by the context scrubber so it
         # reaches the UI before we clear state for the next model call.  If
         # the scrubber is mid-span, flush() drops the orphaned content.
@@ -6611,11 +6700,22 @@ class AIAgent:
         else:
             prepended_break = False
         if isinstance(text, str):
-            # Strip <think> blocks first (per-delta is safe for closed pairs; the
-            # unterminated-tag path is handled downstream by stream_consumer).
+            # Suppress reasoning/thinking blocks via the stateful
+            # scrubber (#17924).  Earlier versions ran _strip_think_blocks
+            # per-delta here, which destroyed downstream state machines
+            # when a tag was split across deltas (e.g. MiniMax-M2.7
+            # sends '<think>' and its content as separate deltas —
+            # regex case 2 erased the first delta, so the CLI/gateway
+            # state machine never saw the open tag and leaked the
+            # reasoning content as regular response text).
+            think_scrubber = getattr(self, "_stream_think_scrubber", None)
+            if think_scrubber is not None:
+                text = think_scrubber.feed(text or "")
+            else:
+                # Defensive: legacy callers without the scrubber attribute.
+                text = self._strip_think_blocks(text or "")
             # Then feed through the stateful context scrubber so memory-context
             # spans split across chunks cannot leak to the UI (#5719).
-            text = self._strip_think_blocks(text or "")
             scrubber = getattr(self, "_stream_context_scrubber", None)
             if scrubber is not None:
                 text = scrubber.feed(text)
@@ -8424,7 +8524,7 @@ class AIAgent:
             _omit_temp = False
             _fixed_temp = None
 
-        # Provider preferences (OpenRouter-specific)
+        # Provider preferences (OpenRouter-style)
         _prefs: Dict[str, Any] = {}
         if self.providers_allowed:
             _prefs["only"] = self.providers_allowed
@@ -8439,16 +8539,16 @@ class AIAgent:
         if self.provider_data_collection:
             _prefs["data_collection"] = self.provider_data_collection
 
-        # Anthropic max output for Claude on OpenRouter/Nous
+        # Claude max-output override on aggregators
         _ant_max = None
         if (_is_or or _is_nous) and "claude" in (self.model or "").lower():
             try:
                 from agent.anthropic_adapter import _get_anthropic_max_output
                 _ant_max = _get_anthropic_max_output(self.model)
             except Exception:
-                pass  # fail open — let the proxy pick its default
+                pass
 
-        # Qwen session metadata precomputed here (promptId is per-call random)
+        # Qwen session metadata
         _qwen_meta = None
         if _is_qwen:
             _qwen_meta = {
@@ -8456,8 +8556,44 @@ class AIAgent:
                 "promptId": str(uuid.uuid4()),
             }
 
-        # Ephemeral max output override — consume immediately so the next
-        # turn doesn't inherit it.
+        # ── Provider profile path (registered providers) ───────────────────
+        # Profiles handle per-provider quirks via hooks. When a profile is
+        # found, delegate fully; otherwise fall through to the legacy flag path.
+        try:
+            from providers import get_provider_profile
+            _profile = get_provider_profile(self.provider)
+        except Exception:
+            _profile = None
+
+        if _profile:
+            _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
+            if _ephemeral_out is not None:
+                self._ephemeral_max_output_tokens = None
+
+            return _ct.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                base_url=self.base_url,
+                timeout=self._resolved_api_call_timeout(),
+                max_tokens=self.max_tokens,
+                ephemeral_max_output_tokens=_ephemeral_out,
+                max_tokens_param_fn=self._max_tokens_param,
+                reasoning_config=self.reasoning_config,
+                request_overrides=self.request_overrides,
+                session_id=getattr(self, "session_id", None),
+                provider_profile=_profile,
+                ollama_num_ctx=self._ollama_num_ctx,
+                # Context forwarded to profile hooks:
+                provider_preferences=_prefs or None,
+                anthropic_max_output=_ant_max,
+                supports_reasoning=self._supports_reasoning_extra_body(),
+                qwen_session_metadata=_qwen_meta,
+            )
+
+        # ── Legacy flag path ────────────────────────────────────────────
+        # Reached only when get_provider_profile() returns None — i.e. a
+        # completely unknown provider not in providers/ registry.
         _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
         if _ephemeral_out is not None:
             self._ephemeral_max_output_tokens = None
@@ -8540,6 +8676,7 @@ class AIAgent:
             "google/gemini-2",
             "qwen/qwen3",
             "tencent/hy3-preview",
+            "xiaomi/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 
@@ -10576,6 +10713,11 @@ class AIAgent:
         scrubber = getattr(self, "_stream_context_scrubber", None)
         if scrubber is not None:
             scrubber.reset()
+        # Reset the think scrubber for the same reason — an interrupted
+        # prior stream may have left us inside an unterminated block.
+        think_scrubber = getattr(self, "_stream_think_scrubber", None)
+        if think_scrubber is not None:
+            think_scrubber.reset()
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
@@ -11116,6 +11258,7 @@ class AIAgent:
             thinking_sig_retry_attempted = False
             image_shrink_retry_attempted = False
             oauth_1m_beta_retry_attempted = False
+            llama_cpp_grammar_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -12206,6 +12349,49 @@ class AIAgent:
                         )
                         continue
 
+                    # ── llama.cpp grammar-parse recovery ──────────────────
+                    # llama.cpp's ``json-schema-to-grammar`` converter rejects
+                    # regex escape classes (``\d``, ``\w``, ``\s``) and most
+                    # ``format`` values in tool schemas.  MCP servers emit
+                    # these routinely for date/phone/email params.  Recovery:
+                    # strip ``pattern``/``format`` from ``self.tools`` and
+                    # retry once.  We keep the keywords by default so cloud
+                    # providers get the full prompting hints; this branch
+                    # fires only for users on llama.cpp's OAI server.
+                    if (
+                        classified.reason == FailoverReason.llama_cpp_grammar_pattern
+                        and not llama_cpp_grammar_retry_attempted
+                    ):
+                        llama_cpp_grammar_retry_attempted = True
+                        try:
+                            from tools.schema_sanitizer import strip_pattern_and_format
+                            _, _stripped = strip_pattern_and_format(self.tools)
+                        except Exception as _strip_exc:  # pragma: no cover — defensive
+                            logging.warning(
+                                "%sllama.cpp grammar recovery: strip helper failed: %s",
+                                self.log_prefix, _strip_exc,
+                            )
+                            _stripped = 0
+                        if _stripped:
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  llama.cpp rejected tool schema grammar — "
+                                f"stripped {_stripped} pattern/format keyword(s), retrying...",
+                                force=True,
+                            )
+                            logging.warning(
+                                "%sllama.cpp grammar recovery: stripped %d "
+                                "pattern/format keyword(s) from tool schemas",
+                                self.log_prefix, _stripped,
+                            )
+                            continue
+                        # No keywords found to strip — fall through to normal
+                        # retry path rather than loop forever on the same error.
+                        logging.warning(
+                            "%sllama.cpp grammar error but no pattern/format "
+                            "keywords to strip — falling through to normal retry",
+                            self.log_prefix,
+                        )
+
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     self._touch_activity(
@@ -12352,9 +12538,12 @@ class AIAgent:
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
-                        # for the single-credential-pool exception.  Fixes #11314.
+                        # for the single-credential-pool and CloudCode-quota
+                        # exceptions.  Fixes #11314 and #13636.
                         pool_may_recover = _pool_may_recover_from_rate_limit(
-                            self._credential_pool
+                            self._credential_pool,
+                            provider=self.provider,
+                            base_url=getattr(self, "base_url", None),
                         )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
@@ -13861,9 +14050,19 @@ class AIAgent:
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
 
-        # Extract reasoning from the last assistant message (if any)
+        # Extract reasoning from the CURRENT turn only.  Walk backwards
+        # but stop at the user message that started this turn — anything
+        # earlier is from a prior turn and must not leak into the reasoning
+        # box (confusing stale display; #17055).  Within the current turn
+        # we still want the *most recent* non-empty reasoning: many
+        # providers (Claude thinking, DeepSeek v4, Codex Responses) emit
+        # reasoning on the tool-call step and leave the final-answer step
+        # with reasoning=None, so picking only the last assistant would
+        # silently drop legitimate same-turn reasoning.
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break  # turn boundary — don't cross into prior turns
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break

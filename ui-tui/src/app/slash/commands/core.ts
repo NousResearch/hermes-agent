@@ -1,15 +1,19 @@
+import { forceRedraw } from '@hermes/ink'
+
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
   SessionSaveResponse,
+  SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
+import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
@@ -111,16 +115,17 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['new'],
     help: 'start a new session',
     name: 'clear',
-    run: (_arg, ctx, cmd) => {
+    run: (arg, ctx, cmd) => {
       if (ctx.session.guardBusySessionSwitch('switch sessions')) {
         return
       }
 
       const isNew = cmd.startsWith('/new')
+      const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
         patchUiState({ status: 'forging session…' })
-        ctx.session.newSession(isNew ? 'new session started' : undefined)
+        ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
       if (NO_CONFIRM_DESTRUCTIVE) {
@@ -137,6 +142,30 @@ export const coreCommands: SlashCommand[] = [
           title: isNew ? 'Start a new session?' : 'Clear the current session?'
         }
       })
+    }
+  },
+
+  {
+    help: 'force a full UI repaint',
+    name: 'redraw',
+    run: (_arg, ctx) => {
+      forceRedraw(process.stdout)
+      ctx.transcript.sys('ui redrawn')
+    }
+  },
+
+  {
+    help: 'show live session info',
+    name: 'status',
+    run: (_arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session')
+      }
+
+      ctx.gateway
+        .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
+        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
+        .catch(ctx.guardedErr)
     }
   },
 
@@ -318,10 +347,27 @@ export const coreCommands: SlashCommand[] = [
       const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
       if (!target) {
-        return sys('nothing to copy')
+        return sys('nothing to copy — start a conversation first')
       }
 
-      writeOsc52Clipboard(target.text)
+      void writeClipboardText(target.text)
+        .then(nativeOk => {
+          if (ctx.stale()) {
+            return
+          }
+
+          if (nativeOk) {
+            sys('copied to clipboard')
+          } else {
+            writeOsc52Clipboard(target.text)
+            sys('sent OSC52 copy sequence (terminal support required)')
+          }
+        })
+        .catch(error => {
+          if (!ctx.stale()) {
+            sys(`copy failed: ${String(error)}`)
+          }
+        })
     }
   },
 

@@ -23,6 +23,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'user-guide/cli',
         'user-guide/tui',
+        'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
         'user-guide/configuring-models',
         'user-guide/sessions',
@@ -133,6 +134,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/bluebubbles',
         'user-guide/messaging/qqbot',
         'user-guide/messaging/yuanbao',
+        'user-guide/messaging/teams',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],

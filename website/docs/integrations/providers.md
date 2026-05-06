@@ -42,6 +42,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
+For the official API-key path, see the dedicated [Google Gemini guide](/docs/guides/google-gemini).
+
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::
@@ -479,6 +481,44 @@ model:
 :::tip Local NIM
 For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
 :::
+
+### GMI Cloud
+
+Open and reasoning models via [GMI Cloud](https://inference.gmi.ai) — OpenAI-compatible API, API key authentication.
+
+```bash
+# GMI Cloud
+hermes chat --provider gmi --model deepseek-ai/DeepSeek-R1
+# Requires: GMI_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "gmi"
+  default: "deepseek-ai/DeepSeek-R1"
+```
+
+The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi.ai/v1`).
+
+### StepFun
+
+Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compatible API, API key authentication.
+
+```bash
+# StepFun
+hermes chat --provider stepfun --model step-3-mini
+# Requires: STEPFUN_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "stepfun"
+  default: "step-3-mini"
+```
+
+The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
 
 ### Hugging Face Inference Providers
 
@@ -1152,6 +1192,113 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ---
 
+### Cookbook: Together AI, Groq, Perplexity
+
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+
+#### Together AI
+
+Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices significantly below first-party APIs. Good default for multi-model fleets.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: together
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+    # api_mode: chat_completions  # default — no need to set
+
+model:
+  default: MiniMaxAI/MiniMax-M2.7   # or any model from together.ai/models
+  provider: custom:together
+```
+
+```bash
+# ~/.hermes/.env
+TOGETHER_API_KEY=your-together-key
+```
+
+Switch models mid-session:
+
+```
+/model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
+/model custom:together:google/gemma-4-31b-it
+/model custom:together:deepseek-ai/DeepSeek-V3
+```
+
+Together's `/v1/models` endpoint works, so `hermes model` can auto-discover available models.
+
+#### Groq
+
+Ultra-fast inference (~500 tok/s on Llama-3.3-70B). Small catalog but strong for latency-sensitive interactive use.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+
+model:
+  default: llama-3.3-70b-versatile
+  provider: custom:groq
+```
+
+```bash
+# ~/.hermes/.env
+GROQ_API_KEY=your-groq-key
+```
+
+#### Perplexity
+
+Useful when you want a model that does live web search and citation automatically. Strict about which models are available — check [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api) for the current list.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: perplexity
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+
+model:
+  default: sonar
+  provider: custom:perplexity
+```
+
+```bash
+# ~/.hermes/.env
+PERPLEXITY_API_KEY=your-perplexity-key
+```
+
+#### Multiple providers in one config
+
+The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+
+```yaml
+custom_providers:
+  - name: together
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+  - name: perplexity
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+
+model:
+  default: MiniMaxAI/MiniMax-M2.7
+  provider: custom:together      # boot to Together; switch freely after
+```
+
+:::tip Troubleshooting
+- `hermes doctor` should print no `Unknown provider` warnings for any of these names after the CLI validator fixes in #15083.
+- If a provider's `/v1/models` endpoint is unreachable (Perplexity is the common one), `hermes model` will persist the model with a warning rather than hard-reject — see #15136.
+- To skip `custom_providers:` entirely and use bare `provider: custom` with `CUSTOM_BASE_URL` env var, see #15103.
+:::
+
+---
+
 ### Choosing the Right Setup
 
 | Use Case | Recommended |
@@ -1239,7 +1386,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `alibaba`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

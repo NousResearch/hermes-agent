@@ -99,6 +99,12 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+        # channel_id -> Hermes chat_type ("dm", "group", "channel").
+        # Mattermost does not accept usable threaded continuation inside DMs,
+        # so outbound sends need to know when a channel is a DM even though
+        # BasePlatformAdapter only passes chat_id/reply_to into send().
+        self._channel_type_cache: Dict[str, str] = {}
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -216,8 +222,34 @@ class MattermostAdapter(BasePlatformAdapter):
         cached[post_id] = resolved
         return resolved
 
+    def _remember_channel_type(self, channel_id: str, chat_type: str) -> None:
+        if not channel_id:
+            return
+        cache = getattr(self, "_channel_type_cache", None)
+        if cache is None:
+            cache = self._channel_type_cache = {}
+        cache[str(channel_id)] = str(chat_type or "").lower()
+
+    def _is_dm_channel(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if isinstance(metadata, dict):
+            meta_chat_type = str(
+                metadata.get("chat_type")
+                or metadata.get("channel_type")
+                or ""
+            ).lower()
+            if meta_chat_type in {"dm", "direct", "d"}:
+                return True
+
+        cache = getattr(self, "_channel_type_cache", {}) or {}
+        return cache.get(str(chat_id)) == "dm"
+
     async def _root_id_for_payload(
         self,
+        chat_id: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[str]:
@@ -231,11 +263,15 @@ class MattermostAdapter(BasePlatformAdapter):
         thread instead of leaking into the main channel.
 
         Returns ``None`` when the post should not be threaded (reply mode
-        is "off", or no thread context is available).
+        is "off", the target is a DM, or no thread context is available).
         """
         if self._reply_mode != "thread":
             return None
-        metadata_thread_id = metadata.get("thread_id") if metadata else None
+        if self._is_dm_channel(chat_id, metadata):
+            return None
+        metadata_thread_id = (
+            metadata.get("thread_id") if isinstance(metadata, dict) else None
+        )
         if reply_to:
             if metadata_thread_id and metadata_thread_id == reply_to:
                 return metadata_thread_id
@@ -335,7 +371,7 @@ class MattermostAdapter(BasePlatformAdapter):
             # Thread support: prefer an explicit reply_to (resolved to its
             # thread root); otherwise fall back to metadata["thread_id"] so
             # progress/intermediate sends without a reply_to still thread.
-            root_id = await self._root_id_for_payload(reply_to, metadata)
+            root_id = await self._root_id_for_payload(chat_id, reply_to, metadata)
             if root_id:
                 payload["root_id"] = root_id
 
@@ -354,6 +390,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         ch_type = _CHANNEL_TYPE_MAP.get(data.get("type", "O"), "channel")
         display_name = data.get("display_name") or data.get("name") or chat_id
+        self._remember_channel_type(chat_id, ch_type)
         return {"name": display_name, "type": ch_type}
 
     # ------------------------------------------------------------------
@@ -375,6 +412,7 @@ class MattermostAdapter(BasePlatformAdapter):
             self._reply_mode == "thread"
             and metadata
             and metadata.get("thread_id")
+            and not self._is_dm_channel(chat_id, metadata)
         ):
             payload["parent_id"] = metadata["thread_id"]
         await self._api_post(
@@ -530,7 +568,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        root_id = await self._root_id_for_payload(reply_to, metadata)
+        root_id = await self._root_id_for_payload(chat_id, reply_to, metadata)
         if root_id:
             payload["root_id"] = root_id
 
@@ -570,7 +608,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        root_id = await self._root_id_for_payload(reply_to, metadata)
+        root_id = await self._root_id_for_payload(chat_id, reply_to, metadata)
         if root_id:
             payload["root_id"] = root_id
 
@@ -658,7 +696,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
                 }
-                root_id = await self._root_id_for_payload(None, metadata)
+                root_id = await self._root_id_for_payload(chat_id, None, metadata)
                 if root_id:
                     payload["root_id"] = root_id
                 logger.info(
@@ -787,6 +825,7 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id = post.get("channel_id", "")
         channel_type_raw = data.get("channel_type", "O")
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
+        self._remember_channel_type(channel_id, chat_type)
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
@@ -851,19 +890,17 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.  In
-        # thread reply mode, a handled top-level channel post will become the
-        # root of the bot's reply thread, so expose its own id as thread_id for
-        # progress/stream/media sends and session keying.  Keep DMs unthreaded
-        # here so they retain one stable DM session unless Mattermost supplies
-        # a real root_id on an in-thread DM reply.
-        thread_id = post.get("root_id") or None
-        if (
-            thread_id is None
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-        ):
-            thread_id = post_id or None
+        # Thread support: if the post is in a non-DM thread, use root_id. In
+        # thread reply mode, a handled top-level channel/group post becomes
+        # the root of the bot's reply thread, so expose its own id as
+        # thread_id for progress/stream/media sends and session keying.
+        # DMs stay flat even if old accidental DM thread replies arrive,
+        # because Mattermost DMs cannot continue Hermes conversations there.
+        thread_id = None
+        if channel_type_raw != "D":
+            thread_id = post.get("root_id") or None
+            if thread_id is None and self._reply_mode == "thread":
+                thread_id = post_id or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

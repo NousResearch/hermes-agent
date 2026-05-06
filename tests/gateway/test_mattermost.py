@@ -284,7 +284,7 @@ class TestMattermostSend:
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={})
 
-        root_id = await self.adapter._root_id_for_payload("ghost", None)
+        root_id = await self.adapter._root_id_for_payload("channel_1", "ghost", None)
 
         assert root_id == "ghost"
 
@@ -296,6 +296,7 @@ class TestMattermostSend:
         self.adapter._api_get = AsyncMock(return_value={})
 
         root_id = await self.adapter._root_id_for_payload(
+            "channel_1",
             "user_reply",
             {"thread_id": "thread_root"},
         )
@@ -310,6 +311,7 @@ class TestMattermostSend:
         self.adapter._api_get = AsyncMock()
 
         root_id = await self.adapter._root_id_for_payload(
+            "channel_1",
             "thread_root",
             {"thread_id": "thread_root"},
         )
@@ -344,6 +346,62 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "thread_root"
         # event.source.thread_id is already a root, so no API resolution needed.
+        self.adapter._api_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_dm_reply_does_not_create_thread(self):
+        """Mattermost DMs stay flat even when reply_mode=thread and the
+        gateway passes reply_to=event.message_id."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._remember_channel_type("dm_channel", "dm")
+        self.adapter._api_get = AsyncMock()
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_dm_reply"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "dm_channel",
+            "Flat DM reply",
+            reply_to="incoming_dm_post",
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+        self.adapter._api_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_dm_metadata_thread_id_is_ignored(self):
+        """Progress/media sends in DMs must not use metadata thread_id as a
+        Mattermost root_id."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._remember_channel_type("dm_channel", "dm")
+        self.adapter._api_get = AsyncMock()
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_dm_progress"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "dm_channel",
+            "Progress",
+            metadata={"thread_id": "old_dm_thread"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
         self.adapter._api_get.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -489,6 +547,21 @@ class TestMattermostSendTyping:
         self.adapter._api_post.assert_awaited_once_with(
             "users/bot_uid/typing",
             {"channel_id": "channel_1"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_typing_in_dm_omits_parent_id(self):
+        """Mattermost DM typing indicators must stay unthreaded."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._remember_channel_type("dm_channel", "dm")
+
+        await self.adapter.send_typing(
+            "dm_channel", metadata={"thread_id": "old_dm_thread"}
+        )
+
+        self.adapter._api_post.assert_awaited_once_with(
+            "users/bot_uid/typing",
+            {"channel_id": "dm_channel"},
         )
 
 
@@ -718,14 +791,40 @@ class TestMattermostWebSocketParsing:
 
     @pytest.mark.asyncio
     async def test_thread_mode_top_level_dm_does_not_create_thread_session(self):
-        """DMs keep their stable DM session unless Mattermost supplies a real
-        root_id on an existing thread reply."""
+        """DMs keep their stable DM session in Mattermost thread mode."""
         self.adapter._reply_mode = "thread"
         post_data = {
             "id": "post_dm_top",
             "user_id": "user_123",
             "channel_id": "chan_dm",
             "message": "DM message",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_root_id_is_ignored(self):
+        """Accidental Mattermost DM thread replies should not split the DM
+        conversation into a thread session."""
+        self.adapter._reply_mode = "thread"
+        post_data = {
+            "id": "post_dm_reply",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": "DM thread reply",
+            "root_id": "old_dm_thread",
         }
         event = {
             "event": "posted",

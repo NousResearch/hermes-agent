@@ -237,6 +237,43 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
+def test_non_retryable_tool_blocker_halts_conversation_after_first_failed_tool_call():
+    agent = _make_agent("web_search", max_iterations=10)
+    args = {"query": "latest market news"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(args), "c-billing")],
+        ),
+        _mock_response(content="SHOULD_NOT_BE_USED", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=json.dumps({"error": "Error searching web: Payment Required / Insufficient credits"}),
+        ) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search for the latest news")
+
+    mock_hfc.assert_called_once()
+    assert result["api_calls"] == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["completed"] is True
+    assert "billing or credits blocker" in result["final_response"]
+    assert result["guardrail"]["code"] == "non_retryable_tool_blocker"
+    assert result["guardrail"]["tool_name"] == "web_search"
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert len(tool_contents) == 1
+    assert "Payment Required / Insufficient credits" in tool_contents[0]
+    assert "Tool loop hard stop" in tool_contents[0]
+
+
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}

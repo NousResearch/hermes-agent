@@ -7,6 +7,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolCallSignature,
     canonical_tool_args,
+    detect_non_retryable_tool_blocker,
 )
 
 
@@ -89,6 +90,22 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
     assert controller.before_call("web_search", args).action == "allow"
     assert controller.halt_decision is None
+
+
+def test_non_retryable_billing_tool_error_halts_immediately_without_config_hard_stop():
+    controller = ToolCallGuardrailController()
+    args = {"query": "latest news"}
+    result = json.dumps({"error": "Error searching web: Payment Required / Insufficient credits"})
+
+    assert controller.before_call("web_search", args).action == "allow"
+    decision = controller.after_call("web_search", args, result, failed=True)
+
+    assert detect_non_retryable_tool_blocker("web_search", result)
+    assert decision.action == "halt"
+    assert decision.code == "non_retryable_tool_blocker"
+    assert decision.tool_name == "web_search"
+    assert "Insufficient credits" in decision.message
+    assert controller.halt_decision == decision
 
 
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():

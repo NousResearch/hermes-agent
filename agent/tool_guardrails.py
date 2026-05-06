@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -56,6 +57,34 @@ MUTATING_TOOL_NAMES = frozenset(
         "delegate_task",
         "process",
     }
+)
+
+_NON_RETRYABLE_BILLING_HINTS = (
+    "payment required",
+    "insufficient credits",
+    "insufficient quota",
+    "insufficient balance",
+    "credits have been exhausted",
+    "credit balance",
+    "billing hard limit",
+    "billing_not_active",
+    "top up your credits",
+    "top up your account",
+    "add more credits",
+    "out of credits",
+    "can only afford",
+)
+
+_TRANSIENT_QUOTA_HINTS = (
+    "try again",
+    "retry",
+    "daily quota",
+    "weekly quota",
+    "monthly quota",
+    "quota reset",
+    "resets at",
+    "cooldown",
+    "rate limit",
 )
 
 
@@ -218,6 +247,45 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     return False, ""
 
 
+def _extract_tool_error_text(result: str | None) -> str:
+    if not result:
+        return ""
+
+    parsed = safe_json_loads(result)
+    if isinstance(parsed, dict):
+        for key in ("error", "message", "detail"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    if isinstance(result, str):
+        return result.strip()
+    return ""
+
+
+def detect_non_retryable_tool_blocker(tool_name: str, result: str | None) -> str:
+    """Return a concise blocker reason when a tool hit a non-retryable billing wall.
+
+    These failures are qualitatively different from a generic tool error: retrying the
+    same tool path will burn iterations and tokens without producing progress, while the
+    correct next step is to surface the blocker to the user immediately.
+    """
+    error_text = _extract_tool_error_text(result)
+    if not error_text:
+        return ""
+
+    normalized = " ".join(error_text.lower().split())
+    if not any(hint in normalized for hint in _NON_RETRYABLE_BILLING_HINTS):
+        return ""
+    if any(hint in normalized for hint in _TRANSIENT_QUOTA_HINTS):
+        return ""
+
+    trimmed = re.sub(r"\s+", " ", error_text).strip()
+    if len(trimmed) > 220:
+        trimmed = trimmed[:217].rstrip() + "..."
+    return trimmed
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -293,6 +361,22 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
+            blocker_reason = detect_non_retryable_tool_blocker(tool_name, result)
+            if blocker_reason:
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="non_retryable_tool_blocker",
+                    message=(
+                        f"Stopped {tool_name}: it hit a non-retryable billing or credits blocker. "
+                        f"Surface the blocker to the user instead of retrying. Last error: {blocker_reason}"
+                    ),
+                    tool_name=tool_name,
+                    count=1,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)

@@ -9214,6 +9214,12 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code == "non_retryable_tool_blocker":
+            return (
+                f"I stopped after {tool} hit a non-retryable billing or credits blocker. "
+                "The tool backend needs attention before I can continue, so retrying would only "
+                "waste iterations. The last tool result contains the exact error."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "

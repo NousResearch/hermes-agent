@@ -40,36 +40,25 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+_CRON_SAFE_TOOLSET = "safe_subset"
+
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
-    """Resolve the toolset list for a cron job.
+    """Resolve the toolset list for an unattended cron job.
 
-    Precedence:
-    1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
-       Keeps the agent's job-scoped toolset override intact — #6130.
-    2. Per-platform ``hermes tools`` config for the ``cron`` platform.
-       Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
-       so users can gate cron toolsets globally without recreating every job.
-    3. ``None`` on any lookup failure — AIAgent loads the full default set
-       (legacy behavior before this change, preserved as the safety net).
-
-    _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
-    ``_get_platform_tools`` for unconfigured platforms, so fresh installs
-    get cron WITHOUT ``moa`` by default (issue reported by Norbert —
-    surprise $4.63 run).
+    Cron runs without a user present to approve each tool call, so prompt-created
+    jobs must not inherit broad platform defaults or opt themselves into
+    privileged per-job toolsets. Keep the default explicit and narrow.
     """
-    per_job = job.get("enabled_toolsets")
-    if per_job:
-        return per_job
-    try:
-        from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
-    except Exception as exc:
+    requested = job.get("enabled_toolsets")
+    if requested and requested != [_CRON_SAFE_TOOLSET]:
         logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
-            exc,
+            "Cron job %r requested unsupported toolsets %r; using %s instead",
+            job.get("id") or job.get("name") or "<unknown>",
+            requested,
+            _CRON_SAFE_TOOLSET,
         )
-        return None
+    return [_CRON_SAFE_TOOLSET]
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -1216,7 +1205,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=[],
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

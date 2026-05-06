@@ -153,6 +153,15 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_CRON_DENIED_READ_NAMES = {
+    ".env",
+    ".netrc",
+    ".pgpass",
+    "credentials",
+    "config.yaml",
+    "config.yml",
+}
+_CRON_DENIED_READ_DIRS = {".ssh", ".aws", ".gnupg"}
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
@@ -171,6 +180,38 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
+    return None
+
+
+def _check_cron_read_path(filepath: str, resolved: Path) -> str | None:
+    """Return an error if an unattended cron run tries to read credentials."""
+    if not os.getenv("HERMES_CRON_SESSION"):
+        return None
+
+    lowered_name = resolved.name.lower()
+    lowered_suffix = resolved.suffix.lower()
+    parts = {part.lower() for part in resolved.parts}
+    denied = (
+        lowered_name in _CRON_DENIED_READ_NAMES
+        or lowered_name.endswith(("_secret", "_secrets"))
+        or "secret" in lowered_name
+        or any(part in _CRON_DENIED_READ_DIRS for part in parts)
+    )
+
+    hermes_home = os.getenv("HERMES_HOME")
+    if hermes_home:
+        try:
+            hermes_root = Path(hermes_home).expanduser().resolve()
+            if resolved.is_relative_to(hermes_root):
+                denied = denied or lowered_suffix in {".json", ".yaml", ".yml"}
+        except (OSError, ValueError):
+            pass
+
+    if denied:
+        return (
+            f"Cannot read '{filepath}' in a cron session: the path appears to "
+            "contain credentials or private configuration."
+        )
     return None
 
 
@@ -461,6 +502,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+
+        cron_read_error = _check_cron_read_path(path, _resolved)
+        if cron_read_error:
+            return json.dumps({"error": cron_read_error})
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).

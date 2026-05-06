@@ -293,6 +293,12 @@ TOOLSETS = {
         "tools": [],
         "includes": ["web", "vision", "image_gen"]
     },
+
+    "safe_subset": {
+        "description": "Minimal cron-safe tools for unattended jobs",
+        "tools": ["read_file", "web_search"],
+        "includes": []
+    },
     
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)

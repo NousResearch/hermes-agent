@@ -46,6 +46,32 @@ _CRON_THREAT_PATTERNS = [
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (
+        r'(read|open|show|display|print|dump|copy|summarize|inspect|review|search|scan|find)'
+        r'[^\n]{0,120}(\.env\b|\.netrc\b|\.pgpass\b|credentials?\b|secrets?\b|api\s*keys?'
+        r'|~?/\.hermes/(?:\.env|config\.ya?ml|[^\s]*\.(?:ya?ml|json))|~/\.ssh/)',
+        "read_sensitive_files",
+    ),
+    (
+        r'\b(?:terminal|execute_code|delegate_task|web_extract|write_file|patch|search_files'
+        r'|browser_(?:navigate|console|cdp))\b|navigate\s+the\s+browser',
+        "cron_privileged_tool",
+    ),
+    (
+        r'(post|send|upload|exfiltrat\w*|webhook|monitoring\s+endpoint|report\s+to)'
+        r'[^\n]{0,160}(https?://|contents?\b|secrets?\b|api\s*keys?|\b\.env\b)',
+        "cron_data_exfiltration",
+    ),
+    (
+        r'(scan|probe|enumerate)[^\n]{0,80}(open\s+ports?|port\s+scan|nmap|10\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+        r'|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})',
+        "network_recon",
+    ),
+    (
+        r'(169\.254\.169\.254|169\.254\.170\.2|fd00:ec2::254|metadata\.google\.internal'
+        r'|metadata\.goog|latest/meta-data)',
+        "metadata_ssrf",
+    ),
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
@@ -601,7 +627,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": "Compatibility field for stored jobs. Agent-backed cron runs are unattended, so the scheduler enforces the built-in safe_subset toolset regardless of broad values supplied here. safe_subset currently exposes only read_file and web_search, with cron-specific credential path blocking. On update, pass an empty array to clear."
             },
             "workdir": {
                 "type": "string",

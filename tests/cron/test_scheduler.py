@@ -852,7 +852,7 @@ class TestRunJobSessionPersistence:
             ),
         ]
 
-    def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
+    def test_run_job_ignores_unsafe_enabled_toolsets(self, tmp_path):
         job = {
             "id": "toolset-job",
             "name": "test",
@@ -868,17 +868,10 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+        assert kwargs["enabled_toolsets"] == ["safe_subset"]
 
-    def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
-        """When a job has no explicit enabled_toolsets, the scheduler now
-        resolves them from ``hermes tools`` platform config for ``cron``
-        (PR #14xxx — blanket fix for Norbert's surprise ``moa`` run).
-
-        The legacy "pass None → AIAgent loads full default" path is still
-        reachable, but only when ``_get_platform_tools`` raises (safety net
-        for any unexpected config shape).
-        """
+    def test_run_job_uses_safe_cron_toolset_when_not_set(self, tmp_path):
+        """Cron jobs without explicit toolsets must not inherit broad defaults."""
         job = {
             "id": "no-toolset-job",
             "name": "test",
@@ -893,17 +886,11 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        # Resolution happened — not None, is a list.
-        assert isinstance(kwargs["enabled_toolsets"], list)
-        # The cron default is _HERMES_CORE_TOOLS with _DEFAULT_OFF_TOOLSETS
-        # (``moa``, ``homeassistant``, ``rl``) removed. The most important
-        # invariant: ``moa`` is NOT in the default cron toolset, so a cron
-        # run cannot accidentally spin up frontier models.
-        assert "moa" not in kwargs["enabled_toolsets"]
+        assert kwargs["enabled_toolsets"] == ["safe_subset"]
+        assert kwargs["disabled_toolsets"] == []
 
-    def test_run_job_per_job_toolsets_win_over_platform_config(self, tmp_path):
-        """Per-job enabled_toolsets (via cronjob tool) always take precedence
-        over the platform-level ``hermes tools`` config."""
+    def test_run_job_rejects_unsafe_per_job_toolsets(self, tmp_path):
+        """Prompt-created cron jobs cannot opt themselves into privileged tools."""
         job = {
             "id": "override-job",
             "name": "test",
@@ -911,8 +898,6 @@ class TestRunJobSessionPersistence:
             "enabled_toolsets": ["terminal"],
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        # Even if the user has ``hermes tools`` configured to enable web+file
-        # for cron, the per-job override wins.
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch(
@@ -925,7 +910,7 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["enabled_toolsets"] == ["terminal"]
+        assert kwargs["enabled_toolsets"] == ["safe_subset"]
 
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
         """Empty final_response should stay empty for delivery logic (issue #2234).
@@ -1552,7 +1537,8 @@ class TestRunJobSkillBacked:
         assert final_response == "ok"
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert "cronjob" in (kwargs["disabled_toolsets"] or [])
+        assert kwargs["enabled_toolsets"] == ["safe_subset"]
+        assert kwargs["disabled_toolsets"] == []
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
         assert "blogwatcher" in prompt_arg

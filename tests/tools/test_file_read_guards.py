@@ -91,6 +91,39 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("device file", result["error"])
 
 
+class TestCronReadPathBlocking(unittest.TestCase):
+    """Cron's safe subset may read files, but not credential paths."""
+
+    def setUp(self):
+        _read_tracker.clear()
+
+    def tearDown(self):
+        _read_tracker.clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_cron_session_rejects_hermes_env_file(self, mock_ops):
+        with patch.dict(os.environ, {
+            "HERMES_CRON_SESSION": "1",
+            "HERMES_HOME": "/tmp/hermes-cron-home",
+        }):
+            result = json.loads(
+                read_file_tool("/tmp/hermes-cron-home/.env", task_id="cron_read")
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("cron session", result["error"])
+        mock_ops.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_cron_session_allows_regular_file(self, mock_ops):
+        mock_ops.return_value = _make_fake_ops(content="hello\n")
+        with patch.dict(os.environ, {"HERMES_CRON_SESSION": "1"}):
+            result = json.loads(read_file_tool("/tmp/notes.txt", task_id="cron_regular"))
+
+        self.assertEqual(result["content"], "hello\n")
+        mock_ops.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Character-count limits
 # ---------------------------------------------------------------------------

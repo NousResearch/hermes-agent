@@ -359,15 +359,15 @@ def _describe_media_for_mirror(media_files):
         media_path, is_voice = media_files[0]
         ext = os.path.splitext(media_path)[1].lower()
         if is_voice and ext in _VOICE_EXTS:
-            return "[Sent voice message]"
+            return "[已发送语音消息]"
         if ext in _IMAGE_EXTS:
-            return "[Sent image attachment]"
+            return "[已发送图片附件]"
         if ext in _VIDEO_EXTS:
-            return "[Sent video attachment]"
+            return "[已发送视频附件]"
         if ext in _AUDIO_EXTS:
-            return "[Sent audio attachment]"
-        return "[Sent document attachment]"
-    return f"[Sent {len(media_files)} media attachments]"
+            return "[已发送音频附件]"
+        return "[已发送文档附件]"
+    return f"[已发送 {len(media_files)} 个媒体附件]"
 
 
 def _get_cron_auto_delivery_target():

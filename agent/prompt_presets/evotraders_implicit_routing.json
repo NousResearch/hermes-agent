@@ -1,0 +1,1315 @@
+{
+  "schema": "evotraders_implicit_routing.v2",
+  "rule_defaults": {
+    "enabled": true,
+    "priority": 0,
+    "weight": 1.0,
+    "min_score": 0.0,
+    "requires_ticker": false
+  },
+  "rules": [
+    {
+      "rule_id": "ths-trade-core",
+      "name": "同花顺交易查询核心",
+      "description": "同花顺交易域（账户/持仓/委托）问题优先路由到交易查询工具。",
+      "enabled": true,
+      "priority": 10,
+      "weight": 2.0,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(同花顺|ths).*(持仓|账户|委托|交易|成交)",
+        "(持仓|账户|委托|交易|成交).*(同花顺|ths)"
+      ],
+      "negative_keywords": [
+        "不要交易",
+        "不用交易"
+      ],
+      "keywords": [
+        "同花顺持仓",
+        "同花顺账户",
+        "同花顺委托",
+        "ths持仓",
+        "ths账户",
+        "ths委托"
+      ]
+    },
+    {
+      "rule_id": "iwencai-a-share-screener-core",
+      "name": "问财A股选股核心",
+      "description": "A股/连板/选股意图优先走问财选股链路。",
+      "enabled": true,
+      "priority": 2,
+      "weight": 1.28,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(选股|筛选|筛出来|筛一下|过滤).*(A股|主板|创业板|科创板)?",
+        "(涨停|跌停|连板|炸板|触及涨停|触及跌停)",
+        "(1进2|一进二|2进3|3进4|4进5|昨日涨停)",
+        "同花顺.*问财",
+        "iwencai"
+      ],
+      "negative_keywords": [
+        "不要问财",
+        "不用问财",
+        "不要选股",
+        "不选股"
+      ],
+      "keywords": [
+        "问财选股",
+        "问财选A股",
+        "同花顺问财",
+        "选股",
+        "筛选",
+        "连板"
+      ]
+    },
+    {
+      "rule_id": "iwencai-sector-screener-core",
+      "name": "问财板块筛选核心",
+      "description": "板块/行业/概念筛选与排序走问财板块链路。",
+      "enabled": true,
+      "priority": 3,
+      "weight": 1.3,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(选|筛选|找|找出|排名).*(板块|行业|概念|题材)",
+        "(板块|行业|概念|题材).*(涨幅|跌幅|强势|领涨|领跌|估值|资金|净流入|主力)"
+      ],
+      "negative_keywords": [
+        "不要板块",
+        "不看板块",
+        "不要行业",
+        "不看行业"
+      ],
+      "keywords": [
+        "选板块",
+        "筛选板块",
+        "行业筛选",
+        "概念筛选",
+        "题材筛选"
+      ]
+    },
+    {
+      "rule_id": "iwencai-industry-data-core",
+      "name": "问财行业数据核心",
+      "description": "行业估值、财务、资金、排名等数据查询。",
+      "enabled": true,
+      "priority": 4,
+      "weight": 1.29,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(行业).*(估值|市盈率|市净率|分位|盈利|利润|营收|财务|ROE|毛利率|净利率|行情|涨跌幅|资金|净流入|排名|榜单)",
+        "(板块排名|行业排名).*(估值|盈利|财务|行情)?",
+        "iwencai.*行业"
+      ],
+      "negative_keywords": [
+        "不要行业",
+        "不看行业",
+        "行业新闻",
+        "行业资讯",
+        "行业公告"
+      ],
+      "keywords": [
+        "行业数据",
+        "行业估值",
+        "行业财务",
+        "行业资金",
+        "行业排名",
+        "板块排名"
+      ]
+    },
+    {
+      "rule_id": "iwencai-business-data-core",
+      "name": "问财公司经营数据核心",
+      "description": "公司经营、客户供应商、参控股和合同等经营维度查询。",
+      "enabled": true,
+      "priority": 5,
+      "weight": 1.3,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(公司|个股|企业).*(经营|主营业务|业务构成|产品结构|地区分布|客户|供应商|参控股|子公司|参股|股权投资|重大合同)",
+        "iwencai.*(经营|主营|客户|供应商|参控股|股权投资|重大合同)"
+      ],
+      "negative_keywords": [
+        "新闻",
+        "公告",
+        "事件",
+        "选股",
+        "选板块"
+      ],
+      "keywords": [
+        "公司经营",
+        "经营数据",
+        "主营业务",
+        "客户",
+        "供应商",
+        "参控股",
+        "重大合同"
+      ]
+    },
+    {
+      "rule_id": "iwencai-macro-data-core",
+      "name": "问财宏观数据核心",
+      "description": "GDP/CPI/PMI/LPR等宏观指标查询。",
+      "enabled": true,
+      "priority": 5,
+      "weight": 1.3,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(宏观|宏观经济).*(数据|指标|走势|变化|同比|环比|查询)?",
+        "(GDP|CPI|PPI|PMI|M2|社融|LPR|利率|汇率).*(数据|走势|变化)?",
+        "iwencai.*(宏观|GDP|CPI|PPI|PMI|社融|M2|LPR)"
+      ],
+      "negative_keywords": [
+        "公司经营",
+        "公告",
+        "选股",
+        "选板块"
+      ],
+      "keywords": [
+        "宏观",
+        "宏观数据",
+        "GDP",
+        "CPI",
+        "PPI",
+        "PMI",
+        "社融",
+        "M2",
+        "LPR"
+      ]
+    },
+    {
+      "rule_id": "iwencai-insresearch-rating-core",
+      "name": "问财机构研报评级核心",
+      "description": "机构研究、研报评级、目标价、一致预期等查询。",
+      "enabled": true,
+      "priority": 5,
+      "weight": 1.3,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(机构|券商|卖方|研报|研究报告).*(评级|观点|目标价|上调|下调|覆盖|推荐)",
+        "(业绩预测|盈利预测|一致预期|ESG评级|信用评级|基金评级|券商金股).*(查询|数据|名单|明细)?",
+        "iwencai.*(研报|评级|机构研究|券商金股|ESG)"
+      ],
+      "negative_keywords": [
+        "公告",
+        "事件",
+        "宏观",
+        "选股",
+        "选板块"
+      ],
+      "keywords": [
+        "机构研究",
+        "机构评级",
+        "研报",
+        "研报评级",
+        "目标价",
+        "业绩预测",
+        "一致预期",
+        "ESG评级",
+        "券商金股"
+      ]
+    },
+    {
+      "rule_id": "iwencai-index-data-core",
+      "name": "问财指数数据核心",
+      "description": "指数行情、点位、成交及走势查询。",
+      "enabled": true,
+      "priority": 5,
+      "weight": 1.3,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(指数|大盘|盘面).*(行情|涨跌|涨跌幅|点位|成交量|成交额|走势|表现|查询)?",
+        "(上证指数|深证成指|创业板指|沪深300|中证500|上证50|恒生指数|纳斯达克|道琼斯|标普500).*(涨跌|点位|行情|走势|成交)?",
+        "iwencai.*(指数|上证|沪深300|创业板|恒生|纳斯达克)"
+      ],
+      "negative_keywords": [
+        "宏观",
+        "公告",
+        "事件",
+        "选股",
+        "选板块"
+      ],
+      "keywords": [
+        "指数",
+        "指数数据",
+        "指数行情",
+        "指数点位",
+        "上证指数",
+        "深证成指",
+        "创业板指",
+        "沪深300"
+      ]
+    },
+    {
+      "rule_id": "iwencai-market-data-fallback",
+      "name": "问财行情兜底",
+      "description": "行情/资金/技术指标相关问题在非本地优先场景下兜底到问财。",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.06,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(问财|iwencai).*(行情|价格|涨跌幅|成交量|资金流向|主力净流入|大单|小单|技术指标)"
+      ],
+      "negative_keywords": [
+        "本地行情",
+        "通达信",
+        "tdx",
+        "tq",
+        "tqlex",
+        "优先本地",
+        "不要问财行情",
+        "不用问财行情"
+      ],
+      "keywords": [
+        "问财行情",
+        "行情数据查询",
+        "股票价格",
+        "涨跌幅",
+        "成交量",
+        "换手率",
+        "主力资金流向",
+        "主力净流入",
+        "技术指标"
+      ]
+    },
+    {
+      "rule_id": "iwencai-basic-info-fallback",
+      "name": "问财基础资料兜底",
+      "description": "基础资料/静态信息相关问题在非本地优先场景下兜底到问财。",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.05,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(问财|iwencai).*(基本资料|基础信息|静态信息|上市日期|发行主体|费率|机构资料)"
+      ],
+      "negative_keywords": [
+        "本地资料",
+        "本地数据",
+        "通达信",
+        "tdx",
+        "tq",
+        "tqlex",
+        "优先本地",
+        "不要问财基本资料",
+        "不用问财基本资料"
+      ],
+      "keywords": [
+        "问财基本资料",
+        "基本资料查询",
+        "基础信息查询",
+        "静态信息",
+        "上市日期",
+        "发行主体",
+        "机构资料"
+      ]
+    },
+    {
+      "rule_id": "iwencai-news-search-core",
+      "name": "问财新闻资讯核心",
+      "description": "新闻、资讯、政策、舆情等检索走问财新闻链路。",
+      "enabled": true,
+      "priority": 3,
+      "weight": 1.26,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(新闻|资讯|消息|快讯|报道|舆情|事件).*",
+        "(政策|监管|公告|通告|问询|处罚|立案|调查|澄清|辟谣|回应|说明)"
+      ],
+      "negative_keywords": [
+        "不要新闻",
+        "不用新闻",
+        "不看新闻"
+      ],
+      "keywords": [
+        "新闻",
+        "资讯",
+        "快讯",
+        "政策",
+        "舆情"
+      ]
+    },
+    {
+      "rule_id": "iwencai-announcement-search-core",
+      "name": "问财公告检索核心",
+      "description": "公告/财报/监管函等披露信息检索。",
+      "enabled": true,
+      "priority": 4,
+      "weight": 1.27,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(公告|财报|年报|季报|半年报|中报|业绩预告|业绩快报|分红|派息|回购|增持|减持|重组|重大合同|关联交易|问询函|监管函|风险提示).*"
+      ],
+      "negative_keywords": [
+        "不要公告",
+        "不用公告",
+        "不看公告"
+      ],
+      "keywords": [
+        "公告",
+        "财报",
+        "年报",
+        "季报",
+        "问询函",
+        "监管函"
+      ]
+    },
+    {
+      "rule_id": "iwencai-event-data-core",
+      "name": "问财事件数据核心",
+      "description": "业绩预告、解禁、质押、机构调研等事件数据查询。",
+      "enabled": true,
+      "priority": 5,
+      "weight": 1.31,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(业绩预告|预增|预减|扭亏|增发|配股|质押|解禁|机构调研|监管函|问询函|警示函|股东大会|重大事项).*(数据|查询|统计|明细|名单|记录|情况)?"
+      ],
+      "negative_keywords": [
+        "不要事件",
+        "不看事件"
+      ],
+      "keywords": [
+        "事件数据",
+        "事件查询",
+        "业绩预告",
+        "解禁",
+        "质押",
+        "机构调研"
+      ]
+    },
+    {
+      "rule_id": "lianban-tier-analysis-core",
+      "name": "连板梯队分析核心",
+      "description": "连板梯队、主线、打板方向等题材结构分析。",
+      "enabled": true,
+      "priority": 6,
+      "weight": 1.34,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(连板天梯|连板梯队|连板结构|梯队完整性|连板高度|晋级结构)",
+        "(打板|跟随|半路|低吸).*(连板|梯队|主线)"
+      ],
+      "negative_keywords": [
+        "不要连板",
+        "不做连板"
+      ],
+      "keywords": [
+        "连板梯队",
+        "连板结构",
+        "主线",
+        "打板方向"
+      ]
+    },
+    {
+      "rule_id": "tdx-wenda-screener-core",
+      "name": "通达信问达选股核心",
+      "description": "问达选股/连板筛选意图走本地问达链路。",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.12,
+      "min_score": 0.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "问达选股",
+        "wendaQuery",
+        "(涨停|跌停|连板|炸板)",
+        "(1进2|一进二|2进3|3进4|4进5|昨日涨停)"
+      ],
+      "negative_keywords": [
+        "不要问达",
+        "不用问达"
+      ],
+      "keywords": [
+        "问达",
+        "问达选股",
+        "wendaQuery"
+      ]
+    },
+    {
+      "rule_id": "evo-parallel-subagent-dispatch-core",
+      "name": "Evo 并行子智能体调度",
+      "description": "并行子智能体：按交易日/多标的结构化委派（parallel_work_dispatch_tool / delegate 批量），再合并报告",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.12,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "并行.*(子|智能体|代理|委派|执行|分析)",
+        "(按|分).*(交易日|每个交易日).*(并行|并行执行|分开)",
+        "\\d+\\s*(个|日|天).*(交易日)?.*并行",
+        "parallel_work_dispatch",
+        "delegate_tool.*tasks",
+        "多标.*并行",
+        "同时.*(开跑|分析|子代理)"
+      ],
+      "negative_keywords": [
+        "不要并行",
+        "不要子代理",
+        "单线程",
+        "只要一天"
+      ],
+      "keywords": [
+        "并行子智能体",
+        "并行子代理",
+        "并行委派",
+        "parallel_work_dispatch",
+        "按交易日并行",
+        "五日并行",
+        "多天并行分析",
+        "多标的并行",
+        "结构化并行",
+        "同时跑多天",
+        "分天分析",
+        "子智能体并行"
+      ]
+    },
+    {
+      "rule_id": "dragon-tiger-core",
+      "name": "查询个股龙虎榜",
+      "description": "龙虎榜（上榜日期/买卖席位/净买入/营业部）",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.15,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "龙虎榜",
+        "上榜(日期|明细)?",
+        "席位",
+        "营业部",
+        "净买入"
+      ],
+      "negative_keywords": [
+        "不要龙虎榜",
+        "不看龙虎榜"
+      ],
+      "keywords": [
+        "龙虎榜",
+        "上榜日期",
+        "上榜明细",
+        "买卖席位",
+        "营业部",
+        "净买入",
+        "机构席位"
+      ]
+    },
+    {
+      "rule_id": "report-rating-core",
+      "name": "查询个股研报评级",
+      "description": "研报评级一致预期（评级/目标价/一致预期变化）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 1.05,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "研报(评级|一致预期|目标价)",
+        "一致预期",
+        "分析师评级",
+        "目标价"
+      ],
+      "negative_keywords": [
+        "不要研报",
+        "不看研报"
+      ],
+      "keywords": [
+        "研报评级",
+        "一致预期",
+        "目标价",
+        "分析师评级",
+        "评级变动"
+      ]
+    },
+    {
+      "rule_id": "shareholder-research-core",
+      "name": "查询股东信息",
+      "description": "股东研究（股东人数/控股股东/十大股东/十大流通）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 1.0,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "股东人数",
+        "户数",
+        "十大(股东|流通股东)",
+        "控股股东",
+        "实控人"
+      ],
+      "negative_keywords": [
+        "不要股东",
+        "不看股东"
+      ],
+      "keywords": [
+        "股东人数",
+        "户数",
+        "控股股东",
+        "实控人",
+        "十大股东",
+        "十大流通股东",
+        "股东结构"
+      ]
+    },
+    {
+      "rule_id": "share-capital-core",
+      "name": "查询股本信息",
+      "description": "股本（结构/变动/限售解禁/回购）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.95,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "股本(结构|变动)?",
+        "限售(解禁)?",
+        "解禁",
+        "回购",
+        "股份回购"
+      ],
+      "negative_keywords": [
+        "不要股本",
+        "不看股本"
+      ],
+      "keywords": [
+        "股本结构",
+        "股本变动",
+        "限售解禁",
+        "解禁",
+        "回购",
+        "股份回购"
+      ]
+    },
+    {
+      "rule_id": "industry-chain-core",
+      "name": "查询行业产业链",
+      "description": "产业链/行业动态（产业链图谱/行业重要事件/动态）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 1.05,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "产业链",
+        "上下游",
+        "行业动态",
+        "行业(事件|要闻|最新|数据)",
+        "产业链(图谱|映射)?"
+      ],
+      "negative_keywords": [
+        "不要产业链",
+        "不看产业链"
+      ],
+      "keywords": [
+        "产业链",
+        "上下游",
+        "行业动态",
+        "行业重要事件",
+        "图谱",
+        "链路"
+      ]
+    },
+    {
+      "rule_id": "board-cpbd-core",
+      "name": "板块操盘必读",
+      "description": "板块操盘必读（板块详解/阶段涨幅/市场统计）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 1.05,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "操盘必读",
+        "板块操盘必读",
+        "板块(基础资料|详解|阶段涨幅|市场统计)"
+      ],
+      "negative_keywords": [
+        "不要操盘必读"
+      ],
+      "keywords": [
+        "操盘必读",
+        "板块操盘必读",
+        "板块详解",
+        "阶段涨幅",
+        "市场统计"
+      ]
+    },
+    {
+      "rule_id": "board-valuation-core",
+      "name": "板块估值",
+      "description": "板块估值（估值对比/历史估值走势）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 1.05,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "板块估值",
+        "行业估值",
+        "(pe|pb|ps|pcf)\\b",
+        "估值(对比|走势|分位|排名)"
+      ],
+      "negative_keywords": [
+        "不要估值"
+      ],
+      "keywords": [
+        "板块估值",
+        "行业估值",
+        "估值对比",
+        "历史估值",
+        "估值走势",
+        "估值分位",
+        "PE",
+        "PB",
+        "PS",
+        "PCF"
+      ]
+    },
+    {
+      "rule_id": "trading-info-core",
+      "name": "查询个股交易相关数据",
+      "description": "个股交易相关问题（融资融券/资金流向/涨跌停分析）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.82,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "融[资券]",
+        "资金流(向|入|出)",
+        "(涨停|跌停)(原因|分析)?",
+        "查询?个股交易相关数据?",
+        "交易数据"
+      ],
+      "negative_keywords": [
+        "不要看交易",
+        "不看交易"
+      ],
+      "keywords": [
+        "融资融券",
+        "转融券",
+        "资金流向",
+        "交易数据",
+        "个股交易",
+        "涨停分析",
+        "跌停分析",
+        "交易相关",
+        "交易相关数据",
+        "查询个股交易相关数据",
+        "大宗交易",
+        "涨停原因",
+        "跌停原因"
+      ]
+    },
+    {
+      "rule_id": "rh-trade-buy-core",
+      "name": "买入下单",
+      "description": "同花顺交易买入快速路由（buy 委托）",
+      "enabled": true,
+      "priority": 6,
+      "weight": 1.36,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(买入|下单|委托).*(\\bbuy\\b|买|建仓|开仓|加仓)",
+        "(帮我|现在|立即).*(买入|买进|下买单|下委托)",
+        "rh_trade_buy"
+      ],
+      "negative_keywords": [
+        "不要下单",
+        "只做分析",
+        "模拟分析"
+      ],
+      "keywords": [
+        "买入",
+        "买进",
+        "下买单",
+        "买入委托",
+        "buy",
+        "建仓",
+        "开仓",
+        "加仓"
+      ]
+    },
+    {
+      "rule_id": "rh-trade-sell-core",
+      "name": "卖出下单",
+      "description": "同花顺交易卖出快速路由（sell 委托）",
+      "enabled": true,
+      "priority": 6,
+      "weight": 1.36,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(卖出|下单|委托).*(\\bsell\\b|卖|减仓|清仓|止盈|止损)",
+        "(帮我|现在|立即).*(卖出|卖掉|下卖单|下委托)",
+        "rh_trade_sell"
+      ],
+      "negative_keywords": [
+        "不要下单",
+        "只做分析",
+        "模拟分析"
+      ],
+      "keywords": [
+        "卖出",
+        "卖掉",
+        "下卖单",
+        "卖出委托",
+        "sell",
+        "减仓",
+        "清仓",
+        "止盈",
+        "止损"
+      ]
+    },
+    {
+      "rule_id": "rh-trade-cancel-core",
+      "name": "撤单",
+      "description": "同花顺交易撤单快速路由（全撤/按合同号）",
+      "enabled": true,
+      "priority": 6,
+      "weight": 1.34,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "撤单",
+        "取消委托",
+        "撤销委托",
+        "全撤",
+        "合同号.*撤",
+        "rh_trade_cancel"
+      ],
+      "negative_keywords": [
+        "不要撤单"
+      ],
+      "keywords": [
+        "撤单",
+        "取消委托",
+        "撤销委托",
+        "全撤",
+        "按合同号撤单"
+      ]
+    },
+    {
+      "rule_id": "rh-trade-query-core",
+      "name": "交易数据打包",
+      "description": "同花顺交易查询快速路由（资金/持仓/委托/汇总）",
+      "enabled": true,
+      "priority": 5,
+      "weight": 1.32,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(账户|资金|可用|冻结|总资产)",
+        "(持仓|仓位|可用股数|成本|盈亏|市值)",
+        "(委托|成交|当日委托|历史委托|合同号)",
+        "(交易数据|交易查询|查账户|查持仓|查委托)",
+        "rh_trade_(data_bundle|account|positions|orders)"
+      ],
+      "negative_keywords": [
+        "不要交易数据",
+        "不看账户",
+        "不看持仓"
+      ],
+      "keywords": [
+        "账户资金",
+        "可用资金",
+        "持仓",
+        "仓位",
+        "委托",
+        "成交",
+        "交易数据",
+        "查账户",
+        "查持仓",
+        "查委托"
+      ]
+    },
+    {
+      "rule_id": "rh-market-snapshot-core",
+      "name": "最新行情快照",
+      "description": "同花顺行情快照快速路由（最新分时/快照）",
+      "enabled": true,
+      "priority": 7,
+      "weight": 1.45,
+      "min_score": 0.95,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(行情快照|快照行情|分时快照)",
+        "(最新行情|实时行情|当前行情|现价|最新价)",
+        "(snapshot|quote)",
+        "rh_quote_latest"
+      ],
+      "negative_keywords": [
+        "不要行情",
+        "不看行情"
+      ],
+      "keywords": [
+        "行情快照",
+        "最新行情",
+        "实时行情",
+        "分时行情",
+        "当前行情",
+        "现价",
+        "最新价",
+        "snapshot",
+        "quote"
+      ]
+    },
+    {
+      "rule_id": "rh-wencai-auction-analysis-core",
+      "name": "集合竞价组合分析",
+      "description": "集合竞价/竞价分析快速路由：按代码批量拉近5天竞价组合数据结构（支持指定日期单日）",
+      "enabled": true,
+      "priority": 7,
+      "weight": 1.42,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(集合竞价|开盘集合|盘前竞价|竞价分析|竞价结构)",
+        "竞价(涨幅|金额|量|未匹配)",
+        "rh_wencai_auction_analysis"
+      ],
+      "negative_keywords": [
+        "不要竞价",
+        "不看竞价",
+        "不要集合竞价"
+      ],
+      "keywords": [
+        "竞价",
+        "集合竞价",
+        "盘前竞价",
+        "开盘集合",
+        "竞价分析",
+        "竞价结构",
+        "竞价涨幅",
+        "竞价金额",
+        "竞价量",
+        "未匹配量"
+      ]
+    },
+    {
+      "rule_id": "rh-auction-screener-combo-core",
+      "name": "集合竞价选股（组合）",
+      "description": "竞价选股快速路由：筛出当日强势集合竞价个股，并输出候选池近5日竞价结构（支持多种 JSON 输出形态）。",
+      "enabled": true,
+      "priority": 7,
+      "weight": 1.44,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "(竞价|集合竞价).*(选股|筛选|筛出来|筛一下|过滤|选出|挑选)",
+        "竞价选股",
+        "集合竞价选股",
+        "rh_auction_screener_combo"
+      ],
+      "negative_keywords": [
+        "不要选股",
+        "不选股",
+        "不要竞价选股",
+        "不要集合竞价选股"
+      ],
+      "keywords": [
+        "竞价选股",
+        "集合竞价选股",
+        "竞价筛选",
+        "集合竞价筛选",
+        "盘前竞价选股",
+        "开盘集合竞价选股"
+      ]
+    },
+    {
+      "rule_id": "stock-events-core",
+      "name": "查询股票事件信息",
+      "description": "个股事件信息（增减持/股东事件/十大股东明细）",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.08,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "查询?股票事件信息?",
+        "股票事件",
+        "大宗交易",
+        "十大股东明细",
+        "增减持"
+      ],
+      "negative_keywords": [],
+      "keywords": [
+        "增减持",
+        "事件信息",
+        "股东事件",
+        "股票事件",
+        "十大股东明细",
+        "大宗交易",
+        "查询股票事件信息"
+      ]
+    },
+    {
+      "rule_id": "main-position-core",
+      "name": "查询个股主力持仓",
+      "description": "机构与主力持仓相关问题（含北向持股）",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.18,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "查询?个股主力持仓",
+        "主力(持仓|仓位)",
+        "机构(持股|持仓)(汇总|明细)?",
+        "机构分布",
+        "价仓对比"
+      ],
+      "negative_keywords": [],
+      "keywords": [
+        "主力持仓",
+        "机构持仓",
+        "机构持股",
+        "机构持股汇总",
+        "机构分布",
+        "机构明细",
+        "北向持股",
+        "价仓对比",
+        "基金价仓对比",
+        "查询个股主力持仓"
+      ]
+    },
+    {
+      "rule_id": "financials-core",
+      "name": "查询财务分析数据",
+      "description": "财务报表与财务分析相关问题",
+      "enabled": true,
+      "priority": 0,
+      "weight": 1.0,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [],
+      "negative_keywords": [],
+      "keywords": [
+        "利润表",
+        "资产负债",
+        "现金流",
+        "财务分析",
+        "行业排名",
+        "估值历史",
+        "财报",
+        "员工构成",
+        "员工效益"
+      ]
+    },
+    {
+      "rule_id": "hot-topic-core",
+      "name": "查询个股热点题材",
+      "description": "热点题材与主题链路问题",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.9,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [],
+      "negative_keywords": [],
+      "keywords": [
+        "热点题材",
+        "板块族谱",
+        "主题库",
+        "事件驱动",
+        "信息面概览",
+        "热点"
+      ]
+    },
+    {
+      "rule_id": "company-info-core",
+      "name": "查询公司信息",
+      "description": "公司概况/董监高/参股控股等公司资料问题",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.9,
+      "min_score": 1.0,
+      "requires_ticker": true,
+      "regex_keywords": [],
+      "negative_keywords": [],
+      "keywords": [
+        "公司信息",
+        "公司概况",
+        "董监高",
+        "参股控股",
+        "发行与交易",
+        "企业概况"
+      ]
+    },
+    {
+      "rule_id": "a-share-symbol-cache-refresh-core",
+      "name": "A股代码缓存刷新器",
+      "description": "刷新或检查本地 A 股代码名称缓存",
+      "enabled": true,
+      "priority": 2,
+      "weight": 1.3,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "更新.*(本地)?股票代码(函数|缓存)",
+        "刷新.*A股.*(代码|名称).*(缓存|映射)",
+        "(快速检查|强制更新).*(股票代码|代码缓存)"
+      ],
+      "negative_keywords": [],
+      "keywords": [
+        "更新本地股票代码函数",
+        "刷新A股代码缓存",
+        "同步最新股票名称和代码",
+        "更新本地stock code",
+        "快速检查股票代码缓存",
+        "强制更新股票代码缓存"
+      ]
+    },
+    {
+      "rule_id": "stock-watcher-core",
+      "name": "自选股监控（Stock Watcher）",
+      "description": "自选股管理与行情摘要：添加/删除/列表/清空自选股，并基于同花顺(10jqka)汇总近期表现",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.08,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "自选股(列表|管理|监控|预警|提醒|清空|添加|删除)",
+        "监控.*(自选|股票)",
+        "(添加|删除|移除|清空).*(自选股|自选)",
+        "(同花顺|10jqka).*(自选|行情|监控|摘要)"
+      ],
+      "negative_keywords": [
+        "不要自选股",
+        "不需要自选股",
+        "不要监控"
+      ],
+      "keywords": [
+        "自选股",
+        "自选股列表",
+        "管理自选股",
+        "添加自选股",
+        "删除自选股",
+        "清空自选股",
+        "自选股监控",
+        "自选股预警",
+        "行情摘要",
+        "同花顺自选股",
+        "10jqka"
+      ]
+    },
+    {
+      "rule_id": "tdx-ggtzljyj-core",
+      "name": "个股投资逻辑研究",
+      "description": "个股核心投资逻辑深度研究（公司是什么/核心逻辑/行业格局/财务验证/市场预期/估值匹配/风险/结论）；适配同花顺分组/持仓池/自选池的批量研究入口",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.06,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "个股.*(投资逻辑|逻辑研究|深度研究|基本面研究|研究报告)",
+        "(公司|个股).*(核心逻辑|护城河|增长逻辑|商业模式|竞争格局|财务质量|估值)",
+        "(同花顺|THS).*(板块|分组|自选|持仓).*(分析|研究|解读)",
+        "持仓.*(分析|研究|梳理|逻辑)"
+      ],
+      "negative_keywords": [
+        "不要基本面",
+        "只看技术面",
+        "不要投资逻辑"
+      ],
+      "keywords": [
+        "个股投资逻辑研究",
+        "投资逻辑研究",
+        "基本面研究",
+        "个股深度研究",
+        "核心逻辑",
+        "商业模式",
+        "竞争格局",
+        "财务质量",
+        "市场预期",
+        "估值匹配",
+        "同花顺板块",
+        "同花顺分组",
+        "持仓",
+        "自选股池"
+      ]
+    },
+    {
+      "rule_id": "tdx-position-decision-core",
+      "name": "仓位决策",
+      "description": "仓位决策与风险控制（结合用户当前持仓、可用资金、成本位置给出加减仓节奏）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.8,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "仓位.*(决策|管理|建议|调整)",
+        "(该|现在).*(加仓|减仓|降仓|上仓位)",
+        "可用(余额|资金).*(怎么用|怎么配|仓位)",
+        "持仓.*(成本|浮盈|浮亏).*(仓位|调整|决策)",
+        "风险.*(控制|回撤).*(仓位|节奏)"
+      ],
+      "negative_keywords": [
+        "不要仓位",
+        "不看仓位",
+        "不要决策"
+      ],
+      "keywords": [
+        "仓位决策",
+        "仓位管理",
+        "加仓减仓",
+        "总仓位",
+        "仓位节奏",
+        "可用资金",
+        "持仓成本",
+        "回撤控制",
+        "风险控制"
+      ]
+    },
+    {
+      "rule_id": "tdx-trade-plan-core",
+      "name": "生成交易计划",
+      "description": "交易计划生成（结合当前持仓成本、可用资金输出买点/卖点/止盈止损与执行分批）",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.8,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "交易计划",
+        "(买点|卖点).*(怎么定|设置|分析)",
+        "(止盈|止损).*(怎么设|设置|规则)",
+        "帮我做.*(交易计划|操作计划)",
+        "(这个票|该股).*(怎么做|怎么操作|怎么交易)",
+        "结合.*(持仓|成本|可用余额).*(计划|建议)"
+      ],
+      "negative_keywords": [
+        "不要交易计划",
+        "不做计划"
+      ],
+      "keywords": [
+        "交易计划",
+        "买卖点",
+        "止盈止损",
+        "分批执行",
+        "入场计划",
+        "离场计划",
+        "执行策略",
+        "持仓成本",
+        "可用余额"
+      ]
+    },
+    {
+      "rule_id": "tdx-tail-session-stock-picker-core",
+      "name": "尾盘选股智能体",
+      "description": "尾盘选股与次日惯性博弈（主线板块、资金强度追随、主力离场判定、重大风险排雷）",
+      "enabled": true,
+      "priority": 1,
+      "weight": 1.2,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "尾盘.*(选股|入场|介入|买点|分析)",
+        "尾盘买点",
+        "尾盘分析",
+        "尾盘.*(买|买入|上车|介入)",
+        "次日.*(惯性|冲高|溢价).*(博弈|兑现|止盈)",
+        "主力.*(离场|跑了|自救|做多)",
+        "(减持|解禁|利空).*(排雷|风险)",
+        "开盘集合.*(竞价|分析)",
+        "集合竞价.*(开盘|太差|偏弱)"
+      ],
+      "negative_keywords": [
+        "不要尾盘",
+        "不做短线",
+        "不要博弈"
+      ],
+      "keywords": [
+        "尾盘选股",
+        "尾盘入场",
+        "尾盘买点",
+        "尾盘分析",
+        "尾盘买入",
+        "尾盘上车",
+        "次日惯性",
+        "次日冲高兑现",
+        "资金强度追随",
+        "主力离场",
+        "主力自救",
+        "主线板块",
+        "重大风险排雷",
+        "减持解禁利空",
+        "开盘集合",
+        "集合竞价",
+        "集合分析"
+      ]
+    },
+    {
+      "rule_id": "trading-robot-core",
+      "name": "交易机器人",
+      "description": "本地交易机器人：基于 autoTrading 本地 MySQL 缓存做账户/持仓/交易分析与交易计划，支持条件单、止盈止损与审核流；实盘执行前需用户明确同意。",
+      "enabled": true,
+      "priority": 0,
+      "weight": 0.78,
+      "min_score": 1.0,
+      "requires_ticker": false,
+      "regex_keywords": [
+        "分析我的持仓",
+        "我的票",
+        "我的股票",
+        "我持有",
+        "我的盈利",
+        "我的亏损",
+        "我的收益",
+        "最近\\s*(1周|一周|\\d+天).*交易",
+        "(昨天|昨日).*买入价",
+        "我的成本(是多少|价)",
+        "可用余额",
+        "交易计划",
+        "(买点|卖点|止盈|止损)",
+        "条件单",
+        "取消条件单",
+        "autoTrading",
+        "本地交易所",
+        "审核下单"
+      ],
+      "negative_keywords": [
+        "不要交易机器人",
+        "不要实盘",
+        "不做交易计划"
+      ],
+      "keywords": [
+        "交易机器人",
+        "持仓分析",
+        "交易分析",
+        "一周交易复盘",
+        "昨天买入价",
+        "成本价",
+        "可用余额",
+        "交易计划",
+        "买卖点",
+        "止盈止损",
+        "条件单",
+        "取消条件单",
+        "本地MySQL",
+        "autoTrading"
+      ]
+    }
+  ]
+}

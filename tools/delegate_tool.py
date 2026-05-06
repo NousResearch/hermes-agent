@@ -43,7 +43,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "execute_code",  # children should reason step-by-step, not write scripts
     ]
 )
 
@@ -639,9 +638,67 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "delegation",
         "clarify",
         "memory",
-        "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _normalize_requested_toolsets(toolsets: Optional[List[str]]) -> List[str]:
+    """Normalize caller-provided identifiers to canonical toolset names.
+
+    Accepts both:
+    - toolset names (e.g. ``file``, ``code_execution``)
+    - tool names (e.g. ``execute_code`` -> ``code_execution``)
+    """
+    if not toolsets:
+        return []
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw in toolsets:
+        if not isinstance(raw, str):
+            continue
+        name = raw.strip()
+        if not name:
+            continue
+
+        mapped: Optional[str] = None
+        if name in TOOLSETS:
+            mapped = name
+        else:
+            try:
+                import model_tools as _model_tools
+
+                mapped = _model_tools.get_toolset_for_tool(name)
+            except Exception:
+                mapped = None
+
+        if mapped and mapped not in seen:
+            normalized.append(mapped)
+            seen.add(mapped)
+    return normalized
+
+
+def _restrict_child_toolsets_to_readonly_skills(
+    child_toolsets: List[str], parent_toolsets: set[str]
+) -> List[str]:
+    """Ensure children get only readonly skill access.
+
+    - Replace ``skills`` with ``skills_readonly`` for child agents.
+    - Add ``skills_readonly`` when parent has skill access, so leaf children
+      can discover/load skills even if caller narrows toolsets.
+    """
+    out: List[str] = []
+    for ts in child_toolsets:
+        if ts == "skills":
+            ts = "skills_readonly"
+        if ts not in out:
+            out.append(ts)
+
+    if ("skills" in parent_toolsets or "skills_readonly" in parent_toolsets) and (
+        "skills_readonly" not in out
+    ):
+        out.append("skills_readonly")
+    return out
 
 
 def _build_child_progress_callback(
@@ -905,10 +962,20 @@ def _build_child_agent(
         }
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
+    if "skills" in parent_toolsets:
+        parent_toolsets.add("skills_readonly")
 
     if toolsets:
+        requested_toolsets = _normalize_requested_toolsets(toolsets)
         # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        child_toolsets = [t for t in requested_toolsets if t in parent_toolsets]
+        # Ensure code_execution is ALWAYS available for subagents (core execution capability)
+        # This bypasses the parent_toolsets filter since execute_code is essential
+        # for subagents to run scripts and process data independently.
+        # Reason: parent platforms (e.g. weixin/api_server) may not have code_execution
+        # in their enabled toolsets, but subagents fundamentally need it to do any work.
+        if "code_execution" not in child_toolsets:
+            child_toolsets.append("code_execution")
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
@@ -920,6 +987,16 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    child_toolsets = _restrict_child_toolsets_to_readonly_skills(
+        child_toolsets, parent_toolsets
+    )
+
+    # Ensure code_execution is always available for subagents — it's a core
+    # execution capability (Python sandbox) that should not be gated by the
+    # parent agent's toolset configuration.
+    if "code_execution" not in child_toolsets:
+        child_toolsets.append("code_execution")
 
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
@@ -2421,10 +2498,12 @@ DELEGATE_TASK_SCHEMA = {
         "status) and verify it yourself — fetch the URL, stat the file, read "
         "back the content — before telling the user the operation succeeded.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
+        "delegate_task, clarify, memory, send_message, skill_manage "
+        "(only skills_list + skill_view are allowed).\n"
         "- Orchestrator subagents (role='orchestrator') retain "
         "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
+        "cannot use clarify, memory, send_message, or skill_manage "
+        "(only skills_list + skill_view are allowed). "
         "Orchestrators are bounded by delegation.max_spawn_depth "
         "(default 2) and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"

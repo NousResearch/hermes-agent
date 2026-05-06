@@ -122,6 +122,16 @@ from tools.terminal_tool import (
     _get_sudo_password_callback,
 )
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+try:
+    from tools.evotraders_evidence import (
+        build_evidence_envelope,
+        merge_evidence,
+        check_min_evidence,
+    )
+except Exception:  # pragma: no cover - optional helper import
+    build_evidence_envelope = None
+    merge_evidence = None
+    check_min_evidence = None
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
@@ -149,7 +159,18 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import (
+    build_skills_system_prompt,
+    build_context_files_prompt,
+    build_environment_hints,
+    load_soul_md,
+    load_prompt_preset,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    STRICT_VERBATIM_EVIDENCE_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    OPENAI_MODEL_EXECUTION_GUIDANCE,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -960,6 +981,7 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        skip_prompt_presets: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -1044,6 +1066,7 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
+        self.skip_prompt_presets = skip_prompt_presets
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -1736,6 +1759,7 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self._evotraders_evidence_recent: list[dict] = []
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -1853,6 +1877,23 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        # Factual grounding gate: when enabled, block deterministic claims
+        # about file existence/save success unless grounded in actual tool output.
+        _fg = _agent_section.get("factual_grounding_gate", True)
+        if isinstance(_fg, str):
+            self._factual_grounding_gate = _fg.strip().lower() not in ("0", "false", "off", "no")
+        else:
+            self._factual_grounding_gate = bool(_fg)
+        _sv = _agent_section.get("strict_verbatim_evidence", True)
+        if isinstance(_sv, str):
+            self._strict_verbatim_evidence = _sv.strip().lower() not in ("0", "false", "off", "no")
+        else:
+            self._strict_verbatim_evidence = bool(_sv)
+        _sve = _agent_section.get("strict_verbatim_exact_only", True)
+        if isinstance(_sve, str):
+            self._strict_verbatim_exact_only = _sve.strip().lower() not in ("0", "false", "off", "no")
+        else:
+            self._strict_verbatim_exact_only = bool(_sve)
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -4302,7 +4343,7 @@ class AIAgent:
                 encoding="utf-8",
             )
 
-            self._vprint(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
+            self._vprint(f"{self.log_prefix}🧾 请求调试转储已写入：{dump_file}")
 
             if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
                 print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
@@ -4893,7 +4934,7 @@ class AIAgent:
             # Replay the items into the store (replace mode)
             self._todo_store.write(last_todo_response, merge=False)
             if not self.quiet_mode:
-                self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+                self._vprint(f"{self.log_prefix}📋 已从历史恢复 {len(last_todo_response)} 个待办项")
         _set_interrupt(False)
 
     @property
@@ -4943,6 +4984,18 @@ class AIAgent:
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
         prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+        # Optional prompt preset overlay (e.g. EvoTraders/AG-CLI system+user policies).
+        # This is additive and opt-in via HERMES_PROMPT_PRESET.
+        # For simple/low-latency routes we may skip presets entirely to avoid
+        # domain-specific hard constraints bloating the prompt.
+        if not getattr(self, "skip_prompt_presets", False):
+            try:
+                _preset = load_prompt_preset()
+            except Exception:
+                _preset = None
+            if _preset:
+                prompt_parts.append(_preset)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -4996,6 +5049,8 @@ class AIAgent:
                 # prerequisite checks, verification, anti-hallucination).
                 if "gpt" in _model_lower or "codex" in _model_lower:
                     prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+        if self._strict_verbatim_evidence:
+            prompt_parts.append(STRICT_VERBATIM_EVIDENCE_GUIDANCE)
 
         # so it can refer the user to them rather than reinventing answers.
 
@@ -5926,7 +5981,7 @@ class AIAgent:
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
-                        self._touch_activity("receiving stream response")
+                        self._touch_activity("正在接收流式响应")
                         if self._interrupt_requested:
                             break
                         event_type = getattr(event, "type", "")
@@ -6051,7 +6106,7 @@ class AIAgent:
         collected_text_deltas: list = []
         try:
             for event in stream_or_response:
-                self._touch_activity("receiving stream response")
+                self._touch_activity("正在接收流式响应")
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
@@ -6535,7 +6590,7 @@ class AIAgent:
         )
 
         _call_start = time.time()
-        self._touch_activity("waiting for non-streaming API response")
+        self._touch_activity("等待非流式 API 响应")
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -6937,7 +6992,7 @@ class AIAgent:
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
-            self._touch_activity("waiting for provider response (streaming)")
+            self._touch_activity("等待提供方响应（流式）")
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             # Capture rate limit headers from the initial HTTP response.
@@ -6964,7 +7019,7 @@ class AIAgent:
             usage_obj = None
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
-                self._touch_activity("receiving stream response")
+                self._touch_activity("正在接收流式响应")
 
                 if self._interrupt_requested:
                     break
@@ -7170,7 +7225,7 @@ class AIAgent:
                     # actively arriving (the chat_completions path
                     # already does this at the top of its chunk loop).
                     last_chunk_time["t"] = time.time()
-                    self._touch_activity("receiving stream response")
+                    self._touch_activity("正在接收流式响应")
 
                     if self._interrupt_requested:
                         break
@@ -7349,7 +7404,7 @@ class AIAgent:
                                 )
                             except Exception:
                                 pass
-                            self._emit_status("🔄 Reconnected — resuming…")
+                            self._emit_status("🔄 已重连——继续处理中…")
                             continue
 
                         # SSE error events from proxies (e.g. OpenRouter sends
@@ -7418,7 +7473,7 @@ class AIAgent:
                                     )
                                 except Exception:
                                     pass
-                                self._emit_status("🔄 Reconnected — resuming…")
+                                self._emit_status("🔄 已重连——继续处理中…")
                                 continue
                             self._emit_status(
                                 "❌ Connection to provider failed after "
@@ -7509,7 +7564,7 @@ class AIAgent:
                 _last_heartbeat = _hb_now
                 _waiting_secs = int(_hb_now - last_chunk_time["t"])
                 self._touch_activity(
-                    f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                    f"等待流式响应（{_waiting_secs} 秒，尚未收到任何分片）"
                 )
 
             # Detect stale streams: connections kept alive by SSE pings
@@ -7525,10 +7580,10 @@ class AIAgent:
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                 )
                 self._emit_status(
-                    f"⚠️ No response from provider for {int(_stale_elapsed)}s "
-                    f"(model: {api_kwargs.get('model', 'unknown')}, "
-                    f"context: ~{_est_ctx:,} tokens). "
-                    f"Reconnecting..."
+                    f"⚠️ 提供方已 {int(_stale_elapsed)} 秒无响应"
+                    f"（模型：{api_kwargs.get('model', 'unknown')}，"
+                    f"上下文：约 {_est_ctx:,} tokens）。"
+                    f"正在重连…"
                 )
                 try:
                     rc = request_client_holder.get("client")
@@ -7546,7 +7601,7 @@ class AIAgent:
                 # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()
                 self._touch_activity(
-                    f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
+                    f"检测到流式输出卡住（{int(_stale_elapsed)} 秒无分片），正在重连"
                 )
 
             if self._interrupt_requested:
@@ -7589,9 +7644,9 @@ class AIAgent:
                     if len(_partial_names) > 3:
                         _name_str += f", +{len(_partial_names) - 3} more"
                     _warn = (
-                        f"\n\n⚠ Stream stalled mid tool-call "
-                        f"({_name_str}); the action was not executed. "
-                        f"Ask me to retry if you want to continue."
+                        f"\n\n⚠ 流式输出在工具调用中途中断"
+                        f"（{_name_str}）；该操作未执行。"
+                        f"如果你希望继续，请让我重试。"
                     )
                     _partial_text = (_partial_text or "") + _warn
                     # Also fire as a streaming delta so the user sees it now
@@ -8514,6 +8569,7 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_mydamoxing = base_url_host_matches(self.base_url, "mydamoxing.cn")
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
         _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
 
@@ -8624,6 +8680,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_mydamoxing=_is_mydamoxing,
             is_tokenhub=_is_tokenhub,
             is_lmstudio=_is_lmstudio,
             is_custom_provider=self.provider == "custom",
@@ -9218,6 +9275,482 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    def _capture_evotraders_evidence(self, tool_name: str, tool_result: str) -> None:
+        """Capture lightweight evidence snapshots from evotraders tool outputs."""
+        if not tool_name or not tool_name.startswith("evotraders_"):
+            return
+        if build_evidence_envelope is None:
+            return
+        try:
+            envelope = build_evidence_envelope(tool_name, tool_result)
+            if not isinstance(envelope, dict):
+                return
+            self._evotraders_evidence_recent.append(envelope)
+            if len(self._evotraders_evidence_recent) > 20:
+                self._evotraders_evidence_recent = self._evotraders_evidence_recent[-20:]
+
+            route_trace = envelope.get("route_trace") or {}
+            if route_trace:
+                logger.info(
+                    "evotraders route trace: tool=%s matched_rule=%s selected=%s fallback=%s latency_ms=%s",
+                    tool_name,
+                    route_trace.get("matched_rule_id", ""),
+                    route_trace.get("selected_tool", ""),
+                    route_trace.get("fallback_chain", []),
+                    route_trace.get("route_latency_ms", ""),
+                )
+        except Exception as e:
+            logger.debug("Failed to capture evotraders evidence: %s", e)
+
+    @staticmethod
+    def _looks_like_stock_analysis_intent(user_message: Any) -> bool:
+        text = ""
+        if isinstance(user_message, str):
+            text = user_message
+        elif isinstance(user_message, list):
+            parts = []
+            for p in user_message:
+                if isinstance(p, dict) and str(p.get("type")) in {"text", "input_text", "output_text"}:
+                    parts.append(str(p.get("text", "")))
+            text = "\n".join(parts)
+        text = str(text or "").strip().lower()
+        if not text:
+            return False
+        if re.search(r"\b\d{6}\b", text):
+            return True
+        stock_tokens = (
+            "股票", "个股", "a股", "分析", "诊断", "买入", "卖出", "仓位", "止损", "目标价",
+            "涨停", "连板", "主线", "资金流", "换手", "k线",
+        )
+        return any(t in text for t in stock_tokens)
+
+    def _get_stock_evidence_missing(self, original_user_message: Any) -> Optional[list[str]]:
+        if merge_evidence is None or check_min_evidence is None:
+            return None
+        if not self._looks_like_stock_analysis_intent(original_user_message):
+            return None
+        required_codes: list[str] = []
+        text = ""
+        if isinstance(original_user_message, str):
+            text = original_user_message
+        elif isinstance(original_user_message, list):
+            parts = []
+            for p in original_user_message:
+                if isinstance(p, dict) and str(p.get("type")) in {"text", "input_text", "output_text"}:
+                    parts.append(str(p.get("text", "")))
+            text = "\n".join(parts)
+        for m in re.findall(r"\b\d{6}\b", str(text or "")):
+            if m not in required_codes:
+                required_codes.append(m)
+        merged = merge_evidence(self._evotraders_evidence_recent)
+        check = check_min_evidence(merged, intent="stock_analysis", required_codes=required_codes)
+        if check.get("ok"):
+            return []
+        missing = check.get("missing", [])
+        return [str(x) for x in missing]
+
+    @staticmethod
+    def _extract_paths_from_text(text: str) -> list[str]:
+        if not text:
+            return []
+        # Absolute Unix path patterns; keep conservative to reduce false positives.
+        found = re.findall(r"(/[\w\-.]+(?:/[\w\-.]+)+)", text)
+        out: list[str] = []
+        for p in found:
+            if p not in out:
+                out.append(p)
+        return out
+
+    @staticmethod
+    def _tool_output_has_path_failure(tool_text: str, path: str) -> bool:
+        if not tool_text or path not in tool_text:
+            return False
+        t = tool_text.lower()
+        fail_tokens = (
+            "no such file or directory",
+            "cannot access",
+            "file not found",
+            "not found",
+            "不存在",
+            "找不到",
+            "无法访问",
+        )
+        return any(tok in t for tok in fail_tokens)
+
+    @staticmethod
+    def _tool_output_has_path_success(tool_text: str, path: str) -> bool:
+        if not tool_text or path not in tool_text:
+            return False
+        t = tool_text.lower()
+        if "no such file or directory" in t or "cannot access" in t:
+            return False
+        # Typical success hints from ls/stat/cat/find outputs.
+        success_tokens = (
+            "-rw",
+            "drwx",
+            " size ",
+            " bytes",
+            "total ",
+            "exit code: 0",
+            "wrote contents to",
+            "exists",
+            "已确认存在",
+            "文件已存在",
+        )
+        return any(tok in t for tok in success_tokens)
+
+    @staticmethod
+    def _extract_numeric_claim_tokens(text: str) -> list[str]:
+        if not text:
+            return []
+        tokens: list[str] = []
+        # Percentages: 0.29%, 86.0%
+        for m in re.findall(r"\b\d+(?:\.\d+)?%", text):
+            if m not in tokens:
+                tokens.append(m)
+        # Numbers with comma grouping: 8,880 / 1,244 / 26
+        for m in re.findall(r"\b\d{1,3}(?:,\d{3})+\b", text):
+            if m not in tokens:
+                tokens.append(m)
+        # Plain integers that look like counts (>= 2 digits).
+        for m in re.findall(r"\b\d{2,}\b", text):
+            if m not in tokens:
+                tokens.append(m)
+        return tokens
+
+    @staticmethod
+    def _looks_like_statistical_conclusion(text: str) -> bool:
+        t = (text or "").lower()
+        keywords = (
+            "通过率",
+            "淘汰率",
+            "总候选",
+            "筛选结果",
+            "统计结果",
+            "漏斗",
+            "信号数",
+            "候选数",
+            "最终通过率",
+            "总交易日",
+            "throughput",
+            "pass rate",
+            "filter result",
+            "funnel",
+        )
+        return any(k in t for k in keywords)
+
+    def _apply_factual_grounding_gate_if_needed(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Optional[str],
+        interrupted: bool,
+        messages: list,
+    ) -> Optional[str]:
+        """Block fabricated deterministic claims without tool-grounded evidence.
+
+        Scope (intentionally narrow):
+        - File existence / file saved style claims with absolute paths.
+        - Contradictions where recent tool outputs say file missing.
+        """
+        if interrupted or not final_response or not self._factual_grounding_gate:
+            return final_response
+
+        text = str(final_response)
+        user_text = ""
+        if isinstance(original_user_message, str):
+            user_text = original_user_message
+        elif isinstance(original_user_message, list):
+            parts = []
+            for p in original_user_message:
+                if isinstance(p, dict) and str(p.get("type")) in {"text", "input_text", "output_text"}:
+                    parts.append(str(p.get("text", "")))
+            user_text = "\n".join(parts)
+        user_text_l = str(user_text or "").lower()
+
+        has_deterministic_claim = any(
+            tok in text
+            for tok in (
+                "已保存",
+                "已创建",
+                "已写入",
+                "文件已存在",
+                "已确认存在",
+                "筛选完成",
+                "统计结果",
+            )
+        )
+        mentioned_paths = self._extract_paths_from_text(text)
+
+        # Only gate potentially high-risk deterministic assertions.
+        if not has_deterministic_claim and not mentioned_paths:
+            return final_response
+
+        # Gather recent tool outputs in order.
+        tool_texts: list[str] = []
+        for m in messages[-120:]:
+            if isinstance(m, dict) and m.get("role") == "tool":
+                tool_texts.append(str(m.get("content") or ""))
+
+        # If user explicitly requests verbatim/raw output, require at least one
+        # direct tool snippet be present in the final response.
+        if self._strict_verbatim_evidence:
+            verbatim_markers = (
+                "原样",
+                "完整输出",
+                "原文",
+                "不要总结",
+                "直接贴结果",
+                "raw",
+                "verbatim",
+                "exact output",
+            )
+            asks_verbatim = any(k in user_text_l for k in verbatim_markers)
+            if asks_verbatim:
+                if not tool_texts:
+                    gated = (
+                        "你要求原样输出，但当前没有可引用的工具结果。\n"
+                        "请先执行命令/工具，再原样返回 stdout/stderr 片段。"
+                    )
+                    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                        messages[-1]["content"] = gated
+                    logger.warning("factual grounding gate triggered: verbatim_no_tool_output session=%s", self.session_id or "none")
+                    return gated
+
+                # Hard mode: raw-only response, no summary text.
+                if self._strict_verbatim_exact_only:
+                    raw = str(tool_texts[-1]).strip()
+                    if raw:
+                        exact = "原样工具输出:\n```\n" + raw[:4000] + "\n```"
+                        if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                            messages[-1]["content"] = exact
+                        return exact
+                    gated = (
+                        "你要求原样输出，但没有可回显的工具原文。\n"
+                        "请先执行工具并生成实际输出。"
+                    )
+                    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                        messages[-1]["content"] = gated
+                    logger.warning("factual grounding gate triggered: verbatim_exact_no_content session=%s", self.session_id or "none")
+                    return gated
+
+                # Require at least one direct overlap snippet from recent tool output.
+                final_norm = re.sub(r"\s+", " ", text.strip())
+                overlap = False
+                for tt in tool_texts[-10:]:
+                    snippet = re.sub(r"\s+", " ", str(tt).strip())[:120]
+                    if snippet and snippet in final_norm:
+                        overlap = True
+                        break
+                if not overlap:
+                    # Auto-append one raw tool snippet to satisfy verbatim requirement.
+                    raw = str(tool_texts[-1]).strip()
+                    if raw:
+                        final_response = final_response.rstrip() + "\n\n原样工具输出片段:\n```\n" + raw[:800] + "\n```"
+                        text = str(final_response)
+                    else:
+                        gated = (
+                            "你要求原样输出，但回复里没有工具原文片段。\n"
+                            "请直接粘贴工具输出，不要二次总结。"
+                        )
+                        if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                            messages[-1]["content"] = gated
+                        logger.warning("factual grounding gate triggered: verbatim_missing_snippet session=%s", self.session_id or "none")
+                        return gated
+
+        if not tool_texts and has_deterministic_claim:
+            gated = (
+                "我不能确认上述结论：当前回复缺少可核验的工具运行证据。\n"
+                "请先执行并展示真实结果（例如 `ls -l <路径>` / `stat <路径>` / 脚本原始输出），"
+                "再给最终结论。"
+            )
+            if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                messages[-1]["content"] = gated
+            logger.warning("factual grounding gate triggered: no_tool_evidence session=%s", self.session_id or "none")
+            return gated
+
+        # Numeric/statistical claim guard: if claiming concrete filtering stats
+        # (counts, pass rates, funnel percentages), require overlap with recent
+        # tool outputs; otherwise force verification.
+        if self._looks_like_statistical_conclusion(text):
+            claim_tokens = self._extract_numeric_claim_tokens(text)
+            if claim_tokens:
+                combined_tool_text = "\n".join(tool_texts[-30:])  # recent outputs only
+                matched = [tok for tok in claim_tokens if tok in combined_tool_text]
+                # Need at least 2 numeric matches to consider grounded stats.
+                if len(matched) < min(2, len(claim_tokens)):
+                    gated = (
+                        "我不能输出这些统计数字结论：缺少可核验的同轮工具证据。\n"
+                        "请先提供原始执行结果（脚本 stdout / `ls` / `find` / `cat` 原文）后再汇总结论。"
+                    )
+                    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                        messages[-1]["content"] = gated
+                    logger.warning(
+                        "factual grounding gate triggered: stats_unverified claim_tokens=%s matched=%s session=%s model=%s",
+                        claim_tokens[:10],
+                        matched[:10],
+                        self.session_id or "none",
+                        self.model,
+                    )
+                    return gated
+
+        path_evidence: dict[str, dict[str, Any]] = {p: {"status": "unknown", "snippet": ""} for p in mentioned_paths}
+        evidence_refs: list[str] = []
+        for tool_text in tool_texts:
+            for p in mentioned_paths:
+                if p not in tool_text:
+                    continue
+                if self._tool_output_has_path_failure(tool_text, p):
+                    path_evidence[p] = {"status": "fail", "snippet": tool_text[:240]}
+                elif self._tool_output_has_path_success(tool_text, p):
+                    path_evidence[p] = {"status": "ok", "snippet": tool_text[:240]}
+
+        bad_paths = [p for p, ev in path_evidence.items() if ev.get("status") != "ok"]
+        if bad_paths:
+            details = []
+            for p in bad_paths[:3]:
+                ev = path_evidence.get(p, {})
+                status = ev.get("status", "unknown")
+                if status == "fail":
+                    details.append(f"{p}（最近工具输出显示不存在/访问失败）")
+                else:
+                    details.append(f"{p}（缺少成功验证输出）")
+            detail_text = "；".join(details)
+            gated = (
+                "我不能把该结论当作已验证事实输出。\n"
+                f"未通过验证：{detail_text}。\n"
+                "请先用真实命令结果核验后再下结论（例如 `ls -l <路径>`、`stat <路径>`）。"
+            )
+            if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                messages[-1]["content"] = gated
+            logger.warning(
+                "factual grounding gate triggered: bad_paths=%s session=%s model=%s",
+                bad_paths,
+                self.session_id or "none",
+                self.model,
+            )
+            return gated
+
+        # Collect compact evidence snippets for traceability when file paths are claimed.
+        if mentioned_paths:
+            for p in mentioned_paths[:3]:
+                snip = (path_evidence.get(p, {}).get("snippet") or "").strip().replace("\n", " ")
+                if snip:
+                    evidence_refs.append(f"- `{p}` <- {snip[:160]}")
+
+        # For statistical conclusions, attach numeric evidence snippets.
+        if self._looks_like_statistical_conclusion(text):
+            claim_tokens = self._extract_numeric_claim_tokens(text)
+            if claim_tokens:
+                for tool_text in tool_texts[-30:]:
+                    tool_flat = str(tool_text).replace("\n", " ")
+                    if any(tok in tool_flat for tok in claim_tokens):
+                        snip = tool_flat[:180]
+                        if snip and all(snip not in r for r in evidence_refs):
+                            evidence_refs.append(f"- `stats` <- {snip}")
+                    if len(evidence_refs) >= 5:
+                        break
+
+        # High-risk assertions must carry concrete evidence references.
+        if (has_deterministic_claim or self._looks_like_statistical_conclusion(text)) and not evidence_refs:
+            gated = (
+                "我不能输出该结论：缺少可引用的工具证据片段。\n"
+                "请先执行并提供原始结果（命令输出/文件校验）后再总结。"
+            )
+            if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                messages[-1]["content"] = gated
+            logger.warning(
+                "factual grounding gate triggered: missing_citation_refs session=%s model=%s",
+                self.session_id or "none",
+                self.model,
+            )
+            return gated
+
+        if evidence_refs:
+            final_response = final_response.rstrip() + "\n\n证据引用（工具实际输出）:\n" + "\n".join(evidence_refs[:5])
+
+        return final_response
+
+    def _apply_stock_evidence_gate_if_needed(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Optional[str],
+        interrupted: bool,
+        messages: list,
+    ) -> Optional[str]:
+        """Block deterministic stock conclusions when minimum evidence is missing."""
+        # Allow temporary disable via environment variable
+        if str(os.getenv("EVOTRADERS_DISABLE_STOCK_EVIDENCE_GATE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            return final_response
+        if interrupted or not final_response:
+            return final_response
+        missing = self._get_stock_evidence_missing(original_user_message)
+        if missing is None or not missing:
+            return final_response
+
+        missing_text = "、".join(str(x) for x in missing) if missing else "关键证据"
+        gated = (
+            "当前不输出确定性投资结论：最小证据集不足。\n"
+            f"缺口：{missing_text}。\n"
+            "请先补齐行情快照、结构证据与数据时点后再给结论。"
+        )
+        logger.warning(
+            "stock evidence gate triggered: missing=%s session=%s model=%s",
+            missing,
+            self.session_id or "none",
+            self.model,
+        )
+        # Keep history consistent with final visible response.
+        if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+            messages[-1]["content"] = gated
+        return gated
+
+    def _maybe_enqueue_stock_evidence_autofetch(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: str,
+        messages: list,
+        assistant_message: Any,
+        finish_reason: Optional[str],
+        already_attempted: bool,
+    ) -> bool:
+        """Queue one-shot evidence autofetch turn before final stock answer."""
+        # Allow temporary disable via environment variable
+        if str(os.getenv("EVOTRADERS_DISABLE_STOCK_EVIDENCE_GATE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            return False
+        if already_attempted:
+            return False
+        if "evotraders_route_and_call" not in (self.valid_tool_names or []):
+            return False
+        if not self._has_content_after_think_block(final_response):
+            return False
+        missing = self._get_stock_evidence_missing(original_user_message)
+        if not missing:
+            return False
+
+        missing_text = "、".join(missing)
+        logger.info(
+            "stock evidence auto-fetch trigger: missing=%s session=%s model=%s",
+            missing,
+            self.session_id or "none",
+            self.model,
+        )
+        self._emit_status(f"📊 证据不足（{missing_text}）— 正在自动补抓后再给结论")
+        interim_msg = self._build_assistant_message(assistant_message, "incomplete")
+        messages.append(interim_msg)
+        messages.append({
+            "role": "user",
+            "content": (
+                "继续：这是股票分析任务。先调用 evotraders_route_and_call "
+                "补齐最小证据集（行情快照、结构证据、数据时点），再给最终结论。"
+            ),
+        })
+        self._session_messages = messages
+        self._save_session_log(messages)
+        return True
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -9703,7 +10236,7 @@ class AIAgent:
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).
         self._current_tool = tool_names_str
-        self._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+        self._touch_activity(f"并发执行 {num_tools} 个工具：{tool_names_str}")
 
         # Capture CLI callbacks from the agent thread so worker threads can
         # register them locally.  Without this, _get_approval_callback() in
@@ -9916,13 +10449,15 @@ class AIAgent:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
-            self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
+            self._touch_activity(f"工具完成：{name}（{tool_duration:.1f} 秒）")
 
             if not blocked and self.tool_complete_callback:
                 try:
                     self.tool_complete_callback(tc.id, name, args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
+
+            self._capture_evotraders_evidence(name, function_result)
 
             function_result = maybe_persist_tool_result(
                 content=function_result,
@@ -9970,7 +10505,7 @@ class AIAgent:
             if self._interrupt_requested:
                 remaining_calls = assistant_message.tool_calls[i-1:]
                 if remaining_calls:
-                    self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
+                    self._vprint(f"{self.log_prefix}⚡ 中断：跳过 {len(remaining_calls)} 个工具调用", force=True)
                 for skipped_tc in remaining_calls:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
@@ -10032,7 +10567,7 @@ class AIAgent:
 
             if not _execution_blocked:
                 self._current_tool = function_name
-                self._touch_activity(f"executing tool: {function_name}")
+                self._touch_activity(f"正在执行工具：{function_name}")
 
             # Set activity callback for long-running tool execution (terminal
             # commands, etc.) so the gateway's inactivity monitor doesn't kill
@@ -10300,7 +10835,7 @@ class AIAgent:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
             self._current_tool = None
-            self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+            self._touch_activity(f"工具完成：{function_name}（{tool_duration:.1f} 秒）")
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -10311,6 +10846,8 @@ class AIAgent:
                     self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
+
+            self._capture_evotraders_evidence(function_name, function_result)
 
             function_result = maybe_persist_tool_result(
                 content=function_result,
@@ -10348,7 +10885,7 @@ class AIAgent:
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
-                self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
+                self._vprint(f"{self.log_prefix}⚡ 中断：跳过剩余 {remaining} 个工具调用", force=True)
                 for skipped_tc in assistant_message.tool_calls[i:]:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
@@ -10908,6 +11445,7 @@ class AIAgent:
         api_call_count = 0
         final_response = None
         interrupted = False
+        stock_evidence_autofetch_attempted = False
         codex_ack_continuations = 0
         length_continue_retries = 0
         truncated_tool_call_retries = 0
@@ -10968,7 +11506,7 @@ class AIAgent:
             
             api_call_count += 1
             self._api_call_count = api_call_count
-            self._touch_activity(f"starting API call #{api_call_count}")
+            self._touch_activity(f"开始第 {api_call_count} 次 API 调用")
 
             # Grace call: the budget is exhausted but we gave the model one
             # more chance.  Consume the grace flag so the loop exits after
@@ -11226,9 +11764,9 @@ class AIAgent:
             thinking_spinner = None
             
             if not self.quiet_mode:
-                self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
-                self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
-                self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
+                self._vprint(f"\n{self.log_prefix}🔄 正在发起第 {api_call_count}/{self.max_iterations} 次 API 调用...")
+                self._vprint(f"{self.log_prefix}   📊 请求大小：{len(api_messages)} 条消息，约 {approx_tokens:,} tokens（约 {total_chars:,} 字符）")
+                self._vprint(f"{self.log_prefix}   🔧 可用工具：{len(self.tools) if self.tools else 0}")
             else:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.get_thinking_faces())
@@ -11412,7 +11950,7 @@ class AIAgent:
                         self.thinking_callback("")
                     
                     if not self.quiet_mode:
-                        self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
+                        self._vprint(f"{self.log_prefix}⏱️  API 调用完成，用时 {api_duration:.2f} 秒")
                     
                     if self.verbose_logging:
                         # Log response with provider info if available
@@ -11515,7 +12053,7 @@ class AIAgent:
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
                         if self._fallback_index < len(self._fallback_chain):
-                            self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
+                            self._emit_status("⚠️ 响应为空/格式异常——正在切换到备用方案…")
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -11577,21 +12115,21 @@ class AIAgent:
                         else:
                             _failure_hint = f"response time {api_duration:.1f}s"
 
-                        self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
-                        self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
+                        self._vprint(f"{self.log_prefix}⚠️  API 响应无效（第 {retry_count}/{max_retries} 次尝试）：{', '.join(error_details)}", force=True)
+                        self._vprint(f"{self.log_prefix}   🏢 提供方：{provider_name}", force=True)
                         cleaned_provider_error = self._clean_error_message(error_msg)
-                        self._vprint(f"{self.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
+                        self._vprint(f"{self.log_prefix}   📝 提供方消息：{cleaned_provider_error}", force=True)
                         self._vprint(f"{self.log_prefix}   ⏱️  {_failure_hint}", force=True)
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
-                            self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                            self._emit_status(f"⚠️ 无效响应已达最大重试次数（{max_retries}）——正在尝试备用方案...")
                             if self._try_activate_fallback():
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
                                 continue
-                            self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                            self._emit_status(f"❌ 无效响应重试已超过上限（{max_retries}），停止重试。")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -11604,7 +12142,7 @@ class AIAgent:
                         
                         # Backoff before retry — jittered exponential: 5s base, 120s cap
                         wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
-                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
+                        self._vprint(f"{self.log_prefix}⏳ 将在 {wait_time:.1f} 秒后重试（{_failure_hint}）…", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
@@ -11612,7 +12150,7 @@ class AIAgent:
                         _backoff_touch_counter = 0
                         while time.time() < sleep_end:
                             if self._interrupt_requested:
-                                self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                                self._vprint(f"{self.log_prefix}⚡ 重试等待期间检测到中断，正在终止。", force=True)
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
@@ -11671,7 +12209,7 @@ class AIAgent:
                             finish_reason = "length"
 
                     if finish_reason == "length":
-                        self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
+                        self._vprint(f"{self.log_prefix}⚠️ 响应被截断（finish_reason='length'）——模型已达到最大输出 token 限制", force=True)
 
                         # Normalize the truncated response to a single OpenAI-style
                         # message shape so text-continuation and tool-call retry
@@ -11824,7 +12362,7 @@ class AIAgent:
 
                         # If we have prior messages, roll back to last complete state
                         if len(messages) > 1:
-                            self._vprint(f"{self.log_prefix}   ⏪ Rolling back to last complete assistant turn")
+                            self._vprint(f"{self.log_prefix}   ⏪ 正在回滚到上一条完整的 assistant 回复")
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
 
                             self._cleanup_task_resources(effective_task_id)
@@ -11840,7 +12378,7 @@ class AIAgent:
                             }
                         else:
                             # First message was truncated - mark as failed
-                            self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover", force=True)
+                            self._vprint(f"{self.log_prefix}❌ 首次响应被截断，无法恢复", force=True)
                             self._persist_session(messages, conversation_history)
                             return {
                                 "final_response": None,
@@ -11977,7 +12515,7 @@ class AIAgent:
                             clear_nous_rate_limit()
                         except Exception:
                             pass
-                    self._touch_activity(f"API call #{api_call_count} completed")
+                    self._touch_activity(f"第 {api_call_count} 次 API 调用完成")
                     break  # Success, exit retry loop
 
                 except InterruptedError:
@@ -11987,7 +12525,7 @@ class AIAgent:
                     if self.thinking_callback:
                         self.thinking_callback("")
                     api_elapsed = time.time() - api_start_time
-                    self._vprint(f"{self.log_prefix}⚡ Interrupted during API call.", force=True)
+                    self._vprint(f"{self.log_prefix}⚡ API 调用过程中已中断。", force=True)
                     self._persist_session(messages, conversation_history)
                     interrupted = True
                     final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
@@ -12257,7 +12795,7 @@ class AIAgent:
                     ):
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
-                            self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            self._vprint(f"{self.log_prefix}🔐 收到 401 后已刷新 Codex 认证，正在重试请求...")
                             continue
                     if (
                         self.api_mode == "chat_completions"
@@ -12297,7 +12835,7 @@ class AIAgent:
                     ):
                         copilot_auth_retry_attempted = True
                         if self._try_refresh_copilot_client_credentials():
-                            self._vprint(f"{self.log_prefix}🔐 Copilot credentials refreshed after 401. Retrying request...")
+                            self._vprint(f"{self.log_prefix}🔐 收到 401 后已刷新 Copilot 凭证，正在重试请求...")
                             continue
                     if (
                         self.api_mode == "anthropic_messages"
@@ -12418,16 +12956,16 @@ class AIAgent:
                     _base = getattr(self, "base_url", "unknown")
                     _model = getattr(self, "model", "unknown")
                     _status_code_str = f" [HTTP {status_code}]" if status_code else ""
-                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}", force=True)
-                    self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
-                    self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
-                    self._vprint(f"{self.log_prefix}   📝 Error: {_error_summary}", force=True)
+                    self._vprint(f"{self.log_prefix}⚠️  API 调用失败（第 {retry_count}/{max_retries} 次尝试）：{error_type}{_status_code_str}", force=True)
+                    self._vprint(f"{self.log_prefix}   🔌 提供方：{_provider}  模型：{_model}", force=True)
+                    self._vprint(f"{self.log_prefix}   🌐 端点：{_base}", force=True)
+                    self._vprint(f"{self.log_prefix}   📝 错误：{_error_summary}", force=True)
                     if status_code and status_code < 500:
                         _err_body = getattr(api_error, "body", None)
                         _err_body_str = str(_err_body)[:300] if _err_body else None
                         if _err_body_str:
-                            self._vprint(f"{self.log_prefix}   📋 Details: {_err_body_str}", force=True)
-                    self._vprint(f"{self.log_prefix}   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
+                            self._vprint(f"{self.log_prefix}   📋 详情：{_err_body_str}", force=True)
+                    self._vprint(f"{self.log_prefix}   ⏱️  用时：{elapsed_time:.2f} 秒  上下文：{len(api_messages)} 条消息，约 {approx_tokens:,} tokens")
 
                     # Actionable hint for OpenRouter "no tool endpoints" error.
                     # This fires regardless of whether fallback succeeds — the
@@ -12457,7 +12995,7 @@ class AIAgent:
 
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:
-                        self._vprint(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
+                        self._vprint(f"{self.log_prefix}⚡ 错误处理期间检测到中断，正在终止重试。", force=True)
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
@@ -12550,7 +13088,7 @@ class AIAgent:
                             base_url=getattr(self, "base_url", None),
                         )
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            self._emit_status("⚠️ 触发限流——正在切换到备用提供方…")
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
@@ -12629,8 +13167,8 @@ class AIAgent:
                     if is_payload_too_large:
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
-                            self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                            self._vprint(f"{self.log_prefix}❌ 针对请求体过大错误，压缩尝试已达上限（{max_compression_attempts}）。", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 可用 /new 开始新会话，或用 /compress 重新尝试压缩。", force=True)
                             logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -12642,7 +13180,7 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_status(f"⚠️ 请求体过大（413）——正在进行压缩尝试 {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -12655,13 +13193,13 @@ class AIAgent:
                         conversation_history = None
 
                         if len(messages) < original_len:
-                            self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            self._emit_status(f"🗜️ 已压缩 {original_len} → {len(messages)} 条消息，正在重试...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
                         else:
-                            self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                            self._vprint(f"{self.log_prefix}❌ 请求体过大且无法继续压缩。", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 可用 /new 开始新会话，或用 /compress 重新尝试压缩。", force=True)
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -12713,8 +13251,8 @@ class AIAgent:
                             # loop forever if the error keeps recurring.
                             compression_attempts += 1
                             if compression_attempts > max_compression_attempts:
-                                self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                                self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                                self._vprint(f"{self.log_prefix}❌ 压缩尝试已达上限（{max_compression_attempts}）。", force=True)
+                                self._vprint(f"{self.log_prefix}   💡 可用 /new 开始新会话，或用 /compress 重新尝试压缩。", force=True)
                                 logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                                 self._persist_session(messages, conversation_history)
                                 return {
@@ -12748,7 +13286,7 @@ class AIAgent:
                         )
                         if parsed_limit and parsed_limit < old_ctx:
                             new_ctx = parsed_limit
-                            self._vprint(f"{self.log_prefix}Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
+                            self._vprint(f"{self.log_prefix}检测到 API 返回上下文上限：{new_ctx:,} tokens（之前为 {old_ctx:,}）", force=True)
                         elif minimax_delta_only_overflow:
                             new_ctx = old_ctx
                             self._vprint(
@@ -12780,14 +13318,14 @@ class AIAgent:
                                 compressor._context_probe_persistable = bool(
                                     parsed_limit and parsed_limit == new_ctx
                                 )
-                            self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
+                            self._vprint(f"{self.log_prefix}⚠️ 上下文长度超限——正在降档：{old_ctx:,} → {new_ctx:,} tokens", force=True)
                         else:
-                            self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)
+                            self._vprint(f"{self.log_prefix}⚠️ 最低档位仍然上下文超限——正在尝试压缩...", force=True)
 
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
-                            self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                            self._vprint(f"{self.log_prefix}❌ 压缩尝试已达上限（{max_compression_attempts}）。", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 可用 /new 开始新会话，或用 /compress 重新尝试压缩。", force=True)
                             logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -12799,7 +13337,7 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                        self._emit_status(f"🗜️ 上下文过大（约 {approx_tokens:,} tokens）——正在压缩（{compression_attempts}/{max_compression_attempts}）...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -12813,14 +13351,14 @@ class AIAgent:
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
-                                self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                                self._emit_status(f"🗜️ 已压缩 {original_len} → {len(messages)} 条消息，正在重试...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
                         else:
                             # Can't compress further and already at minimum tier
-                            self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
+                            self._vprint(f"{self.log_prefix}❌ 上下文长度超限且无法继续压缩。", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 当前会话内容累计过多。可用 /new 开始新会话，或用 /compress 手动触发压缩。", force=True)
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -12878,7 +13416,7 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        self._emit_status(f"⚠️ 不可重试错误（HTTP {status_code}）——正在尝试备用方案...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -12892,24 +13430,24 @@ class AIAgent:
                             f"❌ Non-retryable error (HTTP {status_code}): "
                             f"{self._summarize_api_error(api_error)}"
                         )
-                        self._vprint(f"{self.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
-                        self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
-                        self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
+                        self._vprint(f"{self.log_prefix}❌ 不可重试的客户端错误（HTTP {status_code}）。正在终止。", force=True)
+                        self._vprint(f"{self.log_prefix}   🔌 提供方：{_provider}  模型：{_model}", force=True)
+                        self._vprint(f"{self.log_prefix}   🌐 端点：{_base}", force=True)
                         # Actionable guidance for common auth errors
                         if classified.is_auth or classified.reason == FailoverReason.billing:
                             if _provider == "openai-codex" and status_code == 401:
-                                self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
-                                self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
-                                self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
-                                self._vprint(f"{self.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                                self._vprint(f"{self.log_prefix}   💡 Codex OAuth token 被拒绝（HTTP 401）。你的 token 可能已被", force=True)
+                                self._vprint(f"{self.log_prefix}      其他客户端（Codex CLI、VS Code）刷新。可按以下步骤修复：", force=True)
+                                self._vprint(f"{self.log_prefix}      1. 在终端运行 `codex` 生成新的 token。", force=True)
+                                self._vprint(f"{self.log_prefix}      2. 然后运行 `hermes auth` 重新认证。", force=True)
                             else:
-                                self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
-                                self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
-                                self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
+                                self._vprint(f"{self.log_prefix}   💡 你的 API key 被提供方拒绝。请检查：", force=True)
+                                self._vprint(f"{self.log_prefix}      • key 是否有效？可运行：hermes setup", force=True)
+                                self._vprint(f"{self.log_prefix}      • 你的账号是否有 {_model} 的访问权限？", force=True)
                                 if base_url_host_matches(str(_base), "openrouter.ai"):
-                                    self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                                    self._vprint(f"{self.log_prefix}      • 额度检查：https://openrouter.ai/settings/credits", force=True)
                         else:
-                            self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 这类错误通常无法通过重试解决。", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
                         # Skip session persistence when the error is likely
                         # context-overflow related (status 400 + large session).
@@ -12945,7 +13483,7 @@ class AIAgent:
                             retry_count = 0
                             continue
                         # Try fallback before giving up entirely
-                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                        self._emit_status(f"⚠️ 已耗尽最大重试次数（{max_retries}）——正在尝试备用方案...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -12953,10 +13491,10 @@ class AIAgent:
                             continue
                         _final_summary = self._summarize_api_error(api_error)
                         if is_rate_limited:
-                            self._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                            self._emit_status(f"❌ 重试 {max_retries} 次后仍被限流——{_final_summary}")
                         else:
-                            self._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
-                        self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
+                            self._emit_status(f"❌ 重试 {max_retries} 次后 API 仍失败——{_final_summary}")
+                        self._vprint(f"{self.log_prefix}   💀 最终错误：{_final_summary}", force=True)
 
                         # Detect SSE stream-drop pattern (e.g. "Network
                         # connection lost") and surface actionable guidance.
@@ -12973,17 +13511,15 @@ class AIAgent:
                         )
                         if _is_stream_drop:
                             self._vprint(
-                                f"{self.log_prefix}   💡 The provider's stream "
-                                f"connection keeps dropping. This often happens "
-                                f"when the model tries to write a very large "
-                                f"file in a single tool call.",
+                                f"{self.log_prefix}   💡 提供方的流式连接持续中断。"
+                                f"这种情况通常发生在模型尝试通过单次工具调用"
+                                f"写入超大文件时。",
                                 force=True,
                             )
                             self._vprint(
-                                f"{self.log_prefix}      Try asking the model "
-                                f"to use execute_code with Python's open() for "
-                                f"large files, or to write the file in smaller "
-                                f"sections.",
+                                f"{self.log_prefix}      你可以让模型改用 "
+                                f"execute_code + Python 的 open() 处理大文件，"
+                                f"或者把文件拆成更小的分段写入。",
                                 force=True,
                             )
 
@@ -13029,9 +13565,9 @@ class AIAgent:
                                     pass
                     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                     if is_rate_limited:
-                        self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                        self._emit_status(f"⏱️ 触发限流。等待 {wait_time:.1f} 秒（第 {retry_count + 1}/{max_retries} 次尝试）…")
                     else:
-                        self._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                        self._emit_status(f"⏳ 将在 {wait_time:.1f} 秒后重试（第 {retry_count}/{max_retries} 次尝试）…")
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
@@ -13046,7 +13582,7 @@ class AIAgent:
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if self._interrupt_requested:
-                            self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                            self._vprint(f"{self.log_prefix}⚡ 重试等待期间检测到中断，正在终止。", force=True)
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
                             return {
@@ -13157,9 +13693,9 @@ class AIAgent:
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
-                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content}")
+                        self._vprint(f"{self.log_prefix}🤖 助手：{assistant_message.content}")
                     else:
-                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                        self._vprint(f"{self.log_prefix}🤖 助手：{assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).
@@ -13188,15 +13724,15 @@ class AIAgent:
                 if has_incomplete_scratchpad(assistant_message.content or ""):
                     self._incomplete_scratchpad_retries += 1
                     
-                    self._vprint(f"{self.log_prefix}⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
+                    self._vprint(f"{self.log_prefix}⚠️ 检测到不完整的 <REASONING_SCRATCHPAD>（已开启但未闭合）")
                     
                     if self._incomplete_scratchpad_retries <= 2:
-                        self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._incomplete_scratchpad_retries}/2)...")
+                        self._vprint(f"{self.log_prefix}🔄 正在重试 API 调用（{self._incomplete_scratchpad_retries}/2）...")
                         # Don't add the broken message, just retry
                         continue
                     else:
                         # Max retries - discard this turn and save as partial
-                        self._vprint(f"{self.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True)
+                        self._vprint(f"{self.log_prefix}❌ 不完整 scratchpad 已达到最大重试次数（2），将保存为部分结果。", force=True)
                         self._incomplete_scratchpad_retries = 0
                         
                         rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
@@ -13257,7 +13793,7 @@ class AIAgent:
 
                     if self._codex_incomplete_retries < 3:
                         if not self.quiet_mode:
-                            self._vprint(f"{self.log_prefix}↻ Codex response incomplete; continuing turn ({self._codex_incomplete_retries}/3)")
+                            self._vprint(f"{self.log_prefix}↻ Codex 响应不完整；继续当前回合（{self._codex_incomplete_retries}/3）")
                         self._session_messages = messages
                         self._save_session_log(messages)
                         continue
@@ -13278,7 +13814,7 @@ class AIAgent:
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
-                        self._vprint(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                        self._vprint(f"{self.log_prefix}🔧 正在处理 {len(assistant_message.tool_calls)} 个工具调用...")
                     
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
@@ -13304,10 +13840,10 @@ class AIAgent:
                         available = ", ".join(sorted(self.valid_tool_names))
                         invalid_name = invalid_tool_calls[0]
                         invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
-                        self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
+                        self._vprint(f"{self.log_prefix}⚠️ 未知工具 '{invalid_preview}'——正在将错误反馈给模型以自我修正（{self._invalid_tool_retries}/3）")
 
                         if self._invalid_tool_retries >= 3:
-                            self._vprint(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
+                            self._vprint(f"{self.log_prefix}❌ 无效工具调用重试已超过上限（3），将以部分结果停止。", force=True)
                             self._invalid_tool_retries = 0
                             self._persist_session(messages, conversation_history)
                             return {
@@ -13390,16 +13926,16 @@ class AIAgent:
                         self._invalid_json_retries += 1
 
                         tool_name, error_msg = invalid_json_args[0]
-                        self._vprint(f"{self.log_prefix}⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
+                        self._vprint(f"{self.log_prefix}⚠️ 工具 '{tool_name}' 的参数 JSON 无效：{error_msg}")
 
                         if self._invalid_json_retries < 3:
-                            self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._invalid_json_retries}/3)...")
+                            self._vprint(f"{self.log_prefix}🔄 正在重试 API 调用（{self._invalid_json_retries}/3）...")
                             # Don't add anything to messages, just retry the API call
                             continue
                         else:
                             # Instead of returning partial, inject tool error results so the model can recover.
                             # Using tool results (not user messages) preserves role alternation.
-                            self._vprint(f"{self.log_prefix}⚠️  Injecting recovery tool results for invalid JSON...")
+                            self._vprint(f"{self.log_prefix}⚠️ 正在注入用于恢复的工具结果（针对无效 JSON）...")
                             self._invalid_json_retries = 0  # Reset for next attempt
                             
                             # Append the assistant message with its (broken) tool_calls
@@ -13599,6 +14135,21 @@ class AIAgent:
                     # prior housekeeping tool turn and should not silence the
                     # final response path.
                     self._mute_post_response = False
+
+                    # Stock evidence auto-fetch (one-shot):
+                    # If the model is about to answer a stock-analysis question
+                    # but minimum evidence is still missing, force one
+                    # additional tool round first, then let the model conclude.
+                    if self._maybe_enqueue_stock_evidence_autofetch(
+                        original_user_message=original_user_message,
+                        final_response=final_response,
+                        messages=messages,
+                        assistant_message=assistant_message,
+                        finish_reason=finish_reason,
+                        already_attempted=stock_evidence_autofetch_attempted,
+                    ):
+                        stock_evidence_autofetch_attempted = True
+                        continue
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
@@ -13640,7 +14191,7 @@ class AIAgent:
                         if fallback and getattr(self, '_last_content_tools_all_housekeeping', False):
                             _turn_exit_reason = "fallback_prior_turn_content"
                             logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                            self._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
+                            self._emit_status("↻ 工具调用后仍返回空内容——将使用先前内容作为最终答案")
                             self._last_content_with_tools = None
                             self._last_content_tools_all_housekeeping = False
                             self._empty_content_retries = 0
@@ -13692,12 +14243,10 @@ class AIAgent:
                             self._last_content_with_tools = None
                             self._last_content_tools_all_housekeeping = False
                             logger.info(
-                                "Empty response after tool calls — nudging model "
-                                "to continue processing"
+                                "工具调用后返回空响应——提示模型继续处理"
                             )
                             self._emit_status(
-                                "⚠️ Model returned empty after tool calls — "
-                                "nudging to continue"
+                                "⚠️ 工具调用后模型返回空内容——正在提示继续"
                             )
                             # Append the empty assistant message first so the
                             # message sequence stays valid:
@@ -13710,9 +14259,8 @@ class AIAgent:
                             messages.append({
                                 "role": "user",
                                 "content": (
-                                    "You just executed tool calls but returned an "
-                                    "empty response. Please process the tool "
-                                    "results above and continue with the task."
+                                    "你刚执行了工具调用，但返回了空响应。请处理上方工具结果，"
+                                    "并继续完成任务。"
                                 ),
                             })
                             continue
@@ -14034,6 +14582,19 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
+
+        final_response = self._apply_stock_evidence_gate_if_needed(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+            messages=messages,
+        )
+        final_response = self._apply_factual_grounding_gate_if_needed(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+            messages=messages,
+        )
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

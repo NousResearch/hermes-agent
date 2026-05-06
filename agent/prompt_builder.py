@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -27,6 +28,79 @@ from agent.skill_utils import (
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prompt presets (opt-in system prompt overlays)
+# ---------------------------------------------------------------------------
+
+_PRESET_LOCK = threading.Lock()
+_PRESET_CACHE: dict[str, str] = {}
+
+
+def load_prompt_preset() -> Optional[str]:
+    """Load an opt-in prompt preset.
+
+    Enabled by environment variable:
+    - HERMES_PROMPT_PRESET=evotraders
+    - HERMES_PROMPT_PRESET=evotraders,evotraders_policy   (multiple overlays)
+
+    Presets are bundled under ``agent/prompt_presets/*.md``.
+    Content is scanned for injection patterns and truncated, same as SOUL.md.
+    """
+    raw = str(os.getenv("HERMES_PROMPT_PRESET", "")).strip().lower()
+    if not raw:
+        return None
+    # Support multiple presets separated by comma (and tolerate whitespace).
+    names = [p.strip() for p in raw.split(",") if p.strip()]
+    if not names:
+        return None
+    # Keep the surface tight: only allow safe names to avoid path tricks.
+    for name in names:
+        if not re.fullmatch(r"[a-z0-9_-]{1,64}", name):
+            return None
+
+    cache_key = ",".join(names)
+    with _PRESET_LOCK:
+        cached = _PRESET_CACHE.get(cache_key)
+        if cached is not None:
+            return cached or None
+
+    # Shared conditional: Windows-only blocks.
+    is_windows = sys.platform.startswith("win32") or sys.platform.startswith("cygwin")
+    allow_windows_block = str(os.getenv("EVOTRADERS_ENABLE_WINDOWS_TOOLCHAIN_HINTS", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    base = Path(__file__).resolve().parent / "prompt_presets"
+    parts: list[str] = []
+    for name in names:
+        preset_path = base / f"{name}.md"
+        if not preset_path.exists():
+            continue
+        try:
+            content = preset_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if not content:
+            continue
+        if not (is_windows or allow_windows_block):
+            content = re.sub(
+                r"\[WINDOWS_ONLY_BEGIN\][\s\S]*?\[WINDOWS_ONLY_END\]\s*",
+                "",
+                content,
+                flags=re.MULTILINE,
+            )
+        content = _scan_context_content(content, f"prompt_preset:{name}")
+        content = _truncate_content(content, f"prompt_preset:{name}")
+        parts.append(content)
+
+    final = "\n\n".join([p for p in parts if p.strip()]).strip()
+    with _PRESET_LOCK:
+        _PRESET_CACHE[cache_key] = final
+    return final or None
 
 # ---------------------------------------------------------------------------
 # Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
@@ -135,10 +209,41 @@ DEFAULT_AGENT_IDENTITY = (
     "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
     "You are helpful, knowledgeable, and direct. You assist users with a wide "
     "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
+    "analyzing information, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
     "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations."
+    "Be targeted and efficient in your exploration and investigations.\n\n"
+    "# Financial / stock analyst rigor (hard rules)\n"
+    "When the user asks about stocks, trading, backtesting, factor research, or "
+    "market data, you are acting as a rigorous stock analyst. You MUST treat data "
+    "integrity as critical infrastructure.\n"
+    "- Your analysis may directly influence investment decisions and outcomes. "
+    "Treat every conclusion as high-stakes and high-risk: be conservative, "
+    "evidence-driven, and explicit about uncertainty.\n"
+    "- In stock/market analysis mode, every sentence MUST serve one of these purposes: "
+    "(1) cite evidence, (2) derive an investable conclusion/actionable decision, or "
+    "(3) state risk/uncertainty/assumptions that directly qualify the conclusion. "
+    "Do NOT include fluff, generic commentary, motivational language, or meta "
+    "statements that do not contribute to an investment conclusion.\n"
+    "- Do NOT fabricate or guess any numbers, files, datasets, dates, prices, "
+    "returns, rankings, or 'saved results'.\n"
+    "- Every factual claim (especially numeric/statistical conclusions) MUST be "
+    "grounded in real evidence from tools/logs/database/API responses in the current "
+    "environment. If you lack evidence, say so and request/perform the tool calls.\n"
+    "- Prefer quoting verbatim tool output snippets as evidence. If the user asks "
+    "for '原样/raw/verbatim', return only the raw tool output.\n"
+    "- If evidence is missing or inconsistent, you MUST refuse to provide the "
+    "conclusion rather than filling gaps.\n"
+    "- Forecasts/inferences are allowed ONLY when explicitly labeled as "
+    "assumptions/uncertainty and accompanied by a concrete evidence chain "
+    "(tool outputs, timestamps, inputs). If you cannot provide that, you MUST "
+    "refuse to present the inference as a conclusion.\n"
+    "- Creative writing is allowed ONLY when the user explicitly requests a "
+    "non-financial creative task. It is NEVER allowed as a substitute for "
+    "evidence in stock/market analysis.\n"
+    "- Default language: respond in Simplified Chinese (简体中文) unless the user "
+    "explicitly requests another language, or you are returning verbatim tool output "
+    "that must preserve the original text."
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
@@ -255,9 +360,30 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
+STRICT_VERBATIM_EVIDENCE_GUIDANCE = (
+    "# Verbatim evidence mode\n"
+    "When the user explicitly asks for raw/verbatim/original output (e.g. "
+    "'原样', '不要总结', 'raw output', 'verbatim'), do NOT paraphrase or summarize.\n"
+    "Return directly quoted tool output snippets as evidence. If no tool output "
+    "exists yet, state that clearly and request running the relevant tool first.\n"
+    "Do not fabricate files, numbers, or execution results under any circumstance."
+)
+
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+# Includes common non-OpenAI families (glm/qwen/deepseek/kimi) that tend to
+# describe intended tool usage unless explicitly constrained.
+TOOL_USE_ENFORCEMENT_MODELS = (
+    "gpt",
+    "codex",
+    "gemini",
+    "gemma",
+    "grok",
+    "glm",
+    "qwen",
+    "deepseek",
+    "kimi",
+)
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
@@ -926,7 +1052,7 @@ def build_skills_system_prompt(
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
+            "`hermes setup`) so you don't have to guess, improvise, or make up workarounds.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "

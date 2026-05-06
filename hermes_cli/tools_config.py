@@ -58,6 +58,7 @@ CONFIGURABLE_TOOLSETS = [
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("evotraders",      "📈 EvoTraders / A股工具链",      "WinAPI tqcenter + upstream Evo proxy"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -476,6 +477,7 @@ TOOL_CATEGORIES = {
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "evotraders": [("EVOTRADERS_WINAPI_BASE", "")],
 }
 
 
@@ -1180,8 +1182,8 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
                 all_tools.update(resolve_toolset(ts_keys[idx]))
             total = sum(tool_tokens.get(name, 0) for name in all_tools)
             if total >= 1000:
-                return f"Est. tool context: ~{total / 1000:.1f}k tokens"
-            return f"Est. tool context: ~{total} tokens"
+                return f"预估工具上下文：约 {total / 1000:.1f}k tokens"
+            return f"预估工具上下文：约 {total} tokens"
 
     chosen = curses_checklist(
         f"Tools for {platform_label}",

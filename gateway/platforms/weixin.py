@@ -1673,7 +1673,15 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            err = str(exc)
+            lowered = err.lower()
+            retryable = (
+                "rate limited" in lowered
+                or "too many requests" in lowered
+                or " errcode=429" in lowered
+                or " ret=-2" in lowered
+            )
+            return SendResult(success=False, error=err, retryable=retryable)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:

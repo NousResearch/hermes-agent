@@ -422,6 +422,20 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Factual grounding gate (default true):
+        # Blocks deterministic "done/exist/saved" style claims when no
+        # matching tool evidence exists in the current turn. This reduces
+        # fabricated file/data assertions.
+        "factual_grounding_gate": True,
+        # Strict verbatim evidence mode:
+        # When the user asks for raw/original output ("原样", "完整输出", "不要总结"),
+        # force the assistant to include unmodified tool output snippets
+        # instead of summary-only prose.
+        "strict_verbatim_evidence": True,
+        # Strict verbatim exact-only mode:
+        # When enabled, "raw/verbatim" requests must return tool output snippets
+        # only (no additional summary text).
+        "strict_verbatim_exact_only": True,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

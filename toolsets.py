@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Hermes Web UI quotes watchlist management
+    "quotes_watchlist",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -119,6 +121,12 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "skills_readonly": {
+        "description": "Readonly skill access (list and view only, no management/editing)",
+        "tools": ["skills_list", "skill_view"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
@@ -166,6 +174,33 @@ TOOLSETS = {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
         "tools": ["text_to_speech"],
         "includes": []
+    },
+
+    "evotraders": {
+        "description": "EvoTraders / WinAPI relay (tqcenter + upstream Evo proxy) for A-share analysis on Linux via Windows bridge",
+        "tools": [
+            "evotraders_health",
+            "evotraders_tq_call",
+            "evotraders_proxy_call",
+            "evotraders_market_mainline",
+            "evotraders_wenda_query",
+            "evotraders_indicator_select",
+            "evotraders_iwencai_query",
+            "evotraders_ths_bigorder",
+            "evotraders_trade_query",
+            "evotraders_trade_buy",
+            "evotraders_trade_sell",
+            "evotraders_trade_cancel",
+            "evotraders_trade_verify_bundle",
+            "evotraders_thsquant_health",
+            "evotraders_thsquant_trade_query",
+            "evotraders_thsquant_trade_verify_bundle",
+            "evotraders_tqlex_public_call",
+            "evotraders_route_and_call",
+            "evotraders_route_dry_run",
+        ],
+        "includes": [],
+        "module": "tools.evotraders_tool",
     },
     
     "todo": {

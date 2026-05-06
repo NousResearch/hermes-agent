@@ -8124,6 +8124,9 @@ def cmd_profile(args):
         clone = getattr(args, "clone", False)
         clone_all = getattr(args, "clone_all", False)
         no_alias = getattr(args, "no_alias", False)
+        template = getattr(args, "template", None)
+        winapi_base = str(getattr(args, "winapi_base", "") or "").strip()
+        use_after_create = bool(getattr(args, "use", False))
 
         try:
             clone_from = getattr(args, "clone_from", None)
@@ -8171,6 +8174,25 @@ def cmd_profile(args):
                         )
                     )
 
+            if template == "evotraders":
+                if not winapi_base:
+                    print("Error: --template evotraders requires --winapi-base")
+                    sys.exit(1)
+                try:
+                    from hermes_cli.evotraders_setup import apply_evotraders_profile
+
+                    apply_evotraders_profile(profile_dir, winapi_base=winapi_base)
+                    print("Applied template: evotraders")
+                except Exception as e:
+                    print(f"⚠ Failed to apply evotraders template: {e}")
+
+            if use_after_create:
+                try:
+                    set_active_profile(name)
+                    print(f"Switched to: {name}")
+                except Exception as e:
+                    print(f"⚠ Failed to set active profile: {e}")
+
             # Create wrapper alias
             if not no_alias:
                 collision = check_alias_collision(name)
@@ -8202,6 +8224,9 @@ def cmd_profile(args):
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
+            if template == "evotraders":
+                print(f"  {name} chat -q \"分析 000001\" --toolsets evotraders")
+                print(f"  {name} evotraders doctor")
             if clone or clone_all:
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
@@ -8747,6 +8772,16 @@ def main():
         "or unset, instead of running the full reconfigure wizard.",
     )
     setup_parser.set_defaults(func=cmd_setup)
+
+    # =========================================================================
+    # evotraders command (WinAPI bridge + prompt preset)
+    # =========================================================================
+    try:
+        from hermes_cli.evotraders_setup import add_subparser as _add_evotraders_subparser
+        _add_evotraders_subparser(subparsers)
+    except Exception:
+        # Best-effort: never block the CLI if optional integration wiring fails.
+        pass
 
     # =========================================================================
     # whatsapp command
@@ -10522,6 +10557,22 @@ Examples:
     )
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"
+    )
+    profile_create.add_argument(
+        "--template",
+        choices=["evotraders"],
+        default=None,
+        help="Apply a preset profile template after creation",
+    )
+    profile_create.add_argument(
+        "--winapi-base",
+        default="",
+        help="With --template evotraders: WinAPI base URL, e.g. http://192.168.100.168:18880",
+    )
+    profile_create.add_argument(
+        "--use",
+        action="store_true",
+        help="After creation, set this profile as active",
     )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")

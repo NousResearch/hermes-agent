@@ -318,6 +318,8 @@ class ChatCompletionsTransport(ProviderTransport):
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
+        is_mydamoxing = params.get("is_mydamoxing", False)
+        is_qwen = params.get("is_qwen_portal", False)
 
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
@@ -341,7 +343,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                if reasoning_config is not None:
+                    rc = dict(reasoning_config)
+                    if is_nous and rc.get("enabled") is False:
+                        pass  # omit for Nous when disabled
+                    else:
+                        extra_body["reasoning"] = rc
+                else:
+                    extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
@@ -359,6 +368,33 @@ class ChatCompletionsTransport(ProviderTransport):
             thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if thinking_config:
                 extra_body["thinking_config"] = thinking_config
+
+        if is_nous:
+            extra_body["tags"] = ["product=hermes-agent"]
+
+        # Ollama num_ctx
+        ollama_ctx = params.get("ollama_num_ctx")
+        if ollama_ctx:
+            options = extra_body.get("options", {})
+            options["num_ctx"] = ollama_ctx
+            extra_body["options"] = options
+
+        # Ollama/custom think=false
+        if params.get("is_custom_provider", False):
+            if reasoning_config and isinstance(reasoning_config, dict):
+                _effort = (reasoning_config.get("effort") or "").strip().lower()
+                _enabled = reasoning_config.get("enabled", True)
+                if _effort == "none" or _enabled is False:
+                    extra_body["think"] = False
+
+        # Some OpenAI-compatible GLM gateways require disabling "thinking"
+        # explicitly, otherwise they may emit reasoning-only text and an empty
+        # assistant content body.
+        if is_mydamoxing:
+            extra_body.setdefault("enable_thinking", False)
+
+        if is_qwen:
+            extra_body["vl_high_resolution_images"] = True
 
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")

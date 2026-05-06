@@ -29,6 +29,8 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _normalize_requested_toolsets,
+    _restrict_child_toolsets_to_readonly_skills,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -97,7 +99,7 @@ class TestChildSystemPrompt(unittest.TestCase):
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
-        self.assertEqual(sorted(result), ["file", "terminal"])
+        self.assertEqual(sorted(result), ["code_execution", "file", "terminal"])
 
     def test_preserves_allowed_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "web", "browser"])
@@ -727,8 +729,37 @@ class TestSubagentCostRollup(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "clarify", "memory", "send_message"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
+
+
+class TestNormalizeRequestedToolsets(unittest.TestCase):
+    def test_accepts_toolset_names(self):
+        out = _normalize_requested_toolsets(["file", "code_execution"])
+        self.assertEqual(out, ["file", "code_execution"])
+
+    def test_maps_tool_name_to_toolset(self):
+        out = _normalize_requested_toolsets(["execute_code", "file"])
+        self.assertIn("code_execution", out)
+        self.assertIn("file", out)
+
+
+class TestReadonlySkillsForChild(unittest.TestCase):
+    def test_replaces_skills_with_readonly_variant(self):
+        out = _restrict_child_toolsets_to_readonly_skills(
+            ["terminal", "skills"],
+            {"terminal", "skills", "skills_readonly"},
+        )
+        self.assertIn("terminal", out)
+        self.assertIn("skills_readonly", out)
+        self.assertNotIn("skills", out)
+
+    def test_auto_adds_readonly_skills_when_parent_has_skills(self):
+        out = _restrict_child_toolsets_to_readonly_skills(
+            ["file", "code_execution"],
+            {"file", "code_execution", "skills"},
+        )
+        self.assertIn("skills_readonly", out)
 
     def test_constants(self):
         from tools.delegate_tool import (
@@ -784,7 +815,10 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(creds["api_key"], "sk-or-test-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
-        mock_resolve.assert_called_once_with(requested="openrouter")
+        mock_resolve.assert_called_once_with(
+            requested="openrouter",
+            target_model="google/gemini-3-flash-preview",
+        )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
@@ -804,7 +838,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["model"], "server-default-model")
         self.assertEqual(creds["provider"], "custom")
         self.assertEqual(creds["base_url"], "https://my-server.example/v1")
-        mock_resolve.assert_called_once_with(requested="custom:my-server")
+        mock_resolve.assert_called_once_with(
+            requested="custom:my-server", target_model=None
+        )
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -868,7 +904,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "nous")
         self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
         self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
-        mock_resolve.assert_called_once_with(requested="nous")
+        mock_resolve.assert_called_once_with(
+            requested="nous", target_model="hermes-3-llama-3.1-8b"
+        )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1305,7 +1343,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser", "mcp-MiniMax"],
+            ["web", "browser", "code_execution", "mcp-MiniMax"],
         )
 
     @patch(
@@ -1333,7 +1371,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser"],
+            ["web", "browser", "code_execution"],
         )
 
 
@@ -1630,13 +1668,15 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
         # We should see the heartbeat stop firing well before 0.6s.
+        # Default production idle ceiling is larger than 5 — pin it for this regression.
         with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            _run_single_child(
-                task_index=0,
-                goal="Test wedged child",
-                child=child,
-                parent_agent=parent,
-            )
+            with patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5):
+                _run_single_child(
+                    task_index=0,
+                    goal="Test wedged child",
+                    child=child,
+                    parent_agent=parent,
+                )
 
         # With idle threshold=5 + interval=0.05s, touches should cap
         # around 5. Bound loosely to avoid timing flakes.

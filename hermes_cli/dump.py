@@ -54,12 +54,12 @@ def _gateway_status() -> str:
             mode = snapshot.manager
             if snapshot.has_process_service_mismatch:
                 mode = "manual"
-            return f"running ({mode}, pid {snapshot.gateway_pids[0]})"
+            return f"运行中（{mode}，PID {snapshot.gateway_pids[0]}）"
         if snapshot.service_installed and not snapshot.service_running:
-            return f"stopped ({snapshot.manager})"
-        return f"stopped ({snapshot.manager})"
+            return f"已停止（{snapshot.manager}）"
+        return f"已停止（{snapshot.manager}）"
     except Exception:
-        return "unknown" if sys.platform.startswith(("linux", "darwin")) else "N/A"
+        return "未知" if sys.platform.startswith(("linux", "darwin")) else "N/A"
 
 
 def _count_skills(hermes_home: Path) -> int:
@@ -90,9 +90,9 @@ def _cron_summary(hermes_home: Path) -> str:
             data = json.load(f)
         jobs = data.get("jobs", [])
         active = sum(1 for j in jobs if j.get("enabled", True))
-        return f"{active} active / {len(jobs)} total"
+        return f"{active} 个启用 / 共 {len(jobs)} 个"
     except Exception:
-        return "(error reading)"
+        return "（读取失败）"
 
 
 def _configured_platforms() -> list[str]:

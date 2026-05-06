@@ -709,22 +709,22 @@ def format_auth_error(error: Exception) -> str:
         return str(error)
 
     if error.relogin_required:
-        return f"{error} Run `hermes model` to re-authenticate."
+        return f"{error} 请运行 `hermes model` 重新认证。"
 
     if error.code == "subscription_required":
         return (
-            "No active paid subscription found on Nous Portal. "
-            "Please purchase/activate a subscription, then retry."
+            "在 Nous Portal 未找到有效的付费订阅。"
+            "请购买/激活订阅后重试。"
         )
 
     if error.code == "insufficient_credits":
         return (
-            "Subscription credits are exhausted. "
-            "Top up/renew credits in Nous Portal, then retry."
+            "订阅额度已用尽。"
+            "请在 Nous Portal 充值/续费后重试。"
         )
 
     if error.code == "temporarily_unavailable":
-        return f"{error} Please retry in a few seconds."
+        return f"{error} 请稍等几秒后重试。"
 
     return str(error)
 

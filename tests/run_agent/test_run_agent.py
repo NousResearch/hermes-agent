@@ -982,6 +982,23 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
 
+    def test_auto_injects_for_glm(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="custom:glm-5.1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_strict_verbatim_guidance_injected(self):
+        from agent.prompt_builder import STRICT_VERBATIM_EVIDENCE_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert STRICT_VERBATIM_EVIDENCE_GUIDANCE in prompt
+
+    def test_default_identity_includes_financial_rigor_rules(self):
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert "Financial / stock analyst rigor (hard rules)" in prompt
+
     def test_auto_skips_for_claude(self):
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
         agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="auto")

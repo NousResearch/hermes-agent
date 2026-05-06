@@ -2331,6 +2331,14 @@ class HermesCLI:
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        # Optional lightweight model override for trivial tasks (for example:
+        # wx/weixin notifications). When empty, normal session model is used.
+        self.simple_task_model = (
+            str(CLI_CONFIG["agent"].get("simple_task_model", "") or "").strip()
+        )
+        self.simple_task_strip_system_prompt = bool(
+            CLI_CONFIG["agent"].get("simple_task_strip_system_prompt", True)
+        )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -3498,22 +3506,22 @@ class HermesCLI:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
         if cmd_lower.startswith("/skills search"):
-            return "Searching skills..."
+            return "正在搜索技能…"
         if cmd_lower.startswith("/skills browse"):
-            return "Loading skills..."
+            return "正在加载技能…"
         if cmd_lower.startswith("/skills inspect"):
-            return "Inspecting skill..."
+            return "正在查看技能详情…"
         if cmd_lower.startswith("/skills install"):
-            return "Installing skill..."
+            return "正在安装技能…"
         if cmd_lower.startswith("/skills"):
-            return "Processing skills command..."
+            return "正在处理技能命令…"
         if cmd_lower == "/reload-mcp":
-            return "Reloading MCP servers..."
+            return "正在重载 MCP 服务器…"
         if cmd_lower == "/reload-skills" or cmd_lower == "/reload_skills":
-            return "Reloading skills..."
+            return "正在重载技能…"
         if cmd_lower.startswith("/browser"):
-            return "Configuring browser..."
-        return "Processing command..."
+            return "正在配置浏览器…"
+        return "正在处理命令…"
 
     def _command_spinner_frame(self) -> str:
         """Return the current spinner frame for slow slash commands."""
@@ -3731,6 +3739,7 @@ class HermesCLI:
         route = {
             "model": self.model,
             "runtime": runtime,
+            "simple_task_mode": False,
             "signature": (
                 self.model,
                 runtime["provider"],
@@ -3738,8 +3747,37 @@ class HermesCLI:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                False,
             ),
         }
+
+        # Fast-path small-model routing for very simple Weixin notify tasks.
+        # Keep scope intentionally narrow to avoid degrading normal coding/chat quality.
+        text = str(user_message or "").strip()
+        if self.simple_task_model and text:
+            tl = text.lower()
+            has_weixin = (
+                "/wx" in tl
+                or "微信" in text
+                or "weixin" in tl
+                or "wechat" in tl
+            )
+            has_simple_intent = any(
+                token in text
+                for token in ("通知", "提醒", "发送", "发我", "发到", "文件", "链接", "消息")
+            )
+            if has_weixin and has_simple_intent:
+                route["model"] = self.simple_task_model
+                route["simple_task_mode"] = True
+                route["signature"] = (
+                    route["model"],
+                    runtime["provider"],
+                    runtime["base_url"],
+                    runtime["api_mode"],
+                    runtime["command"],
+                    tuple(runtime["args"]),
+                    True,
+                )
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
@@ -3753,7 +3791,7 @@ class HermesCLI:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, simple_task_mode: bool = False) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -3841,6 +3879,23 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            strip_system = bool(simple_task_mode and self.simple_task_strip_system_prompt)
+            effective_toolsets = ["messaging"] if strip_system else self.enabled_toolsets
+            effective_ephemeral_system_prompt = None
+            if strip_system:
+                # In simple-task mode, use a user-defined minimal prompt if present.
+                # Stored per-profile by hermes-web-ui as: ~/.hermes/<profile>/simple_prompt.md
+                try:
+                    sp = (get_hermes_home() / "simple_prompt.md")
+                    if sp.exists():
+                        _raw = sp.read_text(encoding="utf-8")
+                        _raw = _raw.strip("\n")
+                        if _raw.strip():
+                            effective_ephemeral_system_prompt = _raw
+                except Exception:
+                    effective_ephemeral_system_prompt = None
+            else:
+                effective_ephemeral_system_prompt = self.system_prompt if self.system_prompt else None
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -3851,11 +3906,11 @@ class HermesCLI:
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
-                enabled_toolsets=self.enabled_toolsets,
+                enabled_toolsets=effective_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
-                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                ephemeral_system_prompt=effective_ephemeral_system_prompt,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
@@ -3879,8 +3934,9 @@ class HermesCLI:
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,
                 pass_session_id=self.pass_session_id,
-                skip_context_files=self.ignore_rules,
-                skip_memory=self.ignore_rules,
+                skip_context_files=(self.ignore_rules or strip_system),
+                skip_memory=(self.ignore_rules or strip_system),
+                skip_prompt_presets=strip_system,
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
@@ -3900,6 +3956,7 @@ class HermesCLI:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                bool(simple_task_mode),
             )
 
             # Force-create DB row on /title intent, then apply title.
@@ -9405,6 +9462,7 @@ class HermesCLI:
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            simple_task_mode=turn_route.get("simple_task_mode", False),
         ):
             return None
         
@@ -11260,17 +11318,17 @@ class HermesCLI:
         def _get_placeholder():
             if cli_ref._voice_recording:
                 _label = cli_ref._voice_record_key_label()
-                return f"recording... {_label} to stop, Ctrl+C to cancel"
+                return f"录音中…{_label} 停止，Ctrl+C 取消"
             if cli_ref._voice_processing:
-                return "transcribing..."
+                return "转写中…"
             if cli_ref._sudo_state:
-                return "type password (hidden), Enter to submit · ESC to skip"
+                return "请输入密码（已隐藏），回车提交 · ESC 跳过"
             if cli_ref._secret_state:
-                return "type secret (hidden), Enter to submit · ESC to skip"
+                return "请输入密钥（已隐藏），回车提交 · ESC 跳过"
             if cli_ref._approval_state:
                 return ""
             if cli_ref._clarify_freetext:
-                return "type your answer here and press Enter"
+                return "在此输入你的回答并按回车"
             if cli_ref._clarify_state:
                 return ""
             if cli_ref._command_running:
@@ -11278,10 +11336,10 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
+                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C 取消"
             if cli_ref._voice_mode:
                 _label = cli_ref._voice_record_key_label()
-                return f"type or {_label} to record"
+                return f"输入文字，或 {_label} 录音"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -11961,6 +12019,31 @@ class HermesCLI:
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
 
+                    # Implicit quick-route: Weixin "send/notify" intent → /wx skill.
+                    # Users often type "微信通知..." without a leading slash; treat it as /wx.
+                    if not _file_drop and isinstance(user_input, str):
+                        try:
+                            _t = user_input.strip()
+                            _is_internal_skill_payload = (
+                                _t.startswith('[IMPORTANT: The user has invoked the "')
+                                or _t.startswith("[Failed to load skill:")
+                            )
+                            if _t and (not _t.startswith("/")) and (not _is_internal_skill_payload):
+                                _tl = _t.lower()
+                                _has_weixin = ("微信" in _t) or ("weixin" in _tl) or ("wechat" in _tl)
+                                if _has_weixin:
+                                    _has_intent = any(
+                                        k in _t
+                                        for k in (
+                                            "发送", "发我", "发到", "发个", "给我发", "提醒", "通知", "推送",
+                                            "链接", "文件", "消息",
+                                        )
+                                    )
+                                    if _has_intent or _t.startswith("微信") or _tl.startswith("weixin") or _tl.startswith("wechat"):
+                                        user_input = f"/wx {_t}"
+                        except Exception:
+                            pass
+
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
@@ -12459,6 +12542,7 @@ def main(
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
+                    simple_task_mode=turn_route.get("simple_task_mode", False),
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True

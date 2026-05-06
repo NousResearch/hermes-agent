@@ -110,6 +110,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
 
     # Configuration
+    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+
+    # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",

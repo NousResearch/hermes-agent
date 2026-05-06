@@ -252,6 +252,33 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_evaluate_after_turn_explicit_checkpoint_continues_without_judge(self, hermes_home):
+        """A non-final queue checkpoint should keep /goal alive even when it
+        contains completed-work language that a generic judge may mark done."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-checkpoint", default_max_turns=5)
+        mgr.set("complete queued items one at a time")
+        response = """
+        Completed TR-2858 — communication draft center baseline.
+        Commit: abc1234.
+        Checks: focused proof, upstream proof, typecheck/build, diff check, secret scan.
+        Next queued: TR-2859.
+        Goal remains active; continue automatically.
+        Boundary held: local-only, no push/deploy/hosted writes/external sends.
+        """
+
+        with patch.object(goals, "judge_goal", return_value=("done", "looks complete")) as judge:
+            decision = mgr.evaluate_after_turn(response)
+
+        judge.assert_not_called()
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert "explicitly requested goal continuation" in decision["reason"]
+        assert mgr.state.status == "active"
+        assert mgr.state.turns_used == 1
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals

@@ -48,6 +48,14 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 
+# Explicit checkpoint phrases agents can use when a long-running queued goal has
+# completed one safe iteration but intentionally needs the goal loop to continue
+# on the next queued item.  This keeps the auxiliary judge from misclassifying a
+# useful per-iteration closeout as final goal completion.
+_CONTINUE_CHECKPOINT_RE = re.compile(
+    r"(?is)\bnext\s+queued\s*:.+\bgoal\s+remains\s+active\b.+\bcontinue\s+automatically\b"
+)
+
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
@@ -332,6 +340,17 @@ def judge_goal(
     return verdict, reason
 
 
+def _response_requests_goal_continuation(last_response: str) -> bool:
+    """Return True when the agent explicitly says this is a checkpoint.
+
+    Queue-style goals often complete one item per turn and intentionally end
+    with a non-final checkpoint naming the next item.  That response may look
+    "complete" to the generic auxiliary judge, so honor the explicit local
+    continuation contract before asking the judge.
+    """
+    return bool(_CONTINUE_CHECKPOINT_RE.search(last_response or ""))
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager — the orchestration surface CLI + gateway talk to
 # ──────────────────────────────────────────────────────────────────────
@@ -473,7 +492,10 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason = judge_goal(state.goal, last_response)
+        if _response_requests_goal_continuation(last_response):
+            verdict, reason = "continue", "response explicitly requested goal continuation"
+        else:
+            verdict, reason = judge_goal(state.goal, last_response)
         state.last_verdict = verdict
         state.last_reason = reason
 
@@ -532,4 +554,5 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "_response_requests_goal_continuation",
 ]

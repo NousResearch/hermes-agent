@@ -851,6 +851,28 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return "\n".join(parts)
 
 
+def _agent_result_has_deliverable_final_response(result: dict) -> bool:
+    """Return True when a partial agent result still contains user-facing text.
+
+    Some agent runs can end with ``completed=False`` after hitting an internal
+    budget/transport boundary even though they produced a useful final
+    checkpoint.  Cron should preserve and deliver that checkpoint instead of
+    raising ``RuntimeError(<final response>)`` and replacing it with a failure
+    wrapper.  Hard failures with an explicit error remain failures.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("failed") is True:
+        return False
+    final_response = (result.get("final_response") or "").strip()
+    if not final_response or final_response == "(No response generated)":
+        return False
+    error_text = str(result.get("error") or "").strip()
+    if error_text:
+        return False
+    return True
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -1332,12 +1354,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # job's `last_status` set to "ok". Raise so the except handler below
         # builds the proper failure tuple. (issue #17855)
         if result.get("failed") is True or result.get("completed") is False:
-            _err_text = (
-                result.get("error")
-                or (result.get("final_response") or "").strip()
-                or "agent reported failure"
+            if not _agent_result_has_deliverable_final_response(result):
+                _err_text = (
+                    result.get("error")
+                    or (result.get("final_response") or "").strip()
+                    or "agent reported failure"
+                )
+                raise RuntimeError(_err_text)
+            logger.warning(
+                "Job '%s' returned completed=false but included a deliverable final response; "
+                "delivering the response instead of converting it to a hard failure",
+                job_name,
             )
-            raise RuntimeError(_err_text)
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.

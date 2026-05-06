@@ -7,9 +7,41 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _agent_result_has_deliverable_final_response,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestCronAgentResultClassification:
+    def test_partial_result_with_final_response_is_deliverable(self):
+        result = {
+            "completed": False,
+            "failed": False,
+            "final_response": "Completed one tranche. Next queued: ITEM-2.",
+        }
+
+        assert _agent_result_has_deliverable_final_response(result) is True
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"completed": False, "failed": True, "final_response": "checkpoint"},
+            {"completed": False, "failed": False, "error": "Response truncated due to output length limit", "final_response": ""},
+            {"completed": False, "failed": False, "final_response": "(No response generated)"},
+            {"completed": False, "failed": False, "final_response": ""},
+        ],
+    )
+    def test_hard_failures_and_empty_responses_are_not_deliverable(self, result):
+        assert _agent_result_has_deliverable_final_response(result) is False
 
 
 class TestResolveOrigin:

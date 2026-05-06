@@ -6509,6 +6509,7 @@ class GatewayRunner:
                     _platform_config_key(source.platform),
                     "show_reasoning",
                     getattr(self, "_show_reasoning", False),
+                    chat_type=getattr(source, "chat_type", None),
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
@@ -12496,7 +12497,10 @@ class GatewayRunner:
         user_config = _load_gateway_config()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
-            user_config, platform_key, "streaming"
+            user_config,
+            platform_key,
+            "streaming",
+            chat_type=getattr(source, "chat_type", None),
         )
         _streaming_enabled = (
             _scfg.enabled and _scfg.transport != "off"
@@ -12751,17 +12755,39 @@ class GatewayRunner:
         # Apply tool preview length config (0 = no limit)
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
+            _tpl = resolve_display_setting(
+                user_config,
+                platform_key,
+                "tool_preview_length",
+                0,
+                chat_type=getattr(source, "chat_type", None),
+            )
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
             pass
 
         # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        _source_chat_type = getattr(source, "chat_type", None)
+        _resolved_tp = resolve_display_setting(
+            user_config,
+            platform_key,
+            "tool_progress",
+            chat_type=_source_chat_type,
+        )
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
         _display_cfg = display_config if isinstance(display_config, dict) else {}
         _platforms_cfg = _display_cfg.get("platforms") or {}
         _platform_cfg = _platforms_cfg.get(platform_key) or {}
+        _chat_type_cfg = {}
+        if isinstance(_platform_cfg, dict):
+            _chat_types_cfg = _platform_cfg.get("chat_types") or {}
+            if isinstance(_chat_types_cfg, dict):
+                _source_chat_key = str(_source_chat_type or "").strip().lower()
+                if _source_chat_key in {"direct", "private"}:
+                    _source_chat_key = "dm"
+                _maybe_chat_type_cfg = _chat_types_cfg.get(_source_chat_key)
+                if isinstance(_maybe_chat_type_cfg, dict):
+                    _chat_type_cfg = _maybe_chat_type_cfg
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
         _tool_progress_configured = (
             "tool_progress" in _display_cfg
@@ -12769,6 +12795,7 @@ class GatewayRunner:
                 isinstance(_platform_cfg, dict)
                 and "tool_progress" in _platform_cfg
             )
+            or "tool_progress" in _chat_type_cfg
             or (
                 isinstance(_legacy_tp_overrides, dict)
                 and platform_key in _legacy_tp_overrides
@@ -13240,7 +13267,10 @@ class GatewayRunner:
             # can disable streaming for specific platforms even when the global
             # streaming config is enabled.
             _plat_streaming = resolve_display_setting(
-                user_config, platform_key, "streaming"
+                user_config,
+                platform_key,
+                "streaming",
+                chat_type=getattr(source, "chat_type", None),
             )
             # None = no per-platform override → follow global config
             _streaming_enabled = (

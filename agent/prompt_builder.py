@@ -490,6 +490,15 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "whatsapp_via_mcp_meta_business_api": (
+        "You are on WhatsApp via the official Meta Cloud Business API, reached through an "
+        "external MCP server that forwards inbound messages to this gateway. Send plain text "
+        "only — WhatsApp does not render markdown. Chat identifiers are E.164 phone numbers "
+        "(e.g. +34612345678) and conversations are 1-to-1 by default. You can deliver media: "
+        "include MEDIA:/absolute/path/to/file in your response and images will be sent as "
+        "WhatsApp photos via Meta's Graph API. Keep replies concise — WhatsApp messages have "
+        "a 4096-character body limit per message."
+    ),
     "yuanbao": (
         "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
         "Markdown formatting is supported (code blocks, tables, bold/italic). "

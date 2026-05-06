@@ -107,7 +107,9 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    WHATSAPP_VIA_MCP_META_BUSINESS_API = "whatsapp_via_mcp_meta_business_api"
     YUANBAO = "yuanbao"
+
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -1586,6 +1588,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # WhatsApp via MCP (Meta Business Cloud API) — receives forwarded webhooks
+    # from an external WhatsApp MCP server that owns the Meta Cloud API
+    # credentials, replies via Meta Graph API directly. See ADR docs.
+    wamba_token = os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_TOKEN")
+    wamba_phone_id = os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_PHONE_NUMBER_ID")
+    if wamba_token and wamba_phone_id:
+        if Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API not in config.platforms:
+            config.platforms[Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API] = PlatformConfig()
+        config.platforms[Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API].enabled = True
+        config.platforms[Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API].token = wamba_token
+        config.platforms[Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API].extra.update({
+            "phone_number_id": wamba_phone_id,
+            "webhook_secret": os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_WEBHOOK_SECRET", ""),
+            "host": os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_HOST", "0.0.0.0"),
+            "port": int(os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_PORT", "8643")),
+            "path": os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_PATH", "/wa"),
+        })
+    wamba_home = os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_HOME_CHANNEL")
+    if wamba_home and Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API in config.platforms:
+        config.platforms[Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API].home_channel = HomeChannel(
+            platform=Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API,
+            chat_id=wamba_home,
+            name=os.getenv("WHATSAPP_VIA_MCP_META_BUSINESS_API_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

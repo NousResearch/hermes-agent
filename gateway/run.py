@@ -4333,6 +4333,18 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API:
+            from gateway.platforms.whatsapp_via_mcp_meta_business_api import (
+                WhatsAppViaMcpMetaBusinessApiAdapter,
+                check_whatsapp_via_mcp_meta_business_api_requirements,
+            )
+            if not check_whatsapp_via_mcp_meta_business_api_requirements():
+                logger.warning(
+                    "WhatsApp via MCP (Meta Business API): aiohttp/httpx missing"
+                )
+                return None
+            return WhatsAppViaMcpMetaBusinessApiAdapter(config)
+
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
             if not WEBSOCKETS_AVAILABLE:
@@ -4381,6 +4393,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API: "WHATSAPP_VIA_MCP_META_BUSINESS_API_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
@@ -4407,6 +4420,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.WHATSAPP_VIA_MCP_META_BUSINESS_API: "WHATSAPP_VIA_MCP_META_BUSINESS_API_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).

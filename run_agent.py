@@ -966,7 +966,9 @@ class AIAgent:
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
-        checkpoint_max_snapshots: int = 50,
+        checkpoint_max_snapshots: int = 20,
+        checkpoint_max_total_size_mb: int = 500,
+        checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
     ):
         """
@@ -1461,6 +1463,17 @@ class AIAgent:
                 elif base_url_host_matches(effective_base, "chatgpt.com"):
                     from agent.auxiliary_client import _codex_cloudflare_headers
                     client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+                elif "default_headers" not in client_kwargs:
+                    # Fall back to profile.default_headers for providers that
+                    # declare custom headers (e.g. Vercel AI Gateway attribution,
+                    # Kimi User-Agent on non-kimi.com endpoints).
+                    try:
+                        from providers import get_provider_profile as _gpf
+                        _ph = _gpf(self.provider)
+                        if _ph and _ph.default_headers:
+                            client_kwargs["default_headers"] = dict(_ph.default_headers)
+                    except Exception:
+                        pass
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -1678,6 +1691,8 @@ class AIAgent:
         self._checkpoint_mgr = CheckpointManager(
             enabled=checkpoints_enabled,
             max_snapshots=checkpoint_max_snapshots,
+            max_total_size_mb=checkpoint_max_total_size_mb,
+            max_file_size_mb=checkpoint_max_file_size_mb,
         )
         
         # SQLite session store (optional -- provided by CLI or gateway)
@@ -1857,6 +1872,13 @@ class AIAgent:
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        try:
+            from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
+            _model_cthresh = _cthresh_fn(self.model)
+            if _model_cthresh is not None:
+                compression_threshold = _model_cthresh
+        except Exception:
+            pass
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -6261,7 +6283,19 @@ class AIAgent:
                 self._client_kwargs.get("api_key", "")
             )
         else:
-            self._client_kwargs.pop("default_headers", None)
+            # No URL-specific headers — check profile.default_headers before clearing.
+            _ph_headers = None
+            try:
+                from providers import get_provider_profile as _gpf2
+                _ph2 = _gpf2(self.provider)
+                if _ph2 and _ph2.default_headers:
+                    _ph_headers = dict(_ph2.default_headers)
+            except Exception:
+                pass
+            if _ph_headers:
+                self._client_kwargs["default_headers"] = _ph_headers
+            else:
+                self._client_kwargs.pop("default_headers", None)
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -8494,7 +8528,7 @@ class AIAgent:
             _omit_temp = False
             _fixed_temp = None
 
-        # Provider preferences (OpenRouter-specific)
+        # Provider preferences (OpenRouter-style)
         _prefs: Dict[str, Any] = {}
         if self.providers_allowed:
             _prefs["only"] = self.providers_allowed
@@ -8509,16 +8543,16 @@ class AIAgent:
         if self.provider_data_collection:
             _prefs["data_collection"] = self.provider_data_collection
 
-        # Anthropic max output for Claude on OpenRouter/Nous
+        # Claude max-output override on aggregators
         _ant_max = None
         if (_is_or or _is_nous) and "claude" in (self.model or "").lower():
             try:
                 from agent.anthropic_adapter import _get_anthropic_max_output
                 _ant_max = _get_anthropic_max_output(self.model)
             except Exception:
-                pass  # fail open — let the proxy pick its default
+                pass
 
-        # Qwen session metadata precomputed here (promptId is per-call random)
+        # Qwen session metadata
         _qwen_meta = None
         if _is_qwen:
             _qwen_meta = {
@@ -8526,8 +8560,44 @@ class AIAgent:
                 "promptId": str(uuid.uuid4()),
             }
 
-        # Ephemeral max output override — consume immediately so the next
-        # turn doesn't inherit it.
+        # ── Provider profile path (registered providers) ───────────────────
+        # Profiles handle per-provider quirks via hooks. When a profile is
+        # found, delegate fully; otherwise fall through to the legacy flag path.
+        try:
+            from providers import get_provider_profile
+            _profile = get_provider_profile(self.provider)
+        except Exception:
+            _profile = None
+
+        if _profile:
+            _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
+            if _ephemeral_out is not None:
+                self._ephemeral_max_output_tokens = None
+
+            return _ct.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                base_url=self.base_url,
+                timeout=self._resolved_api_call_timeout(),
+                max_tokens=self.max_tokens,
+                ephemeral_max_output_tokens=_ephemeral_out,
+                max_tokens_param_fn=self._max_tokens_param,
+                reasoning_config=self.reasoning_config,
+                request_overrides=self.request_overrides,
+                session_id=getattr(self, "session_id", None),
+                provider_profile=_profile,
+                ollama_num_ctx=self._ollama_num_ctx,
+                # Context forwarded to profile hooks:
+                provider_preferences=_prefs or None,
+                anthropic_max_output=_ant_max,
+                supports_reasoning=self._supports_reasoning_extra_body(),
+                qwen_session_metadata=_qwen_meta,
+            )
+
+        # ── Legacy flag path ────────────────────────────────────────────
+        # Reached only when get_provider_profile() returns None — i.e. a
+        # completely unknown provider not in providers/ registry.
         _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
         if _ephemeral_out is not None:
             self._ephemeral_max_output_tokens = None

@@ -182,6 +182,52 @@ def test_stale_claim_reclaimed(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
+    """A retry should get a fresh max-runtime window.
+
+    ``tasks.started_at`` intentionally records the first time the task ever
+    started. Runtime enforcement must therefore use the active
+    ``task_runs.started_at`` row; otherwise every retry of an old task is
+    immediately timed out again.
+    """
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        t = kb.create_task(
+            conn, title="retry", assignee="a", max_runtime_seconds=10,
+        )
+
+        kb.claim_task(conn, t, claimer=f"{host}:first")
+        first_run_id = kb.latest_run(conn, t).id
+        old_started = int(time.time()) - 20
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 999999, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 999999, first_run_id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == [t]
+        assert kb.get_task(conn, t).status == "ready"
+
+        kb.claim_task(conn, t, claimer=f"{host}:retry")
+        retry_run = kb.latest_run(conn, t)
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (999999, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+            (999999, retry_run.id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == []
+        assert kb.get_task(conn, t).status == "running"
+
+
 def test_heartbeat_extends_claim(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -776,3 +822,80 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+
+
+# ---------------------------------------------------------------------------
+# latest_summary / latest_summaries — surface task_runs.summary handoffs
+# ---------------------------------------------------------------------------
+
+def test_latest_summary_returns_none_when_no_runs(kanban_home):
+    """A freshly-created task has no runs and therefore no summary."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="alice")
+        assert kb.latest_summary(conn, t) is None
+
+
+def test_latest_summary_returns_summary_after_complete(kanban_home):
+    """``complete_task(summary=...)`` is the canonical kanban-worker
+    handoff; ``latest_summary`` must surface it so dashboards/CLI can
+    render what the worker actually did."""
+    handoff = "shipped 3 files, ran tests, opened PR #42"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="work", assignee="alice")
+        kb.complete_task(conn, t, summary=handoff)
+        assert kb.latest_summary(conn, t) == handoff
+
+
+def test_latest_summary_picks_newest_when_multiple_runs(kanban_home):
+    """When a task has been re-run (block → unblock → complete), the
+    newest run's summary wins. We unblock to take the task back to
+    ``ready``, then complete a second time and verify the second
+    summary surfaces."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="retry", assignee="alice")
+        kb.complete_task(conn, t, summary="first attempt")
+        # Move back to ready by direct SQL — block_task / unblock_task
+        # paths require an active claim, but we just want a second run
+        # row to exist with a later ended_at.
+        conn.execute(
+            "UPDATE tasks SET status='ready', completed_at=NULL WHERE id=?",
+            (t,),
+        )
+        # Sleep 1s so the second run's ended_at is provably later than
+        # the first (complete_task uses int(time.time())).
+        time.sleep(1.05)
+        kb.complete_task(conn, t, summary="second attempt — final")
+        assert kb.latest_summary(conn, t) == "second attempt — final"
+
+
+def test_latest_summary_skips_empty_string(kanban_home):
+    """A run with an empty-string summary should not mask an earlier
+    populated one — empty strings carry no information."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="t", assignee="alice")
+        kb.complete_task(conn, t, summary="real handoff")
+        # Inject a later run with empty summary directly. Workers
+        # writing "" instead of None is a real shape we want to ignore.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, started_at, ended_at, "
+            "outcome, summary) VALUES (?, 'done', ?, ?, 'completed', ?)",
+            (t, int(time.time()) + 1, int(time.time()) + 2, ""),
+        )
+        conn.commit()
+        assert kb.latest_summary(conn, t) == "real handoff"
+
+
+def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
+    """``latest_summaries`` is the dashboard's N+1 escape hatch — it
+    must return only entries for tasks that actually have a summary,
+    keep the per-task latest, and accept an empty input gracefully."""
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        t2 = kb.create_task(conn, title="b", assignee="bob")
+        t3 = kb.create_task(conn, title="c", assignee="carol")
+        kb.complete_task(conn, t1, summary="alpha")
+        kb.complete_task(conn, t3, summary="charlie")
+        out = kb.latest_summaries(conn, [t1, t2, t3])
+        assert out == {t1: "alpha", t3: "charlie"}
+        # Empty input → empty dict, no SQL syntax error from "IN ()".
+        assert kb.latest_summaries(conn, []) == {}

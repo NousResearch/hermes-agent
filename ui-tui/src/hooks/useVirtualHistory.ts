@@ -51,9 +51,9 @@ const SLIDE_STEP = 12
 
 const NOOP = () => {}
 
-const upperBound = (arr: ArrayLike<number>, target: number) => {
+const upperBound = (arr: ArrayLike<number>, target: number, length = arr.length) => {
   let lo = 0
-  let hi = arr.length
+  let hi = length
 
   while (lo < hi) {
     const mid = (lo + hi) >> 1
@@ -282,8 +282,8 @@ export function useVirtualHistory(
 
       // Binary search — offsets is monotone. Linear walk was O(n) at n=10k+,
       // ~2ms per render during scroll.
-      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo) - 1))
-      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi)))
+      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo, n + 1) - 1))
+      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi, n + 1)))
     }
   }
 

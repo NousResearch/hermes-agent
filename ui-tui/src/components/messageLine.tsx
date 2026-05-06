@@ -1,5 +1,5 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
-import { memo } from 'react'
+import { memo, useState } from 'react'
 
 import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
@@ -21,6 +21,9 @@ import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
+
+// Collapse threshold for long system messages (system prompt etc.)
+const SYSTEM_COLLAPSE_CHARS = 400
 
 export const MessageLine = memo(function MessageLine({
   cols,
@@ -45,6 +48,10 @@ export const MessageLine = memo(function MessageLine({
   const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
   const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
   const thinking = msg.thinking?.trim() ?? ''
+
+  // Collapse toggle for long system messages
+  const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
+  const [systemOpen, setSystemOpen] = useState(false)
 
   if (msg.kind === 'trail' && msg.todos?.length) {
     return (
@@ -104,6 +111,27 @@ export const MessageLine = memo(function MessageLine({
   const content = (() => {
     if (msg.kind === 'slash') {
       return <Text color={t.color.muted}>{msg.text}</Text>
+    }
+
+    // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
+    // MUST come before the hasAnsi check — system messages from the backend
+    // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
+    if (systemIsLong) {
+      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || '(system message)'
+
+      return (
+        <Box flexDirection="column">
+          <Box onClick={() => setSystemOpen(v => !v)}>
+            <Text color={t.color.accent}>{systemOpen ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.muted}>{firstLine}</Text>
+            <Text color={t.color.muted} dimColor>
+              {' — '}
+              {msg.text.length.toLocaleString()} chars
+            </Text>
+          </Box>
+          {systemOpen && <Ansi>{msg.text}</Ansi>}
+        </Box>
+      )
     }
 
     if (msg.role !== 'user' && hasAnsi(msg.text)) {

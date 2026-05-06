@@ -126,6 +126,47 @@ class TestDoctorToolAvailabilityOverrides:
         assert available == []
         assert unavailable == [honcho_entry]
 
+    def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
+        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: False)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [{"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}],
+        )
+
+        assert available == ["kanban"]
+        assert unavailable == []
+
+    def test_leaves_kanban_unavailable_when_worker_env_is_set(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "probe")
+        kanban_entry = {"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [kanban_entry],
+        )
+
+        assert available == []
+        assert unavailable == [kanban_entry]
+
+    def test_leaves_non_worker_kanban_failure_unavailable(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        kanban_entry = {"name": "kanban", "env_vars": [], "tools": ["kanban_show", "not_a_kanban_tool"]}
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [kanban_entry],
+        )
+
+        assert available == []
+        assert unavailable == [kanban_entry]
+
+    def test_kanban_doctor_detail_explains_worker_gate(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):

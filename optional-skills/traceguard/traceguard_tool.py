@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.traceguard import normalize_allowed_evidence_manifest
-from agent.traceguard import validate_parent_synthesis
+from traceguard import normalize_allowed_evidence_manifest
+from traceguard import validate_parent_synthesis
 from tools.registry import registry
 
 

@@ -893,8 +893,6 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
-        require_finish_tool: bool = False,
-        max_verifier_rejects: int = 5,
     ):
         """
         Initialize the AI Agent.
@@ -1103,15 +1101,6 @@ class AIAgent:
         # existing tool message rather than inserting a new user turn).
         self._pending_steer: Optional[str] = None
         self._pending_steer_lock = threading.Lock()
-
-        # ── FINISH TOOL STATE ───────────────────────────────────────────────
-        # _pending_finish_payload: captured finish tool args for verifier processing
-        # _verifier_reject_count: how many times verifier said "continue"
-        # _max_verifier_rejects: hard cap to prevent infinite verifier loops
-        self.require_finish_tool = require_finish_tool
-        self._pending_finish_payload: Optional[dict] = None
-        self._verifier_reject_count = 0
-        self._max_verifier_rejects = max(1, int(max_verifier_rejects or 5))
 
         # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
         # runs each tool on its own ThreadPoolExecutor worker — those worker
@@ -8211,10 +8200,9 @@ class AIAgent:
         *,
         tool_call_id: str | None = None,
     ) -> str:
-        """Capture an explicit finish claim for verifier handling."""
+        """Return a structured finish signal without altering loop state."""
         status = str(function_args.get("status", "done") or "done").strip().lower()
         if status not in {"done", "blocked"}:
-            self._pending_finish_payload = None
             return json.dumps(
                 {
                     "success": False,
@@ -8225,20 +8213,12 @@ class AIAgent:
         evidence = function_args.get("evidence", [])
         if not isinstance(evidence, list):
             evidence = [str(evidence)]
-        payload = {
-            "status": status,
-            "summary": function_args.get("summary", ""),
-            "evidence": [str(item) for item in evidence],
-            "tool_call_id": tool_call_id,
-        }
-        self._pending_finish_payload = payload
         return json.dumps(
             {
                 "success": True,
-                "status": payload["status"],
-                "summary": payload["summary"],
-                "evidence": payload["evidence"],
-                "note": "Finish tool captured. Verifier will validate.",
+                "status": status,
+                "summary": function_args.get("summary", ""),
+                "evidence": [str(item) for item in evidence],
             },
             ensure_ascii=False,
         )
@@ -8655,201 +8635,6 @@ class AIAgent:
         # so the steer marker is never truncated. See steer() for details.
         if num_tools > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools)
-
-    def _run_verifier(
-        self,
-        *,
-        original_task: str,
-        agent_output: str,
-        evidence: list[str],
-        finish_status: str,
-        messages: list,
-    ) -> dict:
-        """Validate a finish claim with a separate JSON-only model call."""
-        def _fallback_verdict(reason: str) -> dict:
-            status = finish_status if finish_status in {"done", "blocked"} else "done"
-            logger.warning(
-                "Finish verifier unavailable; accepting explicit %s payload: %s",
-                status,
-                reason,
-            )
-            return {
-                "status": status,
-                "reason": (
-                    "Finish verifier was unavailable, so the explicit finish "
-                    f"payload was accepted to avoid a verifier retry loop: {reason}"
-                ),
-                "missing": [],
-                "next_prompt": "",
-            }
-
-        def _extract_verdict(raw: str) -> dict:
-            raw = (raw or "").strip()
-            fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
-            if fenced:
-                raw = fenced.group(1).strip()
-            try:
-                return json.loads(raw)
-            except Exception:
-                start = raw.find("{")
-                end = raw.rfind("}")
-                if start >= 0 and end > start:
-                    return json.loads(raw[start : end + 1])
-                raise
-
-        recent_tool_results = []
-        for msg in messages[-20:]:
-            if not isinstance(msg, dict) or msg.get("role") != "tool":
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            recent_tool_results.append(content[:800])
-
-        verifier_prompt = (
-            "Validate whether an AI agent's explicit finish claim is supported "
-            "by observable evidence.\n\n"
-            "Rules:\n"
-            "- Do not trust self-report by itself.\n"
-            "- Evidence must be observable: files, test results, command output, "
-            "logs, URLs, or concrete artifacts.\n"
-            "- Return status 'done' only if the original task is complete.\n"
-            "- Return status 'blocked' only if the task genuinely needs human "
-            "input or an external dependency.\n"
-            "- Otherwise return status 'continue' with a next_prompt.\n\n"
-            f"Original task:\n{original_task}\n\n"
-            f"Agent finish status: {finish_status}\n"
-            f"Agent summary:\n{agent_output}\n\n"
-            "Agent evidence:\n"
-            + ("\n".join(f"- {item}" for item in evidence) if evidence else "- (none)")
-            + "\n\nRecent tool results:\n"
-            + (
-                "\n".join(f"- {item}" for item in recent_tool_results[-8:])
-                if recent_tool_results
-                else "- (none)"
-            )
-            + "\n\nReturn strict JSON with keys: status, reason, missing, next_prompt."
-        )
-
-        try:
-            base_kwargs = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a strict verifier. Output JSON only.",
-                    },
-                    {"role": "user", "content": verifier_prompt},
-                ],
-                "temperature": 0.0,
-                "max_tokens": 1200,
-            }
-            try:
-                response = self.client.chat.completions.create(
-                    **base_kwargs,
-                    response_format={"type": "json_object"},
-                )
-            except Exception as first_exc:
-                logger.info(
-                    "Finish verifier JSON-mode call failed; retrying without response_format: %s",
-                    first_exc,
-                )
-                response = self.client.chat.completions.create(**base_kwargs)
-            raw = getattr(response.choices[0].message, "content", "") or ""
-            verdict = _extract_verdict(raw)
-        except Exception as exc:
-            return _fallback_verdict(str(exc))
-
-        status = verdict.get("status")
-        if status not in {"done", "continue", "blocked"}:
-            status = "continue"
-        missing = verdict.get("missing", [])
-        if not isinstance(missing, list):
-            missing = [str(missing)]
-        return {
-            "status": status,
-            "reason": str(verdict.get("reason", "")),
-            "missing": [str(item) for item in missing],
-            "next_prompt": str(verdict.get("next_prompt", "")),
-        }
-
-    def _handle_pending_finish_payload(
-        self,
-        *,
-        original_task: str,
-        messages: list,
-    ) -> dict | None:
-        """Run verifier for a captured finish payload and return loop action."""
-        payload = self._pending_finish_payload
-        if not payload:
-            return None
-        self._pending_finish_payload = None
-
-        finish_status = payload.get("status", "done")
-        summary = payload.get("summary", "")
-        evidence = payload.get("evidence", [])
-        if not isinstance(evidence, list):
-            evidence = [str(evidence)]
-
-        verdict = self._run_verifier(
-            original_task=original_task,
-            agent_output=summary,
-            evidence=[str(item) for item in evidence],
-            finish_status=finish_status,
-            messages=messages,
-        )
-        status = verdict.get("status", "continue")
-
-        if status == "done":
-            self._verifier_reject_count = 0
-            return {
-                "action": "done",
-                "response": summary or "Task completed.",
-                "reason": verdict.get("reason", ""),
-            }
-
-        if status == "blocked":
-            self._verifier_reject_count = 0
-            reason = verdict.get("reason") or summary or "Task blocked."
-            return {
-                "action": "blocked",
-                "response": f"Task blocked: {reason}",
-                "reason": reason,
-            }
-
-        self._verifier_reject_count += 1
-        if self._verifier_reject_count >= self._max_verifier_rejects:
-            reason = verdict.get("reason") or "verifier rejected completion"
-            return {
-                "action": "blocked",
-                "response": (
-                    "Task blocked: verifier reject budget exhausted "
-                    f"after {self._verifier_reject_count} rejection(s). "
-                    f"Last reason: {reason}"
-                ),
-                "reason": reason,
-            }
-
-        missing = verdict.get("missing") or []
-        next_prompt = verdict.get("next_prompt") or (
-            "Continue working. Call finish again only after you have concrete, "
-            "observable evidence."
-        )
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "[System: finish verifier rejected the completion claim.]\n"
-                    f"Reason: {verdict.get('reason', '')}\n"
-                    f"Missing: {json.dumps(missing, ensure_ascii=False)}\n"
-                    f"Next: {next_prompt}"
-                ),
-            }
-        )
-        return {
-            "action": "continue",
-            "reason": verdict.get("reason", ""),
-        }
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
@@ -12175,21 +11960,6 @@ class AIAgent:
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
-                    finish_action = self._handle_pending_finish_payload(
-                        original_task=user_message,
-                        messages=messages,
-                    )
-                    if finish_action is not None:
-                        action = finish_action.get("action")
-                        if action in {"done", "blocked"}:
-                            final_response = finish_action.get("response", "")
-                            _turn_exit_reason = f"finish_{action}"
-                            messages.append({"role": "assistant", "content": final_response})
-                            break
-                        if action == "continue":
-                            self._session_messages = messages
-                            self._save_session_log(messages)
-                            continue
 
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
@@ -12539,25 +12309,6 @@ class AIAgent:
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
 
-                    if self.require_finish_tool and finish_reason == "stop":
-                        interim_msg = self._build_assistant_message(assistant_message, "incomplete")
-                        messages.append(interim_msg)
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "[System: Do not stop with a content-only response. "
-                                    "Call the finish tool with status 'done' or 'blocked' "
-                                    "and concrete evidence, or continue the next required "
-                                    "action.]"
-                                ),
-                            }
-                        )
-                        self._session_messages = messages
-                        self._save_session_log(messages)
-                        _turn_exit_reason = "content_only_requires_finish"
-                        continue
-                    
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
                     # Pop thinking-only prefill message(s) before appending

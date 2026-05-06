@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from agent.traceguard import TraceGuardEvidence
-from agent.traceguard import build_manifest_from_fixture
-from agent.traceguard import normalize_allowed_evidence_manifest
-from agent.traceguard import validate_parent_synthesis
+from traceguard import TraceGuardEvidence
+from traceguard import build_manifest_from_fixture
+from traceguard import normalize_allowed_evidence_manifest
+from traceguard import validate_parent_synthesis
 
 
 def _fixture() -> dict[str, object]:

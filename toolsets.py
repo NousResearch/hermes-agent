@@ -60,10 +60,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    # Explicit completion signal for verifier-gated workflows.
+    # Explicit completion signal.
     "finish",
-    # Deterministic evidence gate for RLM-style parent synthesis.
-    "traceguard_validate",
 ]
 
 
@@ -198,14 +196,8 @@ TOOLSETS = {
     },
 
     "finish": {
-        "description": "Explicitly signal task completion or blockage for verifier-gated workflows",
+        "description": "Explicitly signal task completion or blockage",
         "tools": ["finish"],
-        "includes": []
-    },
-
-    "traceguard": {
-        "description": "Validate parent synthesis claims against child evidence handles",
-        "tools": ["traceguard_validate"],
         "includes": []
     },
 

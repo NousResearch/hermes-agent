@@ -1,4 +1,4 @@
-"""Explicit completion signal for verifier-gated agent workflows."""
+"""Explicit completion signal for agent workflows."""
 
 from __future__ import annotations
 
@@ -12,10 +12,8 @@ FINISH_SCHEMA = {
     "name": "finish",
     "description": (
         "Explicitly signal that the current task is done or blocked. "
-        "Use status='done' only after the requested work is complete and evidence "
-        "contains observable proof such as changed files, command output, test "
-        "results, logs, or URLs. Use status='blocked' when human input or an "
-        "external dependency is required."
+        "Use status='done' after the requested work is complete. "
+        "Use status='blocked' when human input or an external dependency is required."
     ),
     "parameters": {
         "type": "object",
@@ -55,7 +53,6 @@ def finish_tool(status: str, summary: str, evidence: list[str]) -> str:
             "status": status,
             "summary": summary,
             "evidence": evidence,
-            "note": "Finish payload captured for agent-loop verifier handling.",
         },
         ensure_ascii=False,
     )

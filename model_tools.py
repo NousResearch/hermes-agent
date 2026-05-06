@@ -192,7 +192,6 @@ _LEGACY_TOOLSET_MAP = {
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "finish_tools": ["finish"],
-    "traceguard_tools": ["traceguard_validate"],
     "tts_tools": ["text_to_speech"],
 }
 

@@ -811,9 +811,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
-# that is not already in the list above.  Adding providers/*.py is sufficient
-# to expose a new provider in the model picker, /model, and all downstream
-# consumers — no edits to this file needed.
+# that is not already in the list above.  Adding plugins/model-providers/<name>/
+# is sufficient to expose a new provider in the model picker, /model, and all
+# downstream consumers — no edits to this file needed.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 try:
     from providers import list_providers as _list_providers_for_canonical

@@ -139,9 +139,10 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*"]
+gateway = ["assets/**/*"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

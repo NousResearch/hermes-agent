@@ -23,6 +23,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'user-guide/cli',
         'user-guide/tui',
+        'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
         'user-guide/configuring-models',
         'user-guide/sessions',
@@ -133,6 +134,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/bluebubbles',
         'user-guide/messaging/qqbot',
         'user-guide/messaging/yuanbao',
+        'user-guide/messaging/teams',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],
@@ -168,6 +170,7 @@ const sidebars: SidebarsConfig = {
         'guides/use-voice-mode-with-hermes',
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
+        'guides/cron-script-only',
         'guides/automation-templates',
         'guides/cron-troubleshooting',
         'guides/work-with-skills',

@@ -786,6 +786,12 @@ def stop_profile_gateway() -> bool:
         return False
 
     try:
+        from gateway.status import write_planned_stop_marker
+        write_planned_stop_marker(pid)
+    except Exception:
+        pass
+
+    try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass  # Already gone
@@ -1608,6 +1614,46 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
+    """Return WSL Windows interop PATH entries for generated systemd units.
+
+    WSL shells normally inherit Windows PATH entries such as
+    ``/mnt/c/WINDOWS/System32``. systemd user services do not, so gateway tools
+    that call ``powershell.exe``/``cmd.exe`` work in a terminal but fail in the
+    background service unless we persist the relevant entries at install time.
+    """
+    if not is_wsl():
+        return []
+
+    candidates: list[str] = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry.startswith("/mnt/"):
+            candidates.append(entry)
+
+    for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
+        resolved = shutil.which(executable)
+        if resolved:
+            candidates.append(str(Path(resolved).parent))
+
+    for entry in (
+        "/mnt/c/WINDOWS/system32",
+        "/mnt/c/WINDOWS",
+        "/mnt/c/WINDOWS/System32/Wbem",
+        "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/",
+        "/mnt/c/WINDOWS/System32/OpenSSH/",
+    ):
+        if Path(entry).exists():
+            candidates.append(entry)
+
+    result: list[str] = []
+    seen = set(path_entries)
+    for entry in candidates:
+        if entry and entry not in seen:
+            seen.add(entry)
+            result.append(entry)
+    return result
+
+
 def _remap_path_for_user(path: str, target_home_dir: str) -> str:
     """Remap *path* from the current user's home to *target_home_dir*.
 
@@ -1699,6 +1745,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         node_bin = _remap_path_for_user(node_bin, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
+        path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
         return f"""[Unit]
@@ -1738,6 +1785,7 @@ WantedBy=multi-user.target
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
+    path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
     return f"""[Unit]
@@ -1971,6 +2019,15 @@ def systemd_uninstall(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
 
 
+def _require_service_installed(action: str, system: bool = False) -> None:
+    unit_path = get_systemd_unit_path(system=system)
+    if not unit_path.exists():
+        scope_flag = " --system" if system else ""
+        print(f"✗ Gateway service is not installed")
+        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        sys.exit(1)
+
+
 def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
@@ -1980,6 +2037,7 @@ def systemd_start(system: bool = False):
         # reachable (common on fresh RHEL/Debian SSH sessions without linger).
         # Raises UserSystemdUnavailableError with a remediation message.
         _preflight_user_systemd()
+    _require_service_installed("start", system=system)
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
@@ -1990,6 +2048,14 @@ def systemd_stop(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("stop")
+    _require_service_installed("stop", system=system)
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+        pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
     _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
@@ -2001,6 +2067,7 @@ def systemd_restart(system: bool = False):
         _require_root_for_system_service("restart")
     else:
         _preflight_user_systemd()
+    _require_service_installed("restart", system=system)
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
@@ -2350,6 +2417,13 @@ def launchd_start():
 def launchd_stop():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+        pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
     # immediately restarts it because KeepAlive.SuccessfulExit = false.

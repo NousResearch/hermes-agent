@@ -36,6 +36,24 @@ Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [E
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
+
+Prefer an MCP bridge over `/browser connect`.
+
+Recommended pattern:
+
+- run Hermes inside WSL2
+- keep using your normal signed-in Chrome on Windows
+- add `chrome-devtools-mcp` as an MCP server through `cmd.exe` or `powershell.exe`
+- let Hermes use the resulting MCP browser tools
+
+This is more reliable than trying to force Hermes core browser transport to attach directly across the WSL2/Windows boundary.
+
+See:
+
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+- [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
+
 ### Does it work on Android / Termux?
 
 Yes — Hermes now has a tested Termux install path for Android phones.
@@ -418,8 +436,8 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 
 **Solution:**
 ```bash
-# Install messaging dependencies
-pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
+# Install core messaging gateway dependencies
+pip install "hermes-agent[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080

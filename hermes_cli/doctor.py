@@ -12,6 +12,7 @@ import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -19,15 +20,8 @@ HERMES_HOME = get_hermes_home()
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
 # Load environment variables from ~/.hermes/.env so API key checks work
-from dotenv import load_dotenv
 _env_path = get_env_path()
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
@@ -113,15 +107,35 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+def _is_kanban_worker_env_gate(item: dict) -> bool:
+    """Return True when Kanban is unavailable only because this is not a worker process."""
+    if item.get("name") != "kanban":
+        return False
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+
+    tools = item.get("tools") or []
+    return bool(tools) and all(str(tool).startswith("kanban_") for tool in tools)
+
+
+def _doctor_tool_availability_detail(toolset: str) -> str:
+    """Optional explanatory suffix for toolsets whose doctor status needs context."""
+    if toolset == "kanban" and not os.environ.get("HERMES_KANBAN_TASK"):
+        return "(runtime-gated; loaded only for dispatcher-spawned workers)"
+    return ""
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    if not _honcho_is_configured_for_doctor():
-        return available, unavailable
-
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
-        if item.get("name") == "honcho":
+        name = item.get("name")
+        if _is_kanban_worker_env_gate(item):
+            if "kanban" not in updated_available:
+                updated_available.append("kanban")
+            continue
+        if name == "honcho" and _honcho_is_configured_for_doctor():
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
             continue
@@ -173,6 +187,85 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         issues.append("Enable linger for the gateway user service: sudo loginctl enable-linger $USER")
     else:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
+
+
+_APIKEY_PROVIDERS_CACHE: list | None = None
+
+
+def _build_apikey_providers_list() -> list:
+    """Build the API-key provider health-check list once and cache it.
+
+    Tuple format: (name, env_vars, default_url, base_env, supports_models_endpoint)
+    Base list augmented with any ProviderProfile with auth_type="api_key" not
+    already present — adding providers/*.py is sufficient to get into doctor.
+    """
+    _static = [
+        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("StepFun Step Plan", ("STEPFUN_API_KEY",),                          "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
+        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
+        ("Arcee AI",         ("ARCEEAI_API_KEY",),                           "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
+        ("GMI Cloud",        ("GMI_API_KEY",),                               "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
+        ("DeepSeek",         ("DEEPSEEK_API_KEY",),                          "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
+        ("Hugging Face",     ("HF_TOKEN",),                                  "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
+        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                            "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
+        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
+        # MiniMax global: /v1 endpoint supports /models.
+        ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
+        # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
+        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
+        ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
+        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
+        # OpenCode Go has no shared /models endpoint; skip the health check.
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                       None,                                  "OPENCODE_GO_BASE_URL", False),
+    ]
+    _known_names = {t[0] for t in _static}
+    # Also index by profile canonical name so profiles without display_name
+    # don't create duplicate entries for providers already in the static list.
+    _known_canonical: set[str] = set()
+    _name_to_canonical = {
+        "Z.AI / GLM": "zai", "Kimi / Moonshot": "kimi-coding",
+        "StepFun Step Plan": "stepfun", "Kimi / Moonshot (China)": "kimi-coding-cn",
+        "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
+        "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
+        "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
+        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
+        "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
+        "OpenCode Go": "opencode-go",
+    }
+    for _label, _canonical in _name_to_canonical.items():
+        _known_canonical.add(_canonical)
+    try:
+        from providers import list_providers
+        from providers.base import ProviderProfile as _PP
+        for _pp in list_providers():
+            if not isinstance(_pp, _PP) or _pp.auth_type != "api_key" or not _pp.env_vars:
+                continue
+            _label = _pp.display_name or _pp.name
+            if _label in _known_names or _pp.name in _known_canonical:
+                continue
+            # Separate API-key vars from base-URL override vars — the health-check
+            # loop sends the first found value as Authorization: Bearer, so a URL
+            # string must never be picked.
+            _key_vars = tuple(
+                v for v in _pp.env_vars
+                if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+            )
+            _base_var = next(
+                (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
+                None,
+            )
+            if not _key_vars:
+                continue
+            _models_url = (
+                (_pp.models_url or (_pp.base_url.rstrip("/") + "/models"))
+                if _pp.base_url else None
+            )
+            _static.append((_label, _key_vars, _models_url, _base_var, True))
+    except Exception:
+        pass
+    return _static
 
 
 def run_doctor(args):
@@ -1087,27 +1180,11 @@ def run_doctor(args):
     # -- API-key providers --
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
-    _apikey_providers = [
-        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
-        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
-        ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
-        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
-        ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
-        ("GMI Cloud",        ("GMI_API_KEY",),                                "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
-        ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
-        ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
-        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
-        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
-        # MiniMax global: /v1 endpoint supports /models.
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
-        # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
-        ("Vercel AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
-        ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
-        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
-        # OpenCode Go has no shared /models endpoint; skip the health check.
-        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         None,                                  "OPENCODE_GO_BASE_URL", False),
-    ]
+    # Cached at module level after first build — profiles auto-extend it.
+    global _APIKEY_PROVIDERS_CACHE
+    if _APIKEY_PROVIDERS_CACHE is None:
+        _APIKEY_PROVIDERS_CACHE = _build_apikey_providers_list()
+    _apikey_providers = _APIKEY_PROVIDERS_CACHE
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
         for _ev in _env_vars:
@@ -1221,7 +1298,7 @@ def run_doctor(args):
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
-            check_ok(info.get("name", tid))
+            check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))
         
         for item in unavailable:
             env_vars = item.get("missing_vars") or item.get("env_vars") or []
@@ -1264,9 +1341,23 @@ def run_doctor(args):
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
     from hermes_cli.config import get_env_value
+
+    def _gh_authenticated() -> bool:
+        """Check if gh CLI is authenticated via token file or device flow."""
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status", "--json", "authenticated"],
+                capture_output=True, timeout=10,
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")
+    elif _gh_authenticated():
+        check_ok("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)")
     else:
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 

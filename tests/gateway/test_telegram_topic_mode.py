@@ -443,6 +443,58 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
     assert binding["session_id"] == "new-topic-session"
 
 
+def test_compression_session_split_rewrites_topic_binding(tmp_path):
+    """Compression session splits must keep Telegram topic bindings current."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="compressed-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="old-topic-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    entry = SessionEntry(
+        session_key=topic_key,
+        session_id="old-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+    )
+    runner.session_store._entries = {topic_key: entry}
+    runner.session_store._save = MagicMock()
+
+    runner._sync_session_split_entry(
+        topic_source,
+        topic_key,
+        "compressed-topic-session",
+    )
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "compressed-topic-session"
+    assert entry.session_id == "compressed-topic-session"
+    runner.session_store._save.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp_path, monkeypatch):
     import gateway.run as gateway_run

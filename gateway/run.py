@@ -1552,6 +1552,29 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _sync_session_split_entry(
+        self,
+        source: SessionSource,
+        session_key: Optional[str],
+        new_session_id: str,
+    ) -> None:
+        """Persist a compression-created session id rollover for the active lane."""
+        if not session_key:
+            return
+        entry = self.session_store._entries.get(session_key)
+        if not entry:
+            return
+        entry.session_id = new_session_id
+        self.session_store._save()
+        if not self._is_telegram_topic_lane(source):
+            return
+        try:
+            self._record_telegram_topic_binding(source, entry)
+        except Exception:
+            logger.exception(
+                "Failed to refresh Telegram topic binding after session split"
+            )
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -13826,10 +13849,7 @@ class GatewayRunner:
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
+                self._sync_session_split_entry(source, session_key, agent.session_id)
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

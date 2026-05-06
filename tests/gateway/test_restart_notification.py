@@ -497,6 +497,82 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_skipped_when_flag_disabled(
+    tmp_path, monkeypatch
+):
+    """Per-platform opt-out: gateway_restart_notification=False mutes the home-channel ping."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_default_flag_true(
+    tmp_path, monkeypatch
+):
+    """Default behavior is unchanged: missing flag means notifications still fire."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    # Sanity-check the dataclass default — guards against future refactors
+    # silently flipping the default to False.
+    assert runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification is True
+
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skipped_when_flag_disabled(
+    tmp_path, monkeypatch
+):
+    """The /restart originator's notification also honors the per-platform flag.
+
+    Slack used by end users → flag off → no "Gateway restarted" message even
+    when an end user accidentally triggers /restart. The marker file is still
+    cleaned up so the notification doesn't leak into the next boot.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_send_restart_notification_logs_info_on_sendresult_success(
     tmp_path, monkeypatch, caplog
 ):

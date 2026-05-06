@@ -509,6 +509,51 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun shizukuStateTriggerRunsMatchingAutomationAndExposesVariables() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-shizuku-state-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Shizuku state smoke")
+                    .put("path", "hermes-shizuku-state-trigger.txt")
+                    .put(
+                        "content",
+                        "%SHIZUKU_AVAILABLE:%SHIZUKU_RUNNING:%SHIZUKU_PERMISSION_GRANTED:%SHIZUKU_PRIVILEGE_LABEL",
+                    )
+                    .put("trigger", "shizuku_unavailable"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("shizuku_unavailable", created.getJSONObject("automation").getString("trigger_type"))
+
+        val triggered = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_shizuku_state_trigger",
+                JSONObject().put("shizuku_state", "unavailable"),
+            ),
+        )
+        assertTrue(triggered.toString(), triggered.getBoolean("success"))
+        assertEquals("shizuku_unavailable", triggered.getString("trigger"))
+        assertTrue(triggered.getJSONObject("shizuku_status").has("shizuku_installed"))
+        assertTrue(triggered.getJSONObject("shizuku_status").has("sui_installed"))
+        assertEquals(1, triggered.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertTrue(target.readText().matches(Regex("(true|false):(true|false):(true|false):\\S+")))
+
+        val variables = JSONObject(HermesAutomationBridge.performActionJson(app, "list_variables"))
+            .getJSONObject("variables")
+        assertTrue(variables.has("SHIZUKU_AVAILABLE"))
+        assertTrue(variables.has("SHIZUKU_RUNNING"))
+        assertTrue(variables.has("SHIZUKU_PERMISSION_GRANTED"))
+    }
+
+    @Test
     fun appForegroundTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

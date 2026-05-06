@@ -710,6 +710,76 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun locationTriggerRunsMatchingAutomationAndExposesVariables() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-location-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Location trigger smoke")
+                    .put("path", "hermes-location-trigger.txt")
+                    .put("content", "%LOCATION_PROVIDER:%LAT:%LON:%LOCNAME:%LOCACC")
+                    .put("trigger", "location")
+                    .put("latitude", 37.7749)
+                    .put("longitude", -122.4194)
+                    .put("radius_meters", 200)
+                    .put("location_provider", "gps")
+                    .put("location_name", "office"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = JSONObject(automation.getString("trigger_data"))
+        assertEquals("location", automation.getString("trigger_type"))
+        assertEquals("37.7749", triggerData.getString("latitude"))
+        assertEquals("-122.4194", triggerData.getString("longitude"))
+        assertEquals("office", triggerData.getString("location_name"))
+
+        val missed = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_location_trigger",
+                JSONObject()
+                    .put("latitude", 37.7849)
+                    .put("longitude", -122.4194)
+                    .put("location_provider", "gps")
+                    .put("location_name", "Hermes Office"),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+        assertFalse("Expected ${target.absolutePath} to stay absent", target.exists())
+
+        val matched = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_location_trigger",
+                JSONObject()
+                    .put("latitude", 37.7750)
+                    .put("longitude", -122.4195)
+                    .put("accuracy_meters", 12.5)
+                    .put("location_provider", "gps")
+                    .put("location_name", "Hermes Office"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals("location", matched.getString("trigger"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("gps:37.775:-122.4195:Hermes Office:12.5", target.readText())
+
+        val variables = JSONObject(HermesAutomationBridge.performActionJson(app, "list_variables"))
+            .getJSONObject("variables")
+        assertEquals("37.775", variables.getString("LOCATION_LATITUDE"))
+        assertEquals("-122.4195", variables.getString("LOCATION_LONGITUDE"))
+        assertEquals("Hermes Office", variables.getString("LOCATION_NAME"))
+    }
+
+    @Test
     fun timeTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

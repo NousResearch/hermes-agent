@@ -6,6 +6,10 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 object HermesAutomationBridge {
     fun performActionJson(context: Context, action: String, arguments: JSONObject = JSONObject()): String {
@@ -38,6 +42,10 @@ object HermesAutomationBridge {
                 text = stringArgument(arguments, "notification_text", "text", "content", allowEmpty = true).orEmpty(),
             )
             "run_calendar_event_trigger", "trigger_calendar_event", "calendar_event", "calendar" -> runCalendarEventTriggerJson(
+                context = context,
+                arguments = arguments,
+            )
+            "run_location_trigger", "trigger_location", "location_event", "location" -> runLocationTriggerJson(
                 context = context,
                 arguments = arguments,
             )
@@ -463,6 +471,9 @@ object HermesAutomationBridge {
         if (normalizedTrigger == TRIGGER_CALENDAR_EVENT) {
             return runCalendarEventTriggerJson(context, JSONObject())
         }
+        if (normalizedTrigger == TRIGGER_LOCATION) {
+            return errorJson("location trigger requires run_location_trigger with latitude and longitude")
+        }
         if (normalizedTrigger == TRIGGER_SHIZUKU_AVAILABLE || normalizedTrigger == TRIGGER_SHIZUKU_UNAVAILABLE) {
             return runShizukuStateTriggerJson(context, normalizedTrigger)
         }
@@ -605,6 +616,84 @@ object HermesAutomationBridge {
             .put("calendar_title", title.take(MAX_EVENT_VALUE_CHARS))
             .put("calendar_description", description.take(MAX_EVENT_VALUE_CHARS))
             .put("calendar_location", location.take(MAX_EVENT_VALUE_CHARS))
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runLocationTriggerJson(context: Context, arguments: JSONObject): String {
+        val latitude = optionalDoubleArgument(
+            arguments,
+            "latitude",
+            "lat",
+            "location_latitude",
+            "trigger_latitude",
+        ) ?: return errorJson("location trigger requires latitude")
+        val longitude = optionalDoubleArgument(
+            arguments,
+            "longitude",
+            "lon",
+            "lng",
+            "location_longitude",
+            "trigger_longitude",
+        ) ?: return errorJson("location trigger requires longitude")
+        if (latitude !in -90.0..90.0) {
+            return errorJson("location latitude must be between -90 and 90")
+        }
+        if (longitude !in -180.0..180.0) {
+            return errorJson("location longitude must be between -180 and 180")
+        }
+        val requestedAccuracyMeters = optionalDoubleArgument(
+            arguments,
+            "accuracy_meters",
+            "accuracy",
+            "location_accuracy_meters",
+            "trigger_accuracy_meters",
+        )
+        if (requestedAccuracyMeters != null && requestedAccuracyMeters < 0.0) {
+            return errorJson("location accuracy_meters must be zero or greater")
+        }
+        val accuracyMeters = requestedAccuracyMeters
+        val provider = stringArgument(
+            arguments,
+            "location_provider",
+            "provider",
+            "source",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val name = stringArgument(
+            arguments,
+            "location_name",
+            "place_name",
+            "location_label",
+            "place",
+            "location",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        locationEventNulError(provider, name)?.let { error ->
+            return errorJson(error)
+        }
+        val store = HermesAutomationStore(context)
+        setLocationEventVariables(store, latitude, longitude, accuracyMeters, provider, name)
+        val variables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_LOCATION &&
+                    locationEventMatches(record.triggerData, variables, latitude, longitude, accuracyMeters, provider, name)
+            }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_LOCATION))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_LOCATION)
+            .put("latitude", latitude)
+            .put("longitude", longitude)
+            .put("accuracy_meters", accuracyMeters ?: JSONObject.NULL)
+            .put("location_provider", provider.take(MAX_EVENT_VALUE_CHARS))
+            .put("location_name", name.take(MAX_EVENT_VALUE_CHARS))
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -854,6 +943,15 @@ object HermesAutomationBridge {
         return value.takeIf { it > 0 }
     }
 
+    private fun optionalDoubleArgument(arguments: JSONObject, vararg keys: String): Double? {
+        val key = keys.firstOrNull { candidate -> arguments.has(candidate) && !arguments.isNull(candidate) } ?: return null
+        val value = arguments.opt(key) ?: return null
+        return when (value) {
+            is Number -> value.toDouble()
+            else -> value.toString().trim().toDoubleOrNull()
+        }
+    }
+
     private fun recordEnabled(arguments: JSONObject): Boolean {
         return when {
             arguments.has("automation_enabled") && !arguments.isNull("automation_enabled") ->
@@ -917,9 +1015,14 @@ object HermesAutomationBridge {
     }
 
     private fun buildTriggerData(arguments: JSONObject, triggerType: String): TriggerDataResult {
-        if (triggerType != TRIGGER_CALENDAR_EVENT) {
-            return TriggerDataResult("")
+        return when (triggerType) {
+            TRIGGER_CALENDAR_EVENT -> buildCalendarTriggerData(arguments)
+            TRIGGER_LOCATION -> buildLocationTriggerData(arguments)
+            else -> TriggerDataResult("")
         }
+    }
+
+    private fun buildCalendarTriggerData(arguments: JSONObject): TriggerDataResult {
         val payload = JSONObject()
         listOf(
             copyCalendarTriggerFilter(
@@ -964,6 +1067,116 @@ object HermesAutomationBridge {
         return TriggerDataResult(payload.toString())
     }
 
+    private fun buildLocationTriggerData(arguments: JSONObject): TriggerDataResult {
+        val payload = JSONObject()
+        listOf(
+            copyLocationNumericTriggerFilter(
+                payload,
+                "latitude",
+                arguments,
+                "latitude",
+                "lat",
+                "location_latitude",
+                "trigger_latitude",
+            ),
+            copyLocationNumericTriggerFilter(
+                payload,
+                "longitude",
+                arguments,
+                "longitude",
+                "lon",
+                "lng",
+                "location_longitude",
+                "trigger_longitude",
+            ),
+            copyLocationNumericTriggerFilter(
+                payload,
+                "radius_meters",
+                arguments,
+                "radius_meters",
+                "radius",
+                "trigger_radius_meters",
+                "distance_meters",
+            ),
+            copyLocationNumericTriggerFilter(
+                payload,
+                "max_accuracy_meters",
+                arguments,
+                "max_accuracy_meters",
+                "accuracy_max_meters",
+                "accuracy_meters_max",
+                "location_max_accuracy_meters",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "provider",
+                arguments,
+                "location_provider",
+                "provider",
+                "source",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "location_name",
+                arguments,
+                "location_name",
+                "location_name_contains",
+                "place_name",
+                "place",
+                "location_label",
+            ),
+        ).firstOrNull { it != null }?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        val hasLatitude = payload.has("latitude")
+        val hasLongitude = payload.has("longitude")
+        if (hasLatitude != hasLongitude) {
+            return TriggerDataResult("", "location trigger requires both latitude and longitude when using a coordinate filter")
+        }
+        if (payload.has("radius_meters") && (!hasLatitude || !hasLongitude)) {
+            return TriggerDataResult("", "location trigger radius_meters requires latitude and longitude")
+        }
+        if (hasLatitude && !payload.has("radius_meters")) {
+            payload.put("radius_meters", DEFAULT_LOCATION_RADIUS_METERS.toString())
+        }
+        validateLocationTriggerNumericPayload(payload)?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        return TriggerDataResult(payload.toString())
+    }
+
+    private fun validateLocationTriggerNumericPayload(payload: JSONObject): String? {
+        literalDoubleFilter(payload, "latitude")?.let { latitude ->
+            if (latitude !in -90.0..90.0) {
+                return "location trigger latitude must be between -90 and 90"
+            }
+        }
+        literalDoubleFilter(payload, "longitude")?.let { longitude ->
+            if (longitude !in -180.0..180.0) {
+                return "location trigger longitude must be between -180 and 180"
+            }
+        }
+        literalDoubleFilter(payload, "radius_meters")?.let { radius ->
+            if (radius <= 0.0) {
+                return "location trigger radius_meters must be greater than zero"
+            }
+        }
+        literalDoubleFilter(payload, "max_accuracy_meters")?.let { maxAccuracy ->
+            if (maxAccuracy < 0.0) {
+                return "location trigger max_accuracy_meters must be zero or greater"
+            }
+        }
+        return null
+    }
+
+    private fun literalDoubleFilter(payload: JSONObject, key: String): Double? {
+        if (!payload.has(key) || payload.isNull(key)) {
+            return null
+        }
+        val value = payload.optString(key).trim()
+        return if (looksLikeVariableReference(value)) null else value.toDoubleOrNull()
+    }
+
     private fun copyCalendarTriggerFilter(
         payload: JSONObject,
         targetKey: String,
@@ -978,6 +1191,31 @@ object HermesAutomationBridge {
         if (value.isNotBlank()) {
             payload.put(targetKey, value)
         }
+        return null
+    }
+
+    private fun copyLocationNumericTriggerFilter(
+        payload: JSONObject,
+        targetKey: String,
+        arguments: JSONObject,
+        vararg sourceKeys: String,
+    ): String? {
+        val sourceKey = sourceKeys.firstOrNull { key -> arguments.has(key) && !arguments.isNull(key) } ?: return null
+        val raw = arguments.opt(sourceKey) ?: return null
+        val value = when (raw) {
+            is Number -> raw.toDouble().toString()
+            else -> raw.toString().trim()
+        }
+        if (value.indexOf('\u0000') >= 0) {
+            return "$sourceKey must not contain NUL bytes"
+        }
+        if (value.isBlank()) {
+            return null
+        }
+        if (!looksLikeVariableReference(value) && value.toDoubleOrNull() == null) {
+            return "$sourceKey must be a number"
+        }
+        payload.put(targetKey, value)
         return null
     }
 
@@ -1069,6 +1307,62 @@ object HermesAutomationBridge {
         return value.contains(expanded, ignoreCase = true)
     }
 
+    private fun locationEventMatches(
+        triggerData: String,
+        variables: JSONObject,
+        latitude: Double,
+        longitude: Double,
+        accuracyMeters: Double?,
+        provider: String,
+        name: String,
+    ): Boolean {
+        val filters = runCatching { JSONObject(triggerData.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        if (!textFilterMatches(filters.optString("provider"), provider, variables)) {
+            return false
+        }
+        if (!textFilterMatches(filters.optString("location_name"), name, variables)) {
+            return false
+        }
+        val maxAccuracy = expandedDoubleFilter(filters, "max_accuracy_meters", variables)
+        if (maxAccuracy != null && (accuracyMeters == null || accuracyMeters > maxAccuracy)) {
+            return false
+        }
+        if (!filters.has("latitude") && !filters.has("longitude")) {
+            return true
+        }
+        val savedLatitude = expandedDoubleFilter(filters, "latitude", variables) ?: return false
+        val savedLongitude = expandedDoubleFilter(filters, "longitude", variables) ?: return false
+        if (savedLatitude !in -90.0..90.0 || savedLongitude !in -180.0..180.0) {
+            return false
+        }
+        val radiusMeters = expandedDoubleFilter(filters, "radius_meters", variables) ?: DEFAULT_LOCATION_RADIUS_METERS
+        if (radiusMeters <= 0.0) {
+            return false
+        }
+        return distanceMeters(savedLatitude, savedLongitude, latitude, longitude) <= radiusMeters
+    }
+
+    private fun expandedDoubleFilter(filters: JSONObject, key: String, variables: JSONObject): Double? {
+        if (!filters.has(key) || filters.isNull(key)) {
+            return null
+        }
+        val expanded = expandVariables(filters.optString(key), variables).trim()
+        if (expanded.isBlank() || expanded.indexOf('\u0000') >= 0) {
+            return null
+        }
+        return expanded.toDoubleOrNull()
+    }
+
+    private fun distanceMeters(latitudeA: Double, longitudeA: Double, latitudeB: Double, longitudeB: Double): Double {
+        val dLat = Math.toRadians(latitudeB - latitudeA)
+        val dLon = Math.toRadians(longitudeB - longitudeA)
+        val lat1 = Math.toRadians(latitudeA)
+        val lat2 = Math.toRadians(latitudeB)
+        val haversine = sin(dLat / 2) * sin(dLat / 2) +
+            cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
+        return EARTH_RADIUS_METERS * 2 * atan2(sqrt(haversine), sqrt(1 - haversine))
+    }
+
     private fun calendarEventNulError(
         calendarName: String,
         title: String,
@@ -1080,6 +1374,14 @@ object HermesAutomationBridge {
             title.indexOf('\u0000') >= 0 -> "calendar_title must not contain NUL bytes"
             description.indexOf('\u0000') >= 0 -> "calendar_description must not contain NUL bytes"
             location.indexOf('\u0000') >= 0 -> "calendar_location must not contain NUL bytes"
+            else -> null
+        }
+    }
+
+    private fun locationEventNulError(provider: String, name: String): String? {
+        return when {
+            provider.indexOf('\u0000') >= 0 -> "location_provider must not contain NUL bytes"
+            name.indexOf('\u0000') >= 0 -> "location_name must not contain NUL bytes"
             else -> null
         }
     }
@@ -1180,6 +1482,30 @@ object HermesAutomationBridge {
         store.setVariable("CALENDAR_LOCATION", location.take(MAX_EVENT_VALUE_CHARS))
     }
 
+    private fun setLocationEventVariables(
+        store: HermesAutomationStore,
+        latitude: Double,
+        longitude: Double,
+        accuracyMeters: Double?,
+        provider: String,
+        name: String,
+    ) {
+        val latitudeText = formatLocationNumber(latitude)
+        val longitudeText = formatLocationNumber(longitude)
+        val accuracyText = accuracyMeters?.let { formatLocationNumber(it) }.orEmpty()
+        store.setVariable("LAT", latitudeText)
+        store.setVariable("LON", longitudeText)
+        store.setVariable("LOC", "$latitudeText,$longitudeText")
+        store.setVariable("LOCACC", accuracyText)
+        store.setVariable("LOCPROVIDER", provider.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOCNAME", name.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOCATION_LATITUDE", latitudeText)
+        store.setVariable("LOCATION_LONGITUDE", longitudeText)
+        store.setVariable("LOCATION_ACCURACY_METERS", accuracyText)
+        store.setVariable("LOCATION_PROVIDER", provider.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOCATION_NAME", name.take(MAX_EVENT_VALUE_CHARS))
+    }
+
     private fun setShizukuEventVariables(
         store: HermesAutomationStore,
         status: HermesPrivilegedAccessStatus,
@@ -1211,6 +1537,14 @@ object HermesAutomationBridge {
             return "time trigger"
         }
         return String.format(Locale.US, "%02d:%02d", minutes / 60, minutes % 60)
+    }
+
+    private fun formatLocationNumber(value: Double): String {
+        return String.format(Locale.US, "%.6f", value).trimEnd('0').trimEnd('.')
+    }
+
+    private fun looksLikeVariableReference(value: String): Boolean {
+        return value.contains('%') || value.contains("{{")
     }
 
     private fun normalizeUiAction(action: String): String {
@@ -1257,6 +1591,7 @@ object HermesAutomationBridge {
         "run_app_foreground_trigger",
         "run_notification_posted_trigger",
         "run_calendar_event_trigger",
+        "run_location_trigger",
         "run_shizuku_state_trigger",
         "run_time_trigger",
         "delete",
@@ -1279,6 +1614,7 @@ object HermesAutomationBridge {
         TRIGGER_NOTIFICATION_POSTED,
         TRIGGER_TIME,
         TRIGGER_CALENDAR_EVENT,
+        TRIGGER_LOCATION,
         TRIGGER_SHIZUKU_AVAILABLE,
         TRIGGER_SHIZUKU_UNAVAILABLE,
     )
@@ -1312,6 +1648,12 @@ object HermesAutomationBridge {
         "calendar_trigger" to TRIGGER_CALENDAR_EVENT,
         "event" to TRIGGER_CALENDAR_EVENT,
         "event_calendar" to TRIGGER_CALENDAR_EVENT,
+        "location" to TRIGGER_LOCATION,
+        "location_event" to TRIGGER_LOCATION,
+        "location_profile" to TRIGGER_LOCATION,
+        "location_trigger" to TRIGGER_LOCATION,
+        "place" to TRIGGER_LOCATION,
+        "geofence" to TRIGGER_LOCATION,
         "clock" to TRIGGER_TIME,
         "clock_time" to TRIGGER_TIME,
         "daily_time" to TRIGGER_TIME,
@@ -1333,6 +1675,9 @@ object HermesAutomationBridge {
     private data class TimeParseResult(val minutes: Int?, val error: String? = null)
     private data class DaysParseResult(val daysCsv: String, val error: String? = null)
     private data class TriggerDataResult(val data: String, val error: String? = null)
+
+    private const val DEFAULT_LOCATION_RADIUS_METERS = 100.0
+    private const val EARTH_RADIUS_METERS = 6_371_008.8
 
     private val TIME_ARGUMENT_KEYS = listOf(
         "time",

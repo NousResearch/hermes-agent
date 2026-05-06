@@ -261,6 +261,89 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsLocationTriggerRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_app_launch_task",
+                org.json.JSONObject()
+                    .put("id", "auto-location")
+                    .put("package_name", "com.nousresearch.hermesagent.missing")
+                    .put("trigger", "location")
+                    .put("latitude", 37.7749)
+                    .put("longitude", -122.4194)
+                    .put("radius_meters", 200)
+                    .put("location_provider", "gps")
+                    .put("location_name", "office"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = org.json.JSONObject(automation.getString("trigger_data"))
+        assertEquals(TRIGGER_LOCATION, automation.getString("trigger_type"))
+        assertEquals("37.7749", triggerData.getString("latitude"))
+        assertEquals("-122.4194", triggerData.getString("longitude"))
+        assertEquals("gps", triggerData.getString("provider"))
+        assertEquals("office", triggerData.getString("location_name"))
+
+        val missed = org.json.JSONObject(
+            HermesAutomationBridge.runLocationTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("latitude", 37.7849)
+                    .put("longitude", -122.4194)
+                    .put("location_provider", "gps")
+                    .put("location_name", "Hermes Office"),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+
+        val matched = org.json.JSONObject(
+            HermesAutomationBridge.runLocationTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("latitude", 37.7750)
+                    .put("longitude", -122.4195)
+                    .put("accuracy_meters", 12.5)
+                    .put("location_provider", "gps")
+                    .put("location_name", "Hermes Office"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertFalse(matched.getJSONArray("results").getJSONObject(0).getBoolean("success"))
+        assertEquals("37.775", store.getVariable("LAT"))
+        assertEquals("-122.4195", store.getVariable("LON"))
+        assertEquals("37.775,-122.4195", store.getVariable("LOC"))
+        assertEquals("12.5", store.getVariable("LOCACC"))
+        assertEquals("gps", store.getVariable("LOCPROVIDER"))
+        assertEquals("Hermes Office", store.getVariable("LOCNAME"))
+
+        val generic = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "location"),
+            ),
+        )
+        assertFalse(generic.toString(), generic.getBoolean("success"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_location_trigger",
+                org.json.JSONObject().put("latitude", 37.7750),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+    }
+
+    @Test
     fun bridgeCreatesFileAndSystemActionRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

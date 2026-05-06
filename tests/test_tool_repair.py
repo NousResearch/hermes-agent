@@ -973,6 +973,139 @@ class TestDesktopSemanticRepair:
         args, _ = _repair_tool_args("desktop_type", args)
         assert args["text"] == original
 
+    # ── Bug-fix unit tests ──
+
+    def test_clipboard_text_none(self):
+        """None should NOT become 'None' string."""
+        from model_tools import _repair_desktop_clipboard_text_string
+
+        assert _repair_desktop_clipboard_text_string(None) is None
+
+    def test_coord_int_bool(self):
+        """True -> 1, False -> 0 for desktop coords."""
+        from model_tools import _repair_desktop_coord_int
+
+        assert _repair_desktop_coord_int(True) == 1
+        assert _repair_desktop_coord_int(False) == 0
+
+    def test_coord_int_string_float(self):
+        """Float string like '100.5' -> 100 for desktop coords."""
+        from model_tools import _repair_desktop_coord_int
+
+        assert _repair_desktop_coord_int("100.5") == 100
+        assert _repair_desktop_coord_int(" 50.9 ") == 50
+        assert _repair_desktop_coord_int("-3.7") == -3
+
+    def test_scroll_amount_string_decimal(self):
+        """Float string like '-3.5' -> -3 for scroll amount."""
+        from model_tools import _repair_desktop_scroll_amount
+
+        assert _repair_desktop_scroll_amount("-3.5") == -3
+        assert _repair_desktop_scroll_amount(" 10.0 ") == 10
+        assert _repair_desktop_scroll_amount("0.9") == 0
+
+    def test_scroll_amount_none(self):
+        """None should pass through unchanged for scroll amount."""
+        from model_tools import _repair_desktop_scroll_amount
+
+        assert _repair_desktop_scroll_amount(None) is None
+
+    def test_coord_int_inf_nan(self):
+        """inf and nan should pass through unchanged (no crash)."""
+        from model_tools import _repair_desktop_coord_int
+
+        result = _repair_desktop_coord_int("inf")
+        assert result == "inf"
+        result = _repair_desktop_coord_int("nan")
+        assert result == "nan"
+        result = _repair_desktop_coord_int("+inf")
+        assert result == "+inf"
+
+    @patch("model_tools.registry")
+    def test_desktop_click_none_passthrough(self, mock_registry):
+        """desktop_click with None x/y should pass through untouched."""
+        from model_tools import _repair_semantic_args
+
+        _FAKE_SCHEMAS["desktop_click"] = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                },
+                "required": ["x", "y"],
+            }
+        }
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_semantic_args("desktop_click", {"x": None, "y": None})
+        assert args["x"] is None
+        assert args["y"] is None
+        assert log is None  # No repair applied (None passthrough)
+
+    @patch("model_tools.registry")
+    def test_desktop_repair_end_to_end(self, mock_registry):
+        """End-to-end test via _repair_semantic_args across all desktop tools."""
+        from model_tools import _repair_semantic_args
+
+        # Register schemas for all desktop tools
+        _FAKE_SCHEMAS["desktop_click"] = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                },
+                "required": ["x", "y"],
+            }
+        }
+        _FAKE_SCHEMAS["desktop_move"] = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                },
+                "required": ["x", "y"],
+            }
+        }
+        _FAKE_SCHEMAS["desktop_clipboard"] = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["read", "write"]},
+                    "text": {"type": "string"},
+                },
+                "required": ["action"],
+            }
+        }
+        _FAKE_SCHEMAS["desktop_scroll"] = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "integer"},
+                },
+                "required": ["amount"],
+            }
+        }
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        # Test all broken input patterns end-to-end
+        cases = [
+            ("desktop_click", {"x": True, "y": False}, {"x": 1, "y": 0}),
+            ("desktop_move", {"x": "100.5", "y": "200.9"}, {"x": 100, "y": 200}),
+            ("desktop_clipboard", {"action": None, "text": None}, {"action": "read", "text": None}),
+            ("desktop_scroll", {"amount": "-3.5"}, {"amount": -3}),
+        ]
+
+        for tname, targs, expected in cases:
+            args, log = _repair_semantic_args(tname, dict(targs))
+            for key, exp_val in expected.items():
+                assert args[key] == exp_val, (
+                    f"{tname}.{key}: expected {exp_val!r}, got {args[key]!r}"
+                )
+            assert log is not None, f"{tname}: expected repair log"
+
     # ── Idempotency ──
 
     @patch("model_tools.registry")

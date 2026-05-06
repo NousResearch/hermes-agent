@@ -700,11 +700,18 @@ def _repair_desktop_coord_int(value):
     GLM-5-Turbo occasionally emits coordinates as floats (``100.0``) or
     string digits (``"500"``) instead of plain ints.
     """
+    # Bug fix: bool is int subclass in Python — True -> 1, False -> 0
+    if isinstance(value, bool):
+        return int(value)
     if isinstance(value, float):
         return int(value)
     if isinstance(value, str):
         try:
-            return int(value.strip())
+            # Bug fix: handle float strings like "100.5" -> 100
+            f = float(value.strip())
+            if f != f or f == float("inf") or f == float("-inf"):
+                return value
+            return int(f)
         except (ValueError, TypeError):
             return value
     # None stays None — required param, let handler produce a clear error
@@ -730,6 +737,10 @@ def _repair_desktop_clipboard_text_string(value):
     ``text: "123"`` (string).  The existing coerce layer only converts
     *string → target_type*, not the reverse, so this covers the gap.
     """
+    # Bug fix: None must not become "None" — handler validates null text
+    # and returns a clear error.
+    if value is None:
+        return value
     if not isinstance(value, str):
         return str(value)
     return value
@@ -746,7 +757,11 @@ def _repair_desktop_scroll_amount(value):
         return int(value)
     if isinstance(value, str):
         try:
-            return int(value.strip())
+            # Bug fix: handle float strings like "-3.5" -> -3
+            f = float(value.strip())
+            if f != f or f == float("inf") or f == float("-inf"):
+                return value
+            return int(f)
         except (ValueError, TypeError):
             return value
     return value

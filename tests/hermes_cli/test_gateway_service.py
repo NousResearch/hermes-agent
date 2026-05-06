@@ -324,6 +324,68 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_get_service_pids_parses_launchctl_plist_style_output(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+        launchctl_stdout = """{
+\t\"PID\" = 80263;
+\t\"Label\" = \"ai.hermes.gateway\";
+};\n"""
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=5, **kwargs):
+            assert cmd == ["launchctl", "list", "ai.hermes.gateway"]
+            return SimpleNamespace(returncode=0, stdout=launchctl_stdout, stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {80263}
+
+    def test_find_gateway_pids_uses_macos_ps_args(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/Users/test/.hermes"))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli.os, "getpid", lambda: 99999)
+
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="12345 /Users/test/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.find_gateway_pids() == [12345]
+        assert calls == [["ps", "-Aww", "-o", "pid=,command="]]
+
+    def test_find_gateway_pids_uses_linux_ps_args(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/home/test/.hermes"))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli.os, "getpid", lambda: 99999)
+
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="12345 /home/test/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.find_gateway_pids() == [12345]
+        assert calls == [["ps", "-A", "eww", "-o", "pid=,command="]]
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

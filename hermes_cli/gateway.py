@@ -114,16 +114,35 @@ def _get_service_pids() -> set:
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
+                pid_from_plist = None
+                label_matches = False
                 for line in result.stdout.strip().splitlines():
-                    parts = line.split()
+                    stripped = line.strip()
+
+                    # Older launchctl output: "PID\tStatus\tLabel"
+                    parts = stripped.split()
                     if len(parts) >= 3 and parts[2] == label:
                         try:
                             pid = int(parts[0])
                             if pid > 0:
                                 pids.add(pid)
+                                continue
                         except ValueError:
                             pass
+
+                    # Modern macOS output: plist-style dictionary
+                    if stripped.startswith('"PID"') and "=" in stripped:
+                        raw_pid = stripped.split("=", 1)[1].strip().rstrip(";")
+                        try:
+                            pid_from_plist = int(raw_pid)
+                        except ValueError:
+                            pid_from_plist = None
+                    elif stripped.startswith('"Label"') and "=" in stripped:
+                        raw_label = stripped.split("=", 1)[1].strip().rstrip(";").strip('"')
+                        label_matches = raw_label == label
+
+                if label_matches and pid_from_plist and pid_from_plist > 0:
+                    pids.add(pid_from_plist)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -333,8 +352,13 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
+            # macOS `ps` doesn't accept the BSD `e` flag the way Linux does,
+            # so we can't surface env vars there. As a result, gateways started
+            # on macOS with only `HERMES_HOME=<path>` (no `--profile` flag)
+            # won't be attributable to a named profile via `_matches_current_profile`.
+            ps_command = ["ps", "-Aww", "-o", "pid=,command="] if is_macos() else ["ps", "-A", "eww", "-o", "pid=,command="]
             result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
+                ps_command,
                 capture_output=True,
                 text=True,
                 timeout=10,

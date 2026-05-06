@@ -386,12 +386,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not (bridge_dir / "node_modules").exists():
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
                 try:
+                    # Read timeout from environment variable, default to 300 seconds (5 minutes)
+                    # to accommodate slower systems like Unraid NAS
+                    npm_install_timeout = int(os.environ.get("WHATSAPP_NPM_INSTALL_TIMEOUT", "300"))
                     install_result = subprocess.run(
                         ["npm", "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
                         text=True,
-                        timeout=60,
+                        timeout=npm_install_timeout,
                     )
                     if install_result.returncode != 0:
                         print(f"[{self.name}] npm install failed: {install_result.stderr}")

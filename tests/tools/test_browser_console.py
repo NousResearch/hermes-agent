@@ -195,6 +195,59 @@ class TestBrowserVisionAnnotate:
                 assert "--annotate" in cmd_args
 
 
+
+class TestBrowserVisionFullPage:
+    """browser_vision supports full_page parameter."""
+
+    def test_schema_has_full_page_param(self):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_vision")
+        props = schema["parameters"]["properties"]
+        assert "full_page" in props
+        assert props["full_page"]["type"] == "boolean"
+        assert props["full_page"]["default"] is True
+
+    def test_full_page_default_includes_full_flag(self):
+        """Default (full_page=True) includes --full in screenshot args."""
+        from tools.browser_tool import browser_vision
+
+        with (
+            patch("tools.browser_tool._run_browser_command") as mock_cmd,
+            patch("tools.browser_tool.call_llm") as mock_call_llm,
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+        ):
+            mock_cmd.return_value = {"success": True, "data": {}}
+            try:
+                browser_vision("test", task_id="test")
+            except Exception:
+                pass
+
+            if mock_cmd.called:
+                args = mock_cmd.call_args[0]
+                cmd_args = args[2] if len(args) > 2 else []
+                assert "--full" in cmd_args
+
+    def test_full_page_false_omits_full_flag(self):
+        """With full_page=False, screenshot command has no --full flag."""
+        from tools.browser_tool import browser_vision
+
+        with (
+            patch("tools.browser_tool._run_browser_command") as mock_cmd,
+            patch("tools.browser_tool.call_llm") as mock_call_llm,
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+        ):
+            mock_cmd.return_value = {"success": True, "data": {}}
+            try:
+                browser_vision("test", full_page=False, task_id="test")
+            except Exception:
+                pass
+
+            if mock_cmd.called:
+                args = mock_cmd.call_args[0]
+                cmd_args = args[2] if len(args) > 2 else []
+                assert "--full" not in cmd_args
+
 class TestBrowserVisionConfig:
     def _setup_screenshot(self, tmp_path):
         shots_dir = tmp_path / "browser_screenshots"

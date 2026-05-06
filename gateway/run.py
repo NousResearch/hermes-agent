@@ -1152,6 +1152,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
+        self._budget_config = self._load_budget_config()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -2158,6 +2159,35 @@ class GatewayRunner:
             return "priority"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
+
+    @staticmethod
+    def _load_budget_config() -> "BudgetConfig":
+        """Load tool result budget config from config.yaml.
+
+        Reads agent.tool_result_overrides and builds a BudgetConfig.
+        Falls back to DEFAULT_BUDGET when no overrides are set.
+        """
+        from tools.budget_config import BudgetConfig, DEFAULT_BUDGET
+        overrides: dict = {}
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                _raw = cfg_get(cfg, "agent", "tool_result_overrides", default={}) or {}
+                if isinstance(_raw, dict):
+                    overrides = {str(k): int(v) for k, v in _raw.items() if isinstance(v, (int, float))}
+        except Exception:
+            pass
+        if not overrides:
+            return DEFAULT_BUDGET
+        return BudgetConfig(
+            default_result_size=DEFAULT_BUDGET.default_result_size,
+            turn_budget=DEFAULT_BUDGET.turn_budget,
+            preview_size=DEFAULT_BUDGET.preview_size,
+            tool_overrides=overrides,
+        )
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -9205,6 +9235,7 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._budget_config = self._load_budget_config()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             def run_sync():
@@ -9235,6 +9266,7 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    budget_config=self._budget_config,
                 )
                 try:
                     return agent.run_conversation(
@@ -9433,6 +9465,7 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
         self._service_tier = self._load_service_tier()
+        self._budget_config = self._load_budget_config()
 
         user_config = _load_gateway_config()
         model = _resolve_gateway_model(user_config)
@@ -13645,6 +13678,7 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    budget_config=self._budget_config,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

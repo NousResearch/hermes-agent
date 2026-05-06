@@ -957,6 +957,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        budget_config: "BudgetConfig" = None,
     ):
         """
         Initialize the AI Agent.
@@ -1204,7 +1205,14 @@ class AIAgent:
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
-        
+
+        # Tool result persistence budget
+        if budget_config is not None:
+            self.budget_config = budget_config
+        else:
+            from tools.budget_config import DEFAULT_BUDGET
+            self.budget_config = DEFAULT_BUDGET
+
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
@@ -9788,6 +9796,7 @@ class AIAgent:
                 tool_name=name,
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
+                config=self.budget_config,
             )
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
@@ -10176,6 +10185,7 @@ class AIAgent:
                 tool_name=function_name,
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
+                config=self.budget_config,
             )
 
             # Discover subdirectory context files from tool arguments

@@ -463,6 +463,11 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Per-tool result persistence thresholds (chars). Overrides registry
+        # defaults for specific tools. Example: {'terminal': 10000, 'search_files': 5000}
+        # When a tool result exceeds its threshold, it is persisted to disk and
+        # replaced with a preview + path reference, saving context window tokens.
+        "tool_result_overrides": {},
     },
     
     "terminal": {

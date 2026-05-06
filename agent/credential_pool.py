@@ -1388,7 +1388,18 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
-        val = env_file.get(key) or os.environ.get(key) or ""
+        val = env_file.get(key) or ""
+        if val:
+            # Expand ${VAR} references using os.environ (#20310).
+            # load_env() does raw string parsing — it never interpolates
+            # variable references, so .env entries like KEY=${OTHER_KEY}
+            # would be stored as the literal string "${OTHER_KEY}".
+            import re
+            def _expand(m):
+                return os.environ.get(m.group(1), m.group(0))
+            val = re.sub(r'\$\{([^}]+)\}', _expand, val)
+        if not val:
+            val = os.environ.get(key) or ""
         return val.strip()
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an

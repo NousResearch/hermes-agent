@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build-release:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HERMES_ANDROID_RUNNER || '["ubuntu-latest"]') }}
     timeout-minutes: 45
     permissions:
       contents: write

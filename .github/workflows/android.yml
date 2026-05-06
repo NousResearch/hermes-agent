@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HERMES_ANDROID_RUNNER || '["ubuntu-latest"]') }}
     timeout-minutes: 20
 
     steps:

@@ -463,11 +463,15 @@ def stop_continuous(force_transcribe: bool = False) -> None:
         rec = _continuous_recorder
         on_status = _continuous_on_status
         on_transcript = _continuous_on_transcript
+        on_silent_limit = _continuous_on_silent_limit
+        auto_restart = _continuous_auto_restart
+        track_no_speech = force_transcribe and not auto_restart
         _continuous_stopping = rec is not None
         _continuous_on_transcript = None
         _continuous_on_status = None
         _continuous_on_silent_limit = None
-        _continuous_no_speech_count = 0
+        if not track_no_speech:
+            _continuous_no_speech_count = 0
 
     if rec is not None:
         if force_transcribe and on_transcript:
@@ -487,6 +491,10 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 wav_path = None
 
             def _transcribe_and_cleanup():
+                global _continuous_no_speech_count, _continuous_stopping
+                transcript: Optional[str] = None
+                should_halt = False
+
                 try:
                     if wav_path:
                         try:
@@ -494,15 +502,38 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                             if result.get("success"):
                                 text = (result.get("transcript") or "").strip()
                                 if text and not is_whisper_hallucination(text):
-                                    on_transcript(text)
+                                    transcript = text
                         finally:
                             if os.path.isfile(wav_path):
                                 os.unlink(wav_path)
                 except Exception as e:
                     logger.warning("failed to stop/transcribe recorder: %s", e)
                 finally:
+                    if transcript:
+                        try:
+                            on_transcript(transcript)
+                        except Exception as e:
+                            logger.warning("on_transcript callback raised: %s", e)
+
+                    if track_no_speech:
+                        with _continuous_lock:
+                            if transcript:
+                                _continuous_no_speech_count = 0
+                            else:
+                                _continuous_no_speech_count += 1
+                                should_halt = (
+                                    _continuous_no_speech_count
+                                    >= _CONTINUOUS_NO_SPEECH_LIMIT
+                                )
+                                if should_halt:
+                                    _continuous_no_speech_count = 0
+                        if should_halt and on_silent_limit:
+                            try:
+                                on_silent_limit()
+                            except Exception:
+                                pass
+
                     _play_beep(frequency=660, count=2)
-                    global _continuous_stopping
                     with _continuous_lock:
                         _continuous_stopping = False
                     if on_status:

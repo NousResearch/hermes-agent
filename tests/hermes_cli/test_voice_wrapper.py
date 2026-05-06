@@ -535,6 +535,75 @@ class TestContinuousLoopSimulation:
         assert statuses == ["listening", "transcribing", "idle"]
         assert voice.is_continuous_active() is False
 
+    def test_force_transcribe_empty_single_shots_hit_silent_limit(
+        self, fake_recorder, monkeypatch
+    ):
+        import hermes_cli.voice as voice
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": ""},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        silent_limit_fired = []
+
+        for _ in range(3):
+            voice.start_continuous(
+                on_transcript=lambda _t: None,
+                on_silent_limit=lambda: silent_limit_fired.append(True),
+                auto_restart=False,
+            )
+            voice.stop_continuous(force_transcribe=True)
+
+        assert silent_limit_fired == [True]
+        assert fake_recorder.stopped == 3
+        assert voice._continuous_no_speech_count == 0
+
+    def test_force_transcribe_valid_single_shot_resets_silent_strikes(
+        self, fake_recorder, monkeypatch
+    ):
+        import hermes_cli.voice as voice
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(voice, "_continuous_no_speech_count", 2)
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "manual stop"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        transcripts = []
+        silent_limit_fired = []
+
+        voice.start_continuous(
+            on_transcript=lambda t: transcripts.append(t),
+            on_silent_limit=lambda: silent_limit_fired.append(True),
+            auto_restart=False,
+        )
+        voice.stop_continuous(force_transcribe=True)
+
+        assert transcripts == ["manual stop"]
+        assert silent_limit_fired == []
+        assert voice._continuous_no_speech_count == 0
+
     def test_force_transcribe_stop_failure_cancels_and_clears_stopping(
         self, fake_recorder, monkeypatch
     ):

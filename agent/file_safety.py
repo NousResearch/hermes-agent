@@ -90,8 +90,27 @@ def is_write_denied(path: str) -> bool:
     return False
 
 
+# Common secret-bearing project-local environment file basenames.
+# These are blocked because .env files routinely contain API keys,
+# database passwords, and other credentials.
+_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    ".env.staging",
+    ".envrc",
+}
+
+
 def get_read_block_error(path: str) -> Optional[str]:
-    """Return an error message when a read targets internal Hermes cache files."""
+    """Return an error message when a read targets blocked files.
+
+    Blocks:
+    - Internal Hermes cache files (hub/index-cache)
+    - Common secret-bearing project-local .env files
+    """
     resolved = Path(path).expanduser().resolve()
     hermes_home = _hermes_home_path().resolve()
     blocked_dirs = [
@@ -107,5 +126,12 @@ def get_read_block_error(path: str) -> Optional[str]:
             f"Access denied: {path} is an internal Hermes cache file "
             "and cannot be read directly to prevent prompt injection. "
             "Use the skills_list or skill_view tools instead."
+        )
+    # Block common secret-bearing project-local .env files.
+    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+        return (
+            f"Access denied: {path} is a secret-bearing environment file "
+            "and cannot be read to prevent credential leakage. "
+            "If you need to check the file structure, read .env.example instead."
         )
     return None

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-06T00:37:26Z",
+  "updated_at": "2026-05-06T02:14:51Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -129,6 +129,10 @@
           "description": ""
         },
         {
+          "id": "x-ai/grok-4.3",
+          "description": ""
+        },
+        {
           "id": "nvidia/nemotron-3-super-120b-a12b",
           "description": ""
         },
@@ -241,6 +245,9 @@
         },
         {
           "id": "x-ai/grok-4.20-beta"
+        },
+        {
+          "id": "x-ai/grok-4.3"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"

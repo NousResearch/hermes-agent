@@ -799,6 +799,12 @@ def switch_model(
                         )
 
         # --- Step d: Aggregator catalog search ---
+        # Track whether the live catalog of the CURRENT provider resolved the
+        # model — if so, step e must not second-guess and switch providers.
+        # Critical for flat-namespace resellers like opencode-go / opencode-zen
+        # whose live /v1/models returns bare IDs (e.g. "deepseek-v4-flash") that
+        # coincidentally match entries in native providers' static catalogs.
+        resolved_in_current_catalog = False
         if is_aggregator(target_provider) and not resolved_alias:
             catalog = list_provider_models(target_provider)
             if catalog:
@@ -806,6 +812,7 @@ def switch_model(
                 for mid in catalog:
                     if mid.lower() == new_model_lower:
                         new_model = mid
+                        resolved_in_current_catalog = True
                         break
                 else:
                     for mid in catalog:
@@ -813,6 +820,7 @@ def switch_model(
                             _, bare = mid.split("/", 1)
                             if bare.lower() == new_model_lower:
                                 new_model = mid
+                                resolved_in_current_catalog = True
                                 break
 
         # --- Step e: detect_provider_for_model() as last resort ---
@@ -825,6 +833,7 @@ def switch_model(
             target_provider == current_provider
             and not is_custom
             and not resolved_alias
+            and not resolved_in_current_catalog
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:

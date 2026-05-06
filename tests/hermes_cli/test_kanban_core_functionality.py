@@ -2687,6 +2687,9 @@ def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
             created_at INTEGER NOT NULL
         )
     """)
+    # task_events is required: _migrate_add_optional_columns also runs a
+    # PRAGMA on it to back-fill the run_id column and raises
+    # OperationalError if the table is absent.
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, priority, created_by, created_at, "
@@ -2719,6 +2722,128 @@ def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
     assert row_again["last_failure_error"] == "missing profile"
     conn.close()
 
+
+def test_legacy_migration_no_legacy_columns_at_all(tmp_path):
+    """Scenario A: DB has neither spawn_failures nor consecutive_failures.
+
+    This is the exact crash scenario from issue #20842 — a very old DB that
+    predates the spawn_failures column entirely.  The old RENAME COLUMN path
+    raised ``sqlite3.OperationalError: no such column: spawn_failures``.
+    The ADD-first approach adds consecutive_failures with default 0.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "ancient.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    # task_events is required: _migrate_add_optional_columns also runs a
+    # PRAGMA on it to back-fill the run_id column and raises
+    # OperationalError if the table is absent.
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('t1', 'ancient task', 'ready', 1)"
+    )
+    conn.commit()
+
+    # Must not raise (this was the crash before this fix).
+    kb._migrate_add_optional_columns(conn)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "consecutive_failures" in cols, "migration must add consecutive_failures"
+    assert "last_failure_error" in cols, "migration must add last_failure_error"
+    assert "spawn_failures" not in cols, "no legacy column should be synthesised"
+
+    row = conn.execute("SELECT * FROM tasks WHERE id = 't1'").fetchone()
+    assert row["consecutive_failures"] == 0
+    assert row["last_failure_error"] is None
+
+    # Idempotent second run must not raise either.
+    kb._migrate_add_optional_columns(conn)
+    row_again = conn.execute("SELECT * FROM tasks WHERE id = 't1'").fetchone()
+    assert row_again["consecutive_failures"] == 0
+    assert row_again["last_failure_error"] is None
+    conn.close()
+
+
+def test_legacy_migration_both_columns_already_present(tmp_path):
+    """Scenario D: DB already has both spawn_failures AND consecutive_failures.
+
+    Represents a partially-migrated DB (e.g. user recovered manually after the
+    #20842 crash).  The migration must be a complete no-op and must not
+    zero-out the existing counter.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "partial.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            spawn_failures INTEGER NOT NULL DEFAULT 0,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_spawn_error TEXT,
+            last_failure_error TEXT
+        )
+    """)
+    # task_events required for the run_id back-fill PRAGMA inside the migrator.
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at, spawn_failures, "
+        "consecutive_failures, last_spawn_error, last_failure_error) "
+        "VALUES ('t2', 'partial task', 'ready', 1, 2, 3, 'old error', 'new error')"
+    )
+    conn.commit()
+
+    kb._migrate_add_optional_columns(conn)
+
+    row = conn.execute("SELECT * FROM tasks WHERE id = 't2'").fetchone()
+    # consecutive_failures must not be reset by the migration.
+    assert row["consecutive_failures"] == 3, "migration must not overwrite existing counter"
+    assert row["last_failure_error"] == "new error", "migration must not overwrite existing error"
+    # Legacy column is preserved harmlessly.
+    assert row["spawn_failures"] == 2
+
+    # Schema must be unchanged — no spurious ADD or DROP.
+    cols_after = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "consecutive_failures" in cols_after
+    assert "last_failure_error" in cols_after
+    assert "spawn_failures" in cols_after  # legacy preserved
+
+    # Idempotent second run must not modify values or raise.
+    kb._migrate_add_optional_columns(conn)
+    row_again = conn.execute("SELECT * FROM tasks WHERE id = 't2'").fetchone()
+    assert row_again["consecutive_failures"] == 3
+    assert row_again["last_failure_error"] == "new error"
+    conn.close()
 
 
 # ---------------------------------------------------------------------------

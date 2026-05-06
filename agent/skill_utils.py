@@ -263,6 +263,62 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
+def _normalize_wake_string(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_wake_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+
+    seen: Set[str] = set()
+    result: List[str] = []
+    for raw in value:
+        item = _normalize_wake_string(raw)
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def extract_skill_wake_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract normalized ``metadata.hermes.wake`` from parsed skill frontmatter.
+
+    The returned payload is intentionally lightweight: it normalizes common
+    scalar/list shapes while leaving schema validation to ``agent.wake_manifest``.
+    Unknown wake keys are preserved so governance tooling can report them instead
+    of silently hiding authoring mistakes.
+    """
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    hermes = metadata.get("hermes")
+    if not isinstance(hermes, dict):
+        return {}
+    wake = hermes.get("wake")
+    if not isinstance(wake, dict):
+        return {}
+
+    result: Dict[str, Any] = {}
+    for key, value in wake.items():
+        if key in {"route", "risk", "delivery"}:
+            normalized = _normalize_wake_string(value)
+            if normalized:
+                result[key] = normalized
+        elif key in {"aliases", "keywords", "route_examples"}:
+            normalized_list = _normalize_wake_string_list(value)
+            if normalized_list:
+                result[key] = normalized_list
+        elif value not in (None, "", [], ()):  # Preserve unknown non-empty keys.
+            result[key] = value
+    return result
+
+
 # ── Skill config extraction ───────────────────────────────────────────────
 
 

@@ -90,22 +90,20 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        # Three ticks below the default limit (5) → still ready, counter grows.
-        for i in range(3):
-            res = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
-            assert tid not in res.auto_blocked
+        assert kb.DEFAULT_FAILURE_LIMIT == 2
+        # One default-limit failure → still ready, counter grows.
+        res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
+        assert tid not in res1.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
-        assert task.consecutive_failures == 3
+        assert task.consecutive_failures == 1
 
-        # Two more ticks → fifth failure exceeds the limit.
-        res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
-        assert tid not in res1.auto_blocked
-        res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
+        # Second default-limit failure trips the guard.
+        res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
         assert tid in res2.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        assert task.consecutive_failures >= 5
+        assert task.consecutive_failures >= 2
         assert task.last_failure_error and "no PATH" in task.last_failure_error
     finally:
         conn.close()
@@ -164,6 +162,27 @@ def test_successful_completion_resets_failure_counter(kanban_home, all_assignees
         ok = kb.complete_task(conn, tid, summary="done")
         assert ok
         task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+    finally:
+        conn.close()
+
+
+def test_reassign_resets_failure_counter_for_new_profile(kanban_home, all_assignees_spawnable):
+    """Retry streaks are scoped to a task/profile pair; reassigning is a
+    human recovery action and gives the new profile a fresh budget."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 1, "
+                "last_failure_error = 'timed out' WHERE id = ?",
+                (tid,),
+            )
+        assert kb.assign_task(conn, tid, "reviewer") is True
+        task = kb.get_task(conn, tid)
+        assert task.assignee == "reviewer"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
     finally:
@@ -713,6 +732,48 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             to_event = next(e for e in events if e.kind == "timed_out")
             assert to_event.payload["limit_seconds"] == 1
             assert to_event.payload["elapsed_seconds"] >= 30
+        finally:
+            conn.close()
+    finally:
+        _kb._pid_alive = original_alive
+
+
+def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
+    """Two timed_out outcomes on the same task/profile trip the retry guard."""
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False
+
+    def _age_active_run(conn, tid):
+        old_started = int(time.time()) - 30
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old_started, tid),
+            )
+
+    try:
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(
+                conn, title="long job", assignee="worker",
+                max_runtime_seconds=1,
+            )
+            for expected_failures in (1, 2):
+                kb.claim_task(conn, tid)
+                kb._set_worker_pid(conn, tid, os.getpid())
+                _age_active_run(conn, tid)
+                timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None)
+                assert tid in timed_out
+                task = kb.get_task(conn, tid)
+                assert task.consecutive_failures == expected_failures
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked"
+            events = kb.list_events(conn, tid)
+            assert [e.kind for e in events].count("timed_out") == 2
+            gave_up = [e for e in events if e.kind == "gave_up"]
+            assert gave_up and gave_up[-1].payload["trigger_outcome"] == "timed_out"
         finally:
             conn.close()
     finally:

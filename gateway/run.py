@@ -3645,6 +3645,24 @@ class GatewayRunner:
         if max_spawn is not None:
             logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
 
+        raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
+        try:
+            failure_limit = int(raw_failure_limit)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
+                raw_failure_limit,
+                _kb.DEFAULT_FAILURE_LIMIT,
+            )
+            failure_limit = _kb.DEFAULT_FAILURE_LIMIT
+        if failure_limit < 1:
+            logger.warning(
+                "kanban dispatcher: kanban.failure_limit=%r is below 1; using default %d",
+                raw_failure_limit,
+                _kb.DEFAULT_FAILURE_LIMIT,
+            )
+            failure_limit = _kb.DEFAULT_FAILURE_LIMIT
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -3673,7 +3691,12 @@ class GatewayRunner:
                     _kb.init_db(board=slug)  # idempotent, handles first-run
                 except Exception:
                     pass
-                return _kb.dispatch_once(conn, board=slug, max_spawn=max_spawn)
+                return _kb.dispatch_once(
+                    conn,
+                    board=slug,
+                    max_spawn=max_spawn,
+                    failure_limit=failure_limit,
+                )
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

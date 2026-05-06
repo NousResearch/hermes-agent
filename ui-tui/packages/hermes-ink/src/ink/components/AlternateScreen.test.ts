@@ -5,7 +5,8 @@ import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderSync } from '../root.js'
-import { EXIT_ALT_SCREEN } from '../termio/dec.js'
+import { CURSOR_HOME, ERASE_SCREEN, ERASE_SCROLLBACK } from '../termio/csi.js'
+import { ENTER_ALT_SCREEN } from '../termio/dec.js'
 
 import { AlternateScreen } from './AlternateScreen.js'
 import Box from './Box.js'
@@ -47,7 +48,7 @@ const replaceStdoutProp = (key: 'columns' | 'isTTY' | 'rows', value: number | bo
   }
 }
 
-describe('AlternateScreen shutdown', () => {
+describe('AlternateScreen', () => {
   const restoreStdoutProps: Array<() => void> = []
   let stdoutWrite: ReturnType<typeof vi.spyOn>
 
@@ -69,13 +70,9 @@ describe('AlternateScreen shutdown', () => {
     }
   })
 
-  it('does not emit a second alt-screen exit while React cleanup runs', () => {
+  it('clears the alt screen without clearing host scrollback', () => {
     const instance = renderSync(
-      React.createElement(
-        AlternateScreen,
-        null,
-        React.createElement(Box, null, React.createElement(Text, null, 'hi'))
-      ),
+      React.createElement(AlternateScreen, null, React.createElement(Box, null, React.createElement(Text, null, 'hi'))),
       {
         exitOnCtrlC: false,
         patchConsole: false,
@@ -84,19 +81,13 @@ describe('AlternateScreen shutdown', () => {
       }
     )
 
-    stdoutWrite.mockClear()
-    vi.mocked(writeSync).mockClear()
+    const mountWrites = stdoutWrite.mock.calls.map(([chunk]) => String(chunk)).join('')
+
+    expect(mountWrites).toContain(ENTER_ALT_SCREEN)
+    expect(mountWrites).toContain(ERASE_SCREEN)
+    expect(mountWrites).toContain(CURSOR_HOME)
+    expect(mountWrites).not.toContain(ERASE_SCROLLBACK)
 
     instance.unmount()
-
-    const syncWrites = vi
-      .mocked(writeSync)
-      .mock.calls.map(([, chunk]) => String(chunk))
-      .join('')
-
-    const streamWrites = stdoutWrite.mock.calls.map(([chunk]) => String(chunk)).join('')
-
-    expect(syncWrites.split(EXIT_ALT_SCREEN)).toHaveLength(2)
-    expect(streamWrites).not.toContain(EXIT_ALT_SCREEN)
   })
 })

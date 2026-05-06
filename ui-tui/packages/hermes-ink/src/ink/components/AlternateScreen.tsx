@@ -2,7 +2,7 @@ import React, { type PropsWithChildren, useContext, useInsertionEffect } from 'r
 import { c as _c } from 'react/compiler-runtime'
 
 import instances from '../instances.js'
-import { CURSOR_HOME, ERASE_SCREEN, ERASE_SCROLLBACK } from '../termio/csi.js'
+import { CURSOR_HOME, ERASE_SCREEN } from '../termio/csi.js'
 import { DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../termio/dec.js'
 import { TerminalWriteContext } from '../useTerminalNotification.js'
 
@@ -53,23 +53,14 @@ export function AlternateScreen(t0: Props) {
       }
 
       writeRaw(
-        ENTER_ALT_SCREEN +
-          ERASE_SCROLLBACK +
-          ERASE_SCREEN +
-          CURSOR_HOME +
-          (mouseTracking ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING)
+        ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + (mouseTracking ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING)
       )
       ink?.setAltScreenActive(true, mouseTracking)
 
       return () => {
-        const shouldExitAltScreen = ink?.isAltScreenActive ?? true
-
         ink?.setAltScreenActive(false)
         ink?.clearTextSelection()
-
-        if (shouldExitAltScreen) {
-          writeRaw((mouseTracking ? DISABLE_MOUSE_TRACKING : '') + EXIT_ALT_SCREEN)
-        }
+        writeRaw((mouseTracking ? DISABLE_MOUSE_TRACKING : '') + EXIT_ALT_SCREEN)
       }
     }
 

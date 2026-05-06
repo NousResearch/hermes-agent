@@ -2169,8 +2169,6 @@ export default class Ink {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
         writeSync(1, EXIT_ALT_SCREEN)
-        this.altScreenActive = false
-        this.altScreenMouseTracking = false
       }
 
       // Disable mouse tracking — unconditional because altScreenActive can be

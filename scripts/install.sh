@@ -1291,17 +1291,21 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
-    # Older installs created this path as a symlink to $HERMES_BIN. Without
-    # the rm, `cat >` follows the symlink and overwrites the venv pip entry
-    # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
+    # Older installs may leave ~/.local/bin/hermes as a symlink (#21454) or
+    # point back into the venv entry point. Removing any existing path
+    # before writing avoids self-recursing shims; writing via mktemp+mv
+    # avoids redirect-following overwriting the symlink target on some shells.
     rm -f "$command_link_dir/hermes"
-    cat > "$command_link_dir/hermes" <<EOF
+    local launcher_tmp
+    launcher_tmp="$(mktemp "$command_link_dir/.hermes-launcher.XXXXXX")"
+    cat > "$launcher_tmp" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
-    chmod +x "$command_link_dir/hermes"
+    chmod +x "$launcher_tmp"
+    mv -f "$launcher_tmp" "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then

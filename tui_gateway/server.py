@@ -1473,6 +1473,11 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
 
+    if isinstance(data, dict) and data.get("fallback_warning"):
+        warning = str(data.get("fallback_warning") or "").strip()
+        if warning:
+            return f"{warning}{suffix}"
+
     return f"{text}{suffix}" if text else None
 
 

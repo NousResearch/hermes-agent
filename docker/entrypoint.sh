@@ -109,4 +109,6 @@ fi
 if [ $# -gt 0 ] && command -v "$1" >/dev/null 2>&1; then
     exec "$@"
 fi
+# 把 agent 日志输出到 stdout，kubectl logs 可直接查看
+tail -n0 -F "$HERMES_HOME/logs/agent.log" 2>/dev/null &
 exec hermes "$@"

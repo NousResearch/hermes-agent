@@ -48,6 +48,7 @@ Agent Android implementation work.
 | Accessibility-based UI snapshot/action | Present through `HermesAccessibilityUiBridge` when the user enables the accessibility service; exposed to model tool-calling through `android_ui_tool`. The same service observes foreground app package changes for saved app-context triggers. |
 | Shizuku/Sui privileged setup | Present: `HermesPrivilegedAccessBridge` detects Shizuku/Sui, binder state, permission state, UID/root-vs-ADB identity, and exposes setup actions. |
 | Shizuku/Sui privileged shell execution | Present through `android_system_tool` action `run_privileged_shell` after the user starts Shizuku/Sui and grants Hermes permission. |
+| Shizuku/Sui app and permission management | Present through explicit `android_system_tool` actions `grant_runtime_permission`, `revoke_runtime_permission`, `force_stop_app`, `enable_app`, `disable_app`, and `set_app_enabled`. These validate package and permission names, refuse to disable or force-stop Hermes itself, and only execute through the user-granted Shizuku/Sui shell bridge. |
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
 | Tasker-style manual tasks/actions | Present for saved shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch records through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. |
@@ -75,11 +76,12 @@ control available to consenting users.
 ## Next Tasker-Parity Work
 
 The next credible Tasker-parity feature after shell/file/system/UI/app-launch
-actions, variables, time/day triggers, basic phone-state triggers,
-app-foreground triggers, and notification-posted triggers
+actions, explicit Shizuku package/permission actions, variables, time/day
+triggers, basic phone-state triggers, app-foreground triggers, and
+notification-posted triggers
 should extend profile coverage with explicit user-visible records:
 
 - location, calendar, sensor, and deeper app-state triggers,
-- Shizuku-only actions clearly marked as requiring user-granted Shizuku/Sui, and
+- saved Shizuku-only task records clearly marked as requiring user-granted Shizuku/Sui, and
 - tests proving scheduled/manual actions cannot mutate outside the Hermes app
   workspace unless Shizuku is explicitly selected and available.

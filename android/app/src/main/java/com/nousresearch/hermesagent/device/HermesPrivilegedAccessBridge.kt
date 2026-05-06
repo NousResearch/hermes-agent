@@ -49,6 +49,12 @@ private val DEFAULT_PRIVILEGED_ACTIONS = listOf(
     "open_shizuku_download",
     "request_shizuku_permission",
     "run_privileged_shell",
+    "grant_runtime_permission",
+    "revoke_runtime_permission",
+    "force_stop_app",
+    "enable_app",
+    "disable_app",
+    "set_app_enabled",
 )
 
 object HermesPrivilegedAccessBridge {
@@ -114,6 +120,69 @@ object HermesPrivilegedAccessBridge {
                 message = "Unsupported privileged Android action: $action",
             )
         }
+    }
+
+    fun handlesStructuredAction(action: String): Boolean {
+        return normalizeStructuredAction(action) != null
+    }
+
+    fun performStructuredActionJson(context: Context, action: String, arguments: JSONObject = JSONObject()): String {
+        val normalizedAction = normalizeStructuredAction(action)
+            ?: return JSONObject()
+                .put("success", false)
+                .put("exit_code", 2)
+                .put("action", action)
+                .put("error", "Unsupported Shizuku app-management action: $action")
+                .put("available_privileged_actions", JSONArray(DEFAULT_PRIVILEGED_ACTIONS))
+                .toString()
+        val appContext = context.applicationContext
+        val packageName = stringArgument(arguments, "package_name", "packageName", "package", "app_package", "application_id")
+            ?.trim()
+            ?: return structuredError(normalizedAction, "requires package_name")
+        if (!ANDROID_PACKAGE_OR_PERMISSION_REGEX.matches(packageName)) {
+            return structuredError(normalizedAction, "package_name is not a valid Android package name", packageName = packageName)
+        }
+        if (normalizedAction in SELF_PROTECTING_ACTIONS && packageName == appContext.packageName) {
+            return structuredError(normalizedAction, "Hermes will not disable or force-stop itself", packageName = packageName)
+        }
+
+        val permission = if (normalizedAction in PERMISSION_ACTIONS) {
+            val value = stringArgument(arguments, "permission", "permission_name", "permissionName", "android_permission")
+                ?.trim()
+                ?: return structuredError(normalizedAction, "requires permission", packageName = packageName)
+            if (!ANDROID_PACKAGE_OR_PERMISSION_REGEX.matches(value)) {
+                return structuredError(
+                    normalizedAction,
+                    "permission is not a valid Android permission name",
+                    packageName = packageName,
+                    permission = value,
+                )
+            }
+            value
+        } else {
+            null
+        }
+
+        val command = when (normalizedAction) {
+            "grant_runtime_permission" -> "pm grant $packageName $permission"
+            "revoke_runtime_permission" -> "pm revoke $packageName $permission"
+            "force_stop_app" -> "am force-stop $packageName"
+            "enable_app" -> "pm enable $packageName"
+            "disable_app" -> "pm disable-user $packageName"
+            "set_app_enabled" -> if (enabledArgument(arguments)) {
+                "pm enable $packageName"
+            } else {
+                "pm disable-user $packageName"
+            }
+            else -> return structuredError(normalizedAction, "unsupported action after normalization", packageName = packageName)
+        }
+        val shellResult = JSONObject(runShellCommandJson(appContext, command, arguments.optInt("timeout_seconds", DEFAULT_SHELL_TIMEOUT_SECONDS)))
+        return shellResult
+            .put("action", normalizedAction)
+            .put("package_name", packageName)
+            .put("permission", permission ?: JSONObject.NULL)
+            .put("adb_shell_command", command)
+            .toString()
     }
 
     fun runShellCommandJson(context: Context, command: String, timeoutSeconds: Int = DEFAULT_SHELL_TIMEOUT_SECONDS): String {
@@ -304,6 +373,71 @@ object HermesPrivilegedAccessBridge {
             )
         }
     }
+
+    private fun stringArgument(arguments: JSONObject, vararg keys: String): String? {
+        return keys.firstNotNullOfOrNull { key ->
+            if (!arguments.has(key) || arguments.isNull(key)) {
+                null
+            } else {
+                arguments.optString(key).takeIf { it.isNotBlank() }
+            }
+        }
+    }
+
+    private fun enabledArgument(arguments: JSONObject): Boolean {
+        if (arguments.has("enabled") && !arguments.isNull("enabled")) {
+            return arguments.optBoolean("enabled", true)
+        }
+        val state = stringArgument(arguments, "state", "enabled_state")?.lowercase().orEmpty()
+        return state !in setOf("false", "off", "disabled", "disable", "0")
+    }
+
+    private fun normalizeStructuredAction(action: String): String? {
+        val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
+        return STRUCTURED_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in STRUCTURED_PRIVILEGED_ACTIONS }
+    }
+
+    private fun structuredError(
+        action: String,
+        message: String,
+        packageName: String? = null,
+        permission: String? = null,
+    ): String {
+        return JSONObject()
+            .put("success", false)
+            .put("exit_code", 2)
+            .put("action", action)
+            .put("error", message)
+            .put("package_name", packageName ?: JSONObject.NULL)
+            .put("permission", permission ?: JSONObject.NULL)
+            .put("available_privileged_actions", JSONArray(DEFAULT_PRIVILEGED_ACTIONS))
+            .toString()
+    }
+
+    private val STRUCTURED_PRIVILEGED_ACTIONS = setOf(
+        "grant_runtime_permission",
+        "revoke_runtime_permission",
+        "force_stop_app",
+        "enable_app",
+        "disable_app",
+        "set_app_enabled",
+    )
+    private val STRUCTURED_ACTION_SYNONYMS = mapOf(
+        "grant_permission" to "grant_runtime_permission",
+        "pm_grant" to "grant_runtime_permission",
+        "revoke_permission" to "revoke_runtime_permission",
+        "pm_revoke" to "revoke_runtime_permission",
+        "force_stop_package" to "force_stop_app",
+        "kill_app" to "force_stop_app",
+        "enable_package" to "enable_app",
+        "pm_enable" to "enable_app",
+        "disable_package" to "disable_app",
+        "disable_user_app" to "disable_app",
+        "pm_disable" to "disable_app",
+    )
+    private val PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
+    private val SELF_PROTECTING_ACTIONS = setOf("force_stop_app", "disable_app", "set_app_enabled")
+    private val ANDROID_PACKAGE_OR_PERMISSION_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)*")
 }
 
 private const val DEFAULT_SHELL_TIMEOUT_SECONDS = 30

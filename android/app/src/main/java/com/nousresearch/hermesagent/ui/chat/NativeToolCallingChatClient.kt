@@ -233,6 +233,12 @@ class NativeToolCallingChatClient(
                 command = command,
                 timeoutSeconds = toolCall.arguments.optInt("timeout_seconds", PRIVILEGED_TOOL_TIMEOUT_SECONDS),
             )
+        } else if (HermesPrivilegedAccessBridge.handlesStructuredAction(action)) {
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context = appContext,
+                action = action,
+                arguments = toolCall.arguments,
+            )
         } else {
             HermesSystemControlBridge.performActionJson(action)
         }
@@ -307,9 +313,10 @@ class NativeToolCallingChatClient(
                     "When the user asks to run a command, inspect the filesystem, read a file, or use a device command, call terminal_tool instead of simulating the result. " +
                     "terminal_tool runs through /system/bin/sh in the Hermes app workspace. " +
                     "file_write_tool writes UTF-8 text files in the Hermes app workspace; file_write_tool can only write inside the Hermes app workspace. " +
-                    "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
+                    "When the user asks about Android settings, phone connectivity, permissions, background runtime, app enable/disable, app force-stop, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
+                    "For Tasker-style Shizuku actions, android_system_tool can run grant_runtime_permission, revoke_runtime_permission, force_stop_app, enable_app, disable_app, and set_app_enabled with explicit package_name, permission, or enabled arguments. " +
                     "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, saved file action, safe saved Android settings action, saved visible-UI action, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks, run them manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted triggers, and expand saved variables in commands, file content, UI selectors, package names, trigger packages, and notification or time event fields. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
@@ -642,7 +649,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_system_tool")
                             .put(
                                 "description",
-                                "Read Hermes Android phone/device status or perform a safe system action such as opening settings panels, Shizuku/wireless-debugging setup, or starting/stopping the background runtime.",
+                                "Read Hermes Android phone/device status, open safe settings/setup panels, start/stop the background runtime, or perform explicit user-granted Shizuku/Sui app and permission actions.",
                             )
                             .put(
                                 "parameters",
@@ -657,7 +664,7 @@ class NativeToolCallingChatClient(
                                                     .put("type", "string")
                                                     .put(
                                                         "description",
-                                                        "Use status to read device state, run_privileged_shell with a command argument for user-granted Shizuku/Sui shell execution, or one of the available system actions returned in status.",
+                                                        "Use status to read device state, run_privileged_shell with a command argument, grant_runtime_permission/revoke_runtime_permission with package_name and permission, force_stop_app/enable_app/disable_app/set_app_enabled with package_name, or one of the available actions returned in status.",
                                                     ),
                                             )
                                             .put(
@@ -667,10 +674,28 @@ class NativeToolCallingChatClient(
                                                     .put("description", "Shell command for action run_privileged_shell. Requires running Shizuku/Sui and user-granted Hermes permission."),
                                             )
                                             .put(
+                                                "package_name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android package name for Shizuku app-management actions such as force_stop_app, enable_app, disable_app, set_app_enabled, grant_runtime_permission, and revoke_runtime_permission."),
+                                            )
+                                            .put(
+                                                "permission",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android runtime permission name for grant_runtime_permission or revoke_runtime_permission, for example android.permission.POST_NOTIFICATIONS."),
+                                            )
+                                            .put(
+                                                "enabled",
+                                                JSONObject()
+                                                    .put("type", "boolean")
+                                                    .put("description", "Desired enabled state for set_app_enabled."),
+                                            )
+                                            .put(
                                                 "timeout_seconds",
                                                 JSONObject()
                                                     .put("type", "integer")
-                                                    .put("description", "Optional timeout for run_privileged_shell, clamped by Hermes."),
+                                                    .put("description", "Optional timeout for run_privileged_shell and Shizuku-backed package-manager actions, clamped by Hermes."),
                                             )
                                     )
                                     .put("required", JSONArray().put("action")),

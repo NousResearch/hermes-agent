@@ -80,6 +80,7 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "transform_terminal_output",
     "transform_tool_result",
+    "transform_api_message",
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",

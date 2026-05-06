@@ -134,6 +134,14 @@ _DEFAULT_PAYLOADS = {
         "model": "gpt-4",
         "platform": "cli",
     },
+    "transform_api_message": {
+        "msg": {"role": "tool", "content": "full local result"},
+        "api_msg": {"role": "tool", "content": "full local result"},
+        "idx": 2,
+        "session_id": "test-session",
+        "model": "gpt-4",
+        "platform": "cli",
+    },
     "post_llm_call": {
         "session_id": "test-session",
         "model": "gpt-4",

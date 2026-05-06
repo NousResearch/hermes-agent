@@ -175,6 +175,24 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _git_full_hash(repo_dir: Path, rev: str = "HEAD") -> Optional[str]:
+    """Resolve a git revision to its full hash for cache invalidation."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -189,32 +207,42 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir: Optional[Path] = None
+    repo_head: Optional[str] = None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    if not embedded_rev:
+        repo_dir = _resolve_repo_dir()
+        if repo_dir is None:
+            return None
+        repo_head = _git_full_hash(repo_dir, "HEAD")
+
+    # Read cache — invalidate if the embedded rev or local HEAD has changed.
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-            ):
-                return cached.get("behind")
+            if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
+                if embedded_rev and cached.get("rev") == embedded_rev:
+                    return cached.get("behind")
+                if not embedded_rev and repo_head and cached.get("repo_head") == repo_head:
+                    return cached.get("behind")
     except Exception:
         pass
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            return None
         behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(
+            json.dumps({
+                "ts": now,
+                "behind": behind,
+                "rev": embedded_rev,
+                "repo_head": repo_head,
+            })
+        )
     except Exception:
         pass
 

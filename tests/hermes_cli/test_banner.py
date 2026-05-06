@@ -1,5 +1,7 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import json
+import time
 from unittest.mock import patch
 
 from rich.console import Console
@@ -133,3 +135,52 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
+
+
+def test_check_for_updates_reuses_cache_when_local_head_matches(tmp_path):
+    cache_path = tmp_path / ".update_check"
+    cache_path.write_text(
+        json.dumps({
+            "ts": time.time(),
+            "behind": 7,
+            "rev": None,
+            "repo_head": "abc123",
+        })
+    )
+
+    with (
+        patch.object(banner, "get_hermes_home", return_value=tmp_path),
+        patch.object(banner, "_resolve_repo_dir", return_value=tmp_path),
+        patch.object(banner, "_git_full_hash", return_value="abc123"),
+        patch.object(banner, "_check_via_local_git") as local_git,
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        assert banner.check_for_updates() == 7
+
+    local_git.assert_not_called()
+
+
+def test_check_for_updates_invalidates_cache_when_local_head_changes(tmp_path):
+    cache_path = tmp_path / ".update_check"
+    cache_path.write_text(
+        json.dumps({
+            "ts": time.time(),
+            "behind": 406,
+            "rev": None,
+            "repo_head": "old-head",
+        })
+    )
+
+    with (
+        patch.object(banner, "get_hermes_home", return_value=tmp_path),
+        patch.object(banner, "_resolve_repo_dir", return_value=tmp_path),
+        patch.object(banner, "_git_full_hash", return_value="new-head"),
+        patch.object(banner, "_check_via_local_git", return_value=0) as local_git,
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        assert banner.check_for_updates() == 0
+
+    local_git.assert_called_once_with(tmp_path)
+    cached = json.loads(cache_path.read_text())
+    assert cached["behind"] == 0
+    assert cached["repo_head"] == "new-head"

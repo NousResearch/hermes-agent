@@ -157,6 +157,38 @@ class ObsidianMemoryProvider(MemoryProvider):
             return f"Session summarized: {summary_path}"
         return ""
 
+    def _extract_requests_with_timestamps(self, raw_content: str) -> list:
+        """Extract user requests from raw checkpoints with timestamps."""
+        requests = []
+        # Pattern: --- Checkpoint @ turn N --- followed by [user] messages
+        checkpoint_pattern = r'--- Checkpoint @ turn (\d+) ---\n((?:\n|.)*?)(?=\n--- Checkpoint @ turn \d+ ---|\Z)'
+        checkpoints = re.findall(checkpoint_pattern, raw_content)
+
+        for turn_num, block in checkpoints:
+            # Find user messages in this block
+            user_lines = re.findall(r'\[user\] (.*)', block)
+            for line in user_lines:
+                line = line.strip()
+                if line and not line.startswith('<') and len(line) > 10:
+                    # Check if it's a request (imperative or question)
+                    if any(line.lower().startswith(w) for w in ['can you', 'could you', 'please', 'want', 'need', 'fix', 'build', 'create', 'update', 'delete', 'add', 'remove', 'uninstall', 'install', 'restart', 'stop', 'start', 'do ', 'make ', 'help ', 'try ', 'let\'s ', 'let us']):
+                        requests.append({
+                            'turn': int(turn_num),
+                            'text': line,
+                            'timestamp': self._session_start.isoformat() if self._session_start else datetime.now(timezone.utc).isoformat()
+                        })
+
+        # Deduplicate similar requests
+        seen = set()
+        unique = []
+        for r in requests:
+            key = r['text'][:80].lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(r)
+
+        return unique
+
     # ------------------------------------------------------------------
     # Raw checkpoint writer
     # ------------------------------------------------------------------
@@ -306,9 +338,30 @@ class ObsidianMemoryProvider(MemoryProvider):
                 parts.append(f"- {doc}")
             parts.append("")
 
-        if user_requests:
+        # Get timestamped requests using the new extractor
+        timestamped_requests = self._extract_requests_with_timestamps(raw)
+        
+        if timestamped_requests:
             parts.append("**Requests:**")
-            for r in user_requests[-8:]:  # Last 8
+            for r in timestamped_requests[-8:]:  # Last 8
+                ts = r.get('timestamp', '')
+                # Format timestamp as HH:MM if available
+                time_str = ''
+                if ts:
+                    try:
+                        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        time_str = dt.strftime("%H:%M")
+                    except:
+                        pass
+                if time_str:
+                    parts.append(f"- [{time_str}] {r['text'][:180]}")
+                else:
+                    parts.append(f"- {r['text'][:200]}")
+            parts.append("")
+        elif user_requests:
+            # Fallback to old format if timestamped extraction fails
+            parts.append("**Requests:**")
+            for r in user_requests[-8:]:
                 parts.append(f"- {r}")
             parts.append("")
 
@@ -490,8 +543,11 @@ class ObsidianMemoryProvider(MemoryProvider):
 
         # Build entry — only if there's actual content
         entry_parts = []
+        now = datetime.now(timezone.utc)
+        time_str = now.strftime("%H:%M")
+        
         if actions or decisions or projects:
-            entry_parts.append(f"\n## Session {self._session_id[:8]}")
+            entry_parts.append(f"\n## Session {self._session_id[:8]} @ {time_str}")
 
             if projects:
                 entry_parts.append(f"\n**Projects:** {', '.join(sorted(projects))}")
@@ -499,12 +555,12 @@ class ObsidianMemoryProvider(MemoryProvider):
             if actions:
                 entry_parts.append("\n**Requests:**")
                 for a in actions[-5:]:
-                    entry_parts.append(f"- {a}")
+                    entry_parts.append(f"- [{time_str}] {a}")
 
             if decisions:
                 entry_parts.append("\n**Decisions:**")
                 for d in decisions[-3:]:
-                    entry_parts.append(f"- {d}")
+                    entry_parts.append(f"- [{time_str}] {d}")
 
             entry = "\n".join(entry_parts) + "\n"
             try:
@@ -546,10 +602,13 @@ class ObsidianMemoryProvider(MemoryProvider):
             for s in sorted(summaries, key=lambda f: f.stat().st_mtime):
                 content = s.read_text().strip()
                 if content:
-                    # Extract key lines
+                    # Extract key lines with timestamps
                     for line in content.splitlines():
                         line = line.strip()
-                        if line.startswith("**") or line.startswith("- "):
+                        if line.startswith("**"):
+                            lines.append(line)
+                        elif line.startswith("- "):
+                            # Preserve timestamp if present
                             lines.append(line)
                     lines.append("")
 

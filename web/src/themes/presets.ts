@@ -183,6 +183,127 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
+export const paperlightTheme: DashboardTheme = {
+  name: "paperlight",
+  label: "Paperlight",
+  description: "Light paper workspace with high-contrast text",
+  palette: {
+    background: { hex: "#f7f1e5", alpha: 1 },
+    midground: { hex: "#0b1220", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0.28 },
+    warmGlow: "rgba(245, 174, 84, 0.18)",
+    noiseOpacity: 0.16,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Source Sans 3", "Avenir Next", "Segoe UI", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontDisplay: `"Source Serif 4", Georgia, serif`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&family=Source+Serif+4:wght@600;700&family=JetBrains+Mono:wght@400;500;600&display=swap",
+    lineHeight: "1.58",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.85rem",
+  },
+  assets: {
+    bg: "radial-gradient(circle at 12% 8%, rgba(255, 208, 128, 0.26), transparent 32%), radial-gradient(circle at 90% 4%, rgba(111, 143, 205, 0.18), transparent 30%), linear-gradient(135deg, #fbf7ef 0%, #f2eadb 48%, #e9dfcd 100%)",
+  },
+  componentStyles: {
+    page: {
+      background:
+        "linear-gradient(180deg, rgba(255, 252, 245, 0.96), rgba(244, 236, 222, 0.92))",
+    },
+    card: {
+      background:
+        "linear-gradient(180deg, rgba(255, 253, 248, 0.94), rgba(249, 244, 235, 0.90))",
+      boxShadow:
+        "0 18px 48px -34px rgba(29, 42, 62, 0.42), inset 0 0 0 1px rgba(96, 77, 46, 0.11)",
+    },
+    header: {
+      background:
+        "linear-gradient(180deg, rgba(255, 253, 248, 0.96), rgba(246, 239, 226, 0.92))",
+    },
+    sidebar: {
+      background:
+        "linear-gradient(180deg, rgba(255, 253, 248, 0.94), rgba(241, 232, 216, 0.92))",
+    },
+    tab: {
+      background: "rgba(255, 255, 255, 0.58)",
+    },
+    badge: {
+      background: "rgba(42, 83, 130, 0.10)",
+    },
+    backdrop: {
+      backgroundSize: "cover",
+      backgroundPosition: "center",
+      fillerOpacity: "0.72",
+      fillerBlendMode: "normal",
+    },
+  },
+  colorOverrides: {
+    card: "#fffaf1",
+    cardForeground: "#0b1220",
+    popover: "#fffdf8",
+    popoverForeground: "#0b1220",
+    primary: "#245a92",
+    primaryForeground: "#ffffff",
+    secondary: "#eadcc5",
+    secondaryForeground: "#111827",
+    muted: "#eee3d1",
+    mutedForeground: "#303846",
+    accent: "#d88325",
+    accentForeground: "#20140a",
+    destructive: "#b42318",
+    destructiveForeground: "#ffffff",
+    success: "#20744f",
+    warning: "#c57a14",
+    border: "#d6c7af",
+    input: "#d1c1a8",
+    ring: "#245a92",
+  },
+  customCSS: `
+    :root body {
+      color-scheme: light;
+      color: #0b1220;
+    }
+
+    :root body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.22;
+      background-image:
+        linear-gradient(rgba(80, 65, 42, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(80, 65, 42, 0.04) 1px, transparent 1px);
+      background-size: 32px 32px, 32px 32px;
+    }
+
+    :root .text-muted-foreground {
+      color: #303846;
+    }
+
+    :root .border-border {
+      border-color: rgba(114, 94, 62, 0.22);
+    }
+
+    :root input,
+    :root textarea,
+    :root select {
+      background-color: rgba(255, 253, 248, 0.9);
+    }
+
+    :root code,
+    :root pre {
+      background-color: rgba(36, 90, 146, 0.08);
+      color: #07111f;
+    }
+  `,
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   midnight: midnightTheme,
@@ -190,4 +311,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  paperlight: paperlightTheme,
 };

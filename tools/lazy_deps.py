@@ -145,8 +145,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "qrcode==7.4.2",
     ),
     "platform.feishu": (
-        "lark-oapi==1.5.3",
+        "lark-oapi==1.6.5",
         "qrcode==7.4.2",
+        "aiohttp==3.13.3",
+        "websockets==15.0.1",
     ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
@@ -410,7 +412,7 @@ def feature_missing(feature: str) -> tuple[str, ...]:
     return tuple(s for s in feature_specs(feature) if not _is_satisfied(s))
 
 
-def ensure(feature: str, *, prompt: bool = True) -> None:
+def ensure(feature: str, *, prompt: bool = True, force: bool = False) -> None:
     """Make sure all packages for ``feature`` are importable.
 
     If they're missing, attempts to install them in the active venv. Raises
@@ -421,13 +423,18 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     confirm before installing. Non-interactive callers (gateway, cron,
     batch) get prompt=False and skip the confirmation — config flag is
     the gate in that case.
+
+    ``force``: when True, reinstalls the feature's full allowlisted spec set
+    even if package metadata says those distributions are already present.
+    This is for import-shape migrations where an older installed package has
+    the right distribution name but not the modules the backend now imports.
     """
     if feature not in LAZY_DEPS:
         raise FeatureUnavailable(
             feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist"
         )
 
-    missing = feature_missing(feature)
+    missing = feature_specs(feature) if force else feature_missing(feature)
     if not missing:
         return
 

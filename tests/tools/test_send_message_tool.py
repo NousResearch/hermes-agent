@@ -633,6 +633,38 @@ class TestSendToPlatformChunking:
         helper.assert_not_awaited()
         lightweight.assert_awaited_once()
 
+    def test_matrix_text_only_does_not_import_feishu_adapter(self, monkeypatch):
+        """Non-Feishu sends must not load the SDK-backed Feishu adapter."""
+        import builtins
+        from types import ModuleType
+
+        fake_feishu = ModuleType("gateway.platforms.feishu")
+        fake_feishu.FeishuAdapter = SimpleNamespace(MAX_MESSAGE_LENGTH=8000)
+        monkeypatch.setitem(sys.modules, "gateway.platforms.feishu", fake_feishu)
+
+        original_import = builtins.__import__
+        feishu_imports = []
+
+        def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "gateway.platforms.feishu":
+                feishu_imports.append((name, tuple(fromlist or ())))
+            return original_import(name, globals, locals, fromlist, level)
+
+        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        with patch.object(builtins, "__import__", tracking_import), \
+             patch("tools.send_message_tool._send_matrix", lightweight):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATRIX,
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:ex.com",
+                    "just text, no files",
+                )
+            )
+
+        assert result["success"] is True
+        assert feishu_imports == []
+
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"
         file_path.write_bytes(b"%PDF-1.4 test")
@@ -1651,6 +1683,151 @@ class TestSendToPlatformDiscordForum:
         assert result["success"] is True
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] == "17585"
+
+
+class TestSendFeishu:
+    def test_standalone_feishu_send_runs_requirement_check_before_sending(self, monkeypatch):
+        from gateway.config import PlatformConfig
+        from tools import send_message_tool as smt
+
+        calls = []
+
+        class FakeFeishuAdapter:
+            def __init__(self, pconfig):
+                self.pconfig = pconfig
+                self._channel = None
+
+            def _build_send_only_channel(self):
+                return object()
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="om_lazy", error=None)
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_pkg = SimpleNamespace(
+            FEISHU_AVAILABLE=False,
+            FeishuAdapter=FakeFeishuAdapter,
+            check_feishu_requirements=lambda: True,
+            check_feishu_send_requirements=lambda: True,
+        )
+        monkeypatch.setitem(sys.modules, "gateway.platforms.feishu", fake_pkg)
+
+        result = asyncio.run(
+            smt._send_feishu(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "app_id": "cli_test_app",
+                        "app_secret": "secret_test",
+                    },
+                ),
+                "oc_direct",
+                "hello after lazy install",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "om_lazy"
+        assert calls == [
+            ("send", "oc_direct", "hello after lazy install", None),
+        ]
+
+    def test_standalone_feishu_send_uses_send_only_requirement_check(self, monkeypatch):
+        from gateway.config import PlatformConfig
+        from tools import send_message_tool as smt
+
+        calls = []
+
+        class FakeFeishuAdapter:
+            def __init__(self, pconfig):
+                self.pconfig = pconfig
+                self._channel = None
+
+            def _build_send_only_channel(self):
+                return object()
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(
+                    success=True, message_id="om_send_only", error=None,
+                )
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_pkg = SimpleNamespace(
+            FeishuAdapter=FakeFeishuAdapter,
+            check_feishu_requirements=lambda: False,
+            check_feishu_send_requirements=lambda: True,
+        )
+        monkeypatch.setitem(sys.modules, "gateway.platforms.feishu", fake_pkg)
+
+        result = asyncio.run(
+            smt._send_feishu(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "app_id": "cli_test_app",
+                        "app_secret": "secret_test",
+                    },
+                ),
+                "oc_direct",
+                "hello",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "om_send_only"
+        assert calls == [
+            ("send", "oc_direct", "hello", None),
+        ]
+
+    def test_standalone_feishu_send_initializes_sdk_channel(self, monkeypatch):
+        pytest.importorskip("lark_oapi.channel")
+
+        from gateway.config import PlatformConfig
+        from tools import send_message_tool as smt
+        import lark_oapi.channel as sdk_channel
+
+        sent = []
+
+        class FakeFeishuChannel:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+            async def send(self, chat_id, message, opts=None):
+                sent.append({"chat_id": chat_id, "message": message, "opts": opts})
+                return SimpleNamespace(success=True, message_id="om_direct", error=None)
+
+        monkeypatch.setattr(sdk_channel, "FeishuChannel", FakeFeishuChannel)
+
+        result = asyncio.run(
+            smt._send_feishu(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "app_id": "cli_test_app",
+                        "app_secret": "secret_test",
+                        "domain": "feishu",
+                        "connection_mode": "websocket",
+                    },
+                ),
+                "oc_direct",
+                "hello from tool",
+            )
+        )
+
+        assert result.get("success") is True, result
+        assert result["platform"] == "feishu"
+        assert result["chat_id"] == "oc_direct"
+        assert result["message_id"] == "om_direct"
+        assert sent == [
+            {"chat_id": "oc_direct", "message": "hello from tool", "opts": None}
+        ]
 
 
 # ---------------------------------------------------------------------------

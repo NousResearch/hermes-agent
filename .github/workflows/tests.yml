@@ -52,7 +52,17 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv pip install -e ".[all,dev,feishu]"
+
+      - name: Feishu adapter contract tests
+        run: |
+          source .venv/bin/activate
+          python -c "import lark_oapi.channel"
+          python -m pytest tests/gateway/feishu/ -v --tb=short
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
 
       - name: Run tests
         # Per-file isolation via scripts/run_tests_parallel.py: discovers

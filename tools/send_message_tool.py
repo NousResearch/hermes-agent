@@ -49,6 +49,7 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
+_FEISHU_MAX_MESSAGE_LENGTH = 8000
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -573,13 +574,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _telegram_available = False
 
-    # Feishu adapter import is optional (requires lark-oapi)
-    try:
-        from gateway.platforms.feishu import FeishuAdapter
-        _feishu_available = True
-    except ImportError:
-        _feishu_available = False
-
     media_files = media_files or []
 
     if platform == Platform.SLACK and message:
@@ -595,8 +589,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
-    if _feishu_available:
-        _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    if platform == Platform.FEISHU:
+        _MAX_LENGTHS[Platform.FEISHU] = _FEISHU_MAX_MESSAGE_LENGTH
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
@@ -1829,10 +1823,12 @@ async def _send_bluebubbles(extra, chat_id, message):
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
     try:
-        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
-        if not FEISHU_AVAILABLE:
+        from gateway.platforms.feishu import (
+            FeishuAdapter,
+            check_feishu_send_requirements,
+        )
+        if not check_feishu_send_requirements():
             return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
-        from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
     except ImportError:
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
@@ -1840,9 +1836,7 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
     try:
         adapter = FeishuAdapter(pconfig)
-        domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
-        adapter._client = adapter._build_lark_client(domain)
+        adapter._channel = adapter._build_send_only_channel()
         metadata = {"thread_id": thread_id} if thread_id else None
 
         last_result = None

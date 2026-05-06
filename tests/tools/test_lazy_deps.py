@@ -104,6 +104,14 @@ class TestAllowlist:
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 
+    def test_feishu_lazy_deps_match_sdk_channel_extra(self):
+        specs = ld.feature_specs("platform.feishu")
+
+        assert "lark-oapi==1.6.5" in specs
+        assert "qrcode==7.4.2" in specs
+        assert "aiohttp==3.13.3" in specs
+        assert "websockets==15.0.1" in specs
+
 
 # ---------------------------------------------------------------------------
 # allow_lazy_installs gating
@@ -163,6 +171,22 @@ class TestEnsure:
             lambda *a, **kw: pytest.fail("pip should not be called"),
         )
         ld.ensure("test.satisfied", prompt=False)  # no exception
+
+    def test_force_install_reinstalls_even_when_metadata_satisfied(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.force", ("zzzfake==1.2.3",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        calls = []
+
+        def fake_install(specs, **kw):
+            calls.append(specs)
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        ld.ensure("test.force", prompt=False, force=True)
+
+        assert calls == [("zzzfake==1.2.3",)]
 
     def test_install_success_path(self, monkeypatch):
         monkeypatch.setitem(ld.LAZY_DEPS, "test.install", ("zzzfake>=1",))

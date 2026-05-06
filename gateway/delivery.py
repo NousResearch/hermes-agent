@@ -9,6 +9,8 @@ Routes messages to the appropriate destination based on:
 """
 
 import logging
+import os
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -17,6 +19,28 @@ from typing import Dict, List, Optional, Any
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text to a file atomically using temp file + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800
@@ -207,7 +231,7 @@ class DeliveryRouter:
         lines.append("")
         lines.append(content)
         
-        output_path.write_text("\n".join(lines))
+        _atomic_write_text(output_path, "\n".join(lines))
         
         return {
             "path": str(output_path),
@@ -220,7 +244,7 @@ class DeliveryRouter:
         out_dir = get_hermes_home() / "cron" / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{job_id}_{timestamp}.txt"
-        path.write_text(content)
+        _atomic_write_text(path, content)
         return path
 
     async def _deliver_to_platform(

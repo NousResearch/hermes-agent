@@ -27,6 +27,8 @@ import tempfile
 import time
 import uuid
 import textwrap
+import selectors
+import subprocess
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -74,6 +76,59 @@ from agent.usage_pricing import (
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+
+def _codex_usage_bar(percent_used: Optional[int], width: int = 5) -> str:
+    safe_percent = max(0, min(100, int(percent_used or 0)))
+    filled = round((safe_percent / 100) * width)
+    return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+
+
+def _codex_window_label(window: Dict[str, Any]) -> str:
+    mins = window.get("windowDurationMins") if isinstance(window, dict) else None
+    try:
+        mins_int = int(mins)
+    except Exception:
+        return "?"
+    if mins_int == 300:
+        return "5h"
+    if mins_int == 10080:
+        return "W"
+    if mins_int % 10080 == 0:
+        return f"{mins_int // 10080}w"
+    if mins_int % 60 == 0:
+        return f"{mins_int // 60}h"
+    return f"{mins_int}m"
+
+
+def _format_codex_usage_label(rate_limits_payload: Any, bar_width: int = 5) -> Optional[str]:
+    """Return compact Codex quota usage text for the TUI status bar.
+
+    Codex app-server currently returns either {"rateLimits": {...}} or the
+    limit object directly. Keep this pure and forgiving so tests can pin the
+    formatting without spawning Codex.
+    """
+    if not isinstance(rate_limits_payload, dict):
+        return None
+    limits = rate_limits_payload.get("rateLimits")
+    if not isinstance(limits, dict):
+        limits = rate_limits_payload
+
+    primary = limits.get("primary")
+    secondary = limits.get("secondary")
+    if not isinstance(primary, dict) and not isinstance(secondary, dict):
+        return None
+
+    parts = ["Codex"]
+    for window in (primary, secondary):
+        if not isinstance(window, dict):
+            continue
+        try:
+            pct = max(0, min(100, int(round(float(window.get("usedPercent", 0) or 0)))))
+        except Exception:
+            pct = 0
+        parts.append(f"{_codex_window_label(window)} {_codex_usage_bar(pct, width=bar_width)} {pct}%")
+    return " ".join(parts) if len(parts) > 1 else None
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -2324,6 +2379,13 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # Codex account quota indicator state. The status bar redraws often,
+        # so app-server probing runs off-thread and the hot path reads cache.
+        self._codex_usage_label_cache: Optional[str] = None
+        self._codex_usage_cache_expires: float = 0.0
+        self._codex_usage_fetch_inflight = False
+        self._codex_usage_retry_at: float = 0.0
+        self._codex_usage_lock = threading.Lock()
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -2387,6 +2449,145 @@ class HermesCLI:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+
+    def _should_show_codex_usage_status(self) -> bool:
+        """Return true when the live route is actually Codex-backed."""
+        agent = getattr(self, "agent", None)
+        provider = str(getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip().lower()
+        api_mode = str(getattr(agent, "api_mode", None) or getattr(self, "api_mode", None) or "").strip().lower()
+        base_url = str(getattr(agent, "base_url", None) or getattr(self, "base_url", None) or "").strip().lower()
+        model_name = str(getattr(agent, "model", None) or getattr(self, "model", None) or "").strip().lower()
+
+        if provider == "openai-codex" or api_mode == "codex_responses":
+            return True
+        if "chatgpt.com/backend-api/codex" in base_url:
+            return True
+        # Only infer from model name when no explicit non-Codex provider is set.
+        if not provider and "codex" in model_name:
+            return True
+        return False
+
+    def _get_codex_usage_status_label(self) -> Optional[str]:
+        """Return cached Codex quota label and kick off a refresh if needed."""
+        if not self._should_show_codex_usage_status():
+            return None
+
+        now = time.monotonic()
+        lock = getattr(self, "_codex_usage_lock", None)
+        if lock is None:
+            self._codex_usage_lock = threading.Lock()
+            lock = self._codex_usage_lock
+
+        with lock:
+            label = getattr(self, "_codex_usage_label_cache", None)
+            expires = getattr(self, "_codex_usage_cache_expires", 0.0)
+            if label and now < expires:
+                return label
+            if getattr(self, "_codex_usage_fetch_inflight", False):
+                return label
+            if now < getattr(self, "_codex_usage_retry_at", 0.0):
+                return label
+            self._codex_usage_fetch_inflight = True
+
+        thread = threading.Thread(target=self._refresh_codex_usage_status_label, daemon=True)
+        thread.start()
+        return label
+
+    def _refresh_codex_usage_status_label(self) -> None:
+        try:
+            payload = self._read_codex_rate_limits_payload(timeout=4.0)
+            label = _format_codex_usage_label(payload)
+            now = time.monotonic()
+            with self._codex_usage_lock:
+                if label:
+                    self._codex_usage_label_cache = label
+                    self._codex_usage_cache_expires = now + 60.0
+                    self._codex_usage_retry_at = 0.0
+                else:
+                    self._codex_usage_retry_at = now + 30.0
+        except Exception:
+            try:
+                with self._codex_usage_lock:
+                    self._codex_usage_retry_at = time.monotonic() + 30.0
+            except Exception:
+                pass
+        finally:
+            try:
+                with self._codex_usage_lock:
+                    self._codex_usage_fetch_inflight = False
+            except Exception:
+                pass
+            self._invalidate(min_interval=0.0)
+
+    @staticmethod
+    def _read_codex_rate_limits_payload(timeout: float = 4.0) -> Optional[Dict[str, Any]]:
+        """Read Codex app-server account/rateLimits without exposing tokens."""
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            return None
+
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [codex_bin, "app-server", "--listen", "stdio://"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+
+            messages = [
+                {
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "hermes", "title": "Hermes", "version": "status-bar"},
+                        "capabilities": {"experimentalApi": True},
+                    },
+                },
+                {"method": "initialized"},
+                {"id": 2, "method": "account/rateLimits/read", "params": None},
+            ]
+            for message in messages:
+                proc.stdin.write(json.dumps(message) + "\n")
+            proc.stdin.flush()
+
+            with selectors.DefaultSelector() as selector:
+                selector.register(proc.stdout, selectors.EVENT_READ)
+                deadline = time.monotonic() + max(0.5, timeout)
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        break
+                    events = selector.select(timeout=max(0.05, min(0.25, deadline - time.monotonic())))
+                    for key, _mask in events:
+                        line = key.fileobj.readline()
+                        if not line:
+                            continue
+                        try:
+                            message = json.loads(line)
+                        except Exception:
+                            continue
+                        if message.get("id") != 2:
+                            continue
+                        result = message.get("result")
+                        return result if isinstance(result, dict) else None
+        except Exception:
+            return None
+        finally:
+            if proc is not None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+        return None
 
     @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
@@ -2461,6 +2662,7 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "codex_usage_label": self._get_codex_usage_status_label(),
         }
 
         if not agent:
@@ -2666,6 +2868,18 @@ class HermesCLI:
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
+            codex_usage_label = snapshot.get("codex_usage_label")
+            prompt_elapsed = snapshot.get("prompt_elapsed")
+
+            if width < 100 and codex_usage_label:
+                # On normal 80-column terminals, the Codex quota windows are
+                # more useful than the generic context meter. Keep both 5h and
+                # weekly bars visible instead of trimming them off the right.
+                parts = [f"⚕ {snapshot['model_short']}", duration_label, codex_usage_label]
+                if prompt_elapsed:
+                    parts.append(prompt_elapsed)
+                return self._trim_status_bar_text(" │ ".join(parts), width)
+
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
                 ctx_used = format_token_count_compact(snapshot["context_tokens"])
@@ -2675,7 +2889,8 @@ class HermesCLI:
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
-            prompt_elapsed = snapshot.get("prompt_elapsed")
+            if codex_usage_label:
+                parts.append(codex_usage_label)
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -2725,24 +2940,43 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                    ]
-                    # Position 7: per-prompt elapsed timer (live or frozen)
-                    prompt_elapsed = snapshot.get("prompt_elapsed")
-                    if prompt_elapsed:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-dim", prompt_elapsed))
-                    frags.append(("class:status-bar", " "))
+                    codex_usage_label = snapshot.get("codex_usage_label")
+                    if codex_usage_label and width < 100:
+                        frags = [
+                            ("class:status-bar", " ⚕ "),
+                            ("class:status-bar-strong", snapshot["model_short"]),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", duration_label),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", codex_usage_label),
+                        ]
+                        prompt_elapsed = snapshot.get("prompt_elapsed")
+                        if prompt_elapsed:
+                            frags.append(("class:status-bar-dim", " │ "))
+                            frags.append(("class:status-bar-dim", prompt_elapsed))
+                        frags.append(("class:status-bar", " "))
+                    else:
+                        frags = [
+                            ("class:status-bar", " ⚕ "),
+                            ("class:status-bar-strong", snapshot["model_short"]),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", context_label),
+                            ("class:status-bar-dim", " │ "),
+                            (bar_style, self._build_context_bar(percent)),
+                            ("class:status-bar-dim", " "),
+                            (bar_style, percent_label),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", duration_label),
+                        ]
+                        if codex_usage_label:
+                            frags.append(("class:status-bar-dim", " │ "))
+                            frags.append(("class:status-bar-dim", codex_usage_label))
+                        # Position 7: per-prompt elapsed timer (live or frozen)
+                        prompt_elapsed = snapshot.get("prompt_elapsed")
+                        if prompt_elapsed:
+                            frags.append(("class:status-bar-dim", " │ "))
+                            frags.append(("class:status-bar-dim", prompt_elapsed))
+                        frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:

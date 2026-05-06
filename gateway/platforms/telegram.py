@@ -3248,6 +3248,43 @@ class TelegramAdapter(BasePlatformAdapter):
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
+                # ── Image documents (sent as "file" without compression) ──
+                # Telegram clients let users send a PNG/JPG either as a photo
+                # (compressed) or as a document (uncompressed). The latter
+                # arrives here with mime_type='image/*'. Route those through
+                # the same cache-and-enqueue path as msg.photo so the vision
+                # pipeline (native attach + vision_analyze) can see the bytes.
+                # Without this, image-as-file messages fall into the
+                # "Unsupported document type" branch below and the model
+                # never receives the pixels.
+                _IMG_DOC_MIMES = {
+                    "image/jpeg": ".jpg", "image/jpg": ".jpg",
+                    "image/png": ".png", "image/webp": ".webp",
+                    "image/gif": ".gif", "image/heic": ".heic",
+                    "image/heif": ".heif", "image/bmp": ".bmp",
+                }
+                _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".bmp"}
+                if (doc.mime_type in _IMG_DOC_MIMES) or (ext in _IMG_EXTS):
+                    if not ext:
+                        ext = _IMG_DOC_MIMES.get(doc.mime_type, ".jpg")
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [doc.mime_type or f"image/{ext.lstrip('.')}"]
+                    event.message_type = MessageType.PHOTO
+                    logger.info(
+                        "[Telegram] Cached image-document at %s (mime=%s)",
+                        cached_path, doc.mime_type,
+                    )
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        batch_key = self._photo_batch_key(event, msg)
+                        self._enqueue_photo_event(batch_key, event)
+                    return
+
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()

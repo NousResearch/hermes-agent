@@ -564,6 +564,22 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="anthropic")
         assert result.reason != FailoverReason.oauth_long_context_beta_forbidden
 
+    def test_anthropic_oauth_out_of_extra_usage_classified_as_1m_beta(self):
+        """400 + "You're out of extra usage..." is the second variant of the
+        same root cause (1M-context beta rejected by Claude.ai OAuth
+        subscription). Should classify as oauth_long_context_beta_forbidden
+        so the recovery path strips the beta and retries; the
+        ``oauth_1m_beta_retry_attempted`` guard in run_agent.py ensures a
+        single retry, after which a genuine billing exhaustion surfaces."""
+        e = MockAPIError(
+            "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-haiku-4.5")
+        assert result.reason == FailoverReason.oauth_long_context_beta_forbidden
+        assert result.retryable is True
+        assert result.should_compress is False
+
     # ── Transport errors ──
 
     def test_read_timeout(self):

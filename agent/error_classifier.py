@@ -453,17 +453,24 @@ def classify_api_error(
         )
 
     # Anthropic OAuth subscription rejects the 1M-context beta header.
-    # Observed error body: "The long context beta is not yet available for
-    # this subscription." Returned as HTTP 400 from native Anthropic when
-    # the subscription doesn't include 1M context, even though the request
-    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
-    # in run_agent.py rebuilds the Anthropic client with the beta stripped
-    # and retries once. Pattern is narrow enough that it won't collide with
-    # the 429 tier-gate pattern above (different status, different phrase).
-    if (
-        status_code == 400
-        and "long context beta" in error_msg
-        and "not yet available" in error_msg
+    # Returned as HTTP 400 from native Anthropic when the subscription
+    # doesn't include 1M context, even though the request carries
+    # ``anthropic-beta: context-1m-2025-08-07``. Anthropic surfaces this as
+    # one of two error messages for the same root cause:
+    #   1. "The long context beta is not yet available for this subscription."
+    #   2. "You're out of extra usage. Add more at claude.ai/settings/usage..."
+    # Variant (2) is observed on Claude.ai OAuth tokens (gateway/cron jobs
+    # using ``hermes auth add anthropic --type oauth`` or inheriting from
+    # ``~/.claude/.credentials.json``); without this branch it falls into
+    # the generic billing classifier and the recovery path never fires.
+    # Both variants are recovered by the same code path: strip the beta
+    # header (``drop_context_1m_beta=True``) and retry once. The
+    # ``oauth_1m_beta_retry_attempted`` guard in run_agent.py ensures a
+    # genuine billing exhaustion (variant 2 that doesn't recover after the
+    # strip) surfaces naturally on the second attempt.
+    if status_code == 400 and (
+        ("long context beta" in error_msg and "not yet available" in error_msg)
+        or "out of extra usage" in error_msg
     ):
         return _result(
             FailoverReason.oauth_long_context_beta_forbidden,

@@ -1654,6 +1654,63 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
 
 
+def test_named_custom_runtime_propagates_headers_pool_path(monkeypatch):
+    """Headers must survive pooled custom-provider resolution."""
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "cf-id")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "cf-secret")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "not-needed",
+            "headers": {
+                "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
+                "CF-Access-Client-Secret": "${CF_ACCESS_CLIENT_SECRET}",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["headers"] == {
+        "CF-Access-Client-Id": "cf-id",
+        "CF-Access-Client-Secret": "cf-secret",
+    }
+
+
+def test_named_custom_runtime_propagates_status_file(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "not-needed",
+            "status_file": "/tmp/model-status.json",
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["status_file"] == "/tmp/model-status.json"
+
+
 def test_named_custom_runtime_no_model_when_absent(monkeypatch):
     """When custom_providers entry has no model field, runtime should not either."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
@@ -2134,6 +2191,17 @@ class TestProviderEntryApiKeyEnvAlias:
         normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
         assert normalized is not None
         assert normalized.get("key_env") == "CANONICAL"
+
+    def test_status_file_is_preserved(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "status_file": "/tmp/model-status.json",
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert normalized.get("status_file") == "/tmp/model-status.json"
 
     def test_valid_fields_set_lists_key_env(self):
         """The _VALID_CUSTOM_PROVIDER_FIELDS documentation set must include

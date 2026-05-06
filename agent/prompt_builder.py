@@ -34,21 +34,38 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (
+        r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+        "disregard_rules",
+    ),
+    (
+        r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)",
+        "bypass_restrictions",
+    ),
+    (
+        r"<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->",
+        "html_comment_injection",
+    ),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r"translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)", "translate_execute"),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)", "read_secrets"),
 ]
 
 _CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
 }
 
 
@@ -122,7 +139,7 @@ def _strip_yaml_frontmatter(content: str) -> str:
         end = content.find("\n---", 3)
         if end != -1:
             # Skip past the closing --- and any trailing newline
-            body = content[end + 4:].lstrip("\n")
+            body = content[end + 4 :].lstrip("\n")
             return body if body else content
     return content
 
@@ -206,7 +223,7 @@ KANBAN_GUIDANCE = (
     "Skip heartbeats for short tasks.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
-    "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
+    'need first), call `kanban_block(reason="...")` and stop. Don\'t guess. '
     "The user will unblock with context and the dispatcher will respawn you.\n"
     "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
     "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
@@ -253,6 +270,45 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
     "without acting are not acceptable."
+)
+
+# CodeAct-specific behavioral guidance.  Injected when the agent is in
+# CodeAct mode (run_code is the model's sole tool).  Addresses the runaway
+# loop where the model finds the answer but keeps calling run_code with
+# print() to "present" results instead of outputting a plain assistant message.
+CODEACT_BEHAVIORAL_GUIDANCE = (
+    "# CodeAct mode — presenting your answer\n"
+    "You execute Python in a persistent interpreter via `run_code`.  "
+    "Follow these rules for presenting results:\n\n"
+    "**print() inside run_code is for debugging, NOT for presenting your "
+    "final answer to the user.**  Stdout from run_code is execution output — "
+    "the user sees it in a technical activity log, not as your response.\n\n"
+    "Once you have gathered enough information from run_code (or any tool), "
+    "compose your final answer as a plain text assistant message — "
+    "do NOT make another run_code call to 'present' or 'summarize' it.\n\n"
+    "## When to make a run_code call\n"
+    "- Data gathering, computation, scraping, file I/O, or tool orchestration.\n"
+    "- Processing or transforming results from prior tool calls.\n\n"
+    "## Efficient CodeAct tool use\n"
+    "- Hermes tools are already available as Python functions inside run_code; "
+    "do NOT import them from modules.\n"
+    "- If you need documentation, call `print(help('tool_name'))`; plain "
+    "`help('tool_name')` returns a string that is not shown.\n"
+    "- For image/OCR/translation tasks with a local image path or URL, use "
+    "`vision_analyze(image_url=path, question=...)` first when available. "
+    "Do not start by probing Python environments, listing packages, or "
+    "installing OCR libraries unless the Hermes vision tool fails.\n\n"
+    "## When NOT to make a run_code call\n"
+    "- You already have the answer and just want to show it to the user.\n"
+    "- You are repeating a previous result in a different format.\n"
+    "- The task is conversational or factual and doesn't require code execution.\n\n"
+    "## Anti-loop rules\n"
+    "- Do NOT re-execute code that produced the same result on a previous turn.\n"
+    "- Do NOT call `pass`, `print(...)`, or `42` as filler — if you have nothing "
+    "new to execute, output your response directly.\n"
+    "- After a successful web scrape or search, STOP coding and write your answer.\n"
+    "- If you've made 3+ consecutive run_code calls with the same information, "
+    "you are in a loop — stop immediately and write your answer."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -659,6 +715,7 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -737,6 +794,7 @@ def build_skills_system_prompt(
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     from gateway.session_context import get_session_env
+
     _platform_hint = (
         os.environ.get("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
@@ -879,9 +937,13 @@ def build_skills_system_prompt(
                     continue
                 rel = desc_file.relative_to(ext_dir)
                 cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+                category_descriptions.setdefault(
+                    cat, str(cat_desc).strip().strip("'\"")
+                )
             except Exception as e:
-                logger.debug("Could not read external skill description %s: %s", desc_file, e)
+                logger.debug(
+                    "Could not read external skill description %s: %s", desc_file, e
+                )
 
     if not skills_by_category:
         result = ""
@@ -926,8 +988,7 @@ def build_skills_system_prompt(
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
+            "<available_skills>\n" + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
@@ -1013,7 +1074,10 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
+
+def _truncate_content(
+    content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS
+) -> str:
     """Head/tail truncation with a marker in the middle."""
     if len(content) <= max_chars:
         return content
@@ -1034,6 +1098,7 @@ def load_soul_md() -> Optional[str]:
     """
     try:
         from hermes_cli.config import ensure_hermes_home
+
         ensure_hermes_home()
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
@@ -1128,8 +1193,12 @@ def _load_cursorrules(cwd_path: Path) -> str:
             try:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+                    content = _scan_context_content(
+                        content, f".cursor/rules/{mdc_file.name}"
+                    )
+                    cursorrules_content += (
+                        f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+                    )
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
 
@@ -1138,7 +1207,9 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+def build_context_files_prompt(
+    cwd: Optional[str] = None, skip_soul: bool = False
+) -> str:
     """Discover and load context files for the system prompt.
 
     Priority (first found wins — only ONE project context type is loaded):
@@ -1177,4 +1248,7 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     if not sections:
         return ""
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+    return (
+        "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
+        + "\n".join(sections)
+    )

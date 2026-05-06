@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
@@ -449,6 +450,261 @@ def test_codex_provider_preserves_explicit_codex_model(monkeypatch):
     assert shell._model_is_default is False
     assert shell._ensure_runtime_credentials() is True
     assert shell.model == "gpt-5.1-codex-mini"
+
+
+def test_runtime_resolution_stores_provider_status_file(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "no-key-required",
+            "status_file": "/tmp/model-status.json",
+            "source": "custom_provider:my-server",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error",
+        lambda exc: str(exc),
+    )
+
+    shell = cli.HermesCLI(model="qwen3.6-35b-a3b-q6k", compact=True, max_turns=1)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell._provider_status_file == "/tmp/model-status.json"
+
+
+def test_thinking_command_persists_per_provider_model_without_agent(monkeypatch, tmp_path):
+    cli = _import_cli()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "qwen3.6-35b-a3b-q6k",
+                    "provider": "fumetodev",
+                },
+                "providers": {
+                    "fumetodev": {
+                        "base_url": "https://llm.example.com/v1",
+                        "models": {
+                            "qwen3.6-35b-a3b-q6k": {"context_length": 262144},
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "no-key-required",
+            "source": "custom_provider:fumetodev",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error",
+        lambda exc: str(exc),
+    )
+
+    shell = cli.HermesCLI(model="qwen3.6-35b-a3b-q6k", compact=True, max_turns=1)
+
+    shell._handle_thinking_command("/thinking on")
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert (
+        saved["providers"]["fumetodev"]["models"]["qwen3.6-35b-a3b-q6k"][
+            "chat_template_kwargs"
+        ]["enable_thinking"]
+        is True
+    )
+
+
+def test_thinking_command_default_clears_persisted_override(monkeypatch, tmp_path):
+    cli = _import_cli()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "qwen3.6-35b-a3b-q6k",
+                    "provider": "fumetodev",
+                },
+                "providers": {
+                    "fumetodev": {
+                        "base_url": "https://llm.example.com/v1",
+                        "models": {
+                            "qwen3.6-35b-a3b-q6k": {
+                                "chat_template_kwargs": {
+                                    "enable_thinking": True
+                                }
+                            },
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "no-key-required",
+            "source": "custom_provider:fumetodev",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error",
+        lambda exc: str(exc),
+    )
+
+    shell = cli.HermesCLI(model="qwen3.6-35b-a3b-q6k", compact=True, max_turns=1)
+
+    shell._handle_thinking_command("/thinking default")
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert (
+        "chat_template_kwargs"
+        not in saved["providers"]["fumetodev"]["models"]["qwen3.6-35b-a3b-q6k"]
+    )
+
+
+def test_init_agent_applies_persisted_thinking_mode(monkeypatch, tmp_path):
+    cli = _import_cli()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "qwen3.6-35b-a3b-q6k",
+                    "provider": "fumetodev",
+                },
+                "providers": {
+                    "fumetodev": {
+                        "base_url": "https://llm.example.com/v1",
+                        "models": {
+                            "qwen3.6-35b-a3b-q6k": {
+                                "chat_template_kwargs": {
+                                    "enable_thinking": False
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "no-key-required",
+            "source": "custom_provider:fumetodev",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self._chat_template_kwargs = None
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error",
+        lambda exc: str(exc),
+    )
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="qwen3.6-35b-a3b-q6k", compact=True, max_turns=1)
+
+    assert shell._init_agent() is True
+    assert shell.agent._chat_template_kwargs == {"enable_thinking": False}
+
+
+def test_show_status_includes_thinking_mode(monkeypatch, tmp_path):
+    cli = _import_cli()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    status_file = tmp_path / "model-status.json"
+    status_file.write_text(
+        '{"selected_model":"qwen3.6-35b-a3b-q6k","state":"ready","last_error":""}',
+        encoding="utf-8",
+    )
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "qwen3.6-35b-a3b-q6k",
+                    "provider": "fumetodev",
+                },
+                "providers": {
+                    "fumetodev": {
+                        "base_url": "https://llm.example.com/v1",
+                        "status_file": str(status_file),
+                        "models": {
+                            "qwen3.6-35b-a3b-q6k": {
+                                "chat_template_kwargs": {
+                                    "enable_thinking": False
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(cli, "get_tool_definitions", lambda **kwargs: [])
+
+    shell = cli.HermesCLI(model="qwen3.6-35b-a3b-q6k", compact=True, max_turns=1)
+    shell.requested_provider = "fumetodev"
+    shell.provider = "custom"
+    shell.api_key = "no-key-required"
+    shell._provider_source = "custom_provider:fumetodev"
+    shell._provider_status_file = str(status_file)
+    messages = []
+    monkeypatch.setattr(shell, "_console_print", lambda text: messages.append(text))
+
+    shell._show_status()
+
+    rendered = "\n".join(messages)
+    assert "stack: ready qwen3.6-35b-a3b-q6k" in rendered
+    assert "thinking: off" in rendered
 
 
 def test_codex_provider_strips_provider_prefix_from_model(monkeypatch):

@@ -41,6 +41,16 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_research_search_toolset_includes_research_web_and_browser_tools(self):
+        tools = resolve_toolset("research_search")
+        assert "research_gather" in tools
+        assert "research_local_search" in tools
+        assert "research_search_candidates" in tools
+        assert "research_gap_analyze" in tools
+        assert "web_search" in tools
+        assert "web_extract" in tools
+        assert "browser_navigate" in tools
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools

@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.config import get_custom_provider_context_length
+from hermes_cli.config import (
+    get_custom_provider_codeact_profile,
+    get_custom_provider_context_length,
+    _normalize_custom_provider_entry,
+)
 
 
 class TestGetCustomProviderContextLength:
@@ -141,6 +145,74 @@ class TestGetCustomProviderContextLength:
             )
             == 400_000
         )
+
+
+class TestGetCustomProviderCodeActProfile:
+    def test_provider_level_capability_applies_to_model(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "codeact": {
+                    "enabled": True,
+                    "structured_envelope": True,
+                    "envelope_enforcement": "grammar",
+                },
+                "models": {"m": {}},
+            }
+        ]
+
+        profile = get_custom_provider_codeact_profile(
+            "m", "https://example.invalid/v1", custom
+        )
+
+        assert profile == {
+            "codeact_mode": True,
+            "structured_envelope": True,
+            "envelope_enforcement": "grammar",
+        }
+
+    def test_model_level_capability_overrides_provider_level(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "codeact": {
+                    "enabled": True,
+                    "structured_envelope": True,
+                    "envelope_enforcement": "grammar",
+                },
+                "models": {
+                    "m": {
+                        "codeact": {
+                            "enabled": False,
+                            "structured_envelope": False,
+                            "envelope_enforcement": "none",
+                        }
+                    }
+                },
+            }
+        ]
+
+        profile = get_custom_provider_codeact_profile(
+            "m", "https://example.invalid/v1", custom
+        )
+
+        assert profile == {
+            "codeact_mode": False,
+            "structured_envelope": False,
+            "envelope_enforcement": "none",
+        }
+
+    def test_normalizer_preserves_codeact_capability(self):
+        normalized = _normalize_custom_provider_entry(
+            {
+                "name": "local",
+                "base_url": "https://example.invalid/v1",
+                "codeact": {"enabled": True},
+            }
+        )
+
+        assert normalized is not None
+        assert normalized["codeact"] == {"enabled": True}
 
 
 class TestGetModelContextLengthHonorsOverride:

@@ -46,6 +46,7 @@ DEFAULT_ARCHIVE_AFTER_DAYS = 90
 # .curator_state — persistent scheduler + status
 # ---------------------------------------------------------------------------
 
+
 def _state_file() -> Path:
     return get_hermes_home() / "skills" / ".curator_state"
 
@@ -69,7 +70,9 @@ def load_state() -> Dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             base = _default_state()
-            base.update({k: v for k, v in data.items() if k in base or k.startswith("_")})
+            base.update(
+                {k: v for k, v in data.items() if k in base or k.startswith("_")}
+            )
             return base
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
@@ -80,7 +83,9 @@ def save_state(data: Dict[str, Any]) -> None:
     path = _state_file()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".curator_state_", suffix=".tmp"
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
@@ -111,10 +116,12 @@ def is_paused() -> bool:
 # Config access
 # ---------------------------------------------------------------------------
 
+
 def _load_config() -> Dict[str, Any]:
     """Read curator.* config from ~/.hermes/config.yaml. Tolerates missing file."""
     try:
         from hermes_cli.config import load_config
+
         cfg = load_config()
     except Exception as e:
         logger.debug("Failed to load config for curator: %s", e)
@@ -168,6 +175,7 @@ def get_archive_after_days() -> int:
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
+
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
@@ -235,6 +243,7 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
+
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
     """Walk every agent-created skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
@@ -276,6 +285,77 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             counts["reactivated"] += 1
 
     return counts
+
+
+# ---------------------------------------------------------------------------
+# CodeAct trajectory mining (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+def find_codeact_promotion_candidates_from_sessions(
+    max_sessions: int = 50,
+    min_occurrences: int = 3,
+) -> List[Dict[str, Any]]:
+    """Scan recent session histories for repeated helper function definitions
+    in ``run_code`` tool calls.
+
+    Returns a list of ``PromotionCandidate.to_dict()`` dicts that meet the
+    threshold.  This is the curator's CodeAct analysis pass — it can be
+    called from the background curator agent or from ``hermes curator promote``.
+    """
+    try:
+        from agent.codeact_promotion import (
+            PromotionCandidate,
+            extract_helper_functions,
+        )
+        from hermes_state import SessionDB
+    except ImportError:
+        logger.debug("CodeAct promotion or SessionDB unavailable")
+        return []
+
+    try:
+        db = SessionDB()
+        session_ids = db.list_sessions(limit=max_sessions)
+    except Exception as exc:
+        logger.debug("Failed to list sessions for CodeAct mining: %s", exc)
+        return []
+
+    # Aggregate across sessions.
+    fn_occurrences: Dict[str, List[Dict[str, Any]]] = {}  # fn_name -> [full_defs]
+
+    for sid in session_ids:
+        try:
+            messages = db.get_messages(sid)
+        except Exception:
+            continue
+
+        found = extract_helper_functions(messages)
+        for fn_name, defs in found.items():
+            fn_occurrences.setdefault(fn_name, []).extend(defs)
+
+    candidates: List[Dict[str, Any]] = []
+    for fn_name, defs in fn_occurrences.items():
+        count = len(defs)
+        if count < min_occurrences:
+            continue
+
+        source = defs[-1]  # last definition = most recent version
+        desc_match = __import__("re").search(
+            r'"""(.*?)"""', source, __import__("re").DOTALL
+        )
+        description = (
+            desc_match.group(1).strip() if desc_match else f"Repeated helper: {fn_name}"
+        )
+
+        candidate = PromotionCandidate(
+            fn_name=fn_name,
+            description=description,
+            source_code=source,
+            occurrence_count=count,
+        )
+        candidates.append(candidate.to_dict())
+
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +505,7 @@ CURATOR_REVIEW_PROMPT = (
 # ---------------------------------------------------------------------------
 # Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/
 # ---------------------------------------------------------------------------
+
 
 def _reports_root() -> Path:
     """Directory where curator run reports are written.
@@ -580,6 +661,7 @@ def _parse_structured_summary(
     # rather than any fenced block so we don't accidentally pick up a code
     # sample the model quoted elsewhere.
     import re
+
     match = re.search(
         r"```ya?ml\s*\n(.*?)\n```",
         llm_final,
@@ -594,6 +676,7 @@ def _parse_structured_summary(
     # (config.yaml loader). Fall back to a hand parser for paranoia.
     try:
         import yaml  # type: ignore
+
         data = yaml.safe_load(body)
     except Exception:
         return empty
@@ -611,15 +694,21 @@ def _parse_structured_summary(
                 continue
             frm = entry.get("from")
             into = entry.get("into")
-            if not (isinstance(frm, str) and frm.strip()
-                    and isinstance(into, str) and into.strip()):
+            if not (
+                isinstance(frm, str)
+                and frm.strip()
+                and isinstance(into, str)
+                and into.strip()
+            ):
                 continue
             reason = entry.get("reason")
-            out["consolidations"].append({
-                "from": frm.strip(),
-                "into": into.strip(),
-                "reason": (reason or "").strip() if isinstance(reason, str) else "",
-            })
+            out["consolidations"].append(
+                {
+                    "from": frm.strip(),
+                    "into": into.strip(),
+                    "reason": (reason or "").strip() if isinstance(reason, str) else "",
+                }
+            )
 
     if isinstance(prun_raw, list):
         for entry in prun_raw:
@@ -629,10 +718,12 @@ def _parse_structured_summary(
             if not (isinstance(name, str) and name.strip()):
                 continue
             reason = entry.get("reason")
-            out["prunings"].append({
-                "name": name.strip(),
-                "reason": (reason or "").strip() if isinstance(reason, str) else "",
-            })
+            out["prunings"].append(
+                {
+                    "name": name.strip(),
+                    "reason": (reason or "").strip() if isinstance(reason, str) else "",
+                }
+            )
 
     return out
 
@@ -691,40 +782,48 @@ def _reconcile_classification(
         # hallucination. Fall back to heuristic or prune.
         if mc and mc.get("into") not in destinations:
             if hc:
-                consolidated.append({
-                    "name": name,
-                    "into": hc["into"],
-                    "source": "tool-call audit (model named missing umbrella)",
-                    "reason": "",
-                    "evidence": hc.get("evidence", ""),
-                    "model_claimed_into": mc["into"],
-                })
+                consolidated.append(
+                    {
+                        "name": name,
+                        "into": hc["into"],
+                        "source": "tool-call audit (model named missing umbrella)",
+                        "reason": "",
+                        "evidence": hc.get("evidence", ""),
+                        "model_claimed_into": mc["into"],
+                    }
+                )
             else:
-                pruned.append({
-                    "name": name,
-                    "source": "fallback (model named missing umbrella, no tool-call evidence)",
-                    "reason": "",
-                })
+                pruned.append(
+                    {
+                        "name": name,
+                        "source": "fallback (model named missing umbrella, no tool-call evidence)",
+                        "reason": "",
+                    }
+                )
             continue
 
         # Heuristic found consolidation the model didn't mention.
         if hc:
-            consolidated.append({
-                "name": name,
-                "into": hc["into"],
-                "source": "tool-call audit (model omitted from structured block)",
-                "reason": "",
-                "evidence": hc.get("evidence", ""),
-            })
+            consolidated.append(
+                {
+                    "name": name,
+                    "into": hc["into"],
+                    "source": "tool-call audit (model omitted from structured block)",
+                    "reason": "",
+                    "evidence": hc.get("evidence", ""),
+                }
+            )
             continue
 
         # Model says pruned (or no mention + no heuristic evidence).
         reason = mp.get("reason", "") if mp else ""
-        pruned.append({
-            "name": name,
-            "source": "model" if mp else "no-evidence fallback",
-            "reason": reason,
-        })
+        pruned.append(
+            {
+                "name": name,
+                "source": "model" if mp else "no-evidence fallback",
+                "reason": reason,
+            }
+        )
 
     return {"consolidated": consolidated, "pruned": pruned}
 
@@ -768,8 +867,8 @@ def _write_run_report(
     # Diff before/after
     after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
     after_names = set(after_by_name.keys())
-    removed = sorted(before_names - after_names)   # archived during this run
-    added = sorted(after_names - before_names)     # new skills this run
+    removed = sorted(before_names - after_names)  # archived during this run
+    added = sorted(after_names - before_names)  # new skills this run
     before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
 
     # State transitions between the two snapshots (e.g. active -> stale)
@@ -824,7 +923,11 @@ def _write_run_report(
     # references in-place keeps scheduled jobs working across
     # consolidation passes. Best-effort: never let a cron-module issue
     # break the curator.
-    cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+    cron_rewrites: Dict[str, Any] = {
+        "rewrites": [],
+        "jobs_updated": 0,
+        "jobs_scanned": 0,
+    }
     try:
         consolidated_map = {
             e["name"]: e["into"]
@@ -832,11 +935,11 @@ def _write_run_report(
             if isinstance(e, dict) and e.get("name") and e.get("into")
         }
         pruned_names = [
-            e["name"] for e in pruned
-            if isinstance(e, dict) and e.get("name")
+            e["name"] for e in pruned if isinstance(e, dict) and e.get("name")
         ]
         if consolidated_map or pruned_names:
             from cron.jobs import rewrite_skill_refs as _rewrite_cron_refs
+
             cron_rewrites = _rewrite_cron_refs(
                 consolidated=consolidated_map,
                 pruned=pruned_names,
@@ -939,20 +1042,30 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     lines.append("## Auto-transitions (pure, no LLM)\n")
     lines.append(f"- checked: {auto.get('checked', 0)}")
     lines.append(f"- marked stale: {auto.get('marked_stale', 0)}")
-    lines.append(f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}")
+    lines.append(
+        f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}"
+    )
     lines.append(f"- reactivated: {auto.get('reactivated', 0)}")
     lines.append("")
 
     # LLM pass numbers
     tc_counts = p.get("tool_call_counts") or {}
     lines.append("## LLM consolidation pass\n")
-    lines.append(f"- tool calls: **{counts.get('tool_calls_total', 0)}** "
-                 f"(by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})")
-    lines.append(f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**")
-    lines.append(f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**")
+    lines.append(
+        f"- tool calls: **{counts.get('tool_calls_total', 0)}** "
+        f"(by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})"
+    )
+    lines.append(
+        f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**"
+    )
+    lines.append(
+        f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**"
+    )
     lines.append(f"- new skills this run: **{counts.get('added_this_run', 0)}**")
-    lines.append(f"- state transitions (active ↔ stale ↔ archived): "
-                 f"**{counts.get('state_transitions', 0)}**")
+    lines.append(
+        f"- state transitions (active ↔ stale ↔ archived): "
+        f"**{counts.get('state_transitions', 0)}**"
+    )
     lines.append("")
 
     # Consolidated list — content absorbed into an umbrella. The directory
@@ -1026,7 +1139,9 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     added = p.get("added") or []
     if added:
         lines.append(f"### New skills this run ({len(added)})\n")
-        lines.append("_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n")
+        lines.append(
+            "_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n"
+        )
         for n in added:
             lines.append(f"- `{n}`")
         lines.append("")
@@ -1045,7 +1160,9 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     cron_rw = p.get("cron_rewrites") or {}
     cron_rewrites_list = cron_rw.get("rewrites") or []
     if cron_rewrites_list:
-        lines.append(f"### Cron job skill references rewritten ({len(cron_rewrites_list)})\n")
+        lines.append(
+            f"### Cron job skill references rewritten ({len(cron_rewrites_list)})\n"
+        )
         lines.append(
             "_Cron jobs that referenced a consolidated or pruned skill were "
             "updated in-place so they keep loading the right instructions "
@@ -1088,8 +1205,12 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     # Recovery footer
     lines.append("## Recovery\n")
     lines.append("- Restore an archived skill: `hermes curator restore <name>`")
-    lines.append("- All archives live under `~/.hermes/skills/.archive/` and are recoverable by `mv`")
-    lines.append("- See `run.json` in this directory for the full machine-readable record.")
+    lines.append(
+        "- All archives live under `~/.hermes/skills/.archive/` and are recoverable by `mv`"
+    )
+    lines.append(
+        "- See `run.json` in this directory for the full machine-readable record."
+    )
     lines.append("")
 
     return "\n".join(lines)
@@ -1098,6 +1219,7 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Orchestrator — spawn a forked AIAgent for the LLM review pass
 # ---------------------------------------------------------------------------
+
 
 def _render_candidate_list() -> str:
     """Human/agent-readable list of agent-created skills with usage stats."""
@@ -1163,6 +1285,7 @@ def run_curator_review(
         # curator entirely until they can fix disk space.
         try:
             from agent import curator_backup
+
             snap = curator_backup.snapshot_skills(reason="pre-curator-run")
             if snap is not None and on_summary:
                 try:
@@ -1227,9 +1350,7 @@ def run_curator_review(
                 else:
                     prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
-                final_summary = (
-                    f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
-                )
+                final_summary = f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
         except Exception as e:
             logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
             final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
@@ -1320,7 +1441,9 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
 
     # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
     _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
-    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
+    _legacy = (
+        _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
+    )
     _legacy_provider = _legacy.get("provider") or None
     _legacy_model = _legacy.get("model") or None
     if _legacy_provider and _legacy_model:
@@ -1348,6 +1471,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     Never raises; callers get a structured failure instead.
     """
     import contextlib
+
     result_meta: Dict[str, Any] = {
         "final": "",
         "summary": "",
@@ -1382,11 +1506,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+
         _cfg = load_config()
         _provider, _model_name = _resolve_review_model(_cfg)
-        _rp = resolve_runtime_provider(
-            requested=_provider, target_model=_model_name
-        )
+        _rp = resolve_runtime_provider(requested=_provider, target_model=_model_name)
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
@@ -1425,16 +1548,20 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
+        with (
+            open(os.devnull, "w") as _devnull,
+            contextlib.redirect_stdout(_devnull),
+            contextlib.redirect_stderr(_devnull),
+        ):
             conv_result = review_agent.run_conversation(user_message=prompt)
 
         final = ""
         if isinstance(conv_result, dict):
             final = str(conv_result.get("final_response") or "").strip()
         result_meta["final"] = final
-        result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        result_meta["summary"] = (
+            (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        )
 
         # Collect tool calls for the report. Walk the forked agent's
         # session messages and extract every tool_call made during the
@@ -1470,6 +1597,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public entrypoint for the session-start hook
 # ---------------------------------------------------------------------------
+
 
 def maybe_run_curator(
     *,

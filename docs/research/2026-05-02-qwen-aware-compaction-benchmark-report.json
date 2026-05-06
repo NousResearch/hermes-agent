@@ -1,0 +1,40 @@
+{
+  "2.1": [
+    {
+      "metric": "compaction_walltime_seconds_median",
+      "baseline": 45.23949821400129,
+      "candidate": 45.6076239920003,
+      "delta_pct": 0.8137264835644877,
+      "unit": "s",
+      "note": ""
+    },
+    {
+      "metric": "compaction_walltime_seconds_max",
+      "baseline": 48.0339395280007,
+      "candidate": 48.194857323998804,
+      "delta_pct": 0.33500853267364794,
+      "unit": "s",
+      "note": ""
+    }
+  ],
+  "2.2": [
+    {
+      "metric": "compactions_per_session",
+      "baseline": 6,
+      "candidate": 6,
+      "delta_pct": 0.0,
+      "unit": "n",
+      "note": "includes warmup"
+    }
+  ],
+  "2.3": [
+    {
+      "metric": "fact_retention_pct",
+      "baseline": 90.0,
+      "candidate": 90.0,
+      "delta_pct": 0.0,
+      "unit": "%",
+      "note": ""
+    }
+  ]
+}

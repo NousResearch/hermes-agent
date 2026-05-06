@@ -144,8 +144,8 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["old-configured-model", "new-live-model"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -175,9 +175,66 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     )
 
     assert user_prov is not None
-    assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1")]
+    assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1", {})]
     assert user_prov["models"] == ["old-configured-model", "new-live-model"]
     assert user_prov["total_models"] == 2
+
+
+def test_list_authenticated_providers_uses_headers_for_user_provider_live_models(
+    monkeypatch,
+):
+    """User-defined providers should pass configured headers to live /models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "cf-id")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "cf-secret")
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["qwen3.6-35b-a3b-q6k", "gemma-4-31b-q4km"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    user_providers = {
+        "fumetodev": {
+            "name": "fumetodev",
+            "base_url": "https://llm.fumetodev.com/v1",
+            "api_key": "not-needed",
+            "headers": {
+                "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
+                "CF-Access-Client-Secret": "${CF_ACCESS_CLIENT_SECRET}",
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="fumetodev",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "fumetodev"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert calls == [
+        (
+            "not-needed",
+            "https://llm.fumetodev.com/v1",
+            {
+                "extra_headers": {
+                    "CF-Access-Client-Id": "cf-id",
+                    "CF-Access-Client-Secret": "cf-secret",
+                }
+            },
+        )
+    ]
+    assert user_prov["models"] == ["qwen3.6-35b-a3b-q6k", "gemma-4-31b-q4km"]
 
 
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):

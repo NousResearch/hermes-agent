@@ -30,7 +30,19 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search",
+    "web_extract",
+    # Local-first research search
+    "research_gather",
+    "research_local_search",
+    "research_index_url",
+    "research_status",
+    "research_plan",
+    "research_search_candidates",
+    "research_extract_evidence",
+    "research_rerank",
+    "research_gap_analyze",
+    "research_help",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -76,6 +88,18 @@ TOOLSETS = {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
+    },
+
+    "research_search": {
+        "description": "Local-first research search, evidence gathering, and indexing",
+        "tools": [
+            "research_gather", "research_local_search",
+            "research_index_url", "research_status",
+            "research_plan", "research_search_candidates",
+            "research_extract_evidence", "research_rerank",
+            "research_gap_analyze", "research_help",
+        ],
+        "includes": ["web", "browser"],
     },
     
     "search": {

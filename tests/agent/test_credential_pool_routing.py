@@ -20,6 +20,7 @@ class TestCliTurnRoutePool:
     def test_resolve_turn_includes_pool(self):
         """CLI's _resolve_turn_agent_config must pass credential_pool in runtime."""
         fake_pool = MagicMock(name="FakePool")
+        provider_headers = {"CF-Access-Client-Id": "client-id"}
         shell = SimpleNamespace(
             model="gpt-5.4",
             api_key="sk-test",
@@ -29,6 +30,7 @@ class TestCliTurnRoutePool:
             acp_command=None,
             acp_args=[],
             _credential_pool=fake_pool,
+            _provider_headers=provider_headers,
             service_tier=None,
         )
 
@@ -37,6 +39,7 @@ class TestCliTurnRoutePool:
         route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
+        assert route["runtime"]["provider_headers"] == provider_headers
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ class TestGatewayTurnRoutePool:
 
         fake_pool = MagicMock(name="FakePool")
         runner = SimpleNamespace(_service_tier=None)
+        provider_headers = {"CF-Access-Client-Id": "client-id"}
         runtime_kwargs = {
             "api_key": "***",
             "base_url": None,
@@ -58,12 +62,14 @@ class TestGatewayTurnRoutePool:
             "command": None,
             "args": [],
             "credential_pool": fake_pool,
+            "provider_headers": provider_headers,
         }
 
         bound = GatewayRunner._resolve_turn_agent_config.__get__(runner)
         route = bound("test message", "gpt-5.4", runtime_kwargs)
 
         assert route["runtime"]["credential_pool"] is fake_pool
+        assert route["runtime"]["provider_headers"] == provider_headers
 
 
 # ---------------------------------------------------------------------------

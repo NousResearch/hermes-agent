@@ -4,6 +4,7 @@ description: "Search arXiv papers by keyword, author, category, or ID."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+codeact_fn: arxiv_search
 metadata:
   hermes:
     tags: [Research, Arxiv, Papers, Academic, Science, API]
@@ -16,12 +17,12 @@ Search and retrieve academic papers from arXiv via their free REST API. No API k
 
 ## Quick Reference
 
-| Action | Command |
-|--------|---------|
-| Search papers | `curl "https://export.arxiv.org/api/query?search_query=all:QUERY&max_results=5"` |
-| Get specific paper | `curl "https://export.arxiv.org/api/query?id_list=2402.03300"` |
-| Read abstract (web) | `web_extract(urls=["https://arxiv.org/abs/2402.03300"])` |
-| Read full paper (PDF) | `web_extract(urls=["https://arxiv.org/pdf/2402.03300"])` |
+| Action                | Command                                                                          |
+| --------------------- | -------------------------------------------------------------------------------- |
+| Search papers         | `curl "https://export.arxiv.org/api/query?search_query=all:QUERY&max_results=5"` |
+| Get specific paper    | `curl "https://export.arxiv.org/api/query?id_list=2402.03300"`                   |
+| Read abstract (web)   | `web_extract(urls=["https://arxiv.org/abs/2402.03300"])`                         |
+| Read full paper (PDF) | `web_extract(urls=["https://arxiv.org/pdf/2402.03300"])`                         |
 
 ## Searching Papers
 
@@ -58,14 +59,14 @@ for i, entry in enumerate(root.findall('a:entry', ns)):
 
 ## Search Query Syntax
 
-| Prefix | Searches | Example |
-|--------|----------|---------|
-| `all:` | All fields | `all:transformer+attention` |
-| `ti:` | Title | `ti:large+language+models` |
-| `au:` | Author | `au:vaswani` |
-| `abs:` | Abstract | `abs:reinforcement+learning` |
-| `cat:` | Category | `cat:cs.AI` |
-| `co:` | Comment | `co:accepted+NeurIPS` |
+| Prefix | Searches   | Example                      |
+| ------ | ---------- | ---------------------------- |
+| `all:` | All fields | `all:transformer+attention`  |
+| `ti:`  | Title      | `ti:large+language+models`   |
+| `au:`  | Author     | `au:vaswani`                 |
+| `abs:` | Abstract   | `abs:reinforcement+learning` |
+| `cat:` | Category   | `cat:cs.AI`                  |
+| `co:`  | Comment    | `co:accepted+NeurIPS`        |
 
 ### Boolean operators
 
@@ -88,12 +89,12 @@ search_query=au:hinton+AND+cat:cs.LG
 
 ## Sort and Pagination
 
-| Parameter | Options |
-|-----------|---------|
-| `sortBy` | `relevance`, `lastUpdatedDate`, `submittedDate` |
-| `sortOrder` | `ascending`, `descending` |
-| `start` | Result offset (0-based) |
-| `max_results` | Number of results (default 10, max 30000) |
+| Parameter     | Options                                         |
+| ------------- | ----------------------------------------------- |
+| `sortBy`      | `relevance`, `lastUpdatedDate`, `submittedDate` |
+| `sortOrder`   | `ascending`, `descending`                       |
+| `start`       | Result offset (0-based)                         |
+| `max_results` | Number of results (default 10, max 30000)       |
 
 ```bash
 # Latest 10 papers in cs.AI
@@ -115,6 +116,7 @@ curl -s "https://export.arxiv.org/api/query?id_list=2402.03300,2401.12345,2403.0
 After fetching metadata for a paper, generate a BibTeX entry:
 
 {% raw %}
+
 ```bash
 curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" | python3 -c "
 import sys, xml.etree.ElementTree as ET
@@ -140,6 +142,7 @@ print(f'  url       = {{https://arxiv.org/abs/{raw_id}}}')
 print('}')
 "
 ```
+
 {% endraw %}
 
 ## Reading Paper Content
@@ -158,16 +161,16 @@ For local PDF processing, see the `ocr-and-documents` skill.
 
 ## Common Categories
 
-| Category | Field |
-|----------|-------|
-| `cs.AI` | Artificial Intelligence |
-| `cs.CL` | Computation and Language (NLP) |
-| `cs.CV` | Computer Vision |
-| `cs.LG` | Machine Learning |
-| `cs.CR` | Cryptography and Security |
-| `stat.ML` | Machine Learning (Statistics) |
-| `math.OC` | Optimization and Control |
-| `physics.comp-ph` | Computational Physics |
+| Category          | Field                          |
+| ----------------- | ------------------------------ |
+| `cs.AI`           | Artificial Intelligence        |
+| `cs.CL`           | Computation and Language (NLP) |
+| `cs.CV`           | Computer Vision                |
+| `cs.LG`           | Machine Learning               |
+| `cs.CR`           | Cryptography and Security      |
+| `stat.ML`         | Machine Learning (Statistics)  |
+| `math.OC`         | Optimization and Control       |
+| `physics.comp-ph` | Computational Physics          |
 
 Full list: https://arxiv.org/category_taxonomy
 
@@ -252,10 +255,10 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 
 ## Rate Limits
 
-| API | Rate | Auth |
-|-----|------|------|
-| arXiv | ~1 req / 3 seconds | None needed |
-| Semantic Scholar | 1 req / second | None (100/sec with API key) |
+| API              | Rate               | Auth                        |
+| ---------------- | ------------------ | --------------------------- |
+| arXiv            | ~1 req / 3 seconds | None needed                 |
+| Semantic Scholar | 1 req / second     | None (100/sec with API key) |
 
 ## Notes
 
@@ -276,6 +279,7 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 ## Withdrawn Papers
 
 Papers can be withdrawn after submission. When this happens:
+
 - The `<summary>` field contains a withdrawal notice (look for "withdrawn" or "retracted")
 - Metadata fields may be incomplete
 - Always check the summary before treating a result as a valid paper

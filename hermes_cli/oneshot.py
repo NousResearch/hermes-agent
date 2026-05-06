@@ -294,6 +294,7 @@ def _run_agent(
         quiet_mode=True,
         platform="cli",
         credential_pool=runtime.get("credential_pool"),
+        provider_headers=runtime.get("headers"),
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

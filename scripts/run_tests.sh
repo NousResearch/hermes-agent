@@ -26,23 +26,38 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Activate venv ───────────────────────────────────────────────────────────
 # Prefer a .venv in the current tree, fall back to the main checkout's venv
 # (useful for worktrees where we don't always duplicate the venv).
+#
+# Some local checkouts keep a partial `.venv` around (e.g. Python exists but
+# pytest/pip were never installed, or the env was created by a tool that omits
+# pip by default).  Don't hard-fail on the first activate script we find — pick
+# the first *usable* test environment instead.
 VENV=""
+PYTHON=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    VENV="$candidate"
-    break
+  if [ ! -f "$candidate/bin/activate" ] || [ ! -x "$candidate/bin/python" ]; then
+    continue
   fi
+  candidate_python="$candidate/bin/python"
+  if ! "$candidate_python" -c "import pytest" >/dev/null 2>&1; then
+    continue
+  fi
+  VENV="$candidate"
+  PYTHON="$candidate_python"
+  break
 done
 
 if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  echo "error: no usable virtualenv found in $REPO_ROOT/.venv, $REPO_ROOT/venv, or $HOME/.hermes/hermes-agent/venv" >&2
+  echo "       expected a venv whose python can import pytest" >&2
   exit 1
 fi
 
-PYTHON="$VENV/bin/python"
-
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
+  if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    echo "→ bootstrapping pip into $VENV"
+    "$PYTHON" -m ensurepip --upgrade >/dev/null
+  fi
   echo "→ installing pytest-split into $VENV"
   "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
 fi

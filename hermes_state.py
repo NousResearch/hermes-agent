@@ -1516,28 +1516,34 @@ class SessionDB:
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
-        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
+        Cleans up ``session_{session_id}.json``, ``{session_id}.jsonl``, and any
         ``request_dump_{session_id}_*.json`` files left by the gateway.
-        Silently skips files that don't exist and swallows OSError so a
-        filesystem hiccup never blocks a DB operation.
         """
         if sessions_dir is None:
+            logger.debug("[session_files] sessions_dir 为空，跳过 %s 的文件清理", session_id)
             return
-        for suffix in (".json", ".jsonl"):
-            p = sessions_dir / f"{session_id}{suffix}"
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
-        # request_dump files use session_id as a prefix component
-        try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+        removed = []
+        patterns = [
+            sessions_dir / f"session_{session_id}.json",
+            sessions_dir / f"{session_id}.jsonl",
+        ]
+        for p in patterns:
+            if p.exists():
                 try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+                    p.unlink()
+                    removed.append(p.name)
+                except OSError as e:
+                    logger.debug("[session_files] 删除文件失败 %s: %s", p.name, e)
+        for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+            try:
+                p.unlink()
+                removed.append(p.name)
+            except OSError as e:
+                logger.debug("[session_files] 删除文件失败 %s: %s", p.name, e)
+        if removed:
+            logger.info("[session_files] 已清理 %s 的文件: %s", session_id, ", ".join(removed))
+        else:
+            logger.debug("[session_files] 未找到 %s 的磁盘文件 (目录: %s)", session_id, sessions_dir)
 
     def delete_session(
         self,
@@ -1572,6 +1578,94 @@ class SessionDB:
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
+
+    def delete_sessions(
+        self,
+        session_ids: List[str],
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete multiple sessions and all their messages in a single transaction.
+
+        Child sessions are orphaned (parent_session_id set to NULL) rather
+        than cascade-deleted.  When *sessions_dir* is provided, also removes
+        on-disk transcript files for every deleted session.
+
+        Returns the count of sessions actually found and deleted.
+        """
+        if not session_ids:
+            return 0
+
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            # Collect IDs that actually exist
+            placeholders = ",".join("?" * len(session_ids))
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
+                session_ids,
+            )
+            existing = [row["id"] for row in cursor.fetchall()]
+            if not existing:
+                return 0
+
+            # Orphan child sessions whose parent is about to be deleted
+            orphan_placeholders = ",".join("?" * len(existing))
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({orphan_placeholders})",
+                existing,
+            )
+
+            for sid in existing:
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                removed_ids.append(sid)
+            return len(existing)
+
+        count = self._execute_write(_do)
+        if removed_ids:
+            logger.info(
+                "[session_files] 开始清理 %d 个已删除会话的磁盘文件: %s",
+                len(removed_ids), ", ".join(removed_ids),
+            )
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
+
+    def delete_all_sessions(
+        self,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete all sessions and all their messages.
+
+        When *sessions_dir* is provided, also removes on-disk transcript
+        files for every deleted session.
+
+        Returns the count of sessions deleted.
+        """
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            cursor = conn.execute("SELECT id FROM sessions")
+            all_ids = [row["id"] for row in cursor.fetchall()]
+            if not all_ids:
+                return 0
+
+            conn.execute("UPDATE sessions SET parent_session_id = NULL")
+            conn.execute("DELETE FROM messages")
+            conn.execute("DELETE FROM sessions")
+            removed_ids.extend(all_ids)
+            return len(all_ids)
+
+        count = self._execute_write(_do)
+        if removed_ids:
+            logger.info(
+                "[session_files] 开始清理全部 %d 个会话的磁盘文件",
+                len(removed_ids),
+            )
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
 
     def prune_sessions(
         self,

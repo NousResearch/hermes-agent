@@ -10,6 +10,10 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/stop    — interrupt a running agent
+- GET  /v1/sessions                — list sessions with pagination
+- GET  /v1/sessions/{session_id}   — retrieve a session with full message history
+- DELETE /v1/sessions              — batch delete sessions by session_ids
+- DELETE /v1/sessions/all          — delete all sessions and messages
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -3314,9 +3318,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_delete_sessions(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/sessions — Batch delete sessions from state.db.
-        
+
         Accepts a JSON body with a list of session_ids.
-        Useful for frontend synchronization and bulk cleanup.
+        Deletes DB records and transcript files.
         """
         auth_err = self._check_auth(request)
         if auth_err:
@@ -3344,18 +3348,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         try:
-            # Note: 'messages' table has a FK to 'sessions', so we must delete messages first.
-            placeholders = ",".join("?" * len(session_ids))
-            params = tuple(session_ids)
-            
-            # 1. Delete associated messages
-            db._conn.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders})", params)
-            
-            # 2. Delete sessions
-            cursor = db._conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", params)
-            
-            db._conn.commit()
-            deleted_count = cursor.rowcount
+            from hermes_constants import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+            deleted_count = db.delete_sessions(session_ids, sessions_dir=sessions_dir)
             logger.info("[api_server] Deleted %d/%d sessions", deleted_count, len(session_ids))
             return web.json_response({
                 "status": "success",
@@ -3365,6 +3360,32 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.error("[api_server] Failed to batch delete sessions: %s", e, exc_info=True)
             return web.json_response(
                 {"error": {"message": "Failed to delete sessions", "type": "server_error"}},
+                status=500,
+            )
+
+    async def _handle_delete_all_sessions(self, request: "web.Request") -> "web.Response":
+        """DELETE /v1/sessions/all — delete all sessions, messages, and transcript files."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                {"error": {"message": "Session DB unavailable", "type": "server_error"}},
+                status=500,
+            )
+        try:
+            from hermes_constants import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+            deleted_count = db.delete_all_sessions(sessions_dir=sessions_dir)
+            return web.json_response({
+                "status": "success",
+                "deleted_count": deleted_count,
+            })
+        except Exception as e:
+            logger.error("[api_server] Failed to delete all sessions: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": "Failed to delete all sessions", "type": "server_error"}},
                 status=500,
             )
 
@@ -3927,6 +3948,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Session management endpoints
             self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
             self._app.router.add_delete("/v1/sessions", self._handle_delete_sessions)
+            self._app.router.add_delete("/v1/sessions/all", self._handle_delete_all_sessions)
             self._app.router.add_get("/v1/sessions/{session_id}", self._handle_get_session)
             # Workspace file management
             self._app.router.add_get("/v1/workspace", self._handle_workspace_list)

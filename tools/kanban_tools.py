@@ -49,7 +49,7 @@ def _check_kanban_mode() -> bool:
     Humans running ``hermes chat`` without the kanban toolset see zero
     kanban tools. Workers spawned by the kanban dispatcher (gateway-
     embedded by default) and orchestrator profiles with the kanban
-    toolset enabled see all seven.
+    toolset enabled see the Kanban tool surface.
     """
     if os.environ.get("HERMES_KANBAN_TASK"):
         return True
@@ -135,6 +135,41 @@ def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
 
+def _normalize_profile(value: Any) -> Optional[str]:
+    """Normalize CLI-compatible assignee sentinels for the tool surface."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("none", "-", "null"):
+        return None
+    return text
+
+
+def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
+    """Compact task shape for board-listing tools."""
+    parents = kb.parent_ids(conn, task.id)
+    children = kb.child_ids(conn, task.id)
+    return {
+        "id": task.id,
+        "title": task.title,
+        "assignee": task.assignee,
+        "status": task.status,
+        "priority": task.priority,
+        "tenant": task.tenant,
+        "workspace_kind": task.workspace_kind,
+        "workspace_path": task.workspace_path,
+        "created_by": task.created_by,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "current_run_id": task.current_run_id,
+        "parents": parents,
+        "children": children,
+        "parent_count": len(parents),
+        "child_count": len(children),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -208,6 +243,48 @@ def _handle_show(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_show failed")
         return tool_error(f"kanban_show: {e}")
+
+
+def _handle_list(args: dict, **kw) -> str:
+    """List task summaries with the same core filters as the CLI."""
+    assignee = args.get("assignee")
+    status = args.get("status")
+    tenant = args.get("tenant")
+    include_archived = bool(args.get("include_archived"))
+    limit = args.get("limit")
+    if limit is not None:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return tool_error("limit must be an integer")
+        if limit < 1:
+            return tool_error("limit must be >= 1")
+    try:
+        kb, conn = _connect()
+        try:
+            # Match CLI list: dependencies that cleared since the last
+            # dispatcher tick should be visible to orchestrators immediately.
+            promoted = kb.recompute_ready(conn)
+            tasks = kb.list_tasks(
+                conn,
+                assignee=assignee,
+                status=status,
+                tenant=tenant,
+                include_archived=include_archived,
+                limit=limit,
+            )
+            return json.dumps({
+                "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+                "count": len(tasks),
+                "promoted": promoted,
+            })
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_list: {e}")
+    except Exception as e:
+        logger.exception("kanban_list failed")
+        return tool_error(f"kanban_list: {e}")
 
 
 def _handle_complete(args: dict, **kw) -> str:
@@ -467,6 +544,28 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(f"kanban_create: {e}")
 
 
+def _handle_unblock(args: dict, **kw) -> str:
+    """Transition a blocked task back to ready."""
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    ownership_err = _enforce_worker_task_ownership(str(tid))
+    if ownership_err:
+        return ownership_err
+    try:
+        kb, conn = _connect()
+        try:
+            ok = kb.unblock_task(conn, str(tid))
+            if not ok:
+                return tool_error(f"could not unblock {tid} (not blocked or unknown)")
+            return _ok(task_id=str(tid), status="ready")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_unblock failed")
+        return tool_error(f"kanban_unblock: {e}")
+
+
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
     parent_id = args.get("parent_id")
@@ -513,6 +612,47 @@ KANBAN_SHOW_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": _DESC_TASK_ID_DEFAULT,
+            },
+        },
+        "required": [],
+    },
+}
+
+KANBAN_LIST_SCHEMA = {
+    "name": "kanban_list",
+    "description": (
+        "List Kanban task summaries so an orchestrator profile can discover "
+        "work to route. Supports the same core filters as the CLI: assignee, "
+        "status, tenant, include_archived, and limit. Returns compact rows "
+        "with ids, title, status, assignee, priority, parent/child ids, and "
+        "counts. Also recomputes ready tasks before listing, matching the CLI."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "assignee": {
+                "type": "string",
+                "description": "Optional assignee/profile filter.",
+            },
+            "status": {
+                "type": "string",
+                "enum": [
+                    "triage", "todo", "ready", "running",
+                    "blocked", "done", "archived",
+                ],
+                "description": "Optional task status filter.",
+            },
+            "tenant": {
+                "type": "string",
+                "description": "Optional tenant/project namespace filter.",
+            },
+            "include_archived": {
+                "type": "boolean",
+                "description": "Include archived tasks. Defaults to false.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum number of tasks to return.",
             },
         },
         "required": [],
@@ -787,6 +927,25 @@ KANBAN_CREATE_SCHEMA = {
     },
 }
 
+KANBAN_UNBLOCK_SCHEMA = {
+    "name": "kanban_unblock",
+    "description": (
+        "Move a blocked Kanban task back to ready. Dispatcher-spawned "
+        "workers may only unblock their own task; orchestrator profiles "
+        "with the kanban toolset can unblock routed work."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Blocked task id to return to ready.",
+            },
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
@@ -814,6 +973,15 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_SHOW_SCHEMA,
     handler=_handle_show,
+    check_fn=_check_kanban_mode,
+    emoji="📋",
+)
+
+registry.register(
+    name="kanban_list",
+    toolset="kanban",
+    schema=KANBAN_LIST_SCHEMA,
+    handler=_handle_list,
     check_fn=_check_kanban_mode,
     emoji="📋",
 )
@@ -861,6 +1029,15 @@ registry.register(
     handler=_handle_create,
     check_fn=_check_kanban_mode,
     emoji="➕",
+)
+
+registry.register(
+    name="kanban_unblock",
+    toolset="kanban",
+    schema=KANBAN_UNBLOCK_SCHEMA,
+    handler=_handle_unblock,
+    check_fn=_check_kanban_mode,
+    emoji="▶",
 )
 
 registry.register(

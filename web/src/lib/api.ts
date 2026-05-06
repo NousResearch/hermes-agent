@@ -391,6 +391,7 @@ export interface EnvVarInfo {
   is_password: boolean;
   tools: string[];
   advanced: boolean;
+  custom?: boolean;
 }
 
 export interface SessionMessage {

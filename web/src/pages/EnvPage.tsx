@@ -491,6 +491,8 @@ export default function EnvPage() {
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
+  const [customKey, setCustomKey] = useState("");
+  const [customValue, setCustomValue] = useState("");
   const { toast, showToast } = useToast();
   const { t } = useI18n();
 
@@ -530,6 +532,47 @@ export default function EnvPage() {
         return n;
       });
       showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+    } catch (e) {
+      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleAddCustomEnvVar = async () => {
+    const key = customKey.trim().toUpperCase();
+    const value = customValue.trim();
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+      showToast("Use a valid env var name: letters, numbers, underscores, not starting with a number", "error");
+      return;
+    }
+    if (!value) {
+      showToast("Enter a value before saving the custom key", "error");
+      return;
+    }
+    setSaving(key);
+    try {
+      await api.setEnvVar(key, value);
+      setVars((prev) => {
+        const existing = prev?.[key];
+        return {
+          ...(prev ?? {}),
+          [key]: {
+            is_set: true,
+            redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
+            description: existing?.description ?? "Custom environment variable",
+            url: existing?.url ?? null,
+            category: existing?.category ?? "custom",
+            is_password: existing?.is_password ?? true,
+            tools: existing?.tools ?? [],
+            advanced: existing?.advanced ?? false,
+            custom: existing?.custom ?? true,
+          },
+        };
+      });
+      setCustomKey("");
+      setCustomValue("");
+      showToast(`${key} added`, "success");
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
     } finally {
@@ -599,12 +642,14 @@ export default function EnvPage() {
   };
 
   /* ---- Build provider groups ---- */
-  const { providerGroups, nonProviderGrouped } = useMemo(() => {
-    if (!vars) return { providerGroups: [], nonProviderGrouped: [] };
+  const { providerGroups, nonProviderGrouped, customEntries } = useMemo(() => {
+    if (!vars) return { providerGroups: [], nonProviderGrouped: [], customEntries: [] };
+
+    const customEntries = Object.entries(vars).filter(([, info]) => info.custom);
 
     const providerEntries = Object.entries(vars).filter(
       ([, info]) =>
-        info.category === "provider" && (showAdvanced || !info.advanced),
+        !info.custom && info.category === "provider" && (showAdvanced || !info.advanced),
     );
 
     // Group by provider
@@ -633,7 +678,7 @@ export default function EnvPage() {
     const otherCategories = ["tool", "messaging", "setting"];
     const nonProvider = otherCategories.map((cat) => {
       const entries = Object.entries(vars).filter(
-        ([, info]) => info.category === cat && (showAdvanced || !info.advanced),
+        ([, info]) => !info.custom && info.category === cat && (showAdvanced || !info.advanced),
       );
       const setEntries = entries.filter(([, info]) => info.is_set);
       const unsetEntries = entries.filter(([, info]) => !info.is_set);
@@ -647,7 +692,7 @@ export default function EnvPage() {
       };
     });
 
-    return { providerGroups: groups, nonProviderGrouped: nonProvider };
+    return { providerGroups: groups, nonProviderGrouped: nonProvider, customEntries };
   }, [vars, showAdvanced, t]);
 
   if (!vars) {
@@ -664,6 +709,9 @@ export default function EnvPage() {
   const pendingClearKey = keyClear.pendingId;
   const pendingKeyDescription =
     pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined;
+  const customKeyNormalized = customKey.trim().toUpperCase();
+  const customKeyExists = !!customKeyNormalized && !!vars?.[customKeyNormalized];
+  const customKeySaving = saving === customKeyNormalized;
 
   return (
     <div className="flex flex-col gap-6">
@@ -700,6 +748,90 @@ export default function EnvPage() {
           {showAdvanced ? t.env.hideAdvanced : t.env.showAdvanced}
         </Button>
       </div>
+
+      <Card>
+        <CardHeader className="border-b border-border bg-card">
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-base">Add custom key</CardTitle>
+          </div>
+          <CardDescription>
+            Store any environment variable in <code>~/.hermes/.env</code>. Values are hidden after saving.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 pt-4">
+          <p className="text-xs text-muted-foreground">
+            Custom keys are saved to the Hermes environment but are only used when referenced by config, tools, plugins, or your own scripts.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-[minmax(14rem,1fr)_minmax(16rem,2fr)_auto] sm:items-end">
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-key">Key name</Label>
+              <Input
+                id="custom-env-key"
+                value={customKey}
+                onChange={(e) => setCustomKey(e.target.value.toUpperCase())}
+                placeholder="EXAMPLE_API_KEY"
+                className="font-mono-ui text-xs"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-value">Value</Label>
+              <Input
+                id="custom-env-value"
+                type="password"
+                value={customValue}
+                onChange={(e) => setCustomValue(e.target.value)}
+                placeholder="Paste secret value"
+                className="font-mono-ui text-xs"
+              />
+            </div>
+            <Button
+              onClick={handleAddCustomEnvVar}
+              prefix={<Save />}
+              disabled={customKeySaving || !customKeyNormalized || !customValue.trim()}
+            >
+              {customKeySaving ? "..." : customKeyExists ? t.common.replace : t.common.save}
+            </Button>
+          </div>
+          {customKeyExists && (
+            <p className="text-xs text-amber-500">
+              {customKeyNormalized} already exists. Saving will replace its stored value.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {customEntries.length > 0 && (
+        <Card>
+          <CardHeader className="border-b border-border bg-card">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-5 w-5 text-muted-foreground" />
+              <CardTitle className="text-base">Custom keys</CardTitle>
+            </div>
+            <CardDescription>
+              {customEntries.length} custom environment {customEntries.length === 1 ? "variable" : "variables"} stored in <code>~/.hermes/.env</code>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 pt-4">
+            {customEntries.map(([key, info]) => (
+              <EnvVarRow
+                key={key}
+                varKey={key}
+                info={info}
+                edits={edits}
+                setEdits={setEdits}
+                revealed={revealed}
+                saving={saving}
+                onSave={handleSave}
+                onClear={keyClear.requestDelete}
+                onReveal={handleReveal}
+                onCancelEdit={cancelEdit}
+                clearDialogOpen={keyClear.isOpen}
+              />
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <OAuthProvidersCard
         onError={(msg) => showToast(msg, "error")}
@@ -810,7 +942,6 @@ export default function EnvPage() {
 /* ------------------------------------------------------------------ */
 
 function CollapsibleUnset({
-  category: _category,
   unsetEntries,
   edits,
   setEdits,

@@ -1229,6 +1229,20 @@ async def get_env_vars():
             "tools": info.get("tools", []),
             "advanced": info.get("advanced", False),
         }
+    for var_name, value in sorted(env_on_disk.items()):
+        if var_name in result:
+            continue
+        result[var_name] = {
+            "is_set": bool(value),
+            "redacted_value": redact_key(value) if value else None,
+            "description": "Custom environment variable",
+            "url": None,
+            "category": "custom",
+            "is_password": True,
+            "tools": [],
+            "advanced": False,
+            "custom": True,
+        }
     return result
 
 

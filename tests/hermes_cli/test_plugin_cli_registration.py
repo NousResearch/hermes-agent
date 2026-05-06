@@ -187,3 +187,152 @@ class TestProviderCollectorCliNoop:
         )
         # Should not store anything — CLI is discovered via file convention
         assert not hasattr(collector, "_cli_commands")
+
+
+# ── _surface_generic_plugin_cli_commands ─────────────────────────────────
+#
+# Covers the helper extracted from main()'s argparse setup that surfaces
+# every plugin-registered CLI command as a top-level ``hermes <name>``
+# subparser. Without this helper, ``register_cli_command()`` populates
+# ``manager._cli_commands`` but nothing reads it for top-level argparse,
+# so generic (non-memory) plugins are silently invisible.
+
+
+class TestSurfaceGenericPluginCliCommands:
+    def _build_parser(self):
+        """Tiny argparse skeleton matching main()'s top-level shape."""
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        return parser, subparsers
+
+    def _make_manager_with_command(
+        self,
+        name: str = "mytool",
+        setup_fn=None,
+        handler_fn=None,
+        help_text: str = "test help",
+        description: str = "test description",
+    ) -> PluginManager:
+        """Return a PluginManager whose _cli_commands has one entry."""
+        mgr = PluginManager()
+        mgr._cli_commands[name] = {
+            "name": name,
+            "help": help_text,
+            "description": description,
+            "setup_fn": setup_fn or (lambda p: p.add_argument("--flag")),
+            "handler_fn": handler_fn,
+            "plugin": "test-plugin",
+        }
+        return mgr
+
+    def test_adds_registered_command_as_top_level_subparser(self):
+        """A plugin's register_cli_command-registered name becomes invocable."""
+        from hermes_cli.main import _surface_generic_plugin_cli_commands
+
+        mgr = self._make_manager_with_command(
+            name="mytool",
+            setup_fn=lambda p: p.add_argument("--flag"),
+        )
+        parser, subparsers = self._build_parser()
+
+        _surface_generic_plugin_cli_commands(subparsers, mgr)
+
+        ns = parser.parse_args(["mytool", "--flag", "value"])
+        assert ns.command == "mytool"
+        assert ns.flag == "value"
+
+    def test_attaches_handler_via_set_defaults(self):
+        """When handler_fn is provided it lands as args.func."""
+        from hermes_cli.main import _surface_generic_plugin_cli_commands
+
+        handler = MagicMock()
+        mgr = self._make_manager_with_command(
+            name="dohandle",
+            setup_fn=lambda p: p.add_argument("arg"),
+            handler_fn=handler,
+        )
+        parser, subparsers = self._build_parser()
+
+        _surface_generic_plugin_cli_commands(subparsers, mgr)
+
+        ns = parser.parse_args(["dohandle", "VAL"])
+        assert ns.func is handler
+        assert ns.arg == "VAL"
+
+    def test_no_handler_means_no_func_default(self):
+        """A None handler_fn must not set args.func (caller dispatches manually)."""
+        from hermes_cli.main import _surface_generic_plugin_cli_commands
+
+        mgr = self._make_manager_with_command(
+            name="nofunc",
+            setup_fn=lambda p: None,
+            handler_fn=None,
+        )
+        parser, subparsers = self._build_parser()
+
+        _surface_generic_plugin_cli_commands(subparsers, mgr)
+
+        ns = parser.parse_args(["nofunc"])
+        assert ns.command == "nofunc"
+        assert not hasattr(ns, "func")
+
+    def test_skips_names_already_in_subparsers(self):
+        """A plugin can't override a built-in subcommand by re-registering its name."""
+        from hermes_cli.main import _surface_generic_plugin_cli_commands
+
+        mgr = self._make_manager_with_command(
+            name="chat",  # would conflict with the built-in `hermes chat`
+            setup_fn=lambda p: p.add_argument("--should-not-add"),
+            handler_fn=MagicMock(),
+        )
+        parser, subparsers = self._build_parser()
+
+        # Pre-register `chat` as a built-in-like subparser
+        chat_parser = subparsers.add_parser("chat", help="real chat")
+        chat_parser.add_argument("--real-flag")
+        sentinel = object()
+        chat_parser.set_defaults(func=sentinel)
+
+        _surface_generic_plugin_cli_commands(subparsers, mgr)
+
+        # Real `chat` still works
+        ns = parser.parse_args(["chat", "--real-flag", "yes"])
+        assert ns.real_flag == "yes"
+        assert ns.func is sentinel
+
+        # The plugin's `--should-not-add` was never added to `chat`
+        with pytest.raises(SystemExit):
+            parser.parse_args(["chat", "--should-not-add", "x"])
+
+    def test_iterates_multiple_registered_commands(self):
+        """Every entry in _cli_commands is surfaced (not just the first)."""
+        from hermes_cli.main import _surface_generic_plugin_cli_commands
+
+        mgr = PluginManager()
+        for name in ("alpha", "beta", "gamma"):
+            mgr._cli_commands[name] = {
+                "name": name,
+                "help": f"{name} help",
+                "description": "",
+                "setup_fn": lambda p, n=name: p.add_argument(f"--{n}-flag"),
+                "handler_fn": None,
+                "plugin": "multi-plugin",
+            }
+        parser, subparsers = self._build_parser()
+
+        _surface_generic_plugin_cli_commands(subparsers, mgr)
+
+        for name in ("alpha", "beta", "gamma"):
+            ns = parser.parse_args([name, f"--{name}-flag", "v"])
+            assert ns.command == name
+
+    def test_empty_registry_is_a_noop(self):
+        """An empty _cli_commands dict adds nothing and does not raise."""
+        from hermes_cli.main import _surface_generic_plugin_cli_commands
+
+        mgr = PluginManager()  # no _cli_commands entries
+        parser, subparsers = self._build_parser()
+
+        _surface_generic_plugin_cli_commands(subparsers, mgr)
+
+        assert subparsers.choices == {}

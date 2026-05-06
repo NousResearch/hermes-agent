@@ -84,6 +84,37 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
+def _surface_generic_plugin_cli_commands(subparsers, manager) -> None:
+    """Add each plugin-registered CLI command as a top-level subparser.
+
+    ``PluginContext.register_cli_command()`` stores entries in
+    ``manager._cli_commands``. The existing ``discover_plugin_cli_commands()``
+    loop in ``main()`` only surfaces ``plugins/memory/<name>`` providers, so
+    a generic plugin that calls ``ctx.register_cli_command(name="foo", ...)``
+    has its entry recorded but never added to argparse — meaning ``hermes foo``
+    fails with ``argparse: invalid choice``.
+
+    This helper iterates the registry and adds each entry as a top-level
+    subparser. Names already present in ``subparsers.choices`` (memory loop
+    output or built-in subcommands) are skipped to avoid argparse conflicts.
+
+    Extracted to module level so it can be unit-tested with a fake
+    ``PluginManager`` without driving the full ``main()`` argparse setup.
+    """
+    for cmd_name, cmd_info in manager._cli_commands.items():
+        if cmd_name in subparsers.choices:
+            continue
+        plugin_parser = subparsers.add_parser(
+            cmd_name,
+            help=cmd_info["help"],
+            description=cmd_info.get("description", ""),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        cmd_info["setup_fn"](plugin_parser)
+        if cmd_info.get("handler_fn"):
+            plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -9763,6 +9794,22 @@ Examples:
             cmd_info["setup_fn"](plugin_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
+
+    # =========================================================================
+    # Surface generic third-party plugin CLI commands. See
+    # _surface_generic_plugin_cli_commands() docstring for rationale.
+    # =========================================================================
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        _generic_mgr = get_plugin_manager()
+        # Use no kwargs — older Hermes versions don't accept ``force=``.
+        _generic_mgr.discover_and_load()
+        _surface_generic_plugin_cli_commands(subparsers, _generic_mgr)
+    except Exception as _generic_exc:
+        logging.getLogger(__name__).debug(
+            "Generic plugin CLI discovery failed: %s", _generic_exc
+        )
 
     # =========================================================================
     # curator command — background skill maintenance

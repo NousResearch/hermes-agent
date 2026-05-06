@@ -3461,6 +3461,43 @@ class TestRunConversation:
         assert result["messages"][-1]["content"] == "(empty)"
         assert not any("nudging to continue" in m.lower() for m in status_messages)
 
+    def test_end_turn_tool_in_mixed_batch_stops_without_followup_nudge(self, agent):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("read_file")
+        tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tc2 = _mock_tool_call(name="read_file", arguments='{"path":"README.md"}', call_id="c2")
+        resp1 = _mock_response(
+            content="I checked the details and will hand this over now.",
+            finish_reason="tool_calls",
+            tool_calls=[tc1, tc2],
+        )
+        agent.client.chat.completions.create.return_value = resp1
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        def _is_end_turn(name):
+            return name == "read_file"
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", side_effect=_is_end_turn),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("image")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 1
+        assert result["final_response"] == "I checked the details and will hand this over now."
+        assert result["messages"][-1]["role"] == "assistant"
+        assert result["messages"][-1]["content"] == "(empty)"
+        assert not any("nudging to continue" in m.lower() for m in status_messages)
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

@@ -3712,6 +3712,9 @@ def run_conversation(
                 # flag so it can fire again if the model goes empty on
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
+                agent._last_tool_calls_all_end_turn = agent._tool_batch_has_end_turn(
+                    assistant_message.tool_calls
+                )
 
                 messages.append(assistant_msg)
                 agent._emit_interim_assistant_message(assistant_msg)
@@ -3751,6 +3754,22 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                if getattr(agent, "_last_tool_calls_all_end_turn", False):
+                    _turn_exit_reason = "end_turn_tool_batch"
+                    messages.append(agent._build_empty_assistant_placeholder())
+                    clean = agent._strip_think_blocks(turn_content).strip()
+                    if (
+                        clean
+                        and getattr(agent, "interim_assistant_callback", None) is not None
+                    ):
+                        agent._response_was_previewed = True
+                    final_response = clean
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
+                    agent._last_tool_calls_all_end_turn = False
+                    agent._empty_content_retries = 0
                     break
 
                 # Reset per-turn retry counters after successful tool

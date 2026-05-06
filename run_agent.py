@@ -4813,6 +4813,29 @@ class AIAgent:
         from agent.chat_completion_helpers import build_assistant_message
         return build_assistant_message(self, assistant_message, finish_reason)
 
+    @staticmethod
+    def _build_empty_assistant_placeholder() -> dict:
+        """Return a synthetic assistant message used only to keep history valid."""
+        return {
+            "role": "assistant",
+            "content": "(empty)",
+            "finish_reason": "stop",
+        }
+
+    @staticmethod
+    def _tool_batch_has_end_turn(tool_calls) -> bool:
+        """Return True when any tool in the batch can legally end the turn."""
+        if not tool_calls:
+            return False
+        from tools.registry import registry
+
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", None)
+            if name and registry.is_end_turn(name):
+                return True
+        return False
+
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 

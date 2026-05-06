@@ -2705,8 +2705,9 @@ class AIAgent:
             except Exception:
                 _aux_cfg_provider = ""
             if client is None or not aux_model:
+                event_ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
                 msg = (
-                    "⚠ No auxiliary LLM provider configured — context "
+                    f"⚠ [{event_ts}] No auxiliary LLM provider configured — context "
                     "compression will drop middle turns without a summary. "
                     "Run `hermes setup` or set OPENROUTER_API_KEY."
                 )
@@ -9450,8 +9451,9 @@ class AIAgent:
         if summary_error:
             if getattr(self, "_last_compression_summary_warning", None) != summary_error:
                 self._last_compression_summary_warning = summary_error
+                event_ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
                 self._emit_warning(
-                    f"⚠ Compression summary failed: {summary_error}. "
+                    f"⚠ [{event_ts}] Compression summary failed: {summary_error}. "
                     "Inserted a fallback context marker."
                 )
         else:

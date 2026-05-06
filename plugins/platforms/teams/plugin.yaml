@@ -1,0 +1,13 @@
+name: teams-platform
+kind: platform
+version: 1.0.0
+description: >
+  Microsoft Teams gateway adapter for Hermes Agent.
+  Connects to Microsoft Teams via the Bot Framework and relays messages
+  between Teams chats (personal DMs, group chats, channel posts) and
+  the Hermes agent. Supports Adaptive Card approval prompts.
+author: Aamir Jawaid
+requires_env:
+  - TEAMS_CLIENT_ID
+  - TEAMS_CLIENT_SECRET
+  - TEAMS_TENANT_ID

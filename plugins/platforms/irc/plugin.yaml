@@ -1,0 +1,13 @@
+name: irc-platform
+kind: platform
+version: 1.0.0
+description: >
+  IRC gateway adapter for Hermes Agent.
+  Connects to an IRC server and relays messages between an IRC channel
+  (or DMs) and the Hermes agent.  No external dependencies — uses
+  Python's stdlib asyncio for the IRC protocol.
+author: Nous Research
+requires_env:
+  - IRC_SERVER
+  - IRC_CHANNEL
+  - IRC_NICKNAME

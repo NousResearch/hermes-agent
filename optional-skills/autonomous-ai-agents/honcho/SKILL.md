@@ -145,10 +145,10 @@ Controls **how often** dialectic and context calls happen.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `contextCadence` | `1` | Min turns between context API calls |
-| `dialecticCadence` | `3` | Min turns between dialectic API calls |
+| `dialecticCadence` | `2` | Min turns between dialectic API calls. Recommended 1–5 |
 | `injectionFrequency` | `every-turn` | `every-turn` or `first-turn` for base context injection |
 
-Higher cadence values reduce API calls and cost. `dialecticCadence: 3` (default) means the dialectic engine fires at most every 3rd turn.
+Higher cadence values fire the dialectic LLM less often. `dialecticCadence: 2` means the engine fires every other turn. Setting it to `1` fires every turn.
 
 ### Depth (how many)
 
@@ -179,6 +179,8 @@ If `dialecticDepthLevels` is omitted, rounds use **proportional levels** derived
 | 3 | [minimal, base, low] |
 
 This keeps earlier passes cheap while using full depth on the final synthesis.
+
+**Depth at session start.** The session-start prewarm runs the full configured `dialecticDepth` in the background before turn 1. A single-pass prewarm on a cold peer often returns thin output — multi-pass depth runs the audit/reconcile cycle before the user ever speaks. Turn 1 consumes the prewarm result directly; if prewarm hasn't landed in time, turn 1 falls back to a synchronous call with a bounded timeout.
 
 ### Level (how hard)
 
@@ -368,7 +370,7 @@ Config file: `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.jso
 | `contextTokens` | uncapped | Max tokens for the combined base context injection (summary + representation + card). Opt-in cap — omit to leave uncapped, set to an integer to bound injection size. |
 | `injectionFrequency` | `every-turn` | `every-turn` or `first-turn` |
 | `contextCadence` | `1` | Min turns between context API calls |
-| `dialecticCadence` | `3` | Min turns between dialectic LLM calls |
+| `dialecticCadence` | `2` | Min turns between dialectic LLM calls (recommended 1–5) |
 
 The `contextTokens` budget is enforced at injection time. If the session summary + representation + card exceed the budget, Honcho trims the summary first, then the representation, preserving the card. This prevents context blowup in long sessions.
 

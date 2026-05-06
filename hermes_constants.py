@@ -8,13 +8,64 @@ import os
 from pathlib import Path
 
 
+_profile_fallback_warned: bool = False
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
+
+    When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
+    a non-default profile is active, logs a loud one-shot warning to
+    ``errors.log`` so cross-profile data corruption is diagnosable instead
+    of silent.  Behavior is unchanged otherwise — we still return
+    ``~/.hermes`` — because raising here would brick 30+ module-level
+    callers that import this at load time.  Subprocess spawners are
+    expected to propagate ``HERMES_HOME`` explicitly (see the systemd
+    template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
+    ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/hermes-agent/issues/18594.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    val = os.environ.get("HERMES_HOME", "").strip()
+    if val:
+        return Path(val)
+
+    # Guard: if a non-default profile is sticky-active, warn once that
+    # the fallback to the default profile is almost certainly wrong.
+    global _profile_fallback_warned
+    if not _profile_fallback_warned:
+        try:
+            # Inline the default-root resolution from get_default_hermes_root()
+            # to stay import-safe (this function is called from module scope
+            # in 30+ files; we cannot afford to trigger logging setup here).
+            active_path = (Path.home() / ".hermes" / "active_profile")
+            active = active_path.read_text().strip() if active_path.exists() else ""
+        except (UnicodeDecodeError, OSError):
+            active = ""
+        if active and active != "default":
+            _profile_fallback_warned = True
+            # Write directly to stderr.  We intentionally do NOT route this
+            # through ``logging`` because (a) this function is called at
+            # module-import time from 30+ sites, often before logging is
+            # configured, and (b) root-logger propagation would double-emit
+            # on consoles where a StreamHandler is already attached.
+            import sys
+            msg = (
+                f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
+                f"profile is {active!r}. Falling back to ~/.hermes, which "
+                f"is the DEFAULT profile — not {active!r}. Any data this "
+                f"process writes will land in the wrong profile. The "
+                f"subprocess spawner should pass HERMES_HOME explicitly "
+                f"(see issue #18594)."
+            )
+            try:
+                sys.stderr.write(msg + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
+    return Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:

@@ -652,6 +652,42 @@ class TestBuildGeminiRequest:
         assert decls[0]["description"] == "foo"
         assert decls[0]["parameters"] == {"type": "object"}
 
+    def test_tools_strip_json_schema_only_fields_from_parameters(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {"type": "function", "function": {
+                    "name": "fn1",
+                    "description": "foo",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "$schema": "ignored",
+                                "description": "City name",
+                                "additionalProperties": False,
+                            }
+                        },
+                        "required": ["city"],
+                    },
+                }},
+            ],
+        )
+        params = req["tools"][0]["functionDeclarations"][0]["parameters"]
+        assert "$schema" not in params
+        assert "additionalProperties" not in params
+        assert params["type"] == "object"
+        assert params["required"] == ["city"]
+        assert params["properties"]["city"] == {
+            "type": "string",
+            "description": "City name",
+        }
+
     def test_tool_choice_auto(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
@@ -814,6 +850,69 @@ class TestTranslateGeminiResponse:
         assert _map_gemini_finish_reason("RECITATION") == "content_filter"
 
 
+class TestTranslateStreamEvent:
+    def test_parallel_calls_to_same_tool_get_unique_indices(self):
+        """Gemini may emit several functionCall parts with the same name in a
+        single turn (e.g. parallel file reads). Each must get its own OpenAI
+        ``index`` — otherwise downstream aggregators collapse them into one.
+        """
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        event = {
+            "response": {
+                "candidates": [{
+                    "content": {"parts": [
+                        {"functionCall": {"name": "read_file", "args": {"path": "a"}}},
+                        {"functionCall": {"name": "read_file", "args": {"path": "b"}}},
+                        {"functionCall": {"name": "read_file", "args": {"path": "c"}}},
+                    ]},
+                }],
+            }
+        }
+        counter = [0]
+        chunks = _translate_stream_event(event, model="gemini-2.5-flash",
+                                         tool_call_counter=counter)
+        indices = [c.choices[0].delta.tool_calls[0].index for c in chunks]
+        assert indices == [0, 1, 2]
+        assert counter[0] == 3
+
+    def test_counter_persists_across_events(self):
+        """Index assignment must continue across SSE events in the same stream."""
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        def _event(name):
+            return {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": name, "args": {}}}]},
+            }]}}
+
+        counter = [0]
+        chunks_a = _translate_stream_event(_event("foo"), model="m", tool_call_counter=counter)
+        chunks_b = _translate_stream_event(_event("bar"), model="m", tool_call_counter=counter)
+        chunks_c = _translate_stream_event(_event("foo"), model="m", tool_call_counter=counter)
+
+        assert chunks_a[0].choices[0].delta.tool_calls[0].index == 0
+        assert chunks_b[0].choices[0].delta.tool_calls[0].index == 1
+        assert chunks_c[0].choices[0].delta.tool_calls[0].index == 2
+
+    def test_finish_reason_switches_to_tool_calls_when_any_seen(self):
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        counter = [0]
+        # First event emits one tool call.
+        _translate_stream_event(
+            {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": "x", "args": {}}}]},
+            }]}},
+            model="m", tool_call_counter=counter,
+        )
+        # Second event carries only the terminal finishReason.
+        chunks = _translate_stream_event(
+            {"response": {"candidates": [{"finishReason": "STOP"}]}},
+            model="m", tool_call_counter=counter,
+        )
+        assert chunks[-1].choices[0].finish_reason == "tool_calls"
+
+
 class TestGeminiCloudCodeClient:
     def test_client_exposes_openai_interface(self):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
@@ -826,83 +925,158 @@ class TestGeminiCloudCodeClient:
         finally:
             client.close()
 
-    def test_create_with_mocked_http(self, monkeypatch):
-        """End-to-end: mock oauth + http, verify translation works."""
-        from agent import gemini_cloudcode_adapter, google_oauth
-        from agent.google_oauth import GoogleCredentials, save_credentials
 
-        # Set up logged-in state
-        save_credentials(GoogleCredentials(
-            access_token="bearer-tok",
-            refresh_token="rt",
-            expires_ms=int((time.time() + 3600) * 1000),
-            project_id="test-proj",
-        ))
+class TestGeminiHttpErrorParsing:
+    """Regression coverage for _gemini_http_error Google-envelope parsing.
 
-        # Mock the HTTP response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": {
-                "candidates": [{
-                    "content": {"parts": [{"text": "hello from mock"}]},
-                    "finishReason": "STOP",
-                }],
-                "usageMetadata": {
-                    "promptTokenCount": 5,
-                    "candidatesTokenCount": 3,
-                    "totalTokenCount": 8,
-                },
+    These are the paths that users actually hit during Google-side throttling
+    (April 2026: gemini-2.5-pro MODEL_CAPACITY_EXHAUSTED, gemma-4-26b-it
+    returning 404).  The error needs to carry status_code + response so the
+    main loop's error_classifier and Retry-After logic work.
+    """
+
+    @staticmethod
+    def _fake_response(status: int, body: dict | str = "", headers=None):
+        """Minimal httpx.Response stand-in (duck-typed for _gemini_http_error)."""
+        class _FakeResponse:
+            def __init__(self):
+                self.status_code = status
+                if isinstance(body, dict):
+                    self.text = json.dumps(body)
+                else:
+                    self.text = body
+                self.headers = headers or {}
+        return _FakeResponse()
+
+    def test_model_capacity_exhausted_produces_friendly_message(self):
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": "Resource has been exhausted (e.g. check quota).",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "MODEL_CAPACITY_EXHAUSTED",
+                        "domain": "googleapis.com",
+                        "metadata": {"model": "gemini-2.5-pro"},
+                    },
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "30s",
+                    },
+                ],
             }
         }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        assert err.code == "code_assist_capacity_exhausted"
+        assert err.retry_after == 30.0
+        assert err.details["reason"] == "MODEL_CAPACITY_EXHAUSTED"
+        # Message must be user-friendly, not a raw JSON dump.
+        message = str(err)
+        assert "gemini-2.5-pro" in message
+        assert "capacity exhausted" in message.lower()
+        assert "30s" in message
+        # response attr is preserved for run_agent's Retry-After header path.
+        assert err.response is not None
 
-        client = gemini_cloudcode_adapter.GeminiCloudCodeClient()
-        try:
-            with patch.object(client._http, "post", return_value=mock_response) as mock_post:
-                result = client.chat.completions.create(
-                    model="gemini-2.5-flash",
-                    messages=[{"role": "user", "content": "hi"}],
-                )
-            assert result.choices[0].message.content == "hello from mock"
+    def test_resource_exhausted_without_reason(self):
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
 
-            # Verify the request was wrapped correctly
-            call_args = mock_post.call_args
-            assert "cloudcode-pa.googleapis.com" in call_args[0][0]
-            assert ":generateContent" in call_args[0][0]
-            json_body = call_args[1]["json"]
-            assert json_body["project"] == "test-proj"
-            assert json_body["model"] == "gemini-2.5-flash"
-            assert "request" in json_body
-            # Auth header
-            assert call_args[1]["headers"]["Authorization"] == "Bearer bearer-tok"
-        finally:
-            client.close()
+        body = {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded for requests per minute.",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        assert err.code == "code_assist_rate_limited"
+        message = str(err)
+        assert "quota" in message.lower()
 
-    def test_create_raises_on_http_error(self, monkeypatch):
-        from agent import gemini_cloudcode_adapter
-        from agent.google_oauth import GoogleCredentials, save_credentials
+    def test_404_model_not_found_produces_model_retired_message(self):
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
 
-        save_credentials(GoogleCredentials(
-            access_token="tok", refresh_token="rt",
-            expires_ms=int((time.time() + 3600) * 1000),
-            project_id="p",
+        body = {
+            "error": {
+                "code": 404,
+                "message": "models/gemma-4-26b-it is not found for API version v1internal",
+                "status": "NOT_FOUND",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(404, body))
+        assert err.status_code == 404
+        message = str(err)
+        assert "not available" in message.lower() or "retired" in message.lower()
+        # Error message should reference the actual model text from Google.
+        assert "gemma-4-26b-it" in message
+
+    def test_unauthorized_preserves_status_code(self):
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        err = _gemini_http_error(self._fake_response(
+            401, {"error": {"code": 401, "message": "Invalid token", "status": "UNAUTHENTICATED"}},
         ))
+        assert err.status_code == 401
+        assert err.code == "code_assist_unauthorized"
 
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.text = "unauthorized"
+    def test_retry_after_header_fallback(self):
+        """If the body has no RetryInfo detail, fall back to Retry-After header."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
 
-        client = gemini_cloudcode_adapter.GeminiCloudCodeClient()
-        try:
-            with patch.object(client._http, "post", return_value=mock_response):
-                with pytest.raises(gemini_cloudcode_adapter.CodeAssistError) as exc_info:
-                    client.chat.completions.create(
-                        model="gemini-2.5-flash",
-                        messages=[{"role": "user", "content": "hi"}],
-                    )
-            assert exc_info.value.code == "code_assist_unauthorized"
-        finally:
-            client.close()
+        resp = self._fake_response(
+            429,
+            {"error": {"code": 429, "message": "Rate limited", "status": "RESOURCE_EXHAUSTED"}},
+            headers={"Retry-After": "45"},
+        )
+        err = _gemini_http_error(resp)
+        assert err.retry_after == 45.0
+
+    def test_malformed_body_still_produces_structured_error(self):
+        """Non-JSON body must not swallow status_code — we still want the classifier path."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        err = _gemini_http_error(self._fake_response(500, "<html>internal error</html>"))
+        assert err.status_code == 500
+        # Raw body snippet must still be there for debugging.
+        assert "500" in str(err)
+
+    def test_status_code_flows_through_error_classifier(self):
+        """End-to-end: CodeAssistError from a 429 must classify as rate_limit.
+
+        This is the whole point of adding status_code to CodeAssistError —
+        _extract_status_code must see it and FailoverReason.rate_limit must
+        fire, so the main loop triggers fallback_providers.
+        """
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": "Resource has been exhausted",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "MODEL_CAPACITY_EXHAUSTED",
+                        "metadata": {"model": "gemini-2.5-pro"},
+                    }
+                ],
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+
+        classified = classify_api_error(
+            err, provider="google-gemini-cli", model="gemini-2.5-pro",
+        )
+        assert classified.status_code == 429
+        assert classified.reason == FailoverReason.rate_limit
 
 
 # =============================================================================
@@ -915,14 +1089,6 @@ class TestProviderRegistration:
 
         assert "google-gemini-cli" in PROVIDER_REGISTRY
         assert PROVIDER_REGISTRY["google-gemini-cli"].auth_type == "oauth_external"
-
-    @pytest.mark.parametrize("alias", [
-        "gemini-cli", "gemini-oauth", "google-gemini-cli",
-    ])
-    def test_alias_resolves(self, alias):
-        from hermes_cli.auth import resolve_provider
-
-        assert resolve_provider(alias) == "google-gemini-cli"
 
     def test_google_gemini_alias_still_goes_to_api_key_gemini(self):
         """Regression guard: don't shadow the existing google-gemini → gemini alias."""

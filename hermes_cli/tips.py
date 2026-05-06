@@ -10,8 +10,7 @@ import random
 
 TIPS = [
     # --- Slash Commands ---
-    "/btw <question> asks a quick side question without tools or history — great for clarifications.",
-    "/background <prompt> runs a task in a separate session while your current one stays free.",
+    "/background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
     "/compress manually compresses conversation context when things get long.",
     "/rollback lists filesystem checkpoints — restore files the agent modified to any prior state.",
@@ -101,13 +100,16 @@ TIPS = [
     "hermes gateway install sets up Hermes as a system service (systemd/launchd).",
     "hermes memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).",
     "hermes webhook subscribe creates event-driven webhook routes with HMAC validation.",
+    "Save money: hermes tools disables unused tools, hermes skills config trims skills down.",
+    "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
+    "hermes models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---
     "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
     "Set display.compact: true to reduce whitespace in output for denser information.",
-    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent.",
+    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
     "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
     "Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.",
@@ -127,7 +129,7 @@ TIPS = [
 
     # --- Tools & Capabilities ---
     "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
-    "delegate_task spawns up to 3 concurrent sub-agents with isolated contexts for parallel work.",
+    "delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
     "search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.",
     "patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.",
@@ -190,7 +192,7 @@ TIPS = [
     "Voice messages on Telegram, Discord, WhatsApp, and Slack are auto-transcribed.",
 
     # --- Gateway & Messaging ---
-    "Hermes runs on 18 platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, email, and more.",
+    "Hermes runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
     "hermes gateway install sets it up as a system service that starts on boot.",
     "DingTalk uses Stream Mode — no webhooks or public URL needed.",
     "BlueBubbles brings iMessage to Hermes via a local macOS server.",
@@ -245,7 +247,7 @@ TIPS = [
     "Three plugin types: general (tools/hooks), memory providers, and context engines.",
     "hermes plugins install owner/repo installs plugins directly from GitHub.",
     "8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.",
-    "Plugin hooks include pre_tool_call, post_tool_call, pre_llm_call, and post_llm_call.",
+    "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.",
 
     # --- Miscellaneous ---
     "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.",
@@ -264,7 +266,6 @@ TIPS = [
     "hermes status --deep runs deeper diagnostic checks across all components.",
 
     # --- Hidden Gems & Power-User Tricks ---
-    "BOOT.md at ~/.hermes/BOOT.md runs automatically on every gateway start — use it for startup checks.",
     "Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context.",
     "Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines.",
     "prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.",
@@ -289,6 +290,7 @@ TIPS = [
     "When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.",
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",
     "agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.",
+    "agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the error — lower it for fast fallback.",
     "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.",
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",
@@ -323,7 +325,6 @@ TIPS = [
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
     "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.",
     "The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.",
-    "Smart routing can auto-route simple queries to a cheaper model — set smart_model_routing.enabled: true.",
     "hermes claw migrate --dry-run previews OpenClaw migration without writing anything.",
     "File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed.",
     "Slash commands never trigger the large-paste collapse — /command with big arguments works correctly.",
@@ -333,6 +334,144 @@ TIPS = [
     "MCP ${ENV_VAR} placeholders in config are resolved at server spawn — including vars from ~/.hermes/.env.",
     "Skills from trusted repos (NousResearch) get a 'trusted' security level; community skills get extra scanning.",
     "The skills quarantine at ~/.hermes/skills/.hub/quarantine/ holds skills pending security review.",
+
+    # --- Advanced Slash Commands ---
+    '/steer <prompt> injects a note after the next tool call — nudge direction mid-task without interrupting.',
+    '/goal <text> sets a standing Ralph-loop objective — Hermes auto-continues turn after turn until a judge says done.',
+    '/snapshot create [label] saves a full state snapshot of Hermes config; /snapshot restore <id> reverts later.',
+    '/copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.',
+    '/redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.',
+    '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
+    '/footer toggles the gateway footer on final replies showing model, tool counts, and turn timing.',
+    '/busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.',
+    '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
+    '/approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.',
+    '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
+    '/kanban boards switch <slug> changes the active multi-project Kanban board from inside chat.',
+    '/reload reloads ~/.hermes/.env into the running session — pick up new API keys without restarting.',
+
+    # --- Cron (no-agent & scripts) ---
+    'cronjob with no_agent=True runs a script on schedule and sends its stdout directly — zero tokens, zero LLM.',
+    'An empty cron script stdout means silent tick — nothing is delivered, perfect for threshold watchdogs.',
+    "HERMES_CRON_MAX_PARALLEL (default 4) caps how many cron jobs run per tick so bursts don't saturate your keys.",
+
+    # --- Gateway Hooks ---
+    'Gateway hooks live under ~/.hermes/hooks/<name>/ with HOOK.yaml + handler.py — handler must be named `handle`.',
+    'Hook events include gateway:startup, session:start, agent:step, and command:* wildcard subscriptions.',
+    'Drop a ~/.hermes/BOOT.md checklist and a gateway:startup hook runs it as a one-shot agent every boot.',
+
+    # --- Curator ---
+    'hermes curator run --dry-run previews what the curator would archive or consolidate without mutating anything.',
+    "hermes curator pin <skill> hard-fences a skill against both auto-archival and the agent's skill_manage tool.",
+    'hermes curator rollback restores skills from a pre-run snapshot — backups live under skills/.curator_backups/.',
+
+    # --- Credential Pools & Routing ---
+    'hermes auth reset <provider> clears all cooldowns and exhaustion flags on a credential pool.',
+    'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.',
+    'use_gateway: true per-tool routes web, image, tts, or browser through your Nous subscription — no extra keys.',
+    'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.',
+    'provider_routing.require_parameters: true only routes to providers that support every param in your request.',
+
+    # --- TUI & Dashboard ---
+    'HERMES_TUI_RESUME=1 auto-re-attaches to the most recent TUI session on launch — handy after SSH drops.',
+    "HERMES_TUI_THEME=light|dark|<hex> forces the TUI theme on terminals that don't set COLORFGBG.",
+    'Ctrl+G or Ctrl+X Ctrl+E in the TUI opens the input buffer in $EDITOR for long multi-line prompts.',
+    'The TUI renders LaTeX inline — $E=mc^2$ becomes Unicode math instead of raw TeX.',
+    'hermes dashboard launches a local web UI at 127.0.0.1:9119 — zero data leaves localhost.',
+    'hermes dashboard --tui embeds the full Hermes TUI in your browser via xterm.js and a WebSocket PTY.',
+    'Drop a YAML in ~/.hermes/dashboard-themes/ with two palette colors to reskin the entire dashboard.',
+    'Dashboard plugins are drop-in: manifest.json + JS bundle in ~/.hermes/dashboard-plugins/ — no npm build required.',
+    'layoutVariant: cockpit in a dashboard theme adds a 260px left rail that plugins can populate via the sidebar slot.',
+
+    # --- Env Vars & Config Gates ---
+    "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
+    'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).',
+    'HERMES_WRITE_SAFE_ROOT restricts write_file and patch to a directory prefix; writes outside require approval.',
+    'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
+    'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
+    'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
+    'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
+
+    # --- TTS ---
+    'tts.provider: piper runs 44-language local TTS on CPU — voices auto-download to ~/.hermes/cache/piper-voices/.',
+    'tts.providers.<name>.type: command wires any CLI TTS engine with {input_path} and {output_path} placeholders.',
+
+    # --- API Server & Proxy ---
+    'API_SERVER_ENABLED=true runs an OpenAI-compatible endpoint alongside the gateway for Open WebUI and LibreChat.',
+    'GATEWAY_PROXY_URL runs a split setup: platform I/O locally, agent work delegated to a remote API server.',
+
+    # --- Platform-specific ---
+    'MATRIX_DEVICE_ID pins a stable device ID for E2EE — without it, keys rotate every start and historic decrypt breaks.',
+    'TELEGRAM_WEBHOOK_SECRET is required whenever TELEGRAM_WEBHOOK_URL is set — generate with openssl rand -hex 32.',
+
+    # --- Batch ---
+    "batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.",
+
+    # --- Less-Known Slash Commands ---
+    '/new starts a fresh session in place (alias /reset) — fresh session ID, clean history, CLI stays open.',
+    '/clear wipes the terminal screen AND starts a new session — one shortcut for a visual reset.',
+    '/history prints the current conversation in-line without leaving the CLI — useful for a quick re-read.',
+    '/save writes the current conversation to disk without ending the session.',
+    '/status shows session info at a glance: ID, title, model, token usage, and elapsed time.',
+    '/image <path> attaches a local image file for your next prompt without pasting or drag-and-drop.',
+    '/platforms shows gateway and messaging-platform connection status right from inside chat.',
+    '/commands paginates the full slash-command + installed-skill list — useful on platforms without tab completion.',
+    '/toolsets lists every available toolset so you know what -t/--toolsets accepts.',
+    '/gquota shows Google Gemini Code Assist quota usage with progress bars when that provider is active.',
+    '/voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts.',
+    '/reload-skills re-scans ~/.hermes/skills/ so drop-in skills appear without restarting the session.',
+    '/indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs.',
+    '/debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too.',
+
+    # --- CLI Subcommands & Flags ---
+    'hermes -z "<prompt>" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts.',
+    'hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it.',
+    'hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step.',
+    'hermes chat --ignore-user-config skips ~/.hermes/config.yaml — reproducible bug reports and CI runs.',
+    "hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.",
+    'hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
+    'hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.',
+    'hermes import restores a session export or profile archive produced by sessions export or profile export.',
+    'hermes fallback manages the fallback_model chain interactively — no hand-editing config.yaml.',
+    'hermes pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
+    'hermes setup walks first-time users through provider, keys, and platform wiring in one interactive flow.',
+    'hermes status --deep runs the full health sweep across every component; plain hermes status is the quick view.',
+
+    # --- Agent Behavior Env Vars ---
+    'HERMES_AGENT_TIMEOUT=0 disables the gateway inactivity kill for a running agent — use for long research runs.',
+    'HERMES_ENABLE_PROJECT_PLUGINS=1 auto-loads repo-local plugins from ./.hermes/plugins/ — trust-gated by design.',
+    "HERMES_DISABLE_FILE_STATE_GUARD=1 turns off the 'file changed since you read it' guard on patch and write_file.",
+    'HERMES_ALLOW_PRIVATE_URLS=true lets web tools hit localhost and private networks — off by default in gateway mode.',
+    'HERMES_OPTIONAL_SKILLS=name1,name2 auto-installs extra optional-catalog skills on first run per profile.',
+    'HERMES_BUNDLED_SKILLS points at a custom bundled-skill tree — used by Homebrew and Nix packaging.',
+    'HERMES_DUMP_REQUEST_STDOUT=1 dumps every API request payload to stdout instead of log files.',
+    'HERMES_OAUTH_TRACE=1 logs redacted OAuth token exchange and refresh attempts for debugging provider auth.',
+    'HERMES_STREAM_RETRIES (default 3) controls mid-stream reconnect attempts on transient network errors.',
+
+    # --- Gateway Behavior Env Vars ---
+    'HERMES_GATEWAY_BUSY_ACK_ENABLED=false silences the ⚡/⏳/⏩ ack messages when a user messages a busy agent.',
+    'HERMES_AGENT_NOTIFY_INTERVAL (default 180s) sets how often the gateway pings with progress on long turns.',
+    'HERMES_RESTART_DRAIN_TIMEOUT (default 900s) caps how long /restart waits for in-flight runs before forcing.',
+    'HERMES_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.',
+
+    # --- Auxiliary Tasks & Image Generation ---
+    'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.',
+    'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
+    'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
+    'auxiliary.session_search.max_concurrency bounds how many matched sessions are summarized in parallel (default 3).',
+    'auxiliary.session_search.extra_body forwards provider-specific OpenAI-compatible fields on summarization calls.',
+
+    # --- Security ---
+    'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.',
+    'TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.',
+
+    # --- Sessions & Source Tags ---
+    '--source tool chats are excluded from hermes sessions list by default — set --source explicitly to see them.',
+    'Session IDs are timestamp-prefixed (20250305_091523_abcd) so sorting works naturally in ls and jq.',
+
+    # --- Misc ---
+    'API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups.',
+    'Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.hermes/dashboard-plugins/.',
 ]
 
 
@@ -344,6 +483,5 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
 
 

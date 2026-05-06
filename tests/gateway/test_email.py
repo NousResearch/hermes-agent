@@ -25,14 +25,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from gateway.platforms.base import SendResult
 
 
-class TestPlatformEnum(unittest.TestCase):
-    """Verify EMAIL is in the Platform enum."""
-
-    def test_email_in_platform_enum(self):
-        from gateway.config import Platform
-        self.assertEqual(Platform.EMAIL.value, "email")
-
-
 class TestConfigEnvOverrides(unittest.TestCase):
     """Verify email config is loaded from environment variables."""
 
@@ -71,20 +63,6 @@ class TestConfigEnvOverrides(unittest.TestCase):
         config = GatewayConfig()
         _apply_env_overrides(config)
         self.assertNotIn(Platform.EMAIL, config.platforms)
-
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-    }, clear=False)
-    def test_email_in_connected_platforms(self):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        connected = config.get_connected_platforms()
-        self.assertIn(Platform.EMAIL, connected)
-
 
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
@@ -255,121 +233,6 @@ class TestExtractAttachments(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["type"], "image")
         mock_cache.assert_called_once()
-
-
-class TestAuthorizationMaps(unittest.TestCase):
-    """Verify email is in authorization maps in gateway/run.py."""
-
-    def test_email_in_adapter_factory(self):
-        """Email adapter creation branch should exist."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._create_adapter)
-        self.assertIn("Platform.EMAIL", source)
-
-    def test_email_in_allowed_users_map(self):
-        """EMAIL_ALLOWED_USERS should be in platform_env_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOWED_USERS", source)
-
-    def test_email_in_allow_all_map(self):
-        """EMAIL_ALLOW_ALL_USERS should be in platform_allow_all_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOW_ALL_USERS", source)
-
-
-class TestSendMessageToolRouting(unittest.TestCase):
-    """Verify email routing in send_message_tool."""
-
-    def test_email_in_platform_map(self):
-        import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._handle_send)
-        self.assertIn('"email"', source)
-
-    def test_send_to_platform_has_email_branch(self):
-        import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._send_to_platform)
-        self.assertIn("Platform.EMAIL", source)
-
-
-class TestCronDelivery(unittest.TestCase):
-    """Verify email in cron scheduler platform_map."""
-
-    def test_email_in_cron_platform_map(self):
-        import cron.scheduler
-        import inspect
-        source = inspect.getsource(cron.scheduler)
-        self.assertIn('"email"', source)
-
-
-class TestToolset(unittest.TestCase):
-    """Verify email toolset is registered."""
-
-    def test_email_toolset_exists(self):
-        from toolsets import TOOLSETS
-        self.assertIn("hermes-email", TOOLSETS)
-
-    def test_email_in_gateway_toolset(self):
-        from toolsets import TOOLSETS
-        includes = TOOLSETS["hermes-gateway"]["includes"]
-        self.assertIn("hermes-email", includes)
-
-
-class TestPlatformHints(unittest.TestCase):
-    """Verify email platform hint is registered."""
-
-    def test_email_in_platform_hints(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-        self.assertIn("email", PLATFORM_HINTS)
-        self.assertIn("email", PLATFORM_HINTS["email"].lower())
-
-
-class TestChannelDirectory(unittest.TestCase):
-    """Verify email in channel directory session-based discovery."""
-
-    def test_email_in_session_discovery(self):
-        from gateway.config import Platform
-        # Verify email is a Platform enum member — the dynamic loop in
-        # build_channel_directory iterates all Platform members, so email
-        # is included automatically as long as it's in the enum.
-        email_values = [p.value for p in Platform]
-        self.assertIn("email", email_values)
-
-
-class TestGatewaySetup(unittest.TestCase):
-    """Verify email in gateway setup wizard."""
-
-    def test_email_in_platforms_list(self):
-        from hermes_cli.gateway import _PLATFORMS
-        keys = [p["key"] for p in _PLATFORMS]
-        self.assertIn("email", keys)
-
-    def test_email_has_setup_vars(self):
-        from hermes_cli.gateway import _PLATFORMS
-        email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
-        var_names = [v["name"] for v in email_platform["vars"]]
-        self.assertIn("EMAIL_ADDRESS", var_names)
-        self.assertIn("EMAIL_PASSWORD", var_names)
-        self.assertIn("EMAIL_IMAP_HOST", var_names)
-        self.assertIn("EMAIL_SMTP_HOST", var_names)
-
-
-class TestEnvExample(unittest.TestCase):
-    """Verify .env.example has email config."""
-
-    def test_env_example_has_email_vars(self):
-        env_path = Path(__file__).resolve().parents[2] / ".env.example"
-        content = env_path.read_text()
-        self.assertIn("EMAIL_ADDRESS", content)
-        self.assertIn("EMAIL_PASSWORD", content)
-        self.assertIn("EMAIL_IMAP_HOST", content)
-        self.assertIn("EMAIL_SMTP_HOST", content)
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -562,6 +425,91 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
 
+    def test_non_allowlisted_sender_dropped(self):
+        """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"99",
+                "sender_addr": "outsider@evil.com",
+                "sender_name": "Spammer",
+                "subject": "Buy now!!!",
+                "message_id": "<spam@evil.com>",
+                "in_reply_to": "",
+                "body": "Cheap meds",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should NOT be called for non-allowlisted sender
+            adapter._message_handler.assert_not_called()
+            # Thread context should NOT be created
+            self.assertNotIn("outsider@evil.com", adapter._thread_context)
+
+    def test_allowlisted_sender_proceeds(self):
+        """Senders in EMAIL_ALLOWED_USERS should proceed to dispatch normally."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            captured_events = []
+
+            async def mock_handler(event):
+                captured_events.append(event)
+                return None
+
+            adapter._message_handler = mock_handler
+
+            msg_data = {
+                "uid": b"100",
+                "sender_addr": "admin@test.com",
+                "sender_name": "Admin",
+                "subject": "Important",
+                "message_id": "<msg@test.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
+
+    def test_empty_allowlist_allows_all(self):
+        """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""
+        import asyncio
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure EMAIL_ALLOWED_USERS is not in the env
+            if "EMAIL_ALLOWED_USERS" in os.environ:
+                del os.environ["EMAIL_ALLOWED_USERS"]
+
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"101",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hey",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should be called when no allowlist is configured
+            adapter._message_handler.assert_called()
+
 
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
@@ -625,6 +573,7 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Re: Project question")
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
+            self.assertIn("Date", send_call)
 
     def test_reply_does_not_double_re(self):
         """If subject already has Re:, don't add another."""
@@ -656,6 +605,7 @@ class TestThreadContext(unittest.TestCase):
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
+            self.assertIn("Date", send_call)
 
 
 class TestSendMethods(unittest.TestCase):
@@ -1026,6 +976,11 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(result["platform"], "email")
             _, kwargs = mock_server.starttls.call_args
             self.assertIsInstance(kwargs["context"], ssl.SSLContext)
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Hermes Agent")
+            self.assertIn("Date", send_call)
+            self.assertEqual(send_call["To"], "user@test.com")
+            self.assertEqual(send_call["From"], "hermes@test.com")
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",

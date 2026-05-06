@@ -28,7 +28,7 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 ### Interactive setup
 
 ```bash
-hermes setup gateway
+hermes gateway setup
 ```
 
 Select **QQ Bot** from the platform list and follow the prompts.
@@ -48,11 +48,12 @@ QQ_CLIENT_SECRET=your-app-secret
 |---|---|---|
 | `QQ_APP_ID` | QQ Bot App ID (required) | — |
 | `QQ_CLIENT_SECRET` | QQ Bot App Secret (required) | — |
-| `QQ_HOME_CHANNEL` | OpenID for cron/notification delivery | — |
-| `QQ_HOME_CHANNEL_NAME` | Display name for home channel | `Home` |
+| `QQBOT_HOME_CHANNEL` | OpenID for cron/notification delivery | — |
+| `QQBOT_HOME_CHANNEL_NAME` | Display name for home channel | `Home` |
 | `QQ_ALLOWED_USERS` | Comma-separated user OpenIDs for DM access | open (all users) |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated group OpenIDs for group access | — |
 | `QQ_ALLOW_ALL_USERS` | Set to `true` to allow all DMs | `false` |
-| `QQ_MARKDOWN_SUPPORT` | Enable QQ markdown (msg_type 2) | `true` |
+| `QQ_PORTAL_HOST` | Override the QQ portal host (set to `sandbox.q.qq.com` for sandbox routing) | `q.qq.com` |
 | `QQ_STT_API_KEY` | API key for voice-to-text provider | — |
 | `QQ_STT_BASE_URL` | Base URL for STT provider | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | `QQ_STT_MODEL` | STT model name | `glm-asr` |
@@ -68,7 +69,7 @@ platforms:
     extra:
       app_id: "your-app-id"
       client_secret: "your-secret"
-      markdown_support: true
+      markdown_support: true       # enable QQ markdown (msg_type 2). Config-only; no env-var equivalent.
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"
@@ -113,7 +114,7 @@ This usually means:
 - Verify the bot's **intents** are enabled at q.qq.com
 - Check `QQ_ALLOWED_USERS` if DM access is restricted
 - For group messages, ensure the bot is **@mentioned** (group policy may require allowlisting)
-- Check `QQ_HOME_CHANNEL` for cron/notification delivery
+- Check `QQBOT_HOME_CHANNEL` for cron/notification delivery
 
 ### Connection errors
 

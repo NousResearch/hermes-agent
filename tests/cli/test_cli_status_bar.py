@@ -237,6 +237,13 @@ class TestCLIStatusBar:
         cli_obj._spinner_text = ""
         assert cli_obj._spinner_widget_height(width=90) == 0
 
+    def test_spinner_height_uses_display_width_for_wide_characters(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "你" * 40
+        cli_obj._tool_start_time = 0
+
+        assert cli_obj._spinner_widget_height(width=64) == 2
+
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._voice_mode = True
@@ -258,6 +265,68 @@ class TestCLIStatusBar:
         fragments = cli_obj._get_voice_status_fragments(width=50)
 
         assert fragments == [("class:voice-status-recording", " ● REC ")]
+
+    # Round-13 Copilot review regressions on #19835. The label in voice
+    # status bar / recording hint / placeholder must render the
+    # configured ``voice.record_key`` — not hardcoded Ctrl+B. Pinning
+    # the cache (``set_voice_record_key_cache``) keeps display in sync
+    # with the prompt_toolkit binding without re-reading config on
+    # every render.
+    def test_voice_status_bar_renders_configured_ctrl_letter(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = False
+        cli_obj._voice_continuous = False
+        cli_obj.set_voice_record_key_cache("ctrl+o")
+
+        wide = cli_obj._get_voice_status_fragments(width=120)
+        assert any("Ctrl+O to record" in text for _cls, text in wide)
+
+        compact = cli_obj._get_voice_status_fragments(width=50)
+        assert compact == [("class:voice-status", " 🎤 Ctrl+O ")]
+
+    def test_voice_recording_status_bar_renders_configured_named_key(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = True
+        cli_obj._voice_processing = False
+        cli_obj.set_voice_record_key_cache("ctrl+space")
+
+        fragments = cli_obj._get_voice_status_fragments(width=120)
+
+        assert fragments == [("class:voice-status-recording", " ● REC  Ctrl+Space to stop ")]
+
+    def test_voice_status_bar_falls_back_to_ctrl_b_without_cache(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = False
+        cli_obj._voice_continuous = False
+        # No cache set — mirrors pre-startup state; fall back to
+        # documented Ctrl+B default (Copilot round-13 review).
+
+        compact = cli_obj._get_voice_status_fragments(width=50)
+
+        assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
+
+    def test_voice_status_bar_renders_malformed_config_as_default(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = False
+        cli_obj._voice_continuous = False
+        # Non-string / typoed configs fall through the formatter to the
+        # documented default so the status bar never advertises an
+        # invalid shortcut.
+        cli_obj.set_voice_record_key_cache(True)
+
+        compact = cli_obj._get_voice_status_fragments(width=50)
+
+        assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
 
 
 class TestCLIUsageReport:

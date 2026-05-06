@@ -7,8 +7,15 @@ import logging
 import os
 import threading
 from pathlib import Path
+
+from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
-from tools.file_operations import ShellFileOperations
+from tools.file_operations import (
+    ShellFileOperations,
+    normalize_read_pagination,
+    normalize_search_pagination,
+)
+from tools import file_state
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -71,6 +78,55 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
+def _resolve_path(filepath: str, task_id: str = "default") -> Path:
+    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
+    instead of the main repository root.
+    """
+    return _resolve_path_for_task(filepath, task_id)
+
+
+def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
+    """Return the task's live terminal cwd for bookkeeping when available."""
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        container_key = task_id
+
+    with _file_ops_lock:
+        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
+    if cached is not None:
+        live_cwd = getattr(getattr(cached, "env", None), "cwd", None) or getattr(
+            cached, "cwd", None
+        )
+        if live_cwd:
+            return live_cwd
+
+    try:
+        from tools.terminal_tool import _active_environments, _env_lock
+
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            live_cwd = getattr(env, "cwd", None) if env is not None else None
+        if live_cwd:
+            return live_cwd
+    except Exception:
+        pass
+
+    return None
+
+
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
+    """Resolve *filepath* against the task's live terminal cwd when possible."""
+    p = Path(filepath).expanduser()
+    if not p.is_absolute():
+        base = _get_live_tracking_cwd(task_id) or os.environ.get(
+            "TERMINAL_CWD", os.getcwd()
+        )
+        p = Path(base) / p
+    return p.resolve()
+
+
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
@@ -99,10 +155,10 @@ _SENSITIVE_PATH_PREFIXES = (
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
-def _check_sensitive_path(filepath: str) -> str | None:
+def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
@@ -148,6 +204,103 @@ _file_ops_cache: dict = {}
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
+# Per-task bounds for the containers inside each _read_tracker[task_id].
+# A CLI session uses one stable task_id for its lifetime; without these
+# caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
+# is never referenced again (only the most recent reads matter for dedup,
+# loop detection, and external-edit warnings).  Hard caps bound the
+# accretion to a few hundred KB regardless of session length.
+_READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
+_DEDUP_CAP = 1000             # dict; skip-identical-reread guard
+_READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_READ_DEDUP_STATUS_MESSAGE = (
+    "File unchanged since last read. The content from "
+    "the earlier read_file result in this conversation is "
+    "still current — refer to that instead of re-reading."
+)
+
+
+def _cap_read_tracker_data(task_data: dict) -> None:
+    """Enforce size caps on the per-task read-tracker sub-containers.
+
+    Must be called with ``_read_tracker_lock`` held.  Eviction policy:
+
+      * ``read_history`` (set): pop arbitrary entries on overflow.  This
+        is fine because the set only feeds diagnostic summaries; losing
+        old entries just trims the summary's tail.
+      * ``dedup`` / ``read_timestamps`` (dict): pop oldest by insertion
+        order (Python 3.7+ dicts).  Evicted entries lose their dedup
+        skip on a future re-read (the file gets re-sent once) and
+        external-edit mtime comparison (the write/patch falls back to
+        a non-mtime check).  Both are graceful degradations, not bugs.
+    """
+    rh = task_data.get("read_history")
+    if rh is not None and len(rh) > _READ_HISTORY_CAP:
+        excess = len(rh) - _READ_HISTORY_CAP
+        for _ in range(excess):
+            try:
+                rh.pop()
+            except KeyError:
+                break
+
+    dedup = task_data.get("dedup")
+    if dedup is not None and len(dedup) > _DEDUP_CAP:
+        excess = len(dedup) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                dedup.pop(next(iter(dedup)))
+            except (StopIteration, KeyError):
+                break
+
+    dedup_hits = task_data.get("dedup_hits")
+    if dedup_hits is not None and len(dedup_hits) > _DEDUP_CAP:
+        excess = len(dedup_hits) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                dedup_hits.pop(next(iter(dedup_hits)))
+            except (StopIteration, KeyError):
+                break
+
+    ts = task_data.get("read_timestamps")
+    if ts is not None and len(ts) > _READ_TIMESTAMPS_CAP:
+        excess = len(ts) - _READ_TIMESTAMPS_CAP
+        for _ in range(excess):
+            try:
+                ts.pop(next(iter(ts)))
+            except (StopIteration, KeyError):
+                break
+
+
+def _is_internal_file_status_text(content: str) -> bool:
+    """Return True when content looks like an internal file-tool status, not real file bytes.
+
+    The read_file dedup status message must never be persisted as file
+    content.  The obvious shape is the model echoing the message verbatim,
+    but in practice it also wraps it with small framing text (a leading
+    "Note:", a trailing newline + short comment, etc.) before calling
+    write_file.  We treat any short-ish write whose body is dominated by
+    the status message as the same class of corruption.
+
+    Heuristic:
+      * Strict equality (after strip) — the verbatim shape.
+      * OR the stripped content contains the full status message AND is
+        short enough that the status dominates it (<=2x the message length).
+        Short, status-dominated writes can't plausibly be real files —
+        legitimate docs/notes that happen to quote this internal message
+        are always dramatically longer.
+    """
+    if not isinstance(content, str):
+        return False
+    stripped = content.strip()
+    if not stripped:
+        return False
+    if stripped == _READ_DEDUP_STATUS_MESSAGE:
+        return True
+    if _READ_DEDUP_STATUS_MESSAGE in stripped and \
+            len(stripped) <= 2 * len(_READ_DEDUP_STATUS_MESSAGE):
+        return True
+    return False
+
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
@@ -158,14 +311,22 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
+
+    Note: subagent task_ids are collapsed to "default" via
+    ``_resolve_container_task_id`` so delegate_task children share the
+    parent's container and its cached file_ops. RL/benchmark task_ids with
+    a registered env override keep their isolation.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks,
         _creation_locks_lock,
+        _resolve_container_task_id,
     )
     import time
+
+    task_id = _resolve_container_task_id(task_id)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -219,13 +380,17 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona"):
+            if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "vercel_runtime": config.get("vercel_runtime", ""),
                     "docker_volumes": config.get("docker_volumes", []),
+                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                    "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 }
 
             ssh_config = None
@@ -282,6 +447,8 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        offset, limit = normalize_read_pagination(offset, limit)
+
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
@@ -293,7 +460,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = Path(path).expanduser().resolve()
+        _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -308,24 +475,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files.
-        from hermes_constants import get_hermes_home as _get_hh
-        _hermes_home = _get_hh().resolve()
-        _blocked_dirs = [
-            _hermes_home / "skills" / ".hub" / "index-cache",
-            _hermes_home / "skills" / ".hub",
-        ]
-        for _blocked in _blocked_dirs:
-            try:
-                _resolved.relative_to(_blocked)
-                return json.dumps({
-                    "error": (
-                        f"Access denied: {path} is an internal Hermes cache file "
-                        "and cannot be read directly to prevent prompt injection. "
-                        "Use the skills_list or skill_view tools instead."
-                    )
-                })
-            except ValueError:
-                pass
+        block_error = get_read_block_error(path)
+        if block_error:
+            return json.dumps({"error": block_error})
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
@@ -337,21 +489,52 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
+                "dedup_hits": {}, "read_timestamps": {},
             })
+            # Backward-compat for pre-existing tracker entries that predate
+            # dedup_hits/read_timestamps (long-lived task or crossed an
+            # upgrade boundary).
+            if "dedup_hits" not in task_data:
+                task_data["dedup_hits"] = {}
+            if "read_timestamps" not in task_data:
+                task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
+                    # Count repeated stub returns so weak tool-followers that
+                    # ignore the "refer to earlier result" hint don't burn
+                    # their iteration budget in an infinite read loop.  After
+                    # 2 stubs for the same key we escalate to a hard block
+                    # mirroring the count>=4 path on real reads.
+                    with _read_tracker_lock:
+                        hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
+                        task_data["dedup_hits"][dedup_key] = hits
+                        _cap_read_tracker_data(task_data)
+
+                    if hits >= 2:
+                        return json.dumps({
+                            "error": (
+                                f"BLOCKED: You have called read_file on this "
+                                f"exact region {hits + 1} times and the file "
+                                "has NOT changed. STOP calling read_file for "
+                                "this path — the content from your earlier "
+                                "read_file result in this conversation is "
+                                "still current. Proceed with your task using "
+                                "the information you already have."
+                            ),
+                            "path": path,
+                            "already_read": hits + 1,
+                        }, ensure_ascii=False)
+
                     return json.dumps({
-                        "content": (
-                            "File unchanged since last read. The content from "
-                            "the earlier read_file result in this conversation is "
-                            "still current — refer to that instead of re-reading."
-                        ),
+                        "status": "unchanged",
+                        "message": _READ_DEDUP_STATUS_MESSAGE,
                         "path": path,
                         "dedup": True,
+                        "content_returned": False,
                     }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
@@ -387,7 +570,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            result.content = redact_sensitive_text(result.content, code_file=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -404,9 +587,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
         with _read_tracker_lock:
-            # Ensure "dedup" key exists (backward compat with old tracker state)
+            # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
+            # old tracker state from pre-dedup-guard sessions).
             if "dedup" not in task_data:
                 task_data["dedup"] = {}
+            if "dedup_hits" not in task_data:
+                task_data["dedup_hits"] = {}
+            # Real read succeeded — this key is no longer in a stub-loop, so
+            # reset its hit counter.  (File either changed or stat failed
+            # earlier and we fell through.)
+            task_data["dedup_hits"].pop(dedup_key, None)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -425,6 +615,23 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
+
+            # Bound the per-task containers so a long CLI session doesn't
+            # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
+            _cap_read_tracker_data(task_data)
+
+        # Cross-agent file-state registry (separate from per-task read
+        # tracker above): records that THIS agent has read this path so
+        # write/patch can detect sibling-subagent writes that happened
+        # after our read.  Partial read when offset>1 or the read was
+        # truncated (large file with more content than limit covered).
+        # Outside the _read_tracker_lock so the registry's own locking
+        # isn't nested under ours.
+        try:
+            _partial = (offset > 1) or bool(result_dict.get("truncated"))
+            file_state.record_read(task_id, resolved_str, partial=_partial)
+        except Exception:
+            logger.debug("file_state.record_read failed", exc_info=True)
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
@@ -465,12 +672,17 @@ def reset_file_dedup(task_id: str = None):
     with _read_tracker_lock:
         if task_id:
             task_data = _read_tracker.get(task_id)
-            if task_data and "dedup" in task_data:
-                task_data["dedup"].clear()
+            if task_data:
+                if "dedup" in task_data:
+                    task_data["dedup"].clear()
+                if "dedup_hits" in task_data:
+                    task_data["dedup_hits"].clear()
         else:
             for task_data in _read_tracker.values():
                 if "dedup" in task_data:
                     task_data["dedup"].clear()
+                if "dedup_hits" in task_data:
+                    task_data["dedup_hits"].clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -487,6 +699,40 @@ def notify_other_tool_call(task_id: str = "default"):
         if task_data:
             task_data["last_key"] = None
             task_data["consecutive"] = 0
+            # An intervening non-read tool call breaks any stub-loop in
+            # progress, so clear per-key dedup hit counters too.
+            if "dedup_hits" in task_data:
+                task_data["dedup_hits"].clear()
+
+
+def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+    """Remove all dedup cache entries whose resolved path matches *filepath*.
+
+    Called after write_file and patch so that a subsequent read_file on
+    the same path always returns fresh content instead of a stale
+    "File unchanged" stub.  The dedup cache keys are tuples of
+    ``(resolved_path, offset, limit)``; we must evict **all** offset/limit
+    combinations for the written path because any cached range could now
+    be stale.
+
+    Must be called with ``_read_tracker_lock`` **not** held — acquires it
+    internally.
+    """
+    try:
+        resolved = str(_resolve_path(filepath))
+    except (OSError, ValueError):
+        return
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if task_data is None:
+            return
+        dedup = task_data.get("dedup")
+        if not dedup:
+            return
+        # Collect keys to remove (can't mutate dict during iteration).
+        stale_keys = [k for k in dedup if k[0] == resolved]
+        for k in stale_keys:
+            del dedup[k]
 
 
 def _update_read_timestamp(filepath: str, task_id: str) -> None:
@@ -495,9 +741,14 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     Called after write_file and patch so that consecutive edits by the
     same task don't trigger false staleness warnings — each write
     refreshes the stored timestamp to match the file's new state.
+
+    Also invalidates the dedup cache for the written path so that
+    subsequent reads return fresh content (fixes #13144).
     """
+    # Invalidate dedup first (before acquiring lock for timestamp update).
+    _invalidate_dedup_for_path(filepath, task_id)
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path_for_task(filepath, task_id))
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
@@ -505,6 +756,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
         task_data = _read_tracker.get(task_id)
         if task_data is not None:
             task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
+            _cap_read_tracker_data(task_data)
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:
@@ -515,7 +767,7 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     or was never read.  Does not block — the write still proceeds.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:
@@ -540,19 +792,52 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
-    sensitive_err = _check_sensitive_path(path)
+    sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    if _is_internal_file_status_text(content):
+        return tool_error(
+            "Refusing to write internal read_file status text as file content. "
+            "Re-read the file or reconstruct the intended file contents before writing."
+        )
     try:
-        stale_warning = _check_file_staleness(path, task_id)
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.write_file(path, content)
-        result_dict = result.to_dict()
-        if stale_warning:
-            result_dict["_warning"] = stale_warning
-        # Refresh the stored timestamp so consecutive writes by this
-        # task don't trigger false staleness warnings.
-        _update_read_timestamp(path, task_id)
+        # Resolve once for the registry lock + stale check.  Failures here
+        # fall back to the legacy path — write proceeds, per-task staleness
+        # check below still runs.
+        try:
+            _resolved = str(_resolve_path_for_task(path, task_id))
+        except Exception:
+            _resolved = None
+
+        if _resolved is None:
+            stale_warning = _check_file_staleness(path, task_id)
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.write_file(path, content)
+            result_dict = result.to_dict()
+            if stale_warning:
+                result_dict["_warning"] = stale_warning
+            _update_read_timestamp(path, task_id)
+            return json.dumps(result_dict, ensure_ascii=False)
+
+        # Serialize the read→modify→write region per-path so concurrent
+        # subagents can't interleave on the same file.  Different paths
+        # remain fully parallel.
+        with file_state.lock_path(_resolved):
+            # Cross-agent staleness wins over per-task warning when both
+            # fire — its message names the sibling subagent.
+            cross_warning = file_state.check_stale(task_id, _resolved)
+            stale_warning = _check_file_staleness(path, task_id)
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.write_file(path, content)
+            result_dict = result.to_dict()
+            effective_warning = cross_warning or stale_warning
+            if effective_warning:
+                result_dict["_warning"] = effective_warning
+            # Refresh stamps after the successful write so consecutive
+            # writes by this task don't trigger false staleness warnings.
+            _update_read_timestamp(path, task_id)
+            if not result_dict.get("error"):
+                file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -575,46 +860,85 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             _paths_to_check.append(_m.group(1).strip())
     for _p in _paths_to_check:
-        sensitive_err = _check_sensitive_path(_p)
+        sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
     try:
-        # Check staleness for all files this patch will touch.
-        stale_warnings = []
+        # Resolve paths for locking.  Ordered + deduplicated so concurrent
+        # callers lock in the same order — prevents deadlock on overlapping
+        # multi-file V4A patches.
+        _resolved_paths: list[str] = []
+        _seen: set[str] = set()
         for _p in _paths_to_check:
-            _sw = _check_file_staleness(_p, task_id)
-            if _sw:
-                stale_warnings.append(_sw)
+            try:
+                _r = str(_resolve_path_for_task(_p, task_id))
+            except Exception:
+                _r = None
+            if _r and _r not in _seen:
+                _resolved_paths.append(_r)
+                _seen.add(_r)
+        _resolved_paths.sort()
 
-        file_ops = _get_file_ops(task_id)
-        
-        if mode == "replace":
-            if not path:
-                return tool_error("path required")
-            if old_string is None or new_string is None:
-                return tool_error("old_string and new_string required")
-            result = file_ops.patch_replace(path, old_string, new_string, replace_all)
-        elif mode == "patch":
-            if not patch:
-                return tool_error("patch content required")
-            result = file_ops.patch_v4a(patch)
-        else:
-            return tool_error(f"Unknown mode: {mode}")
-        
-        result_dict = result.to_dict()
-        if stale_warnings:
-            result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
-        # Refresh stored timestamps for all successfully-patched paths so
-        # consecutive edits by this task don't trigger false warnings.
-        if not result_dict.get("error"):
+        # Acquire per-path locks in sorted order via ExitStack.  On single
+        # path this degenerates to one lock; on empty list (unresolvable)
+        # it's a no-op and execution falls through unchanged.
+        from contextlib import ExitStack
+        with ExitStack() as _locks:
+            for _r in _resolved_paths:
+                _locks.enter_context(file_state.lock_path(_r))
+
+            # Collect warnings — cross-agent registry first (names sibling),
+            # then per-task tracker as a fallback.
+            stale_warnings: list[str] = []
+            _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
-                _update_read_timestamp(_p, task_id)
-        result_json = json.dumps(result_dict, ensure_ascii=False)
+                try:
+                    _r = str(_resolve_path_for_task(_p, task_id))
+                except Exception:
+                    _r = None
+                _path_to_resolved[_p] = _r
+                _cross = file_state.check_stale(task_id, _r) if _r else None
+                _sw = _cross or _check_file_staleness(_p, task_id)
+                if _sw:
+                    stale_warnings.append(_sw)
+
+            file_ops = _get_file_ops(task_id)
+
+            if mode == "replace":
+                if not path:
+                    return tool_error("path required")
+                if old_string is None or new_string is None:
+                    return tool_error("old_string and new_string required")
+                result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            elif mode == "patch":
+                if not patch:
+                    return tool_error("patch content required")
+                result = file_ops.patch_v4a(patch)
+            else:
+                return tool_error(f"Unknown mode: {mode}")
+
+            result_dict = result.to_dict()
+            if stale_warnings:
+                result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+            # Refresh stored timestamps for all successfully-patched paths so
+            # consecutive edits by this task don't trigger false warnings.
+            if not result_dict.get("error"):
+                for _p in _paths_to_check:
+                    _update_read_timestamp(_p, task_id)
+                    _r = _path_to_resolved.get(_p)
+                    if _r:
+                        file_state.note_write(task_id, _r)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
+        # Suppressed when patch_replace already attached a rich "Did you mean?"
+        # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
-        return result_json
+            if "Did you mean one of these sections?" not in str(result_dict["error"]):
+                result_dict["_hint"] = (
+                    "old_string not found. Use read_file to verify the current "
+                    "content, or search_files to locate the text."
+                )
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
 
@@ -625,6 +949,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        offset, limit = normalize_search_pagination(offset, limit)
+
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.
@@ -667,7 +993,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content)
+                    m.content = redact_sensitive_text(m.content, code_file=True)
         result_dict = result.to_dict()
 
         if count >= 3:
@@ -716,7 +1042,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -771,7 +1097,25 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "write_file: missing required field 'path'. Re-emit the tool call with "
+            "both 'path' and 'content' set."
+        )
+    if "content" not in args:
+        return tool_error(
+            "write_file: missing required field 'content'. The tool call included a "
+            "path but no content argument — this is almost always a dropped-arg bug "
+            "under context pressure. Re-emit the tool call with the full content "
+            "payload, or use execute_code with hermes_tools.write_file() for very "
+            "large files."
+        )
+    if not isinstance(args["content"], str):
+        return tool_error(
+            f"write_file: 'content' must be a string, got "
+            f"{type(args['content']).__name__}."
+        )
+    return write_file_tool(path=args["path"], content=args["content"], task_id=tid)
 
 
 def _handle_patch(args, **kw):
@@ -793,7 +1137,7 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)

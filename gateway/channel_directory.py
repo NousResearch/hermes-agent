@@ -57,7 +57,7 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
 # Build / refresh
 # ---------------------------------------------------------------------------
 
-def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
+async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
     Build a channel directory from connected platform adapters and session data.
 
@@ -72,7 +72,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             if platform == Platform.DISCORD:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
-                platforms["slack"] = _build_slack(adapter)
+                platforms["slack"] = await _build_slack(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -85,6 +85,16 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
             continue
         platforms[plat_name] = _build_from_sessions(plat_name)
+
+    # Include plugin-registered platforms (dynamic enum members aren't in
+    # Platform.__members__, so the loop above misses them).
+    try:
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            if entry.name not in _SKIP_SESSION_DISCOVERY and entry.name not in platforms:
+                platforms[entry.name] = _build_from_sessions(entry.name)
+    except Exception:
+        pass
 
     directory = {
         "updated_at": datetime.now().isoformat(),
@@ -100,7 +110,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """Enumerate all text channels the Discord bot can see."""
+    """Enumerate all text channels and forum channels the Discord bot can see."""
     channels = []
     client = getattr(adapter, "_client", None)
     if not client:
@@ -119,6 +129,15 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "guild": guild.name,
                 "type": "channel",
             })
+        # Forum channels (type 15) — creating a message auto-spawns a thread post.
+        forums = getattr(guild, "forum_channels", None) or []
+        for ch in forums:
+            channels.append({
+                "id": str(ch.id),
+                "name": ch.name,
+                "guild": guild.name,
+                "type": "forum",
+            })
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
 
@@ -127,21 +146,66 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     return channels
 
 
-def _build_slack(adapter) -> List[Dict[str, str]]:
-    """List Slack channels the bot has joined."""
-    # Slack adapter may expose a web client
-    client = getattr(adapter, "_app", None) or getattr(adapter, "_client", None)
-    if not client:
+async def _build_slack(adapter) -> List[Dict[str, Any]]:
+    """List Slack channels the bot has joined across all workspaces.
+
+    Uses ``users.conversations`` against each workspace's web client. Pulls
+    public + private channels the bot is a member of, then merges in DMs
+    discovered from session history (IMs aren't useful to enumerate
+    proactively).
+    """
+    team_clients = getattr(adapter, "_team_clients", None) or {}
+    if not team_clients:
         return _build_from_sessions("slack")
 
-    try:
-        from tools.send_message_tool import _send_slack  # noqa: F401
-        # Use the Slack Web API directly if available
-    except Exception:
-        pass
+    channels: List[Dict[str, Any]] = []
+    seen_ids: set = set()
 
-    # Fallback to session data
-    return _build_from_sessions("slack")
+    for team_id, client in team_clients.items():
+        try:
+            cursor: Optional[str] = None
+            for _page in range(20):  # safety cap on pagination
+                response = await client.users_conversations(
+                    types="public_channel,private_channel",
+                    exclude_archived=True,
+                    limit=200,
+                    cursor=cursor,
+                )
+                if not response.get("ok"):
+                    logger.warning(
+                        "Channel directory: users.conversations not ok for team %s: %s",
+                        team_id,
+                        response.get("error", "unknown"),
+                    )
+                    break
+                for ch in response.get("channels", []):
+                    cid = ch.get("id")
+                    name = ch.get("name")
+                    if not cid or not name or cid in seen_ids:
+                        continue
+                    seen_ids.add(cid)
+                    channels.append({
+                        "id": cid,
+                        "name": name,
+                        "type": "private" if ch.get("is_private") else "channel",
+                    })
+                cursor = (response.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        except Exception as e:
+            logger.warning(
+                "Channel directory: failed to list Slack channels for team %s: %s",
+                team_id, e,
+            )
+            continue
+
+    # Merge in DM/group entries discovered from session history.
+    for entry in _build_from_sessions("slack"):
+        if entry.get("id") not in seen_ids:
+            channels.append(entry)
+            seen_ids.add(entry.get("id"))
+
+    return channels
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
@@ -191,6 +255,15 @@ def load_directory() -> Dict[str, Any]:
         return {"updated_at": None, "platforms": {}}
 
 
+def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
+    """Return the channel ``type`` string (e.g. ``"channel"``, ``"forum"``) for *chat_id*, or *None* if unknown."""
+    directory = load_directory()
+    for ch in directory.get("platforms", {}).get(platform_name, []):
+        if ch.get("id") == chat_id:
+            return ch.get("type")
+    return None
+
+
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """
     Resolve a human-friendly channel name to a numeric ID.
@@ -204,6 +277,14 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     channels = directory.get("platforms", {}).get(platform_name, [])
     if not channels:
         return None
+
+    # 0. Exact ID match — case-sensitive, no normalization. Lets callers pass
+    # raw platform IDs (e.g. Slack "C0B0QV5434G") even when the format guard
+    # in _parse_target_ref hasn't recognized them as explicit.
+    raw = name.strip()
+    for ch in channels:
+        if ch.get("id") == raw:
+            return ch["id"]
 
     query = _normalize_channel_query(name)
 

@@ -7,7 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
 def _make_agent(fallback_model=None):
@@ -19,6 +19,7 @@ def _make_agent(fallback_model=None):
     ):
         agent = AIAgent(
             api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -154,3 +155,68 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+    def test_resolves_key_env_for_fallback_provider(self):
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "fallback-model",
+                "base_url": "https://fallback.example/v1",
+                "key_env": "MY_FALLBACK_KEY",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(
+                        base_url="https://fallback.example/v1",
+                        api_key="env-secret",
+                    ),
+                    "fallback-model",
+                ),
+            ) as mock_rpc,
+        ):
+            assert agent._try_activate_fallback() is True
+            assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+
+# ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
+
+
+def _pool(n_entries: int, has_available: bool = True):
+    """Make a minimal credential-pool stand-in for rotation-room checks."""
+    pool = MagicMock()
+    pool.entries.return_value = [MagicMock() for _ in range(n_entries)]
+    pool.has_available.return_value = has_available
+    return pool
+
+
+class TestPoolRotationRoom:
+    def test_none_pool_returns_false(self):
+        assert _pool_may_recover_from_rate_limit(None) is False
+
+    def test_single_credential_returns_false(self):
+        """With one credential that just 429'd, rotation has nowhere to go.
+
+        The pool may still report has_available() True once cooldown expires,
+        but retrying against the same entry will hit the same daily-quota
+        429 and burn the retry budget.  Must fall back.
+        """
+        assert _pool_may_recover_from_rate_limit(_pool(1)) is False
+
+    def test_single_credential_in_cooldown_returns_false(self):
+        assert _pool_may_recover_from_rate_limit(_pool(1, has_available=False)) is False
+
+    def test_two_credentials_available_returns_true(self):
+        """With >1 credentials and at least one available, rotate instead of fallback."""
+        assert _pool_may_recover_from_rate_limit(_pool(2)) is True
+
+    def test_multiple_credentials_all_in_cooldown_returns_false(self):
+        """All credentials cooling down — fall back rather than wait."""
+        assert _pool_may_recover_from_rate_limit(_pool(3, has_available=False)) is False
+
+    def test_many_credentials_available_returns_true(self):
+        assert _pool_may_recover_from_rate_limit(_pool(10)) is True

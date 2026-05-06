@@ -87,6 +87,114 @@ def reset_client_cache():
     _bedrock_control_client_cache.clear()
 
 
+def invalidate_runtime_client(region: str) -> bool:
+    """Evict the cached ``bedrock-runtime`` client for a single region.
+
+    Per-region counterpart to :func:`reset_client_cache`. Used by the converse
+    call wrappers to discard clients whose underlying HTTP connection has
+    gone stale, so the next call allocates a fresh client (with a fresh
+    connection pool) instead of reusing a dead socket.
+
+    Returns True if a cached entry was evicted, False if the region was not
+    cached.
+    """
+    existed = region in _bedrock_runtime_client_cache
+    _bedrock_runtime_client_cache.pop(region, None)
+    return existed
+
+
+# ---------------------------------------------------------------------------
+# Stale-connection detection
+# ---------------------------------------------------------------------------
+#
+# boto3 caches its HTTPS connection pool inside the client object. When a
+# pooled connection is killed out from under us (NAT timeout, VPN flap,
+# server-side TCP RST, proxy idle cull, etc.), the next use surfaces as
+# one of a handful of low-level exceptions — most commonly
+# ``botocore.exceptions.ConnectionClosedError`` or
+# ``urllib3.exceptions.ProtocolError``. urllib3 also trips an internal
+# ``assert`` in a couple of paths (connection pool state checks, chunked
+# response readers) which bubbles up as a bare ``AssertionError`` with an
+# empty ``str(exc)``.
+#
+# In all of these cases the client is the problem, not the request: retrying
+# with the same cached client reproduces the failure until the process
+# restarts. The fix is to evict the region's cached client so the next
+# attempt builds a new one.
+
+_STALE_LIB_MODULE_PREFIXES = (
+    "urllib3.",
+    "botocore.",
+    "boto3.",
+)
+
+
+def _traceback_frames_modules(exc: BaseException):
+    """Yield ``__name__``-style module strings for each frame in exc's traceback."""
+    tb = getattr(exc, "__traceback__", None)
+    while tb is not None:
+        frame = tb.tb_frame
+        module = frame.f_globals.get("__name__", "")
+        yield module or ""
+        tb = tb.tb_next
+
+
+def is_stale_connection_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` indicates a dead/stale Bedrock HTTP connection.
+
+    Matches:
+      * ``botocore.exceptions.ConnectionError`` and subclasses
+        (``ConnectionClosedError``, ``EndpointConnectionError``,
+        ``ReadTimeoutError``, ``ConnectTimeoutError``).
+      * ``urllib3.exceptions.ProtocolError`` / ``NewConnectionError`` /
+        ``ConnectionError`` (best-effort import — urllib3 is a transitive
+        dependency of botocore so it is always available in practice).
+      * Bare ``AssertionError`` raised from a frame inside urllib3, botocore,
+        or boto3. These are internal-invariant failures (typically triggered
+        by corrupted connection-pool state after a dropped socket) and are
+        recoverable by swapping the client.
+
+    Non-library ``AssertionError``s (from application code or tests) are
+    intentionally not matched — only library-internal asserts signal stale
+    connection state.
+    """
+    # botocore: the canonical signal — HTTPClientError is the umbrella for
+    # ConnectionClosedError, ReadTimeoutError, EndpointConnectionError,
+    # ConnectTimeoutError, and ProxyConnectionError. ConnectionError covers
+    # the same family via a different branch of the hierarchy.
+    try:
+        from botocore.exceptions import (
+            ConnectionError as BotoConnectionError,
+            HTTPClientError,
+        )
+        botocore_errors: tuple = (BotoConnectionError, HTTPClientError)
+    except ImportError:  # pragma: no cover — botocore always present with boto3
+        botocore_errors = ()
+    if botocore_errors and isinstance(exc, botocore_errors):
+        return True
+
+    # urllib3: low-level transport failures
+    try:
+        from urllib3.exceptions import (
+            ProtocolError,
+            NewConnectionError,
+            ConnectionError as Urllib3ConnectionError,
+        )
+        urllib3_errors = (ProtocolError, NewConnectionError, Urllib3ConnectionError)
+    except ImportError:  # pragma: no cover
+        urllib3_errors = ()
+    if urllib3_errors and isinstance(exc, urllib3_errors):
+        return True
+
+    # Library-internal AssertionError (urllib3 / botocore / boto3)
+    if isinstance(exc, AssertionError):
+        for module in _traceback_frames_modules(exc):
+            if any(module.startswith(prefix) for prefix in _STALE_LIB_MODULE_PREFIXES):
+                return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # AWS credential detection
 # ---------------------------------------------------------------------------
@@ -183,14 +291,52 @@ def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
 def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     """Resolve the AWS region for Bedrock API calls.
 
-    Priority: AWS_REGION → AWS_DEFAULT_REGION → us-east-1 (fallback).
+    Priority:
+      1. AWS_REGION env var
+      2. AWS_DEFAULT_REGION env var
+      3. boto3/botocore configured region (from ~/.aws/config or SSO profile)
+      4. us-east-1 (hard fallback)
+
+    The boto3 fallback is critical for EU/AP users who configure their region
+    in ~/.aws/config via a named profile rather than env vars — without it,
+    live model discovery would always return us.* profile IDs regardless of
+    the user's actual region.
     """
     env = env if env is not None else os.environ
-    return (
+    explicit = (
         env.get("AWS_REGION", "").strip()
         or env.get("AWS_DEFAULT_REGION", "").strip()
-        or "us-east-1"
     )
+    if explicit:
+        return explicit
+    try:
+        import botocore.session
+        region = botocore.session.get_session().get_config_variable("region")
+        if region:
+            return region
+    except Exception:
+        pass
+    return "us-east-1"
+
+
+def bedrock_model_ids_or_none() -> Optional[List[str]]:
+    """Live-discover Bedrock model IDs for the active region.
+
+    Returns a list of model ID strings if discovery succeeds and yields
+    at least one model, or ``None`` on failure / empty result.  Callers
+    should fall back to the static curated list when ``None`` is returned.
+
+    This helper consolidates the discover → extract-ids → fallback
+    pattern that was previously duplicated across ``provider_model_ids``,
+    ``list_authenticated_providers`` section 2, and section 3.
+    """
+    try:
+        discovered = discover_bedrock_models(resolve_bedrock_region())
+        if discovered:
+            return [m["id"] for m in discovered]
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +933,17 @@ def call_converse(
         guardrail_config=guardrail_config,
     )
 
-    response = client.converse(**kwargs)
+    try:
+        response = client.converse(**kwargs)
+    except Exception as exc:
+        if is_stale_connection_error(exc):
+            logger.warning(
+                "bedrock: stale-connection error on converse(region=%s, model=%s): "
+                "%s — evicting cached client so the next call reconnects.",
+                region, model, type(exc).__name__,
+            )
+            invalidate_runtime_client(region)
+        raise
     return normalize_converse_response(response)
 
 
@@ -819,7 +975,17 @@ def call_converse_stream(
         guardrail_config=guardrail_config,
     )
 
-    response = client.converse_stream(**kwargs)
+    try:
+        response = client.converse_stream(**kwargs)
+    except Exception as exc:
+        if is_stale_connection_error(exc):
+            logger.warning(
+                "bedrock: stale-connection error on converse_stream(region=%s, "
+                "model=%s): %s — evicting cached client so the next call reconnects.",
+                region, model, type(exc).__name__,
+            )
+            invalidate_runtime_client(region)
+        raise
     return normalize_converse_stream_events(response)
 
 

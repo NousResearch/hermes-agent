@@ -126,59 +126,6 @@ class TestRepoNameFromUrl:
 # ── plugins_command dispatch ──────────────────────────────────────────────
 
 
-class TestPluginsCommandDispatch:
-    """Verify alias routing in plugins_command()."""
-
-    def _make_args(self, action, **extras):
-        args = MagicMock()
-        args.plugins_action = action
-        for k, v in extras.items():
-            setattr(args, k, v)
-        return args
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_rm_alias(self, mock_remove):
-        args = self._make_args("rm", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_uninstall_alias(self, mock_remove):
-        args = self._make_args("uninstall", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_list")
-    def test_ls_alias(self, mock_list):
-        args = self._make_args("ls")
-        plugins_command(args)
-        mock_list.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_toggle")
-    def test_none_falls_through_to_toggle(self, mock_toggle):
-        args = self._make_args(None)
-        plugins_command(args)
-        mock_toggle.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_install")
-    def test_install_dispatches(self, mock_install):
-        args = self._make_args("install", identifier="owner/repo", force=False)
-        plugins_command(args)
-        mock_install.assert_called_once_with("owner/repo", force=False)
-
-    @patch("hermes_cli.plugins_cmd.cmd_update")
-    def test_update_dispatches(self, mock_update):
-        args = self._make_args("update", name="foo")
-        plugins_command(args)
-        mock_update.assert_called_once_with("foo")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_remove_dispatches(self, mock_remove):
-        args = self._make_args("remove", name="bar")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("bar")
-
-
 # ── _read_manifest ────────────────────────────────────────────────────────
 
 
@@ -561,7 +508,7 @@ class TestPromptPluginEnvVars:
 
 
 class TestCursesRadiolist:
-    """Test the curses_radiolist function (non-TTY fallback path)."""
+    """Test the curses_radiolist function."""
 
     def test_non_tty_returns_default(self):
         from hermes_cli.curses_ui import curses_radiolist
@@ -576,6 +523,14 @@ class TestCursesRadiolist:
             mock_stdin.isatty.return_value = False
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
             assert result == 1
+
+    def test_keyboard_interrupt_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+
+        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+            mock_stdin.isatty.return_value = True
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
+            assert result == -1
 
 
 # ── Provider discovery helpers ───────────────────────────────────────────

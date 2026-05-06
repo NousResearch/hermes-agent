@@ -9,6 +9,7 @@ from hermes_cli.model_normalize import (
     normalize_model_for_provider,
     _DOT_TO_HYPHEN_PROVIDERS,
     _AGGREGATOR_PROVIDERS,
+    _normalize_for_deepseek,
     detect_vendor,
 )
 
@@ -93,6 +94,59 @@ class TestCopilotDotPreservation:
         assert result == expected
 
 
+# ── Copilot model-name normalization (issue #6879 regression) ──────────
+
+class TestCopilotModelNormalization:
+    """Copilot requires bare dot-notation model IDs.
+
+    Regression coverage for issue #6879 and the broken Copilot branch
+    that previously left vendor-prefixed Anthropic IDs (e.g.
+    ``anthropic/claude-sonnet-4.6``) and dash-notation Claude IDs (e.g.
+    ``claude-sonnet-4-6``) unchanged, causing the Copilot API to reject
+    the request with HTTP 400 "model_not_supported".
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        # Vendor-prefixed Anthropic IDs — prefix must be stripped.
+        ("anthropic/claude-opus-4.6",   "claude-opus-4.6"),
+        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("anthropic/claude-sonnet-4.5", "claude-sonnet-4.5"),
+        ("anthropic/claude-haiku-4.5",  "claude-haiku-4.5"),
+        # Vendor-prefixed OpenAI IDs — prefix must be stripped.
+        ("openai/gpt-5.4",              "gpt-5.4"),
+        ("openai/gpt-4o",               "gpt-4o"),
+        ("openai/gpt-4o-mini",          "gpt-4o-mini"),
+        # Dash-notation Claude IDs — must be converted to dot-notation.
+        ("claude-opus-4-6",             "claude-opus-4.6"),
+        ("claude-sonnet-4-6",           "claude-sonnet-4.6"),
+        ("claude-sonnet-4-5",           "claude-sonnet-4.5"),
+        ("claude-haiku-4-5",            "claude-haiku-4.5"),
+        # Combined: vendor-prefixed + dash-notation.
+        ("anthropic/claude-opus-4-6",   "claude-opus-4.6"),
+        ("anthropic/claude-sonnet-4-6", "claude-sonnet-4.6"),
+        # Already-canonical inputs pass through unchanged.
+        ("claude-sonnet-4.6",           "claude-sonnet-4.6"),
+        ("gpt-5.4",                     "gpt-5.4"),
+        ("gpt-5-mini",                  "gpt-5-mini"),
+    ])
+    def test_copilot_normalization(self, model, expected):
+        assert normalize_model_for_provider(model, "copilot") == expected
+
+    @pytest.mark.parametrize("model,expected", [
+        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("claude-sonnet-4-6",           "claude-sonnet-4.6"),
+        ("claude-opus-4-6",             "claude-opus-4.6"),
+        ("openai/gpt-5.4",              "gpt-5.4"),
+    ])
+    def test_copilot_acp_normalization(self, model, expected):
+        """Copilot ACP shares the same API expectations as HTTP Copilot."""
+        assert normalize_model_for_provider(model, "copilot-acp") == expected
+
+    def test_openai_codex_still_strips_openai_prefix(self):
+        """Regression: openai-codex must still strip the openai/ prefix."""
+        assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:
@@ -138,3 +192,72 @@ class TestDetectVendor:
     ])
     def test_detects_known_vendors(self, model, expected):
         assert detect_vendor(model) == expected
+
+
+# ── DeepSeek V-series pass-through (bug: V4 models silently folded to V3) ──
+
+class TestDeepseekVSeriesPassThrough:
+    """DeepSeek's V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,
+    and future ``deepseek-v<N>-*`` variants) are first-class model IDs
+    accepted directly by DeepSeek's Chat Completions API. Earlier code
+    folded every non-reasoner name into ``deepseek-chat``, which on
+    aggregators (Nous portal, OpenRouter via DeepInfra) routes to V3 —
+    silently downgrading users who picked V4.
+    """
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",          # vendor-prefixed
+        "deepseek/deepseek-v4-flash",
+        "DeepSeek-V4-Pro",                    # case-insensitive
+        "deepseek-v4-flash-20260423",         # dated variant
+        "deepseek-v5-pro",                    # future V-series
+        "deepseek-v10-ultra",                 # double-digit future
+    ])
+    def test_v_series_passes_through(self, model):
+        expected = model.split("/", 1)[-1].lower()
+        assert _normalize_for_deepseek(model) == expected
+
+    def test_deepseek_provider_preserves_v4_pro(self):
+        """End-to-end via normalize_model_for_provider — user selecting
+        V4 Pro must reach DeepSeek's API as V4 Pro, not V3 alias."""
+        result = normalize_model_for_provider("deepseek-v4-pro", "deepseek")
+        assert result == "deepseek-v4-pro"
+
+    def test_deepseek_provider_preserves_v4_flash(self):
+        result = normalize_model_for_provider("deepseek-v4-flash", "deepseek")
+        assert result == "deepseek-v4-flash"
+
+
+# ── DeepSeek regressions (existing behaviour still holds) ──────────────
+
+class TestDeepseekCanonicalAndReasonerMapping:
+    """Canonical pass-through and reasoner-keyword folding stay intact."""
+
+    @pytest.mark.parametrize("model,expected", [
+        ("deepseek-chat", "deepseek-chat"),
+        ("deepseek-reasoner", "deepseek-reasoner"),
+        ("DEEPSEEK-CHAT", "deepseek-chat"),
+    ])
+    def test_canonical_models_pass_through(self, model, expected):
+        assert _normalize_for_deepseek(model) == expected
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-r1",
+        "deepseek-r1-0528",
+        "deepseek-think-v3",
+        "deepseek-reasoning-preview",
+        "deepseek-cot-experimental",
+    ])
+    def test_reasoner_keywords_map_to_reasoner(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-reasoner"
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-chat-v3.1",    # 'chat' prefix, not V-series pattern
+        "unknown-model",
+        "something-random",
+        "gpt-5",                 # non-DeepSeek names still fall through
+    ])
+    def test_unknown_names_fall_back_to_chat(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-chat"

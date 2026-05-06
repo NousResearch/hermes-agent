@@ -19,6 +19,24 @@ import pytest
 
 from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
+import run_agent
+
+
+# ---------------------------------------------------------------------------
+# Fast backoff for compression retry tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_compression_sleep(monkeypatch):
+    """Short-circuit the 2s time.sleep between compression retries.
+
+    Production code has ``time.sleep(2)`` in multiple places after a 413/context
+    compression, for rate-limit smoothing. Tests assert behavior, not timing.
+    """
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +87,7 @@ def agent():
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -413,6 +432,8 @@ class TestPreflightCompression:
 
         ok_resp = _mock_response(content="After preflight", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [ok_resp]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
@@ -441,6 +462,10 @@ class TestPreflightCompression:
         )
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
+        assert any(
+            ev == "lifecycle" and "Preflight compression" in msg
+            for ev, msg in status_messages
+        )
 
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""

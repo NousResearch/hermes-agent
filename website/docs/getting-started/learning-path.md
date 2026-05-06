@@ -80,15 +80,18 @@ Cron jobs let Hermes Agent run tasks on a schedule — daily summaries, periodic
 
 Extend Hermes Agent with your own tools and reusable skill packages.
 
-1. [Tools Overview](/docs/user-guide/features/tools)
-2. [Skills Overview](/docs/user-guide/features/skills)
-3. [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-4. [Architecture](/docs/developer-guide/architecture)
-5. [Adding Tools](/docs/developer-guide/adding-tools)
-6. [Creating Skills](/docs/developer-guide/creating-skills)
+1. [Plugins](/docs/user-guide/features/plugins)
+2. [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin)
+3. [Tools Overview](/docs/user-guide/features/tools)
+4. [Skills Overview](/docs/user-guide/features/skills)
+5. [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
+6. [Architecture](/docs/developer-guide/architecture)
+7. [Adding Tools](/docs/developer-guide/adding-tools)
+8. [Creating Skills](/docs/developer-guide/creating-skills)
 
 :::tip
-Tools are individual functions the agent can call. Skills are bundles of tools, prompts, and configuration packaged together. Start with tools, graduate to skills.
+For most custom tool creation, start with plugins. The [Adding Tools](/docs/developer-guide/adding-tools)
+page is for built-in Hermes core development, not the usual user/custom-tool path.
 :::
 
 ### "I want to train models"
@@ -129,7 +132,7 @@ Not sure what's available? Here's a quick directory of major features:
 | **MCP** | Connect to external tool servers via Model Context Protocol | [MCP](/docs/user-guide/features/mcp) |
 | **Cron** | Schedule recurring agent tasks | [Cron](/docs/user-guide/features/cron) |
 | **Delegation** | Spawn sub-agents for parallel work | [Delegation](/docs/user-guide/features/delegation) |
-| **Code Execution** | Run code in sandboxed environments | [Code Execution](/docs/user-guide/features/code-execution) |
+| **Code Execution** | Run Python scripts that call Hermes tools programmatically | [Code Execution](/docs/user-guide/features/code-execution) |
 | **Browser** | Web browsing and scraping | [Browser](/docs/user-guide/features/browser) |
 | **Hooks** | Event-driven callbacks and middleware | [Hooks](/docs/user-guide/features/hooks) |
 | **Batch Processing** | Process multiple inputs in bulk | [Batch Processing](/docs/user-guide/features/batch-processing) |

@@ -389,7 +389,6 @@ class CheckpointManager:
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""
-        import re
         m = re.search(r'(\d+) file', stat_line)
         if m:
             entry["files_changed"] = int(m.group(1))
@@ -652,3 +651,204 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")
     lines.append("  /rollback <N> <file>      restore a single file from checkpoint N")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Auto-maintenance (issue #3015 follow-up)
+# ---------------------------------------------------------------------------
+#
+# Every working directory the agent has ever touched gets its own shadow
+# repo under CHECKPOINT_BASE.  Per-repo ``_prune`` is a no-op (see comment
+# in CheckpointManager._prune), so abandoned repos (deleted projects,
+# one-off tmp dirs, long-stale work trees) accumulate forever.  Field
+# reports put the typical offender at 1000+ repos / ~12 GB on active
+# contributor machines.
+#
+# ``prune_checkpoints`` sweeps CHECKPOINT_BASE at startup, deleting shadow
+# repos that match either criterion:
+#   * orphan:  the ``HERMES_WORKDIR`` path no longer exists on disk
+#   * stale:   the repo's newest mtime is older than ``retention_days``
+#
+# ``maybe_auto_prune_checkpoints`` wraps it with an idempotency marker
+# (``CHECKPOINT_BASE/.last_prune``) so calling it on every CLI/gateway
+# startup is free after the first run of the day.  Opt-in via
+# ``checkpoints.auto_prune`` in config.yaml — default off so users who
+# rely on ``/rollback`` against long-ago sessions never lose data
+# silently.
+
+_PRUNE_MARKER_NAME = ".last_prune"
+
+
+def _read_workdir_marker(shadow_repo: Path) -> Optional[str]:
+    """Read ``HERMES_WORKDIR`` from a shadow repo, or None if missing/unreadable."""
+    try:
+        return (shadow_repo / "HERMES_WORKDIR").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _shadow_repo_newest_mtime(shadow_repo: Path) -> float:
+    """Return newest mtime across the shadow repo (walks objects/refs/HEAD).
+
+    We walk instead of trusting the directory mtime because git's pack
+    operations can leave the top-level dir untouched while refs/objects
+    inside get updated.  Best-effort — returns 0.0 on any error.
+    """
+    newest = 0.0
+    try:
+        for p in shadow_repo.rglob("*"):
+            try:
+                m = p.stat().st_mtime
+                if m > newest:
+                    newest = m
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return newest
+
+
+def prune_checkpoints(
+    retention_days: int = 7,
+    delete_orphans: bool = True,
+    checkpoint_base: Optional[Path] = None,
+) -> Dict[str, int]:
+    """Delete stale/orphan shadow repos under ``checkpoint_base``.
+
+    A shadow repo is deleted when either:
+
+    * ``delete_orphans=True`` and its ``HERMES_WORKDIR`` path no longer
+      exists on disk (the original project was deleted / moved); OR
+    * its newest in-repo mtime is older than ``retention_days`` days.
+
+    Returns a dict with counts ``{"scanned", "deleted_orphan",
+    "deleted_stale", "errors", "bytes_freed"}``.
+
+    Never raises — maintenance must never block interactive startup.
+    """
+    base = checkpoint_base or CHECKPOINT_BASE
+    result = {
+        "scanned": 0,
+        "deleted_orphan": 0,
+        "deleted_stale": 0,
+        "errors": 0,
+        "bytes_freed": 0,
+    }
+    if not base.exists():
+        return result
+
+    cutoff = 0.0
+    if retention_days > 0:
+        import time as _time
+        cutoff = _time.time() - retention_days * 86400
+
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        # Protect the marker file and anything that isn't a real shadow
+        # repo (no HEAD = not initialised, leave alone).
+        if not (child / "HEAD").exists():
+            continue
+        result["scanned"] += 1
+
+        reason: Optional[str] = None
+        if delete_orphans:
+            workdir = _read_workdir_marker(child)
+            if workdir is None or not Path(workdir).exists():
+                reason = "orphan"
+
+        if reason is None and retention_days > 0:
+            newest = _shadow_repo_newest_mtime(child)
+            if newest > 0 and newest < cutoff:
+                reason = "stale"
+
+        if reason is None:
+            continue
+
+        # Measure size before delete (best-effort)
+        try:
+            size = sum(p.stat().st_size for p in child.rglob("*") if p.is_file())
+        except OSError:
+            size = 0
+        try:
+            shutil.rmtree(child)
+            result["bytes_freed"] += size
+            if reason == "orphan":
+                result["deleted_orphan"] += 1
+            else:
+                result["deleted_stale"] += 1
+            logger.debug("Pruned %s checkpoint repo: %s (%d bytes)", reason, child.name, size)
+        except OSError as exc:
+            result["errors"] += 1
+            logger.warning("Failed to prune checkpoint repo %s: %s", child.name, exc)
+
+    return result
+
+
+def maybe_auto_prune_checkpoints(
+    retention_days: int = 7,
+    min_interval_hours: int = 24,
+    delete_orphans: bool = True,
+    checkpoint_base: Optional[Path] = None,
+) -> Dict[str, object]:
+    """Idempotent wrapper around ``prune_checkpoints`` for startup hooks.
+
+    Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent
+    calls within ``min_interval_hours`` short-circuit.  Designed to be
+    called once per CLI/gateway process startup; the marker keeps costs
+    bounded regardless of how many times hermes is invoked per day.
+
+    Returns ``{"skipped": bool, "result": prune_checkpoints-dict,
+    "error": optional str}``.
+    """
+    import time as _time
+    base = checkpoint_base or CHECKPOINT_BASE
+    out: Dict[str, object] = {"skipped": False}
+
+    try:
+        if not base.exists():
+            out["result"] = {
+                "scanned": 0, "deleted_orphan": 0, "deleted_stale": 0,
+                "errors": 0, "bytes_freed": 0,
+            }
+            return out
+
+        marker = base / _PRUNE_MARKER_NAME
+        now = _time.time()
+        if marker.exists():
+            try:
+                last_ts = float(marker.read_text(encoding="utf-8").strip())
+                if now - last_ts < min_interval_hours * 3600:
+                    out["skipped"] = True
+                    return out
+            except (OSError, ValueError):
+                pass  # corrupt marker — treat as no prior run
+
+        result = prune_checkpoints(
+            retention_days=retention_days,
+            delete_orphans=delete_orphans,
+            checkpoint_base=base,
+        )
+        out["result"] = result
+
+        try:
+            marker.write_text(str(now), encoding="utf-8")
+        except OSError as exc:
+            logger.debug("Could not write checkpoint prune marker: %s", exc)
+
+        total = result["deleted_orphan"] + result["deleted_stale"]
+        if total > 0:
+            logger.info(
+                "checkpoint auto-maintenance: pruned %d repo(s) "
+                "(%d orphan, %d stale), reclaimed %.1f MB",
+                total,
+                result["deleted_orphan"],
+                result["deleted_stale"],
+                result["bytes_freed"] / (1024 * 1024),
+            )
+    except Exception as exc:
+        logger.warning("checkpoint auto-maintenance failed: %s", exc)
+        out["error"] = str(exc)
+
+    return out
+

@@ -274,13 +274,15 @@ class TestQueryLocalContextLengthLmStudio:
         return client_mock
 
     def test_lmstudio_exact_key_match(self):
-        """Reads max_context_length when key matches exactly."""
+        """Resolves loaded ctx when key matches exactly."""
         from agent.model_metadata import _query_local_context_length
 
         native_resp = self._make_resp(200, {
             "models": [
-                {"key": "nvidia/nvidia-nemotron-super-49b-v1", "id": "nvidia/nvidia-nemotron-super-49b-v1",
-                 "max_context_length": 131072},
+                {"key": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "id": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "max_context_length": 1_048_576,
+                 "loaded_instances": [{"config": {"context_length": 131072}}]},
             ]
         })
         client_mock = self._make_client(
@@ -310,7 +312,8 @@ class TestQueryLocalContextLengthLmStudio:
             "models": [
                 {"key": "nvidia/nvidia-nemotron-super-49b-v1",
                  "id": "nvidia/nvidia-nemotron-super-49b-v1",
-                 "max_context_length": 131072},
+                 "max_context_length": 1_048_576,
+                 "loaded_instances": [{"config": {"context_length": 131072}}]},
             ]
         })
         client_mock = self._make_client(
@@ -422,6 +425,71 @@ class TestQueryLocalContextLengthLmStudio:
             f"Expected loaded instance context (122651) but got {result}. "
             "max_context_length (1048576) must not win over loaded_instances."
         )
+
+
+class TestDetectLocalServerTypeAuth:
+    def test_passes_bearer_token_to_probe_requests(self):
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock) as mock_client:
+            result = detect_local_server_type("http://localhost:1234/v1", api_key="lm-token")
+
+        assert result == "lm-studio"
+        assert mock_client.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer lm-token"
+        }
+
+
+class TestFetchEndpointModelMetadataLmStudio:
+    """fetch_endpoint_model_metadata should use LM Studio's native models endpoint."""
+
+    def _make_resp(self, body):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = body
+        return resp
+
+    def test_uses_native_models_endpoint_only(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        native_resp = self._make_resp(
+            {
+                "models": [
+                    {
+                        "key": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
+                        "id": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
+                        "max_context_length": 1_048_576,
+                        "loaded_instances": [
+                            {"config": {"context_length": 131072}}
+                        ],
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata.requests.get", return_value=native_resp) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "http://localhost:1234/v1",
+                api_key="lm-token",
+                force_refresh=True,
+            )
+
+        assert mock_get.call_count == 1
+        assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
+        assert mock_get.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer lm-token"
+        }
+        assert result["lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
+        assert result["Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
 
 
 class TestQueryLocalContextLengthNetworkError:

@@ -345,10 +345,6 @@ Flash Attention uses float16/bfloat16 for speed. Float32 not supported.
 
 **Performance benchmarks**: See [references/benchmarks.md](references/benchmarks.md) for detailed speed and memory comparisons across GPUs and sequence lengths.
 
-**Algorithm details**: See [references/algorithm.md](references/algorithm.md) for tiling strategy, recomputation, and IO complexity analysis.
-
-**Advanced features**: See [references/advanced-features.md](references/advanced-features.md) for rotary embeddings, ALiBi, paged KV cache, and custom attention masks.
-
 ## Hardware requirements
 
 - **GPU**: NVIDIA Ampere+ (A100, A10, A30) or AMD MI200+

@@ -3,7 +3,9 @@
 Session Search Tool - Long-Term Conversation Recall
 
 Searches past session transcripts in SQLite via FTS5, then summarizes the top
-matching sessions using a cheap/fast model (same pattern as web_extract).
+matching sessions using the configured auxiliary session_search model (same
+pattern as web_extract). By default, auxiliary "auto" routing uses the main
+chat provider/model unless the user overrides auxiliary.session_search.
 Returns focused summaries of past conversations rather than raw transcripts,
 keeping the main model's context window clean.
 
@@ -11,7 +13,7 @@ Flow:
   1. FTS5 search finds matching messages ranked by relevance
   2. Groups by session, takes the top N unique sessions (default 3)
   3. Loads each session's conversation, truncates to ~100k chars centered on matches
-  4. Sends to Gemini Flash with a focused summarization prompt
+  4. Sends to the configured auxiliary model with a focused summarization prompt
   5. Returns per-session summaries with metadata
 """
 
@@ -25,6 +27,27 @@ from typing import Dict, Any, List, Optional, Union
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
+
+
+def _get_session_search_max_concurrency(default: int = 3) -> int:
+    """Read auxiliary.session_search.max_concurrency with sane bounds."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return default
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get("session_search", {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return default
+    raw = task_config.get("max_concurrency")
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, 5))
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -245,7 +268,11 @@ _HIDDEN_SESSION_SOURCES = ("tool",)
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        sessions = db.list_sessions_rich(
+            limit=limit + 5,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            order_by_last_active=True,
+        )  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -253,12 +280,13 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             try:
                 sid = current_session_id
                 visited = set()
+                current_root = current_session_id
                 while sid and sid not in visited:
                     visited.add(sid)
+                    current_root = sid
                     s = db.get_session(sid)
                     parent = s.get("parent_session_id") if s else None
                     sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
             except Exception:
                 current_root = current_session_id
 
@@ -304,7 +332,8 @@ def session_search(
     """
     Search past sessions and return focused summaries of matching conversations.
 
-    Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
+    Uses FTS5 to find matches, then summarizes the top sessions with the
+    configured auxiliary session_search model.
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
@@ -423,9 +452,16 @@ def session_search(
 
         # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
+            """Summarize all sessions with bounded concurrency."""
+            max_concurrency = min(_get_session_search_max_concurrency(), max(1, len(tasks)))
+            semaphore = asyncio.Semaphore(max_concurrency)
+
+            async def _bounded_summary(text: str, meta: Dict[str, Any]) -> Optional[str]:
+                async with semaphore:
+                    return await _summarize_session(text, query, meta)
+
             coros = [
-                _summarize_session(text, query, meta)
+                _bounded_summary(text, meta)
                 for _, _, text, meta in tasks
             ]
             return await asyncio.gather(*coros, return_exceptions=True)
@@ -450,7 +486,7 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
@@ -458,11 +494,18 @@ def session_search(
                 )
                 result = None
 
+            # Prefer resolved parent session metadata over FTS5 match metadata.
+            # match_info carries source/model from the *child* session that contained
+            # the FTS5 hit; after _resolve_to_parent() the session_id points to the
+            # root, so session_meta has the authoritative platform/source for the
+            # session the user actually cares about (#15909).
             entry = {
                 "session_id": session_id,
-                "when": _format_timestamp(match_info.get("session_started")),
-                "source": match_info.get("source", "unknown"),
-                "model": match_info.get("model"),
+                "when": _format_timestamp(
+                    session_meta.get("started_at") or match_info.get("session_started")
+                ),
+                "source": session_meta.get("source") or match_info.get("source", "unknown"),
+                "model": session_meta.get("model") or match_info.get("model"),
             }
 
             if result:

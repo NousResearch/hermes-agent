@@ -29,6 +29,12 @@ from tools.environments.base import _file_mtime_key
 
 logger = logging.getLogger(__name__)
 
+# Keep retry sleeps patchable without mutating the shared stdlib ``time``
+# module. Patching ``tools.environments.file_sync.time.sleep`` replaces
+# ``time.sleep`` globally because ``time`` is the module object; under xdist
+# that lets unrelated background threads inflate retry-test call counts.
+_sleep = time.sleep
+
 _SYNC_INTERVAL_SECONDS = 5.0
 _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
 
@@ -243,7 +249,7 @@ class FileSyncManager:
                         "sync_back: attempt %d failed (%s), retrying in %ds",
                         attempt + 1, exc, delay,
                     )
-                    time.sleep(delay)
+                    _sleep(delay)
 
         logger.warning("sync_back: all %d attempts failed: %s", _SYNC_BACK_MAX_RETRIES, last_exc)
 

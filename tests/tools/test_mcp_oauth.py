@@ -440,6 +440,7 @@ class TestBuildOAuthAuthNonInteractive:
 
 def test_build_client_metadata_basic():
     """_build_client_metadata returns metadata with expected defaults."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_name": "Test Client"}
@@ -453,6 +454,7 @@ def test_build_client_metadata_basic():
 
 def test_build_client_metadata_without_secret_is_public():
     """Without client_secret, token endpoint auth is 'none' (public client)."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {}
@@ -463,6 +465,7 @@ def test_build_client_metadata_without_secret_is_public():
 
 def test_build_client_metadata_with_secret_is_confidential():
     """With client_secret, token endpoint auth is 'client_secret_post'."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_secret": "shh"}
@@ -491,11 +494,36 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
-def test_parse_base_url_strips_path():
-    """_parse_base_url drops path components for OAuth discovery."""
-    from tools.mcp_oauth import _parse_base_url
+def test_build_oauth_auth_preserves_server_url_path():
+    """server_url with path is forwarded to OAuthClientProvider unmodified.
 
-    assert _parse_base_url("https://example.com/mcp/v1") == "https://example.com"
-    assert _parse_base_url("https://example.com") == "https://example.com"
-    assert _parse_base_url("https://host.example.com:8080/api") == "https://host.example.com:8080"
+    Regression for #16015: previously ``_parse_base_url`` stripped the path,
+    collapsing ``https://mcp.notion.com/mcp`` to ``https://mcp.notion.com`` and
+    breaking RFC 9728 protected-resource validation against servers whose PRM
+    advertises a path-scoped resource (Notion). The MCP SDK strips the path
+    itself for authorization-server discovery via
+    ``OAuthContext.get_authorization_base_url``; Hermes must not pre-strip.
+    """
+    from tools import mcp_oauth
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"), \
+         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
+        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+        build_oauth_auth(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            oauth_config={},
+        )
+
+    assert captured["server_url"] == "https://mcp.notion.com/mcp"
+
 

@@ -28,7 +28,9 @@
 
   let
     cfg = config.services.hermes-agent;
-    hermes-agent = inputs.self.packages.${pkgs.system}.default;
+    effectivePackage = if cfg.extraPythonPackages == [ ] then cfg.package
+      else cfg.package.override { inherit (cfg) extraPythonPackages; };
+    hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
     deepConfigType = lib.types.mkOptionType {
@@ -121,11 +123,19 @@
       # ── Provision apt packages (first boot only, cached in writable layer) ──
       # sudo: agent self-modification
       # nodejs/npm: writable node so npm i -g works (nix store copies are read-only)
-      # curl: needed for uv installer
+      #   Node 22 via NodeSource — Ubuntu 24.04 ships Node 18 which is EOL.
+      # curl: needed for uv installer + NodeSource setup
       if [ ! -f /var/lib/hermes-tools-provisioned ] && command -v apt-get >/dev/null 2>&1; then
         echo "First boot: provisioning agent tools..."
         apt-get update -qq
-        apt-get install -y -qq sudo nodejs npm curl
+        apt-get install -y -qq sudo curl ca-certificates gnupg
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+          | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+          > /etc/apt/sources.list.d/nodesource.list
+        apt-get update -qq
+        apt-get install -y -qq nodejs
         touch /var/lib/hermes-tools-provisioned
       fi
 
@@ -140,15 +150,14 @@
         su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
       fi
 
-      # Python 3.11 venv — gives the agent a writable Python with pip.
-      # Uses uv to install Python 3.11 (Ubuntu 24.04 ships 3.12).
+      # Python 3.12 venv — gives the agent a writable Python with pip.
       # --seed includes pip/setuptools so bare `pip install` works.
       _UV_BIN="$TARGET_HOME/.local/bin/uv"
       if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
         su -s /bin/sh "$TARGET_USER" -c "
           export PATH=\"\$HOME/.local/bin:\$PATH\"
-          uv python install 3.11
-          uv venv --python 3.11 --seed \"\$HOME/.venv\"
+          uv python install 3.12
+          uv venv --python 3.12 --seed \"\$HOME/.venv\"
         " || true
       fi
 
@@ -171,7 +180,7 @@
     # Package and entrypoint use stable symlinks (current-package, current-entrypoint)
     # so they can update without recreation. Env vars go through $HERMES_HOME/.env.
     containerIdentity = builtins.hashString "sha256" (builtins.toJSON {
-      schema = 3; # bump when identity inputs change
+      schema = 4; # bump when identity inputs change (4: Node 18→22 via NodeSource)
       image = cfg.container.image;
       extraVolumes = cfg.container.extraVolumes;
       extraOptions = cfg.container.extraOptions;
@@ -446,7 +455,61 @@
       extraPackages = mkOption {
         type = types.listOf types.package;
         default = [ ];
-        description = "Extra packages available on PATH.";
+        description = ''
+          Extra packages available to the agent — terminal commands, skills,
+          cron jobs, and the service process all see them.
+
+          Implemented via the hermes user's per-user profile
+          (`/etc/profiles/per-user/${cfg.user}/bin`), which NixOS includes
+          in PATH for login shells.  The packages are also added to the
+          systemd service PATH for direct process access.
+        '';
+      };
+
+      extraPlugins = mkOption {
+        type = types.listOf types.package;
+        default = [ ];
+        description = ''
+          Directory-based plugin packages to symlink into the hermes plugins
+          directory. Each package should contain a plugin.yaml and __init__.py
+          at its root. Hermes discovers these automatically on startup.
+        '';
+        example = literalExpression ''
+          [
+            (pkgs.fetchFromGitHub {
+              owner = "stephenschoettler";
+              repo = "hermes-lcm";
+              name = "hermes-lcm";
+              rev = "v0.7.0";
+              hash = "sha256-...";
+            })
+          ]
+        '';
+      };
+
+      extraPythonPackages = mkOption {
+        type = types.listOf types.package;
+        default = [ ];
+        description = ''
+          Python packages to add to PYTHONPATH for entry-point plugin discovery.
+          These are pip-packaged plugins that register via the
+          hermes_agent.plugins entry-point group. Each package must be built
+          with the same Python interpreter as hermes (python312).
+        '';
+        example = literalExpression ''
+          [
+            (pkgs.python312Packages.buildPythonPackage {
+              pname = "rtk-hermes";
+              version = "1.0.0";
+              src = pkgs.fetchFromGitHub {
+                owner = "ogallotti";
+                repo = "rtk-hermes";
+                rev = "main";
+                hash = "sha256-...";
+              };
+            })
+          ]
+        '';
       };
 
       restart = mkOption {
@@ -563,7 +626,7 @@
       # so interactive shells share state (sessions, skills, cron) with the
       # gateway service instead of creating a separate ~/.hermes/.
       (lib.mkIf cfg.addToSystemPackages {
-        environment.systemPackages = [ cfg.package ];
+        environment.systemPackages = [ effectivePackage ];
         environment.variables.HERMES_HOME = "${cfg.stateDir}/.hermes";
       })
 
@@ -574,7 +637,38 @@
         });
       })
 
+      # ── Assertions ─────────────────────────────────────────────────────
+      {
+        assertions = let
+          names = map lib.getName cfg.extraPlugins;
+        in [{
+          assertion = (lib.length names) == (lib.length (lib.unique names));
+          message = "services.hermes-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
+        }];
+      }
+
+      # ── Assertions ─────────────────────────────────────────────────────
+      {
+        assertions = let
+          names = map lib.getName cfg.extraPlugins;
+        in [{
+          assertion = (lib.length names) == (lib.length (lib.unique names));
+          message = "services.hermes-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
+        }];
+      }
+
       # ── Warnings ──────────────────────────────────────────────────────
+      # ── Per-user profile for extraPackages ───────────────────────────
+      # Wire extraPackages into the hermes user's per-user profile so the
+      # login-shell snapshot (which rebuilds PATH from NixOS profiles) sees
+      # them.  The systemd service PATH also includes them for direct access.
+      (lib.mkIf (cfg.extraPackages != []) {
+        # listOf options are merged by the NixOS module system — this appends to
+        # any packages the operator assigned to this user externally (e.g. when
+        # createUser = false and the user definition lives elsewhere in the config).
+        users.users.${cfg.user}.packages = cfg.extraPackages;
+      })
+
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
         warnings = [
           ''
@@ -595,6 +689,7 @@
           "d ${cfg.stateDir}/.hermes/sessions 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/.hermes/logs   2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/.hermes/memories 2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes/plugins 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.workingDirectory}         2770 ${cfg.user} ${cfg.group} - -"
         ];
@@ -616,7 +711,7 @@
           find ${cfg.stateDir}/.hermes -maxdepth 1 \
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
-          for _subdir in cron sessions logs memories; do
+          for _subdir in cron sessions logs memories plugins; do
             mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
             chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
             chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
@@ -645,12 +740,12 @@
           # is disabled so the host CLI falls back to native execution.
           ${if cfg.container.enable then ''
             cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
-# Written by NixOS activation script. Do not edit manually.
-backend=${cfg.container.backend}
-container_name=${containerName}
-exec_user=${cfg.user}
-hermes_bin=${containerDataDir}/current-package/bin/hermes
-HERMES_CONTAINER_MODE_EOF
+    # Written by NixOS activation script. Do not edit manually.
+    backend=${cfg.container.backend}
+    container_name=${containerName}
+    exec_user=${cfg.user}
+    hermes_bin=${containerDataDir}/current-package/bin/hermes
+    HERMES_CONTAINER_MODE_EOF
             chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
             chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
           '' else ''
@@ -711,8 +806,8 @@ HERMES_CONTAINER_MODE_EOF
             ENV_FILE="${cfg.stateDir}/.hermes/.env"
             install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
             cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
-${envFileContent}
-HERMES_NIX_ENV_EOF
+    ${envFileContent}
+    HERMES_NIX_ENV_EOF
             ${lib.concatStringsSep "\n" (map (f: ''
               if [ -f "${f}" ]; then
                 echo "" >> "$ENV_FILE"
@@ -725,6 +820,22 @@ HERMES_NIX_ENV_EOF
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
             install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
           '') cfg.documents)}
+
+        # ── Declarative plugins ─────────────────────────────────────────
+        # Remove stale managed symlinks (plugins removed from config)
+        find ${cfg.stateDir}/.hermes/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
+
+        ${lib.concatStringsSep "\n" (map (plugin:
+          let
+            name = lib.getName plugin;
+          in ''
+            if [ ! -f "${plugin}/plugin.yaml" ]; then
+              echo "ERROR: extraPlugins entry '${plugin}' has no plugin.yaml" >&2
+              exit 1
+            fi
+            ln -sfn ${plugin} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+            chown -h ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+          '') cfg.extraPlugins)}
         '';
       }
 
@@ -755,7 +866,7 @@ HERMES_NIX_ENV_EOF
             # reads them at Python startup — no systemd EnvironmentFile needed.
 
             ExecStart = lib.concatStringsSep " " ([
-              "${cfg.package}/bin/hermes"
+              "${effectivePackage}/bin/hermes"
               "gateway"
             ] ++ cfg.extraArgs);
 
@@ -770,12 +881,15 @@ HERMES_NIX_ENV_EOF
             NoNewPrivileges = true;
             ProtectSystem = "strict";
             ProtectHome = false;
-            ReadWritePaths = [ cfg.stateDir ];
+            ReadWritePaths = [
+              cfg.stateDir
+              cfg.workingDirectory
+            ];
             PrivateTmp = true;
           };
 
           path = [
-            cfg.package
+            effectivePackage
             pkgs.bash
             pkgs.coreutils
             pkgs.git
@@ -800,11 +914,11 @@ HERMES_NIX_ENV_EOF
 
           preStart = ''
             # Stable symlinks — container references these, not store paths directly
-            ln -sfn ${cfg.package} ${cfg.stateDir}/current-package
+            ln -sfn ${effectivePackage} ${cfg.stateDir}/current-package
             ln -sfn ${containerEntrypoint} ${cfg.stateDir}/current-entrypoint
 
             # GC roots so nix-collect-garbage doesn't remove store paths in use
-            ${pkgs.nix}/bin/nix-store --add-root ${cfg.stateDir}/.gc-root --indirect -r ${cfg.package} 2>/dev/null || true
+            ${pkgs.nix}/bin/nix-store --add-root ${cfg.stateDir}/.gc-root --indirect -r ${effectivePackage} 2>/dev/null || true
             ${pkgs.nix}/bin/nix-store --add-root ${cfg.stateDir}/.gc-root-entrypoint --indirect -r ${containerEntrypoint} 2>/dev/null || true
 
             # Check if container needs (re)creation

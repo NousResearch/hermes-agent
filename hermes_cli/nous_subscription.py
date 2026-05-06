@@ -9,7 +9,9 @@ from typing import Dict, Iterable, Optional, Set
 from hermes_cli.auth import get_nous_auth_status
 from hermes_cli.config import get_env_value, load_config
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+from utils import is_truthy_value
 from tools.tool_backend_helpers import (
+    fal_key_is_configured,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
     normalize_browser_cloud_provider,
@@ -22,6 +24,13 @@ from tools.tool_backend_helpers import (
 _DEFAULT_PLATFORM_TOOLSETS = {
     "cli": "hermes-cli",
 }
+
+
+def _uses_gateway(section: object) -> bool:
+    """Return True when a config section explicitly opts into the gateway."""
+    if not isinstance(section, dict):
+        return False
+    return is_truthy_value(section.get("use_gateway"), default=False)
 
 
 @dataclass(frozen=True)
@@ -261,17 +270,17 @@ def get_nous_subscription_features(
     # use_gateway flags — when True, the user explicitly opted into the
     # Tool Gateway via `hermes model`, so direct credentials should NOT
     # prevent gateway routing.
-    web_use_gateway = bool(web_cfg.get("use_gateway"))
-    tts_use_gateway = bool(tts_cfg.get("use_gateway"))
-    browser_use_gateway = bool(browser_cfg.get("use_gateway"))
+    web_use_gateway = _uses_gateway(web_cfg)
+    tts_use_gateway = _uses_gateway(tts_cfg)
+    browser_use_gateway = _uses_gateway(browser_cfg)
     image_gen_cfg = config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}
-    image_use_gateway = bool(image_gen_cfg.get("use_gateway"))
+    image_use_gateway = _uses_gateway(image_gen_cfg)
 
     direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
-    direct_fal = bool(get_env_value("FAL_KEY"))
+    direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
@@ -520,7 +529,7 @@ def apply_nous_managed_defaults(
         browser_cfg["cloud_provider"] = "browser-use"
         changed.add("browser")
 
-    if "image_gen" in selected_toolsets and not get_env_value("FAL_KEY"):
+    if "image_gen" in selected_toolsets and not fal_key_is_configured():
         changed.add("image_gen")
 
     return changed
@@ -548,7 +557,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
         ),
-        "image_gen": bool(get_env_value("FAL_KEY")),
+        "image_gen": fal_key_is_configured(),
         "tts": bool(
             resolve_openai_audio_api_key()
             or get_env_value("ELEVENLABS_API_KEY")
@@ -586,7 +595,6 @@ def get_gateway_eligible_tools(
         return [], [], []
 
     if config is None:
-        from hermes_cli.config import load_config
         config = load_config() or {}
 
     # Quick provider check without the heavy get_nous_subscription_features call
@@ -601,10 +609,10 @@ def get_gateway_eligible_tools(
     # no direct keys exist — we only skip the prompt for tools where
     # use_gateway was explicitly set.
     opted_in = {
-        "web": bool((config.get("web") if isinstance(config.get("web"), dict) else {}).get("use_gateway")),
-        "image_gen": bool((config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}).get("use_gateway")),
-        "tts": bool((config.get("tts") if isinstance(config.get("tts"), dict) else {}).get("use_gateway")),
-        "browser": bool((config.get("browser") if isinstance(config.get("browser"), dict) else {}).get("use_gateway")),
+        "web": _uses_gateway(config.get("web")),
+        "image_gen": _uses_gateway(config.get("image_gen")),
+        "tts": _uses_gateway(config.get("tts")),
+        "browser": _uses_gateway(config.get("browser")),
     }
 
     unconfigured: list[str] = []

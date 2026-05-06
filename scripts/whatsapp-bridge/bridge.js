@@ -23,8 +23,10 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { execSync } from 'child_process';
+import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
@@ -229,6 +231,14 @@ async function startSocket() {
 
       // Check allowlist for messages from others (resolve LID ↔ phone aliases)
       if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'allowlist_mismatch',
+            chatId,
+            senderId,
+          }));
+        } catch {}
         continue;
       }
 
@@ -364,6 +374,37 @@ async function startSocket() {
 const app = express();
 app.use(express.json());
 
+// Host-header validation — defends against DNS rebinding.
+// The bridge binds loopback-only (127.0.0.1) but a victim browser on
+// the same machine could be tricked into fetching from an attacker
+// hostname that TTL-flips to 127.0.0.1. Reject any request whose Host
+// header doesn't resolve to a loopback alias.
+// See GHSA-ppp5-vxwm-4cf7.
+const _ACCEPTED_HOST_VALUES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '::1',
+]);
+
+app.use((req, res, next) => {
+  const raw = (req.headers.host || '').trim();
+  if (!raw) {
+    return res.status(400).json({ error: 'Missing Host header' });
+  }
+  // Strip port suffix: "localhost:3000" → "localhost"
+  const hostOnly = (raw.includes(':')
+    ? raw.substring(0, raw.lastIndexOf(':'))
+    : raw
+  ).replace(/^\[|\]$/g, '').toLowerCase();
+  if (!_ACCEPTED_HOST_VALUES.has(hostOnly)) {
+    return res.status(400).json({
+      error: 'Invalid Host header. Bridge accepts loopback hosts only.',
+    });
+  }
+  next();
+});
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
@@ -466,8 +507,31 @@ app.post('/send-media', async (req, res) => {
         msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
       case 'audio': {
-        const audioMime = (ext === 'ogg' || ext === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
-        msgPayload = { audio: buffer, mimetype: audioMime, ptt: ext === 'ogg' || ext === 'opus' };
+        // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
+        // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),
+        // silently convert to ogg/opus via ffmpeg so ptt is always honoured.
+        let audioBuffer = buffer;
+        let audioExt = ext;
+        const needsConversion = !['ogg', 'opus'].includes(ext);
+        let tmpPath = null;
+        if (needsConversion) {
+          tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
+          try {
+            execSync(
+              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+              { timeout: 30000, stdio: 'pipe' }
+            );
+            audioBuffer = readFileSync(tmpPath);
+            audioExt = 'ogg';
+          } catch (convErr) {
+            // ffmpeg not available or conversion failed — fall back to original format
+            console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', convErr.message);
+          } finally {
+            try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
+          }
+        }
+        const audioMime = (audioExt === 'ogg' || audioExt === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
+        msgPayload = { audio: audioBuffer, mimetype: audioMime, ptt: audioExt === 'ogg' || audioExt === 'opus' };
         break;
       }
       case 'document':

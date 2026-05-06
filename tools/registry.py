@@ -19,6 +19,7 @@ import importlib
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -97,6 +98,48 @@ class ToolEntry:
         self.max_result_size_chars = max_result_size_chars
 
 
+# ---------------------------------------------------------------------------
+# check_fn TTL cache
+#
+# check_fn callables like tools/terminal_tool.check_terminal_requirements
+# probe external state (Docker daemon, Modal SDK install, playwright binary
+# availability). For a long-lived CLI or gateway process, calling them on
+# every get_definitions() is pure waste — external state changes on human
+# timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
+# or live credential file changes propagate within a turn or two without
+# requiring any explicit invalidation.
+# ---------------------------------------------------------------------------
+
+_CHECK_FN_TTL_SECONDS = 30.0
+_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache_lock = threading.Lock()
+
+
+def _check_fn_cached(fn: Callable) -> bool:
+    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    now = time.monotonic()
+    with _check_fn_cache_lock:
+        cached = _check_fn_cache.get(fn)
+        if cached is not None:
+            ts, value = cached
+            if now - ts < _CHECK_FN_TTL_SECONDS:
+                return value
+    try:
+        value = bool(fn())
+    except Exception:
+        value = False
+    with _check_fn_cache_lock:
+        _check_fn_cache[fn] = (now, value)
+    return value
+
+
+def invalidate_check_fn_cache() -> None:
+    """Drop all cached ``check_fn`` results. Call after config changes that
+    affect tool availability (e.g. ``hermes tools enable``)."""
+    with _check_fn_cache_lock:
+        _check_fn_cache.clear()
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
@@ -108,6 +151,12 @@ class ToolRegistry:
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
         self._lock = threading.RLock()
+        # Monotonically-increasing generation counter. Bumped on every
+        # mutation (register / deregister / register_toolset_alias / MCP
+        # refresh). External callers (e.g. get_tool_definitions) can memoize
+        # against it: a cache entry keyed on the generation is valid for as
+        # long as the generation hasn't changed.
+        self._generation: int = 0
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
@@ -158,6 +207,7 @@ class ToolRegistry:
                     alias, existing, toolset,
                 )
             self._toolset_aliases[alias] = toolset
+            self._generation += 1
 
     def get_registered_toolset_aliases(self) -> Dict[str, str]:
         """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
@@ -225,6 +275,7 @@ class ToolRegistry:
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
+            self._generation += 1
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
@@ -249,6 +300,7 @@ class ToolRegistry:
                     for alias, target in self._toolset_aliases.items()
                     if target != entry.toolset
                 }
+            self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------
@@ -259,9 +311,17 @@ class ToolRegistry:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
-        are included.
+        are included. ``check_fn()`` results are cached for ~30 s via
+        :func:`_check_fn_cached` to amortize repeat probes (check_terminal_
+        requirements probes modal/docker, browser checks probe playwright,
+        etc.); TTL chosen so env-var changes (``hermes tools enable foo``)
+        still take effect in near-real-time without forcing a full cache
+        flush on every call.
         """
         result = []
+        # Per-call cache on top of the 30 s TTL — handles repeat probes of the
+        # same check_fn within one definitions pass without re-reading the
+        # TTL clock.
         check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
@@ -270,12 +330,7 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    try:
-                        check_results[entry.check_fn] = bool(entry.check_fn())
-                    except Exception:
-                        check_results[entry.check_fn] = False
-                        if not quiet:
-                            logger.debug("Tool %s check raised; skipping", name)
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)

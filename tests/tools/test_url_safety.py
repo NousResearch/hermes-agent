@@ -3,7 +3,12 @@
 import socket
 from unittest.mock import patch
 
-from tools.url_safety import is_safe_url, _is_blocked_ip
+from tools.url_safety import (
+    is_safe_url,
+    _is_blocked_ip,
+    _global_allow_private_urls,
+    _reset_allow_private_cache,
+)
 
 import ipaddress
 import pytest
@@ -152,6 +157,34 @@ class TestIsSafeUrl:
             # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
 
+    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://example.com/file.jpg") is False
+
+    def test_qq_multimedia_hostname_allowed_with_benchmark_ip(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
+
+    def test_qq_multimedia_hostname_exception_is_exact_match(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_qq_multimedia_hostname_exception_requires_https(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("http://multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
+            assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
+
 
 class TestIsBlockedIp:
     """Direct tests for the _is_blocked_ip helper."""
@@ -159,7 +192,7 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
         "169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255",
-        "100.64.0.1", "100.100.100.100", "100.127.255.254",
+        "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
     ])
@@ -174,3 +207,203 @@ class TestIsBlockedIp:
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+
+class TestGlobalAllowPrivateUrls:
+    """Tests for the security.allow_private_urls config toggle."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        """Reset the module-level toggle cache before and after each test."""
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_default_is_false(self, monkeypatch):
+        """Toggle defaults to False when no env var or config is set."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            assert _global_allow_private_urls() is False
+
+    def test_env_var_true(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=true enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+
+    def test_env_var_1(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=1 enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+        assert _global_allow_private_urls() is True
+
+    def test_env_var_yes(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=yes enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "yes")
+        assert _global_allow_private_urls() is True
+
+    def test_env_var_false(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=false keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        assert _global_allow_private_urls() is False
+
+    def test_config_security_section(self, monkeypatch):
+        """security.allow_private_urls in config enables the toggle."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is True
+
+    def test_config_browser_fallback(self, monkeypatch):
+        """browser.allow_private_urls works as legacy fallback."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": {"allow_private_urls": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is True
+
+    def test_config_security_string_false_stays_disabled(self, monkeypatch):
+        """Quoted false must not opt out of SSRF protection."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": "false"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_browser_string_false_stays_disabled(self, monkeypatch):
+        """Legacy browser.allow_private_urls also normalises quoted false."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": {"allow_private_urls": "false"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_security_takes_precedence_over_browser(self, monkeypatch):
+        """security section is checked before browser section."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": True}, "browser": {"allow_private_urls": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is True
+
+    def test_env_var_overrides_config(self, monkeypatch):
+        """Env var takes priority over config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        cfg = {"security": {"allow_private_urls": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_result_is_cached(self, monkeypatch):
+        """Second call uses cached result, doesn't re-read config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+        # Change env after first call — should still be True (cached)
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        assert _global_allow_private_urls() is True
+
+
+class TestAllowPrivateUrlsIntegration:
+    """Integration tests: is_safe_url respects the global toggle."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_private_ip_allowed_when_toggle_on(self, monkeypatch):
+        """Private IPs pass is_safe_url when toggle is enabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("192.168.1.1", 0)),
+        ]):
+            assert is_safe_url("http://router.local") is True
+
+    def test_benchmark_ip_allowed_when_toggle_on(self, monkeypatch):
+        """198.18.x.x (benchmark/OpenWrt proxy range) passes when toggle is on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.23.183", 0)),
+        ]):
+            assert is_safe_url("https://nousresearch.com") is True
+
+    def test_cgnat_allowed_when_toggle_on(self, monkeypatch):
+        """CGNAT range (100.64.0.0/10) passes when toggle is on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.100.100.100", 0)),
+        ]):
+            assert is_safe_url("http://tailscale-peer.example/") is True
+
+    def test_localhost_allowed_when_toggle_on(self, monkeypatch):
+        """Even localhost passes when toggle is on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://localhost:8080/api") is True
+
+    # --- Cloud metadata always blocked regardless of toggle ---
+
+    def test_metadata_hostname_blocked_even_with_toggle(self, monkeypatch):
+        """metadata.google.internal is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+
+    def test_metadata_goog_blocked_even_with_toggle(self, monkeypatch):
+        """metadata.goog is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert is_safe_url("http://metadata.goog/computeMetadata/v1/") is False
+
+    def test_metadata_ip_blocked_even_with_toggle(self, monkeypatch):
+        """169.254.169.254 (AWS/GCP metadata IP) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_metadata_ipv6_blocked_even_with_toggle(self, monkeypatch):
+        """fd00:ec2::254 (AWS IPv6 metadata) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fd00:ec2::254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[fd00:ec2::254]/latest/") is False
+
+    def test_ecs_metadata_blocked_even_with_toggle(self, monkeypatch):
+        """169.254.170.2 (AWS ECS task metadata) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.170.2", 0)),
+        ]):
+            assert is_safe_url("http://169.254.170.2/v2/credentials") is False
+
+    def test_alibaba_metadata_blocked_even_with_toggle(self, monkeypatch):
+        """100.100.100.200 (Alibaba Cloud metadata) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.100.100.200", 0)),
+        ]):
+            assert is_safe_url("http://100.100.100.200/latest/meta-data/") is False
+
+    def test_azure_wire_server_blocked_even_with_toggle(self, monkeypatch):
+        """169.254.169.253 (Azure IMDS wire server) is ALWAYS blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.253", 0)),
+        ]):
+            assert is_safe_url("http://169.254.169.253/") is False
+
+    def test_entire_link_local_blocked_even_with_toggle(self, monkeypatch):
+        """Any 169.254.x.x address is ALWAYS blocked (entire link-local range)."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.42.99", 0)),
+        ]):
+            assert is_safe_url("http://169.254.42.99/anything") is False
+
+    def test_dns_failure_still_blocked_with_toggle(self, monkeypatch):
+        """DNS failures are still blocked even with toggle on."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
+            assert is_safe_url("https://nonexistent.example.com") is False
+
+    def test_empty_url_still_blocked_with_toggle(self, monkeypatch):
+        """Empty URLs are still blocked."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert is_safe_url("") is False

@@ -34,7 +34,12 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2  # noqa: E402
+from gateway.platforms.telegram import (  # noqa: E402
+    TelegramAdapter,
+    _escape_mdv2,
+    _strip_mdv2,
+    _wrap_markdown_tables,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +538,160 @@ class TestStripMdv2:
 
     def test_removes_spoiler_markers(self):
         assert _strip_mdv2("||hidden text||") == "hidden text"
+
+
+# =========================================================================
+# Markdown table auto-wrap
+# =========================================================================
+
+
+class TestWrapMarkdownTables:
+    """_wrap_markdown_tables rewrites GFM pipe tables into Telegram-friendly
+    row groups instead of leaving noisy pipe syntax in the final message."""
+
+    def test_basic_table_rewritten_as_row_groups(self):
+        text = (
+            "Scores:\n\n"
+            "| Player | Score |\n"
+            "|--------|-------|\n"
+            "| Alice  | 150   |\n"
+            "| Bob    | 120   |\n"
+            "\nEnd."
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Alice**" in out
+        assert "• Player: Alice" in out
+        assert "• Score: 150" in out
+        assert "**Bob**" in out
+        assert "• Score: 120" in out
+        # Surrounding prose is preserved
+        assert out.startswith("Scores:")
+        assert out.endswith("End.")
+
+    def test_bare_pipe_table_rewritten(self):
+        """Tables without outer pipes (GFM allows this) are still detected."""
+        text = "head1 | head2\n--- | ---\na | b\nc | d"
+        out = _wrap_markdown_tables(text)
+        assert out.startswith("**a**")
+        assert "• head1: a" in out
+        assert "• head2: b" in out
+        assert "**c**" in out
+
+    def test_alignment_separators(self):
+        """Separator rows with :--- / ---: / :---: alignment markers match."""
+        text = (
+            "| Name | Age | City |\n"
+            "|:-----|----:|:----:|\n"
+            "| Ada  |  30 | NYC  |"
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Ada**" in out
+        assert "• Age: 30" in out
+        assert "• City: NYC" in out
+
+    def test_two_consecutive_tables_rewritten_separately(self):
+        text = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "\n"
+            "| X | Y |\n"
+            "|---|---|\n"
+            "| 9 | 8 |"
+        )
+        out = _wrap_markdown_tables(text)
+        assert out.count("**1**") == 1
+        assert out.count("**9**") == 1
+        assert "• A: 1" in out
+        assert "• X: 9" in out
+
+    def test_plain_text_with_pipes_not_wrapped(self):
+        """A bare pipe in prose must NOT trigger wrapping."""
+        text = "Use the | pipe operator to chain commands."
+        assert _wrap_markdown_tables(text) == text
+
+    def test_horizontal_rule_not_wrapped(self):
+        """A lone '---' horizontal rule must not be mistaken for a separator."""
+        text = "Section A\n\n---\n\nSection B"
+        assert _wrap_markdown_tables(text) == text
+
+    def test_existing_code_block_with_pipes_left_alone(self):
+        """A table already inside a fenced code block must not be re-wrapped."""
+        text = (
+            "```\n"
+            "| a | b |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "```"
+        )
+        assert _wrap_markdown_tables(text) == text
+
+    def test_no_pipe_character_short_circuits(self):
+        text = "Plain **bold** text with no table."
+        assert _wrap_markdown_tables(text) == text
+
+    def test_no_dash_short_circuits(self):
+        text = "a | b\nc | d"  # has pipes but no '-' separator row
+        assert _wrap_markdown_tables(text) == text
+
+    def test_single_column_separator_not_matched(self):
+        """Single-column tables (rare) are not detected — we require at
+        least one internal pipe in the separator row to avoid false
+        positives on formatting rules."""
+        text = "| a |\n| - |\n| b |"
+        assert _wrap_markdown_tables(text) == text
+
+
+class TestFormatMessageTables:
+    """End-to-end: pipe tables become readable Telegram-native text instead
+    of escaped pipe syntax or fenced code blocks."""
+
+    def test_table_rendered_as_bullets(self, adapter):
+        text = (
+            "Data:\n\n"
+            "| Col1 | Col2 |\n"
+            "|------|------|\n"
+            "| A    | B    |\n"
+        )
+        out = adapter.format_message(text)
+        assert "*A*" in out
+        assert "• Col1: A" in out
+        assert "• Col2: B" in out
+        assert "```" not in out
+        assert "\\|" not in out
+
+    def test_text_after_table_still_formatted(self, adapter):
+        text = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "\n"
+            "Nice **work** team!"
+        )
+        out = adapter.format_message(text)
+        # MarkdownV2 bold conversion still happens outside the table
+        assert "*work*" in out
+        # Exclamation outside fence is escaped
+        assert "\\!" in out
+        assert "*1*" in out
+        assert "• A: 1" in out
+
+    def test_multiple_tables_in_single_message(self, adapter):
+        text = (
+            "First:\n"
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "\n"
+            "Second:\n"
+            "| X | Y |\n"
+            "|---|---|\n"
+            "| 9 | 8 |\n"
+        )
+        out = adapter.format_message(text)
+        assert out.count("*1*") == 1
+        assert out.count("*9*") == 1
+        assert "• X: 9" in out
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,5 @@
+name: stepfun-provider
+kind: model-provider
+version: 1.0.0
+description: StepFun Step Plan
+author: Nous Research

@@ -77,6 +77,13 @@ class FakeMemoryProvider(MemoryProvider):
         self.memory_writes.append((action, target, content))
 
 
+class MetadataMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into write metadata."""
+
+    def on_memory_write(self, action, target, content, metadata=None):
+        self.memory_writes.append((action, target, content, metadata or {}))
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider ABC tests
 # ---------------------------------------------------------------------------
@@ -862,6 +869,51 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("add", "memory", "new fact")
         assert p.memory_writes == [("add", "memory", "new fact")]
 
+    def test_on_memory_write_metadata_passed_to_opt_in_provider(self):
+        """Providers that accept metadata receive structured write provenance."""
+        mgr = MemoryManager()
+        p = MetadataMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        mgr.on_memory_write(
+            "add",
+            "memory",
+            "new fact",
+            metadata={
+                "write_origin": "assistant_tool",
+                "execution_context": "foreground",
+                "session_id": "sess-1",
+            },
+        )
+
+        assert p.memory_writes == [
+            (
+                "add",
+                "memory",
+                "new fact",
+                {
+                    "write_origin": "assistant_tool",
+                    "execution_context": "foreground",
+                    "session_id": "sess-1",
+                },
+            )
+        ]
+
+    def test_on_memory_write_metadata_keeps_legacy_provider_compatible(self):
+        """Old 3-arg providers keep working when the manager receives metadata."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        mgr.on_memory_write(
+            "add",
+            "user",
+            "legacy provider fact",
+            metadata={"write_origin": "assistant_tool"},
+        )
+
+        assert p.memory_writes == [("add", "user", "legacy provider fact")]
+
     def test_on_memory_write_replace(self):
         """on_memory_write fires for 'replace' actions."""
         mgr = MemoryManager()
@@ -970,8 +1022,6 @@ class TestHonchoCadenceTracking:
         # Simulate a manager that records prefetch calls
         class FakeManager:
             def prefetch_context(self, key, query=None):
-                pass
-            def prefetch_dialectic(self, key, query):
                 pass
 
         p._manager = FakeManager()

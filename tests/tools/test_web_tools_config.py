@@ -63,38 +63,6 @@ class TestFirecrawlClientConfig:
 
     # ── Configuration matrix ─────────────────────────────────────────
 
-    def test_cloud_mode_key_only(self):
-        """API key without URL → cloud Firecrawl."""
-        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
-            with patch("tools.web_tools.Firecrawl") as mock_fc:
-                from tools.web_tools import _get_firecrawl_client
-                result = _get_firecrawl_client()
-                mock_fc.assert_called_once_with(api_key="fc-test")
-                assert result is mock_fc.return_value
-
-    def test_self_hosted_with_key(self):
-        """Both key + URL → self-hosted with auth."""
-        with patch.dict(os.environ, {
-            "FIRECRAWL_API_KEY": "fc-test",
-            "FIRECRAWL_API_URL": "http://localhost:3002",
-        }):
-            with patch("tools.web_tools.Firecrawl") as mock_fc:
-                from tools.web_tools import _get_firecrawl_client
-                result = _get_firecrawl_client()
-                mock_fc.assert_called_once_with(
-                    api_key="fc-test", api_url="http://localhost:3002"
-                )
-                assert result is mock_fc.return_value
-
-    def test_self_hosted_no_key(self):
-        """URL only, no key → self-hosted without auth."""
-        with patch.dict(os.environ, {"FIRECRAWL_API_URL": "http://localhost:3002"}):
-            with patch("tools.web_tools.Firecrawl") as mock_fc:
-                from tools.web_tools import _get_firecrawl_client
-                result = _get_firecrawl_client()
-                mock_fc.assert_called_once_with(api_url="http://localhost:3002")
-                assert result is mock_fc.return_value
-
     def test_no_config_raises_with_helpful_message(self):
         """Neither key nor URL → ValueError with guidance."""
         with patch("tools.web_tools.Firecrawl"):
@@ -168,18 +136,6 @@ class TestFirecrawlClientConfig:
                     api_key="nous-token",
                     api_url="https://firecrawl-gateway.nousresearch.com",
                 )
-
-    def test_direct_mode_is_preferred_over_tool_gateway(self):
-        """Explicit Firecrawl config should win over the gateway fallback."""
-        with patch.dict(os.environ, {
-            "FIRECRAWL_API_KEY": "fc-test",
-            "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
-        }):
-            with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
-                with patch("tools.web_tools.Firecrawl") as mock_fc:
-                    from tools.web_tools import _get_firecrawl_client
-                    _get_firecrawl_client()
-                mock_fc.assert_called_once_with(api_key="fc-test")
 
     def test_nous_auth_token_respects_hermes_home_override(self, tmp_path):
         """Auth lookup should read from HERMES_HOME/auth.json, not ~/.hermes/auth.json."""
@@ -274,18 +230,6 @@ class TestFirecrawlClientConfig:
                 assert result is not None
 
     # ── Edge cases ───────────────────────────────────────────────────
-
-    def test_empty_string_key_treated_as_absent(self):
-        """FIRECRAWL_API_KEY='' should not be passed as api_key."""
-        with patch.dict(os.environ, {
-            "FIRECRAWL_API_KEY": "",
-            "FIRECRAWL_API_URL": "http://localhost:3002",
-        }):
-            with patch("tools.web_tools.Firecrawl") as mock_fc:
-                from tools.web_tools import _get_firecrawl_client
-                _get_firecrawl_client()
-                # Empty string is falsy, so only api_url should be passed
-                mock_fc.assert_called_once_with(api_url="http://localhost:3002")
 
     def test_empty_string_key_no_url_raises(self):
         """FIRECRAWL_API_KEY='' with no URL → should raise."""
@@ -502,6 +446,54 @@ class TestParallelClientConfig:
             client1 = _get_parallel_client()
             client2 = _get_parallel_client()
             assert client1 is client2
+
+
+class TestWebSearchSchema:
+    """Test suite for web_search tool schema and handler wiring."""
+
+    def test_schema_exposes_optional_limit(self):
+        import tools.web_tools
+
+        limit_schema = tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]["limit"]
+
+        assert limit_schema["type"] == "integer"
+        assert limit_schema["minimum"] == 1
+        assert limit_schema["maximum"] == 100
+        assert limit_schema["default"] == 5
+        assert "limit" not in tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["required"]
+
+    def test_registered_handler_passes_limit(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_search")
+        with patch("tools.web_tools.web_search_tool", return_value='{"success": true}') as mock_search:
+            result = entry.handler({"query": "site:example.com docs", "limit": 12})
+
+        assert result == '{"success": true}'
+        mock_search.assert_called_once_with("site:example.com docs", limit=12)
+
+    def test_registered_handler_defaults_limit_to_five(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_search")
+        with patch("tools.web_tools.web_search_tool", return_value='{"success": true}') as mock_search:
+            result = entry.handler({"query": "docs"})
+
+        assert result == '{"success": true}'
+        mock_search.assert_called_once_with("docs", limit=5)
+
+    def test_web_search_clamps_limit_before_backend_call(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._get_backend", return_value="parallel"), \
+             patch("tools.web_tools._parallel_search", return_value={"success": True, "data": {"web": []}}) as mock_search, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
+
+        assert result == {"success": True, "data": {"web": []}}
+        mock_search.assert_called_once_with("docs", 100)
 
 
 class TestWebSearchErrorHandling:

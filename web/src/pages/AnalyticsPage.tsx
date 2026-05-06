@@ -275,7 +275,6 @@ function CollapsibleCard({
   defaultOpen?: boolean;
   headerExtra?: React.ReactNode;
 }) {
-  const { t } = useI18n();
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -679,7 +678,7 @@ function SkillActivityPanel({ days }: { days: number }) {
                   <Button size="sm" onClick={handleCleanupConfirm} disabled={cleanupLoading} prefix={cleanupLoading ? <Spinner /> : undefined}>
                     {t.analytics.skillCleanupConfirm}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setCleanupPreview(null)}>✕</Button>
+                  <Button size="sm" ghost onClick={() => setCleanupPreview(null)}>✕</Button>
                 </div>
               ) : (
                 <Button size="sm" outlined onClick={handleCleanupPreview} disabled={cleanupLoading} prefix={cleanupLoading ? <Spinner /> : undefined}>

@@ -2678,31 +2678,38 @@ class AIAgent:
         # ── Layer 2: Failure check (config-gated) ──
         if not self._circuit_breaker_enabled:
             return None
+        is_failure = False
         try:
             data = json.loads(result)
+            if not isinstance(data, dict):
+                self._tool_failure_count[tool_name] = 0
+                return None
+
+            if "error" in data:
+                is_failure = True
+            elif "BLOCKED" in str(data):
+                is_failure = True
+            elif data.get("total_count") == 0 and data.get("total_count") is not None:
+                # Empty result counts as failure for search-type tools
+                is_failure = True
+            elif data.get("total_count", 0) > 0:
+                # Has data — success, reset counter
+                self._tool_failure_count[tool_name] = 0
+                return None
+            else:
+                # Unknown format — treat as success (be conservative)
+                self._tool_failure_count[tool_name] = 0
+                return None
         except (json.JSONDecodeError, TypeError):
-            # Not JSON — treat as success (be conservative)
-            self._tool_failure_count[tool_name] = 0
-            return None
+            # Non-JSON — check for Hermes error indicators
+            _r = result or ""
+            if "[error]" in _r or "Error executing" in _r or "Error:" in _r or _r.startswith("Error"):
+                is_failure = True
+            else:
+                self._tool_failure_count[tool_name] = 0
+                return None
 
-        if not isinstance(data, dict):
-            self._tool_failure_count[tool_name] = 0
-            return None
-
-        # Check for failure conditions
-        if "error" in data:
-            is_failure = True
-        elif "BLOCKED" in str(data):
-            is_failure = True
-        elif data.get("total_count") == 0 and data.get("total_count") is not None:
-            # Empty result counts as failure for search-type tools
-            is_failure = True
-        elif data.get("total_count", 0) > 0:
-            # Has data — success, reset counter
-            self._tool_failure_count[tool_name] = 0
-            return None
-        else:
-            # Unknown format — treat as success (be conservative)
+        if not is_failure:
             self._tool_failure_count[tool_name] = 0
             return None
 
@@ -2808,12 +2815,12 @@ class AIAgent:
         consecutive = self._consecutive_tool_calls.get(tool_name, 0)
         result_preview = last_result[:500] if last_result else "(empty)"
         return (
-            f"[Tool called {consecutive} times consecutively] "
-            f"Tool '{tool_name}' has been called {consecutive} times in a row. "
-            f"Last result: {result_preview}\n\n"
-            f"Please pause and assess: are you making progress, or are you stuck in a loop? "
-            f"If the repeated calls are not producing useful results, "
-            f"try a completely different approach."
+            f"[CIRCUIT BREAKER] Tool '{tool_name}' called {consecutive} times "
+            f"consecutively (auxiliary model unavailable). All {consecutive} calls "
+            f"returned similar results. YOU ARE STUCK IN A LOOP. "
+            f"DO NOT retry this tool. DO NOT use similar parameters or approaches. "
+            f"Stop immediately and use a completely different strategy. "
+            f"Last result: {result_preview}"
         )
 
     def _get_tool_suggestion(self, tool_name: str, last_result: str) -> str | None:

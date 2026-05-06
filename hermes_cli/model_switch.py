@@ -1666,10 +1666,22 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+            # When current_provider is bare "custom" (no : suffix) but the
+            # slug is "custom:<name>" (e.g. "custom:llama-swap"), the
+            # equality check below would always return False, causing the
+            # WebUI to fall back to the first available provider (Copilot).
+            # Match bare "custom" against any custom: prefixed slug.
+            _is_current = (
+                slug == current_provider
+                or (
+                    current_provider.strip().lower() == "custom"
+                    and slug.startswith("custom:")
+                )
+            )
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider,
+                "is_current": _is_current,
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

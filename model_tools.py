@@ -135,8 +135,8 @@ def _run_async(coro):
                         worker_loop.run_until_complete(
                             asyncio.gather(*pending, return_exceptions=True)
                         )
-                except Exception:
-                    pass
+            except Exception:
+                logger.debug("pre_tool_call block check failed", exc_info=True)
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -783,7 +783,7 @@ def handle_function_call(
                 duration_ms=duration_ms,
             )
         except Exception:
-            pass
+            logger.debug("post_tool_call plugin hook failed", exc_info=True)
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -808,7 +808,7 @@ def handle_function_call(
                     result = hook_result
                     break
         except Exception:
-            pass
+            logger.debug("transform_tool_result plugin hook failed", exc_info=True)
 
         return result
 

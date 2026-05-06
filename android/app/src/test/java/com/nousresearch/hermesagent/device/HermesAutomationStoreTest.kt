@@ -84,6 +84,56 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsAppForegroundTriggerRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_app_launch_task",
+                org.json.JSONObject()
+                    .put("id", "auto-foreground")
+                    .put("package_name", "com.nousresearch.hermesagent.missing")
+                    .put("trigger", "application")
+                    .put("trigger_package_name", "com.example.foreground"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(TRIGGER_APP_FOREGROUND, created.getJSONObject("automation").getString("trigger_type"))
+        assertEquals("com.example.foreground", created.getJSONObject("automation").getString("trigger_package_name"))
+
+        val missed = org.json.JSONObject(HermesAutomationBridge.runAppForegroundTriggerJson(context, "com.example.other"))
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+
+        val matched = org.json.JSONObject(HermesAutomationBridge.runAppForegroundTriggerJson(context, "com.example.foreground"))
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertFalse(matched.getJSONArray("results").getJSONObject(0).getBoolean("success"))
+
+        val generic = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "app_foreground"),
+            ),
+        )
+        assertFalse(generic.toString(), generic.getBoolean("success"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shell_task",
+                org.json.JSONObject()
+                    .put("command", "printf no")
+                    .put("trigger", "app_foreground"),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+    }
+
+    @Test
     fun bridgeCreatesFileAndSystemActionRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

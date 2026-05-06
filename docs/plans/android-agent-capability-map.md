@@ -45,13 +45,13 @@ Agent Android implementation work.
 | Local chat and tool calls | Present through LiteRT-LM/GGUF runtime paths and `NativeToolCallingChatClient`. |
 | File creation/deletion/read/write | Present through native tool calls and app-workspace shell/file tools. |
 | Android status and safe settings panels | Present through `HermesSystemControlBridge`. |
-| Accessibility-based UI snapshot/action | Present through `HermesAccessibilityUiBridge` when the user enables the accessibility service; exposed to model tool-calling through `android_ui_tool`. |
+| Accessibility-based UI snapshot/action | Present through `HermesAccessibilityUiBridge` when the user enables the accessibility service; exposed to model tool-calling through `android_ui_tool`. The same service observes foreground app package changes for saved app-context triggers. |
 | Shizuku/Sui privileged setup | Present: `HermesPrivilegedAccessBridge` detects Shizuku/Sui, binder state, permission state, UID/root-vs-ADB identity, and exposes setup actions. |
 | Shizuku/Sui privileged shell execution | Present through `android_system_tool` action `run_privileged_shell` after the user starts Shizuku/Sui and grants Hermes permission. |
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
 | Tasker-style manual tasks/actions | Present for saved shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch records through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. |
-| Tasker-style profiles/triggers | Present for manual, interval, boot, power-connected, power-disconnected, battery-low, and battery-okay saved automation tasks. Location, app-state, sensor, calendar, notification, and plugin-profile triggers are not yet present. |
+| Tasker-style profiles/triggers | Present for manual, interval, boot, power-connected, power-disconnected, battery-low, battery-okay, and app-foreground saved automation tasks. App-foreground triggers require the user-enabled Hermes accessibility service and an explicit `trigger_package_name`. Location, deeper app-state, sensor, calendar, notification, and plugin-profile triggers are not yet present. |
 | Tasker-style variables | Present as a durable Android automation variable table exposed through `android_automation_tool`; shell commands, file paths, file content, system-action names, UI selectors, UI text values, and app package names can expand `%NAME` or `{{NAME}}` values at run time. |
 | Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
 | Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
@@ -75,10 +75,10 @@ control available to consenting users.
 ## Next Tasker-Parity Work
 
 The next credible Tasker-parity feature after shell/file/system/UI/app-launch
-actions, variables, and basic phone-state triggers should extend profile
-coverage with explicit user-visible records:
+actions, variables, basic phone-state triggers, and app-foreground triggers
+should extend profile coverage with explicit user-visible records:
 
-- location, app-state, calendar, notification, and sensor triggers,
+- location, calendar, notification, sensor, and deeper app-state triggers,
 - Shizuku-only actions clearly marked as requiring user-granted Shizuku/Sui, and
 - tests proving scheduled/manual actions cannot mutate outside the Hermes app
   workspace unless Shizuku is explicitly selected and available.

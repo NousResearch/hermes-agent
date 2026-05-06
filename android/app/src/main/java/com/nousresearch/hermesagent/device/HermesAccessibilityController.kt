@@ -16,6 +16,8 @@ enum class HermesGlobalAction(val label: String, val actionId: Int) {
 object HermesAccessibilityController {
     @Volatile
     private var service: HermesAccessibilityService? = null
+    @Volatile
+    private var lastForegroundPackageName: String = ""
 
     fun bind(service: HermesAccessibilityService) {
         this.service = service
@@ -45,4 +47,15 @@ object HermesAccessibilityController {
     }
 
     fun currentService(): HermesAccessibilityService? = service
+
+    fun rememberForegroundPackage(packageName: String): Boolean {
+        val trimmed = packageName.trim()
+        if (trimmed.isBlank() || trimmed == lastForegroundPackageName) {
+            return false
+        }
+        lastForegroundPackageName = trimmed
+        return true
+    }
+
+    fun currentForegroundPackageName(): String = lastForegroundPackageName
 }

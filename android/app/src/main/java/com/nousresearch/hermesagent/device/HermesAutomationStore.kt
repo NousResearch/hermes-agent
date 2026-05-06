@@ -11,6 +11,7 @@ data class HermesAutomationRecord(
     val command: String,
     val useShizuku: Boolean,
     val triggerType: String,
+    val triggerPackageName: String = "",
     val intervalMinutes: Int?,
     val enabled: Boolean,
     val createdAtEpochMs: Long,
@@ -28,6 +29,7 @@ data class HermesAutomationRecord(
             .put("command", command)
             .put("use_shizuku", useShizuku)
             .put("trigger_type", triggerType)
+            .put("trigger_package_name", triggerPackageName)
             .put("interval_minutes", intervalMinutes ?: JSONObject.NULL)
             .put("enabled", enabled)
             .put("created_at_epoch_ms", createdAtEpochMs)
@@ -47,6 +49,7 @@ data class HermesAutomationRecord(
                 command = json.optString("command"),
                 useShizuku = json.optBoolean("use_shizuku", false),
                 triggerType = json.optString("trigger_type").ifBlank { TRIGGER_MANUAL },
+                triggerPackageName = json.optString("trigger_package_name"),
                 intervalMinutes = if (json.isNull("interval_minutes")) null else json.optInt("interval_minutes"),
                 enabled = json.optBoolean("enabled", true),
                 createdAtEpochMs = json.optLong("created_at_epoch_ms", 0L),
@@ -174,3 +177,4 @@ const val TRIGGER_POWER_CONNECTED = "power_connected"
 const val TRIGGER_POWER_DISCONNECTED = "power_disconnected"
 const val TRIGGER_BATTERY_LOW = "battery_low"
 const val TRIGGER_BATTERY_OKAY = "battery_okay"
+const val TRIGGER_APP_FOREGROUND = "app_foreground"

@@ -10071,6 +10071,12 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    if self._is_telegram_topic_lane(source):
+                        self._schedule_telegram_topic_title_rename(
+                            source,
+                            session_id,
+                            sanitized,
+                        )
                     return f"✏️ Session title set: **{sanitized}**"
                 else:
                     return "Session not found in database."

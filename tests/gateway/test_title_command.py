@@ -72,6 +72,28 @@ class TestHandleTitleCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_set_title_renames_telegram_topic_lane(self, tmp_path):
+        """Setting /title inside a Telegram topic also requests a topic rename."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        runner._is_telegram_topic_lane = MagicMock(return_value=True)
+        runner._schedule_telegram_topic_title_rename = MagicMock()
+        event = _make_event(text="/title Topic Display Name")
+        result = await runner._handle_title_command(event)
+
+        assert "Topic Display Name" in result
+        assert db.get_session_title("test_session_123") == "Topic Display Name"
+        runner._schedule_telegram_topic_title_rename.assert_called_once_with(
+            event.source,
+            "test_session_123",
+            "Topic Display Name",
+        )
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_show_title_when_set(self, tmp_path):
         """Showing title when one is set returns the title."""
         from hermes_state import SessionDB

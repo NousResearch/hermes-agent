@@ -145,6 +145,7 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
+    model_requires_max_completion_tokens,
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -3047,7 +3048,9 @@ class AIAgent:
         OpenAI-compatible endpoint. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        if self._is_direct_openai_url() or self._is_azure_openai_url():
+        if (self._is_direct_openai_url()
+                or self._is_azure_openai_url()
+                or model_requires_max_completion_tokens(self.model)):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 

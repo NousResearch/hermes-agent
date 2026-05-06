@@ -1481,3 +1481,29 @@ def estimate_request_tokens_rough(
     if tools:
         total_chars += len(str(tools))
     return (total_chars + 3) // 4
+
+
+def model_requires_max_completion_tokens(model: str) -> bool:
+    """Return True when a model requires max_completion_tokens instead of max_tokens.
+
+    OpenAI's newer model families (gpt-4o, gpt-4.1, gpt-5, o1/o3/o4) only accept
+    ``max_completion_tokens``.  This matters for custom OpenAI-compatible endpoints
+    (OpenRouter, self-hosted, proxies) that sit behind non-api.openai.com hosts —
+    the URL-based check alone is insufficient for those.
+
+    Provider-prefixed model names such as "openai/gpt-4o" or "anthropic/claude-3-5"
+    are handled by stripping the prefix before matching.
+    """
+    if not model:
+        return False
+    m = model.strip().lower()
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return (
+        m.startswith("gpt-4o")
+        or m.startswith("gpt-4.1")
+        or m.startswith("gpt-5")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )

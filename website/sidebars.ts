@@ -77,6 +77,7 @@ const sidebars: SidebarsConfig = {
           label: 'Media & Web',
           items: [
             'user-guide/features/voice-mode',
+            'user-guide/features/web-search',
             'user-guide/features/browser',
             'user-guide/features/vision',
             'user-guide/features/image-generation',

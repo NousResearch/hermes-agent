@@ -12,6 +12,7 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
+    _bundled_hub_guard,
     _find_skill,
     _resolve_skill_dir,
     _create_skill,
@@ -56,6 +57,19 @@ description: Updated description.
 # Test Skill v2
 
 Step 1: Do the new thing.
+"""
+
+
+def skill_content(name: str, body: str = "Step 1: Do the thing.") -> str:
+    return f"""\
+---
+name: {name}
+description: A test skill for unit testing.
+---
+
+# {name}
+
+{body}
 """
 
 
@@ -182,6 +196,59 @@ class TestValidateFilePath:
         err = _validate_file_path("malicious.py")
         assert "File must be under one of:" in err
         assert "'malicious.py'" in err
+
+
+# ---------------------------------------------------------------------------
+# Bundled / hub protection
+# ---------------------------------------------------------------------------
+
+
+class TestBundledHubGuard:
+    def test_bundled_manifest_blocks_all_mutation_actions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        (skills_root / ".bundled_manifest").write_text("guarded:abc123\n", encoding="utf-8")
+
+        with _skill_dir(skills_root):
+            _create_skill("guarded", skill_content("guarded"))
+            (skills_root / "guarded" / "references").mkdir()
+            (skills_root / "guarded" / "references" / "api.md").write_text("original", encoding="utf-8")
+
+            edit = _edit_skill("guarded", skill_content("guarded", "Updated."))
+            patch_result = _patch_skill("guarded", "Do the thing.", "Do the unsafe thing.")
+            write = _write_file("guarded", "references/new.md", "new")
+            remove = _remove_file("guarded", "references/api.md")
+            delete = _delete_skill("guarded")
+
+        for result in (edit, patch_result, write, remove, delete):
+            assert result["success"] is False
+            assert "bundled or hub-installed" in result["error"]
+        assert (skills_root / "guarded" / "SKILL.md").exists()
+        assert "Do the unsafe thing" not in (skills_root / "guarded" / "SKILL.md").read_text()
+        assert not (skills_root / "guarded" / "references" / "new.md").exists()
+        assert (skills_root / "guarded" / "references" / "api.md").read_text() == "original"
+
+    def test_hub_lock_blocks_mutation_for_nested_install_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        hub_dir = skills_root / ".hub"
+        hub_dir.mkdir(parents=True)
+        (hub_dir / "lock.json").write_text(
+            json.dumps({"installed": {"hub-skill": {"install_path": "community/hub-skill"}}}),
+            encoding="utf-8",
+        )
+
+        with _skill_dir(skills_root):
+            _create_skill("hub-skill", skill_content("hub-skill"), category="community")
+            guard = _bundled_hub_guard("hub-skill")
+            result = _patch_skill("hub-skill", "Do the thing.", "Do the unsafe thing.")
+
+        assert guard is not None
+        assert "bundled or hub-installed" in guard
+        assert result["success"] is False
+        assert "bundled or hub-installed" in result["error"]
+        assert "Do the unsafe thing" not in (skills_root / "community" / "hub-skill" / "SKILL.md").read_text()
 
 
 # ---------------------------------------------------------------------------

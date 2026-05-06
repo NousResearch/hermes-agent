@@ -13159,6 +13159,7 @@ class GatewayRunner:
                         _status_chat_id,
                         message,
                         metadata=_status_thread_metadata,
+                        priority="silent",
                     ),
                     _loop_for_step,
                 )
@@ -14026,6 +14027,7 @@ class GatewayRunner:
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
                         metadata=_status_thread_metadata,
+                        priority="silent",
                     )
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
@@ -14120,6 +14122,7 @@ class GatewayRunner:
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
                                     metadata=_status_thread_metadata,
+                                    priority="silent",
                                 )
                             except Exception as _warn_err:
                                 logger.debug("Inactivity warning send error: %s", _warn_err)

@@ -1202,6 +1202,36 @@ class TelegramAdapter(BasePlatformAdapter):
         if metadata and "priority" in metadata:
             effective_priority = metadata["priority"]
         
+        # Auto-classify priority if still default "normal" - check content for silent indicators
+        if effective_priority == "normal" and content:
+            content_lower = content.lower()
+            
+            # Check for system message indicators
+            
+            # 1. Check for leading emoji (system messages often start with emoji)
+            system_emoji_prefixes = ['⏳', '🔄', '📊', '⏲️', '🔁', '⏱️', '📡', '🧠', '🤔', '💭', '⚙️', '🔧', '📝', '🔎', '🌐', '💻', '📥', '📤']
+            for emoji in system_emoji_prefixes:
+                if content.startswith(emoji):
+                    effective_priority = "silent"
+                    break
+            if effective_priority != "normal":
+                pass  # Already classified as silent
+            # 2. Check for silent patterns in content
+            elif any(pattern in content_lower for pattern in [
+                "still working", "iterating", "iteration", "checking ",
+                "analyzing", "processing", "searching", "running ",
+                "waiting for", "provider:", "retrying", "elapsed",
+                "thinking...", "working on this", "in progress",
+            ]):
+                effective_priority = "silent"
+            # 3. Check for urgent patterns
+            elif any(pattern in content_lower for pattern in [
+                "error", "failed", "exception", "crashed", "blocked",
+                "abort", "critical", "urgent", "requires approval",
+                "api key", "authentication", "unauthorized", "forbidden",
+            ]):
+                effective_priority = "urgent"
+        
         # Determine notification setting based on priority
         disable_notification = effective_priority == "silent"
         

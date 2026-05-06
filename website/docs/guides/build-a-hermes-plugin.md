@@ -670,20 +670,20 @@ from hermes_cli.plugins import (
 )
 
 
-async def open_board(adapter, command):
+async def open_workflow(adapter, command):
     channel_id = command["channel_id"]
     await adapter._get_client(channel_id).chat_postMessage(
         channel=channel_id,
-        text="Board opened.",
+        text="Interactive workflow opened.",
     )
 
 
-async def handle_board_action(ack, body, action, adapter):
+async def handle_workflow_action(ack, body, action, adapter):
     await ack()
     # Update a task, open a modal, or repaint a message.
 
 
-async def handle_board_view(ack, body, view, adapter):
+async def handle_workflow_view(ack, body, view, adapter):
     await ack()
     # Read modal state and persist changes.
 
@@ -692,18 +692,18 @@ def register(ctx):
     ctx.register_slack_extension(
         slash_commands=[
             SlackSlashCommand(
-                name="board",
-                description="Open the Kanban board",
+                name="workflow",
+                description="Open an interactive Slack workflow",
                 usage_hint="[filters]",
-                ack_text="Opening board...",
-                handler=open_board,
+                ack_text="Opening workflow...",
+                handler=open_workflow,
             ),
         ],
         actions=[
-            SlackActionHandler("my_plugin_board_action", handle_board_action),
+            SlackActionHandler("my_plugin_workflow_action", handle_workflow_action),
         ],
         views=[
-            SlackViewHandler("my_plugin_board_view", handle_board_view),
+            SlackViewHandler("my_plugin_workflow_view", handle_workflow_view),
         ],
     )
 ```

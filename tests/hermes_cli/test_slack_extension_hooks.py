@@ -104,8 +104,8 @@ def test_slack_native_slashes_includes_extension_commands(monkeypatch):
     ctx.register_slack_extension(
         slash_commands=[
             SlackSlashCommand(
-                name="board",
-                description="Open the Kanban board",
+                name="workflow",
+                description="Open an interactive workflow",
                 handler=lambda **_: None,
             )
         ],
@@ -113,8 +113,8 @@ def test_slack_native_slashes_includes_extension_commands(monkeypatch):
 
     slashes = {name: (description, hint) for name, description, hint in slack_native_slashes()}
 
-    assert "board" in slashes
-    assert slashes["board"][0] == "Open the Kanban board"
+    assert "workflow" in slashes
+    assert slashes["workflow"][0] == "Open an interactive workflow"
 
 
 @pytest.mark.asyncio
@@ -129,9 +129,9 @@ async def test_slack_adapter_invokes_extension_handler_with_compatible_kwargs():
     await adapter._invoke_slack_extension_handler(
         handler,
         adapter=adapter,
-        command={"command": "/board"},
+        command={"command": "/workflow"},
         ack=lambda **_: None,
         ignored=True,
     )
 
-    assert seen == {"adapter": adapter, "command": {"command": "/board"}}
+    assert seen == {"adapter": adapter, "command": {"command": "/workflow"}}

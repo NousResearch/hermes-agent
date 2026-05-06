@@ -6450,10 +6450,21 @@ def _install_python_dependencies_with_optional_fallback(
     *,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Install base deps plus as many optional extras as the environment supports."""
+    """Install base deps plus as many optional extras as the environment supports.
+
+    We intentionally do NOT pass ``--quiet`` to pip. On platforms without
+    prebuilt wheels for some extras (Termux/Android aarch64, older musl
+    distros, fresh Raspberry Pi) pip has to compile C/Rust extensions from
+    source, which can take several minutes with zero network activity.
+    Without progress output the call looks like a hang and users Ctrl+C it.
+    Pip's default output is proportional to actual work (one line per
+    Collecting/Building/Installing step), so keeping it visible costs
+    nothing on fast hardware and prevents the "hermes update hangs" reports
+    on slow hardware.
+    """
     try:
         subprocess.run(
-            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
+            install_cmd_prefix + ["install", "-e", ".[all]"],
             cwd=PROJECT_ROOT,
             check=True,
             env=env,
@@ -6465,7 +6476,7 @@ def _install_python_dependencies_with_optional_fallback(
         )
 
     subprocess.run(
-        install_cmd_prefix + ["install", "-e", ".", "--quiet"],
+        install_cmd_prefix + ["install", "-e", "."],
         cwd=PROJECT_ROOT,
         check=True,
         env=env,
@@ -6476,7 +6487,7 @@ def _install_python_dependencies_with_optional_fallback(
     for extra in _load_installable_optional_extras():
         try:
             subprocess.run(
-                install_cmd_prefix + ["install", "-e", f".[{extra}]", "--quiet"],
+                install_cmd_prefix + ["install", "-e", f".[{extra}]"],
                 cwd=PROJECT_ROOT,
                 check=True,
                 env=env,

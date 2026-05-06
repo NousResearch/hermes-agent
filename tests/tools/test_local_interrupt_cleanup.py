@@ -14,7 +14,6 @@ died.  See commit message for full context.
 import os
 import signal
 import subprocess
-import threading
 import time
 from types import SimpleNamespace
 
@@ -30,12 +29,16 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
 
 
 def _pgid_still_alive(pgid: int) -> bool:
-    """Return True if any process in the given process group is still alive."""
-    try:
-        os.killpg(pgid, 0)  # signal 0 = existence check
-        return True
-    except ProcessLookupError:
-        return False
+    """Return True if any non-zombie process in the group is still running."""
+    snapshot = subprocess.run(
+        ["ps", "-o", "stat=", "-g", str(pgid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.splitlines()
+    # A zombie wrapper may remain until its parent reaps it, but it cannot keep
+    # executing user code. Treat all-zombie groups as cleaned up.
+    return any(line.strip() and "Z" not in line.strip() for line in snapshot)
 
 
 def _process_group_snapshot(pgid: int) -> str:
@@ -90,14 +93,12 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
-def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
+def test_wait_for_process_kills_subprocess_on_keyboardinterrupt(monkeypatch):
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
     env = LocalEnvironment(cwd="/tmp")
     try:
-        result_holder = {}
         proc_holder = {}
-        started = threading.Event()
 
         original_run_bash = env._run_bash
 
@@ -105,70 +106,38 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             proc = original_run_bash(cmd_string, *args, **kwargs)
             if "sleep 30" in cmd_string and not kwargs.get("login", False):
                 proc_holder["proc"] = proc
-                started.set()
             return proc
 
         env._run_bash = capture_run_bash
 
-        # Drive execute() on a separate thread so we can SIGNAL-interrupt it
-        # via a thread-targeted exception without killing our test process.
-        def worker():
-            # Spawn a subprocess that will definitely be alive long enough
-            # to observe the cleanup, via env.execute(...) — the normal path
-            # that goes through _wait_for_process.
-            try:
-                result_holder["result"] = env.execute("sleep 30", timeout=60)
-            except BaseException as e:  # noqa: BLE001 — we want to observe it
-                result_holder["exception"] = type(e).__name__
+        # Trigger the same cleanup path as a real Ctrl-C/SIGTERM, but do it
+        # deterministically in the _wait_for_process polling thread.  The old
+        # PyThreadState_SetAsyncExc version could land in the stdout-drain
+        # helper thread under xdist load, making the test fail without testing
+        # the intended except block.
+        import tools.environments.base as base_mod
+        original_sleep = base_mod.time.sleep
 
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        # Wait until the subprocess spawned by THIS env.execute call exists.
-        # A previous test can leak a generic "sleep 30" child under xdist;
-        # scanning the process table then targets the wrong process group and
-        # turns this regression guard into a suite-order flake.
-        assert started.wait(timeout=5.0), (
-            "test setup: couldn't capture the 'sleep 30' subprocess after 5 s"
-        )
+        def interrupting_sleep(_delay):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(base_mod.time, "sleep", interrupting_sleep)
+        with pytest.raises(KeyboardInterrupt):
+            env.execute("sleep 30", timeout=60)
+        monkeypatch.setattr(base_mod.time, "sleep", original_sleep)
+
         proc = proc_holder["proc"]
         pgid = getattr(proc, "_hermes_pgid", os.getpgid(proc.pid))
-        assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
-
-        # Now inject a KeyboardInterrupt into the worker thread the same
-        # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
-        # which is how signal delivery to non-main threads is simulated.
-        import ctypes
-        import sys as _sys
-        # py-thread-state exception targets need the ident, not the Thread
-        tid = t.ident
-        assert tid is not None
-        # Fire KeyboardInterrupt into the worker thread
-        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-            ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt),
-        )
-        assert ret == 1, f"SetAsyncExc returned {ret}, expected 1"
-
-        # Give the worker a moment to: hit the exception at the next poll,
-        # run the except-block cleanup (_kill_process), and exit.
-        t.join(timeout=5.0)
-        assert not t.is_alive(), "worker didn't exit within 5 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
         # just the bash wrapper — the 'sleep 30' child too. Under xdist load,
-        # process-group disappearance can lag briefly after the worker exits,
-        # especially if the process is already dying or waiting to be reaped.
+        # process-group disappearance can lag briefly after the exception.
         assert _wait_for_pgid_exit(pgid), (
-            f"subprocess group {pgid} is STILL ALIVE after worker received "
-            f"KeyboardInterrupt — orphan bug regressed.  This is the "
+            f"subprocess group {pgid} is STILL ALIVE after _wait_for_process "
+            f"received KeyboardInterrupt — orphan bug regressed.  This is the "
             f"sleep-300-survives-SIGTERM scenario from Physikal's Apr 2026 "
             f"report.  See tools/environments/base.py _wait_for_process "
             f"except-block.\n{_process_group_snapshot(pgid)}"
-        )
-        # And the worker should have observed the KeyboardInterrupt (i.e.
-        # it re-raised cleanly, not silently swallowed).
-        assert result_holder.get("exception") == "KeyboardInterrupt", (
-            f"worker result: {result_holder!r} — expected KeyboardInterrupt "
-            f"propagation after cleanup"
         )
     finally:
         try:

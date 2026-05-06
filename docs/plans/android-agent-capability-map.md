@@ -50,8 +50,8 @@ Agent Android implementation work.
 | Shizuku/Sui privileged shell execution | Present through `android_system_tool` action `run_privileged_shell` after the user starts Shizuku/Sui and grants Hermes permission. |
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
-| Tasker-style manual tasks/actions | Partially present through chat-triggered terminal, file, UI, and Android system tool calls. |
-| Tasker-style profiles/triggers | Not yet present as a durable native profile engine. Hermes has background runtime persistence, but not user-defined event/time/location/app-state triggers. |
+| Tasker-style manual tasks/actions | Present for saved shell actions through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. |
+| Tasker-style profiles/triggers | Minimal interval scheduling is present through Android alarms for saved shell tasks. Event, location, app-state, and sensor profiles are not yet present. |
 | Tasker-style variables | Partially present through conversation state and files; there is no dedicated variable table exposed as an Android automation primitive yet. |
 | Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
 | Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
@@ -74,13 +74,12 @@ control available to consenting users.
 
 ## Next Tasker-Parity Work
 
-The next credible Tasker-parity feature should be a small native automation
-engine with explicit user-visible records:
+The next credible Tasker-parity feature after the minimal shell automation
+engine should extend profile coverage with explicit user-visible records:
 
-- saved task/action definitions for shell, file, UI, and system actions,
 - a durable variable store,
-- time-based triggers using Android-supported scheduling,
-- manual run and delete controls,
+- UI/system/file action records beyond shell commands,
+- event, location, app-state, and sensor triggers,
 - Shizuku-only actions clearly marked as requiring user-granted Shizuku/Sui, and
 - tests proving scheduled/manual actions cannot write outside the Hermes app
   workspace unless Shizuku is explicitly selected and available.

@@ -23,6 +23,26 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
+export function applyVoiceRecordResponse(
+  response: null | VoiceRecordResponse,
+  starting: boolean,
+  voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
+  sys: (text: string) => void
+) {
+  if (!starting || response?.status === 'recording') {
+    return
+  }
+
+  voice.setRecording(false)
+
+  if (response?.status === 'busy') {
+    voice.setProcessing(true)
+    sys('voice: still transcribing; try again shortly')
+  } else {
+    voice.setProcessing(false)
+  }
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -157,11 +177,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
-  // CLI parity: Ctrl+B toggles the VAD-driven continuous recording loop
+  // CLI parity: Ctrl+B toggles a VAD-bounded push-to-talk capture
   // (NOT the voice-mode umbrella bit). The mode is enabled via /voice on;
   // Ctrl+B while the mode is off sys-nudges the user. While the mode is
-  // on, the first press starts a continuous loop (gateway → start_continuous,
-  // VAD auto-stop → transcribe → auto-restart), a subsequent press stops it.
+  // on, the first press starts a single VAD-bounded capture
+  // (gateway -> start_continuous(auto_restart=false), VAD auto-stop ->
+  // transcribe -> idle), a subsequent press stops and transcribes it.
   // The gateway publishes voice.status + voice.transcript events that
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
@@ -182,14 +203,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       voice.setProcessing(false)
     }
 
-    gateway.rpc<VoiceRecordResponse>('voice.record', { action }).catch((e: Error) => {
-      // Revert optimistic UI on failure.
-      if (starting) {
-        voice.setRecording(false)
-      }
+    gateway
+      .rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid })
+      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys))
+      .catch((e: Error) => {
+        // Revert optimistic UI on failure.
+        if (starting) {
+          voice.setRecording(false)
+        }
 
-      actions.sys(`voice error: ${e.message}`)
-    })
+        actions.sys(`voice error: ${e.message}`)
+      })
   }
 
   useInput((ch, key) => {

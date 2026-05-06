@@ -295,7 +295,7 @@ export interface VoiceToggleResponse {
 }
 
 export interface VoiceRecordResponse {
-  status?: string
+  status?: 'busy' | 'recording' | 'stopped'
   text?: string
 }
 

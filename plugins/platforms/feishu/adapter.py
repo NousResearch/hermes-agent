@@ -2588,7 +2588,10 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Only a native ``thread_id`` marks a topic. ``root_id`` is present on every quoted reply
+        # too, so using it as a fallback (#19711) turned ordinary quote replies into topic
+        # sessions and pushed the bot's answer into a fresh thread (#20548).
+        thread_id = getattr(message, "thread_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None) or None

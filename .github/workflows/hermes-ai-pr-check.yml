@@ -1,0 +1,92 @@
+name: Hermes AI PR Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  hermes-ai-review:
+    name: Hermes AI Review
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Hermes Agent
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[mcp]
+
+      - name: Build PR context
+        run: |
+          git diff --stat origin/${{ github.base_ref }}...HEAD > /tmp/pr-diff-stat.txt
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > /tmp/pr-files.txt
+          git diff --unified=80 origin/${{ github.base_ref }}...HEAD > /tmp/pr.diff
+
+      - name: Run Hermes PR review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          HERMES_PROVIDER: ${{ vars.HERMES_PROVIDER || 'openai' }}
+          HERMES_MODEL: ${{ vars.HERMES_MODEL || 'gpt-4o-mini' }}
+        run: |
+          cat > /tmp/hermes-pr-prompt.txt <<'PROMPT'
+          You are reviewing a GitHub pull request for Hermes Agent.
+
+          Produce a concise markdown review with:
+          1. Summary of the change.
+          2. Security concerns.
+          3. Test/build risks.
+          4. Documentation or migration notes.
+          5. Concrete requested changes, if any.
+
+          Prefer actionable findings over style nits. If the diff is safe, say so.
+          Use the provided diff/stat files. Do not modify files.
+          PROMPT
+
+          {
+            cat /tmp/hermes-pr-prompt.txt
+            echo
+            echo '## Changed files'
+            cat /tmp/pr-files.txt
+            echo
+            echo '## Diff stat'
+            cat /tmp/pr-diff-stat.txt
+            echo
+            echo '## Diff'
+            cat /tmp/pr.diff
+          } > /tmp/hermes-pr-review-input.txt
+
+          hermes -z "$(cat /tmp/hermes-pr-review-input.txt)" --provider "$HERMES_PROVIDER" -m "$HERMES_MODEL" > hermes-pr-review.md
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-pr-review
+          path: hermes-pr-review.md
+
+      - name: Comment review on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('hermes-pr-review.md', 'utf8').slice(0, 60000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Hermes AI PR Review\n\n${body}`
+            });

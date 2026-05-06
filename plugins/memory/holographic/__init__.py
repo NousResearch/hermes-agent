@@ -30,6 +30,11 @@ from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
+_QUERY_CAPITALIZED = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+_QUERY_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
+_QUERY_SINGLE_QUOTE = re.compile(r"'([^']+)'")
+_QUERY_CODE = re.compile(r"\b(?=[A-Za-z0-9-]{2,16}\b)(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]+\b")
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (unchanged from original PR)
@@ -207,7 +212,7 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._retriever or not query:
             return ""
         try:
-            results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
+            results = self._search_with_entity_fallback(query, limit=5)
             if not results:
                 return ""
             lines = []
@@ -218,6 +223,60 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
             return ""
+
+    def _search_with_entity_fallback(self, query: str, limit: int = 5) -> list[dict]:
+        """Return automatic recall results using keyword search plus entity probes.
+
+        The normal prefetch path receives a natural-language query, while the
+        holographic store also maintains structurally bound entities. If FTS5
+        yields sparse results, probe candidate entities from the query so short
+        codes or quoted names are still recallable through automatic memory.
+        """
+        if not self._retriever:
+            return []
+
+        results = self._retriever.search(query, min_trust=self._min_trust, limit=limit)
+        threshold = int(self._config.get("entity_fallback_threshold", limit))
+        if len(results) >= threshold:
+            return results[:limit]
+
+        seen_ids = {r.get("fact_id") for r in results}
+        for entity in self._extract_query_entities(query):
+            try:
+                probed = self._retriever.probe(entity, limit=limit)
+            except Exception as exc:
+                logger.debug("Holographic entity fallback failed for %r: %s", entity, exc)
+                continue
+            for fact in probed:
+                fact_id = fact.get("fact_id")
+                if fact_id in seen_ids:
+                    continue
+                if float(fact.get("trust_score", fact.get("trust", 0.0)) or 0.0) < self._min_trust:
+                    continue
+                seen_ids.add(fact_id)
+                results.append(fact)
+
+        results.sort(key=lambda r: float(r.get("score", 0.0) or 0.0), reverse=True)
+        return results[:limit]
+
+    @staticmethod
+    def _extract_query_entities(text: str) -> list[str]:
+        """Extract conservative entity candidates from a user query."""
+        seen: set[str] = set()
+        entities: list[str] = []
+
+        def add(value: str) -> None:
+            candidate = value.strip()
+            key = candidate.lower()
+            if candidate and key not in seen:
+                seen.add(key)
+                entities.append(candidate)
+
+        for pattern in (_QUERY_DOUBLE_QUOTE, _QUERY_SINGLE_QUOTE, _QUERY_CAPITALIZED, _QUERY_CODE):
+            for match in pattern.finditer(text):
+                add(match.group(1) if match.lastindex else match.group(0))
+
+        return entities
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         # Holographic memory stores explicit facts via tools, not auto-sync.

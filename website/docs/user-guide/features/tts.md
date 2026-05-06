@@ -302,7 +302,7 @@ Command-type providers run whatever shell command you configure, with your user'
 Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
 
 | Provider | Quality | Cost | API Key |
-|----------|---------|------|---------| 
+|----------|---------|------|---------|
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |

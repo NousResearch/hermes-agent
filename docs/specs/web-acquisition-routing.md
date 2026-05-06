@@ -1,0 +1,186 @@
+# Web Acquisition Routing and Scrapling Pilot
+
+Status: Phase 1 isolated pilot harness implemented
+Owner: Hermes Agent web tooling / research skills
+Scope: documentation, optional-skill positioning, and isolated runtime pilot scripts only
+
+## Decision
+
+Scrapling is an optional `difficult_web_extract` fallback candidate. It is not a default Hermes web backend, not a replacement for `web_extract`, not a replacement for browser automation, and not a global MCP/tool.
+
+The default acquisition ladder remains:
+
+1. `web_search` for discovery.
+2. `web_extract` for ordinary URL-to-markdown extraction.
+3. Browser tools for interaction, screenshots, login flows, visual inspection, or full JavaScript workflows.
+4. Scrapling only when a difficult extraction needs selector-driven, batch-oriented, or session-aware fallback behavior and the caller can provide a narrow target.
+
+## Non-goals
+
+Phase 0 explicitly does not:
+
+- install Scrapling or browser dependencies;
+- add Scrapling to the Hermes main virtualenv;
+- modify `toolsets.py` or `_HERMES_CORE_TOOLS`;
+- change the public `web_extract` schema;
+- register a new top-level tool in `tools/registry.py`;
+- add a new wake route before the route catalog supports it;
+- promise universal anti-bot, CAPTCHA, paywall, or login bypass.
+
+## When Scrapling may be considered
+
+Use Scrapling as a pilot/fallback only when at least one condition is true:
+
+- `web_extract` returns empty, boilerplate, or the wrong main content;
+- the task needs CSS, XPath, text, or regex selection against a known page structure;
+- the target is a batch of homogeneous pages such as announcements, products, listings, or jobs;
+- a lightweight session/cookie flow is needed but a full browser agent would be too heavy;
+- the page is lightly blocked and a controlled fallback is worth trying, without treating stealth mode as guaranteed bypass.
+
+## When not to use Scrapling
+
+Do not use Scrapling for:
+
+- ordinary search or broad web reconnaissance;
+- ordinary article summarization where `web_extract` works;
+- visual verification, screenshots, page interaction, or complex browser state;
+- authenticated/private data, paywalled content, explicit no-scrape contexts, or clear Terms-of-Service conflict;
+- strong CAPTCHA, enterprise WAF, or adversarial anti-bot systems;
+- default Hermes tool exposure.
+
+## Runtime isolation
+
+If a later phase installs Scrapling, it must use an isolated runtime, not the Hermes main environment.
+
+Recommended runtime:
+
+```text
+~/.hermes/runtimes/scrapling/
+```
+
+Recommended Python on Hank's current machine:
+
+```text
+/Users/zhaopufan/.local/bin/python3.11
+```
+
+Do not install into:
+
+```text
+~/.hermes/hermes-agent/venv
+```
+
+Reason: the current Hermes venv uses Python 3.14, while Scrapling currently declares `requires-python >=3.10` and official classifiers through Python 3.13. Its browser/fingerprint stack can also pull Playwright/Patchright/browserforge dependencies that should not contaminate the core agent runtime.
+
+## Fetcher selection policy
+
+| Mode | Scrapling class | Use when | Default |
+| --- | --- | --- | --- |
+| Static | `Fetcher` / `FetcherSession` | Static HTML, selector extraction, fast homogeneous pages | Preferred first attempt |
+| Dynamic | `DynamicFetcher` / dynamic sessions | JavaScript-rendered content, `wait_selector`, `network_idle` | Explicit only |
+| Stealth | `StealthyFetcher` / stealth sessions | Light blocking after static/dynamic fail | Explicit fallback only |
+
+Stealth mode must stay opt-in. It is a fallback, not a capability promise.
+
+## Receipt contract
+
+Future adapters or scripts should emit a structured JSON receipt:
+
+```json
+{
+  "backend": "scrapling",
+  "mode": "static|dynamic|stealth",
+  "url": "https://example.com/page",
+  "selector": ".article",
+  "content": "...",
+  "elapsed_ms": 1234,
+  "fallback_reason": "web_extract_empty|selector_required|batch_homogeneous|light_block",
+  "errors": []
+}
+```
+
+Receipts must preserve enough evidence to audit what was fetched, how it was selected, which fallback was used, and why failures happened.
+
+## Future implementation phases
+
+### Phase 1: optional skill documentation
+
+- Reposition `optional-skills/research/scrapling/SKILL.md` as a difficult extraction fallback skill.
+- Remove broad claims around generic crawling and Cloudflare bypass.
+- Keep setup commands isolated and explicit.
+- Document receipt schema and fallback rules.
+
+### Phase 2: isolated runtime pilot
+
+Implemented pilot files:
+
+```text
+optional-skills/research/scrapling/requirements.txt
+optional-skills/research/scrapling/scripts/setup_runtime.py
+optional-skills/research/scrapling/scripts/scrapling_extract.py
+tests/test_scrapling_optional_runtime.py
+```
+
+Acceptance criteria:
+
+- runtime setup is repeatable through `setup_runtime.py`;
+- `setup_runtime.py --dry-run` prints a JSON setup plan;
+- missing Scrapling dependency returns a structured JSON error from `scrapling_extract.py`;
+- no Scrapling dependency appears in Hermes main venv;
+- browser assets/downloads install only when `--install-browsers` is explicitly requested.
+
+### Phase 3: internal adapter, no global registration
+
+Potential files:
+
+```text
+tools/web_acquire.py
+tests/tools/test_web_acquire.py
+```
+
+The adapter may call the isolated runtime and normalize receipts, but must not call `registry.register(...)` until product and routing decisions are made.
+
+The adapter must reuse existing safety layers where applicable:
+
+```text
+tools/url_safety.py
+tools/website_policy.py
+```
+
+### Phase 4: route-linked fallback, only after pilot proof
+
+Only after real pilot evidence should Hermes consider a task-named route such as:
+
+```text
+difficult_web_extract
+```
+
+Do not name the route `scrapling`; routes should describe work, not vendor/library choices.
+
+Do not add this route to skill metadata until the wake route catalog and tests support it. Unknown routes can be rejected by wake-manifest validation.
+
+## Kill gates
+
+Pause or remove the pilot if any of these happen:
+
+1. isolated Python 3.11 runtime setup is unstable;
+2. Scrapling leaks dependencies into the Hermes main environment;
+3. browser or Patchright install cost is too high;
+4. fetches hang or ignore timeouts;
+5. difficult-page results are not materially better than Firecrawl/Tavily/browser;
+6. stealth mode creates compliance or risk ambiguity;
+7. route integration creates noisy or wrong wakeups;
+8. receipts are not auditable.
+
+## Upgrade gates
+
+Only consider raising Scrapling above B/pilot if all are true:
+
+1. three to five real difficult extraction cases succeed;
+2. `web_extract` clearly fails where Scrapling succeeds;
+3. batch homogeneous extraction is faster or cleaner than browser automation;
+4. receipt output is stable and auditable;
+5. runtime isolation is proven;
+6. any future route is first-class and tested;
+7. stealth remains off by default;
+8. docs continue to avoid universal bypass claims.

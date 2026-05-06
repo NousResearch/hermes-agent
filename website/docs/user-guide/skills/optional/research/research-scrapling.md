@@ -1,14 +1,14 @@
 ---
 title: "Scrapling"
 sidebar_label: "Scrapling"
-description: "Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python"
+description: "Difficult web extraction fallback with Scrapling — selector-driven static/dynamic extraction for cases where web_extract is empty, imprecise, or too coarse."
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Scrapling
 
-Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python.
+Difficult web extraction fallback with Scrapling — selector-driven static/dynamic extraction for cases where web_extract is empty, imprecise, or too coarse.
 
 ## Skill metadata
 
@@ -16,10 +16,10 @@ Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudfl
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/scrapling` |
 | Path | `optional-skills/research/scrapling` |
-| Version | `1.0.0` |
-| Author | FEUAZUR |
+| Version | `1.2.0` |
+| Author | FEUAZUR + Hermes Agent |
 | License | MIT |
-| Tags | `Web Scraping`, `Browser`, `Cloudflare`, `Stealth`, `Crawling`, `Spider` |
+| Tags | `Web Extraction`, `Selector Extraction`, `Fallback`, `Research`, `Batch Extraction` |
 | Related skills | [`duckduckgo-search`](/docs/user-guide/skills/optional/research/research-duckduckgo-search), [`domain-intel`](/docs/user-guide/skills/optional/research/research-domain-intel) |
 
 ## Reference: full SKILL.md
@@ -30,321 +30,231 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Scrapling
 
-[Scrapling](https://github.com/D4Vinci/Scrapling) is a web scraping framework with anti-bot bypass, stealth browser automation, and a spider framework. It provides three fetching strategies (HTTP, dynamic JS, stealth/Cloudflare) and a full CLI.
+[Scrapling](https://github.com/D4Vinci/Scrapling) is an optional fallback for difficult web extraction: selector-driven static, dynamic, and session-aware extraction when Hermes' normal `web_extract` output is empty, wrong, or too coarse.
 
-**This skill is for educational and research purposes only.** Users must comply with local/international data scraping laws and respect website Terms of Service.
+Use this skill narrowly. Scrapling is **not** a default web backend, not a replacement for `web_search`, not a replacement for `web_extract`, not a browser-agent replacement, and not a general anti-bot promise.
+
+**Compliance first:** only fetch public pages that are allowed for the task. Respect robots.txt, website Terms of Service, rate limits, privacy boundaries, and local law. Do not use this skill for paywall bypass, private/authenticated data, credentialed scraping, or adversarial anti-bot circumvention.
 
 ## When to Use
 
-- Scraping static HTML pages (faster than browser tools)
-- Scraping JS-rendered pages that need a real browser
-- Bypassing Cloudflare Turnstile or bot detection
-- Crawling multiple pages with a spider
-- When the built-in `web_extract` tool does not return the data you need
+Consider Scrapling only after the normal Hermes web path is insufficient:
 
-## Installation
+- `web_extract` returns empty, boilerplate, or the wrong main content.
+- The task needs CSS, XPath, text, or regex selection from a known page structure.
+- The task has many homogeneous pages such as announcements, products, listings, jobs, or tables.
+- A lightweight session/cookie flow is needed but full browser automation would be too heavy.
+- A page is lightly blocked and a controlled fallback is worth trying, without treating stealth mode as guaranteed bypass.
 
-```bash
-pip install "scrapling[all]"
-scrapling install
+## When NOT to Use
+
+Do not use Scrapling for:
+
+- ordinary search or broad web reconnaissance — use `web_search`.
+- ordinary article/page extraction where `web_extract` works.
+- visual inspection, screenshots, forms, clicking, or full page interaction — use browser tools.
+- authenticated/private data, paywalled content, explicit no-scrape contexts, or clear ToS conflict.
+- strong CAPTCHA, enterprise WAF, or adversarial anti-bot systems.
+- default Hermes tool exposure or global MCP-style scraping.
+
+## Routing Position
+
+Default acquisition ladder:
+
+1. `web_search` for discovery.
+2. `web_extract` for ordinary URL-to-markdown extraction.
+3. Browser tools for interaction, visual inspection, screenshots, login flows, or complex JavaScript workflows.
+4. Scrapling only as a difficult extraction fallback when the caller can provide a narrow target, selector, or homogeneous batch pattern.
+
+Do not add Scrapling to `_HERMES_CORE_TOOLS`, do not change the public `web_extract` schema, and do not register a new top-level tool until a separate adapter/route design has been accepted.
+
+## Runtime Setup
+
+Do **not** install Scrapling into the Hermes main virtualenv.
+
+Recommended isolated runtime:
+
+```text
+~/.hermes/runtimes/scrapling/
 ```
 
-Minimal install (HTTP only, no browser):
-```bash
-pip install scrapling
+Recommended Python on Hank's current machine:
+
+```text
+/Users/zhaopufan/.local/bin/python3.11
 ```
 
-With browser automation only:
-```bash
-pip install "scrapling[fetchers]"
-scrapling install
-```
-
-## Quick Reference
-
-| Approach | Class | Use When |
-|----------|-------|----------|
-| HTTP | `Fetcher` / `FetcherSession` | Static pages, APIs, fast bulk requests |
-| Dynamic | `DynamicFetcher` / `DynamicSession` | JS-rendered content, SPAs |
-| Stealth | `StealthyFetcher` / `StealthySession` | Cloudflare, anti-bot protected sites |
-| Spider | `Spider` | Multi-page crawling with link following |
-
-## CLI Usage
-
-### Extract Static Page
+Use the bundled pilot setup script instead of installing by hand:
 
 ```bash
-scrapling extract get 'https://example.com' output.md
+python optional-skills/research/scrapling/scripts/setup_runtime.py --dry-run
+python optional-skills/research/scrapling/scripts/setup_runtime.py
 ```
 
-With CSS selector and browser impersonation:
+Only install browser assets when dynamic/stealth extraction is explicitly needed:
 
 ```bash
-scrapling extract get 'https://example.com' output.md \
-  --css-selector '.content' \
-  --impersonate 'chrome'
+python optional-skills/research/scrapling/scripts/setup_runtime.py --install-browsers
 ```
 
-### Extract JS-Rendered Page
+The script installs `optional-skills/research/scrapling/requirements.txt` into the isolated runtime and emits a JSON setup receipt. Browser assets remain opt-in so Playwright/Patchright downloads do not happen during ordinary static pilot checks.
+
+## Fetcher Selection
+
+| Mode | Class | Use When | Default |
+| --- | --- | --- | --- |
+| Static | `Fetcher` / `FetcherSession` | Static HTML, selector extraction, fast homogeneous pages | Preferred first attempt |
+| Dynamic | `DynamicFetcher` / dynamic sessions | JavaScript-rendered content, `wait_selector`, `network_idle` | Explicit only |
+| Stealth | `StealthyFetcher` / stealth sessions | Light blocking after static/dynamic fail | Explicit fallback only |
+
+Stealth mode must stay opt-in. It can help with some light bot checks, but it is slower, heavier, and not a universal bypass mechanism.
+
+## CLI Examples
+
+### Static selector extraction
 
 ```bash
-scrapling extract fetch 'https://example.com' output.md \
-  --css-selector '.dynamic-content' \
-  --disable-resources \
-  --network-idle
+~/.hermes/runtimes/scrapling/bin/python \
+  optional-skills/research/scrapling/scripts/scrapling_extract.py \
+  --url 'https://example.com/article' \
+  --selector '.article' \
+  --selector-type css \
+  --mode static \
+  --fallback-reason selector_required
 ```
 
-### Extract Cloudflare-Protected Page
+### Dynamic extraction with a wait condition
 
 ```bash
-scrapling extract stealthy-fetch 'https://protected-site.com' output.html \
-  --solve-cloudflare \
-  --block-webrtc \
-  --hide-canvas
+~/.hermes/runtimes/scrapling/bin/python \
+  optional-skills/research/scrapling/scripts/scrapling_extract.py \
+  --url 'https://example.com/results' \
+  --selector '.result-card' \
+  --selector-type css \
+  --mode dynamic \
+  --wait-selector '.result-card' \
+  --network-idle \
+  --fallback-reason web_extract_empty
 ```
 
-### POST Request
+### Stealth fallback, explicit only
 
 ```bash
-scrapling extract post 'https://example.com/api' output.json \
-  --json '{"query": "search term"}'
+~/.hermes/runtimes/scrapling/bin/python \
+  optional-skills/research/scrapling/scripts/scrapling_extract.py \
+  --url 'https://example.com/protected-public-page' \
+  --selector '.content' \
+  --selector-type css \
+  --mode stealth \
+  --fallback-reason light_block
 ```
 
-### Output Formats
+The pilot runner emits the JSON receipt schema below for both success and failure. Do not enable stealth mode casually. Record why static/dynamic failed first.
 
-The output format is determined by the file extension:
-- `.html` -- raw HTML
-- `.md` -- converted to Markdown
-- `.txt` -- plain text
-- `.json` / `.jsonl` -- JSON
+## Python Examples
 
-## Python: HTTP Scraping
-
-### Single Request
+### Static CSS selection
 
 ```python
 from scrapling.fetchers import Fetcher
 
-page = Fetcher.get('https://quotes.toscrape.com/')
-quotes = page.css('.quote .text::text').getall()
-for q in quotes:
-    print(q)
+page = Fetcher.get("https://quotes.toscrape.com/", timeout=20)
+quotes = page.css(".quote .text::text").getall()
+print(quotes)
 ```
 
-### Session (Persistent Cookies)
+### XPath selection
+
+```python
+from scrapling.fetchers import Fetcher
+
+page = Fetcher.get("https://example.com/report", timeout=20)
+rows = page.xpath('//table[contains(@class, "data")]//tr').getall()
+print(rows)
+```
+
+### Batch homogeneous pages with a session
 
 ```python
 from scrapling.fetchers import FetcherSession
 
-with FetcherSession(impersonate='chrome') as session:
-    page = session.get('https://example.com/', stealthy_headers=True)
-    links = page.css('a::attr(href)').getall()
-    for link in links[:5]:
-        sub = session.get(link)
-        print(sub.css('h1::text').get())
+urls = [
+    "https://example.com/jobs/1",
+    "https://example.com/jobs/2",
+]
+
+with FetcherSession(impersonate="chrome") as session:
+    for url in urls:
+        page = session.get(url, timeout=20)
+        title = page.css("h1::text").get()
+        location = page.css(".location::text").get()
+        print({"url": url, "title": title, "location": location})
 ```
 
-### POST / PUT / DELETE
-
-```python
-page = Fetcher.post('https://api.example.com/data', json={"key": "value"})
-page = Fetcher.put('https://api.example.com/item/1', data={"name": "updated"})
-page = Fetcher.delete('https://api.example.com/item/1')
-```
-
-### With Proxy
-
-```python
-page = Fetcher.get('https://example.com', proxy='http://user:pass@proxy:8080')
-```
-
-## Python: Dynamic Pages (JS-Rendered)
-
-For pages that require JavaScript execution (SPAs, lazy-loaded content):
+### Dynamic wait selector
 
 ```python
 from scrapling.fetchers import DynamicFetcher
 
-page = DynamicFetcher.fetch('https://example.com', headless=True)
-data = page.css('.js-loaded-content::text').getall()
-```
-
-### Wait for Specific Element
-
-```python
 page = DynamicFetcher.fetch(
-    'https://example.com',
-    wait_selector=('.results', 'visible'),
+    "https://example.com/results",
+    wait_selector=(".result-card", "visible"),
     network_idle=True,
-)
-```
-
-### Disable Resources for Speed
-
-Blocks fonts, images, media, stylesheets (~25% faster):
-
-```python
-from scrapling.fetchers import DynamicSession
-
-with DynamicSession(headless=True, disable_resources=True, network_idle=True) as session:
-    page = session.fetch('https://example.com')
-    items = page.css('.item::text').getall()
-```
-
-### Custom Page Automation
-
-```python
-from playwright.sync_api import Page
-from scrapling.fetchers import DynamicFetcher
-
-def scroll_and_click(page: Page):
-    page.mouse.wheel(0, 3000)
-    page.wait_for_timeout(1000)
-    page.click('button.load-more')
-    page.wait_for_selector('.extra-results')
-
-page = DynamicFetcher.fetch('https://example.com', page_action=scroll_and_click)
-results = page.css('.extra-results .item::text').getall()
-```
-
-## Python: Stealth Mode (Anti-Bot Bypass)
-
-For Cloudflare-protected or heavily fingerprinted sites:
-
-```python
-from scrapling.fetchers import StealthyFetcher
-
-page = StealthyFetcher.fetch(
-    'https://protected-site.com',
     headless=True,
-    solve_cloudflare=True,
-    block_webrtc=True,
-    hide_canvas=True,
 )
-content = page.css('.protected-content::text').getall()
+items = page.css(".result-card::text").getall()
+print(items)
 ```
 
-### Stealth Session
+## Element Selection Quick Reference
 
 ```python
-from scrapling.fetchers import StealthySession
-
-with StealthySession(headless=True, solve_cloudflare=True) as session:
-    page1 = session.fetch('https://protected-site.com/page1')
-    page2 = session.fetch('https://protected-site.com/page2')
-```
-
-## Element Selection
-
-All fetchers return a `Selector` object with these methods:
-
-### CSS Selectors
-
-```python
-page.css('h1::text').get()              # First h1 text
-page.css('a::attr(href)').getall()      # All link hrefs
-page.css('.quote .text::text').getall() # Nested selection
-```
-
-### XPath
-
-```python
+page.css("h1::text").get()
+page.css("a::attr(href)").getall()
 page.xpath('//div[@class="content"]/text()').getall()
-page.xpath('//a/@href').getall()
+page.find_all("div", class_="listing")
+page.find_by_text("Read more", tag="a")
+page.find_by_regex(r"\$\d+\.\d{2}")
 ```
 
-### Find Methods
+For product/listing pages, `find_similar()` can help discover repeated structures after one representative element is found.
 
-```python
-page.find_all('div', class_='quote')       # By tag + attribute
-page.find_by_text('Read more', tag='a')    # By text content
-page.find_by_regex(r'\$\d+\.\d{2}')       # By regex pattern
+## Output Receipt Schema
+
+Any reusable script or future adapter should normalize output to an auditable JSON receipt:
+
+```json
+{
+  "backend": "scrapling",
+  "mode": "static|dynamic|stealth",
+  "url": "https://example.com/page",
+  "selector": ".article",
+  "content": "...",
+  "elapsed_ms": 1234,
+  "fallback_reason": "web_extract_empty|selector_required|batch_homogeneous|light_block",
+  "errors": []
+}
 ```
 
-### Similar Elements
+Receipts should preserve URL, selector, mode, elapsed time, fallback reason, and errors. Do not return unbounded raw HTML unless explicitly needed.
 
-Find elements with similar structure (useful for product listings, etc.):
+## Failure Fallback Rules
 
-```python
-first_product = page.css('.product')[0]
-all_similar = first_product.find_similar()
-```
-
-### Navigation
-
-```python
-el = page.css('.target')[0]
-el.parent                # Parent element
-el.children              # Child elements
-el.next_sibling          # Next sibling
-el.prev_sibling          # Previous sibling
-```
-
-## Python: Spider Framework
-
-For multi-page crawling with link following:
-
-```python
-from scrapling.spiders import Spider, Request, Response
-
-class QuotesSpider(Spider):
-    name = "quotes"
-    start_urls = ["https://quotes.toscrape.com/"]
-    concurrent_requests = 10
-    download_delay = 1
-
-    async def parse(self, response: Response):
-        for quote in response.css('.quote'):
-            yield {
-                "text": quote.css('.text::text').get(),
-                "author": quote.css('.author::text').get(),
-                "tags": quote.css('.tag::text').getall(),
-            }
-
-        next_page = response.css('.next a::attr(href)').get()
-        if next_page:
-            yield response.follow(next_page)
-
-result = QuotesSpider().start()
-print(f"Scraped {len(result.items)} quotes")
-result.items.to_json("quotes.json")
-```
-
-### Multi-Session Spider
-
-Route requests to different fetcher types:
-
-```python
-from scrapling.fetchers import FetcherSession, AsyncStealthySession
-
-class SmartSpider(Spider):
-    name = "smart"
-    start_urls = ["https://example.com/"]
-
-    def configure_sessions(self, manager):
-        manager.add("fast", FetcherSession(impersonate="chrome"))
-        manager.add("stealth", AsyncStealthySession(headless=True), lazy=True)
-
-    async def parse(self, response: Response):
-        for link in response.css('a::attr(href)').getall():
-            if "protected" in link:
-                yield Request(link, sid="stealth")
-            else:
-                yield Request(link, sid="fast", callback=self.parse)
-```
-
-### Pause/Resume Crawling
-
-```python
-spider = QuotesSpider(crawldir="./crawl_checkpoint")
-spider.start()  # Ctrl+C to pause, re-run to resume from checkpoint
-```
+1. If static extraction fails because the target content is not in HTML, try dynamic extraction with a specific `wait_selector`.
+2. If dynamic extraction times out, lower resource load, narrow the selector, or fall back to browser tools for inspection.
+3. If the page is blocked, record the block reason before trying stealth mode.
+4. If stealth fails or raises compliance ambiguity, stop. Do not escalate into adversarial bypass.
+5. If the task requires interaction, screenshots, forms, login, or visual judgment, switch to browser tools.
 
 ## Pitfalls
 
-- **Browser install required**: run `scrapling install` after pip install -- without it, `DynamicFetcher` and `StealthyFetcher` will fail
-- **Timeouts**: DynamicFetcher/StealthyFetcher timeout is in **milliseconds** (default 30000), Fetcher timeout is in **seconds**
-- **Cloudflare bypass**: `solve_cloudflare=True` adds 5-15 seconds to fetch time -- only enable when needed
-- **Resource usage**: StealthyFetcher runs a real browser -- limit concurrent usage
-- **Legal**: always check robots.txt and website ToS before scraping. This library is for educational and research purposes
-- **Python version**: requires Python 3.10+
+- **Runtime isolation:** install under `~/.hermes/runtimes/scrapling/`, not the Hermes main venv.
+- **Python version:** Scrapling currently supports Python 3.10+ and official classifiers through Python 3.13; avoid relying on Hermes' Python 3.14 venv.
+- **Browser install:** `DynamicFetcher` / `StealthyFetcher` may require `scrapling install` inside the isolated runtime.
+- **Timeout units:** check Scrapling fetcher docs; timeout units can differ between static and browser-backed fetchers.
+- **Stealth cost:** stealth fetchers run browser/fingerprint tooling; limit concurrency and record why they were used.
+- **Compliance:** never promise Cloudflare/CAPTCHA/paywall bypass. Stop when the site policy or risk boundary is unclear.
+
+## Related Design Note
+
+See `docs/specs/web-acquisition-routing.md` in the Hermes repo for the Phase 0 routing boundary and upgrade/kill gates.

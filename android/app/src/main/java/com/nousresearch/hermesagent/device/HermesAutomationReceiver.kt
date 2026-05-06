@@ -33,7 +33,14 @@ class HermesAutomationReceiver : BroadcastReceiver() {
                     return
                 }
                 runAsync {
-                    HermesAutomationBridge.runAutomationJson(context.applicationContext, automationId, "alarm")
+                    val appContext = context.applicationContext
+                    val triggerType = HermesAutomationStore(appContext).get(automationId)?.triggerType
+                        ?: "alarm"
+                    HermesAutomationBridge.runAutomationJson(appContext, automationId, triggerType)
+                    val updated = HermesAutomationStore(appContext).get(automationId)
+                    if (updated?.enabled == true && updated.triggerType == TRIGGER_TIME) {
+                        HermesAutomationScheduler.schedule(appContext, updated)
+                    }
                 }
             }
         }

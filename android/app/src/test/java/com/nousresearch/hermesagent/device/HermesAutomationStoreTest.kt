@@ -8,6 +8,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.RobolectricTestRunner
+import java.util.Calendar
 
 @RunWith(RobolectricTestRunner::class)
 class HermesAutomationStoreTest {
@@ -81,6 +82,64 @@ class HermesAutomationStoreTest {
 
         assertTrue(created.toString(), created.getBoolean("success"))
         assertEquals(TRIGGER_POWER_CONNECTED, created.getJSONObject("automation").getString("trigger_type"))
+    }
+
+    @Test
+    fun bridgeCreatesAndRunsTimeTriggerRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_file_write_task",
+                org.json.JSONObject()
+                    .put("id", "auto-time")
+                    .put("path", "time-trigger.txt")
+                    .put("content", "%TIME:%TIME_DAY")
+                    .put("trigger", "time")
+                    .put("time", "08:30")
+                    .put("days_of_week", org.json.JSONArray(listOf("mon", "wed"))),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals(TRIGGER_TIME, automation.getString("trigger_type"))
+        assertEquals(510, automation.getInt("trigger_time_minutes"))
+        assertEquals("MON,WED", automation.getString("trigger_days_of_week"))
+
+        val triggered = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "time"),
+            ),
+        )
+        assertTrue(triggered.toString(), triggered.getBoolean("success"))
+        assertEquals(1, triggered.getInt("matched_count"))
+        assertTrue(store.getVariable("TIME").orEmpty().matches(Regex("\\d{2}:\\d{2}")))
+        assertTrue(store.getVariable("TIME_DAY").orEmpty() in setOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"))
+    }
+
+    @Test
+    fun schedulerComputesNextTimeTriggerWithDayRestriction() {
+        val now = Calendar.getInstance().apply {
+            set(2026, Calendar.MAY, 4, 9, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val next = HermesAutomationScheduler.nextTimeTriggerAtMillis(
+            nowEpochMs = now.timeInMillis,
+            timeMinutes = 8 * 60 + 30,
+            daysOfWeekCsv = "MON,WED",
+        )
+        val expected = Calendar.getInstance().apply {
+            set(2026, Calendar.MAY, 6, 8, 30, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+
+        assertEquals(expected.timeInMillis, next)
     }
 
     @Test

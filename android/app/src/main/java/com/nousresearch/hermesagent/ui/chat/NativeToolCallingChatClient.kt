@@ -310,7 +310,7 @@ class NativeToolCallingChatClient(
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
-                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, phone-state trigger, app-foreground trigger, notification trigger, saved file action, safe saved Android settings action, saved visible-UI action, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks, run them manually, enable/disable/delete them, schedule interval tasks with Android alarms, run boot/power/battery/app-foreground/notification-posted triggers, and expand saved variables in commands, file content, UI selectors, package names, trigger packages, and notification event fields. " +
+                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, saved file action, safe saved Android settings action, saved visible-UI action, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks, run them manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted triggers, and expand saved variables in commands, file content, UI selectors, package names, trigger packages, and notification or time event fields. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -357,7 +357,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks; manual tasks; interval tasks; boot/power/battery/app-foreground/notification-posted phone-state triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access.",
+                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted phone-state triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access.",
                             )
                             .put(
                                 "parameters",
@@ -370,7 +370,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
+                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "id",
@@ -454,7 +454,7 @@ class NativeToolCallingChatClient(
                                                 "trigger",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, or notification_posted. interval_minutes creates an interval trigger. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission."),
+                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, or notification_posted. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission."),
                                             )
                                             .put(
                                                 "trigger_package_name",
@@ -479,6 +479,18 @@ class NativeToolCallingChatClient(
                                                 JSONObject()
                                                     .put("type", "integer")
                                                     .put("description", "Optional interval schedule in minutes. Minimum is 15. Omit for a manual task."),
+                                            )
+                                            .put(
+                                                "time",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Tasker-style time trigger for create_*_task, such as 08:30 or 8.30. Supplying time without trigger also creates a time trigger."),
+                                            )
+                                            .put(
+                                                "days_of_week",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional day restriction for time triggers. Use daily, weekday, weekend, or comma-separated days like mon,wed,fri. Time runs daily when omitted."),
                                             )
                                             .put(
                                                 "enabled",

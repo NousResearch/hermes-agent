@@ -771,6 +771,7 @@ AUTHOR_MAP = {
     "steven_chanin@alum.mit.edu": "stevenchanin",
     "fiver@example.com": "halmisen",
     "mayq0422@gmail.com": "yuqianma",
+    "yuqian@zmetasoft.com": "yuqianma",
     "scott@bubble.local": "bassings",
     "highland0971@users.noreply.github.com": "highland0971",
     "sudolewis@gmail.com": "lewislulu",

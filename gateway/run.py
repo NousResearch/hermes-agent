@@ -13178,14 +13178,17 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
             # sent via the reply API with reply_in_thread=true. Status/interim,
             # approval, and stream-consumer paths usually only receive metadata,
             # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata = dict(_status_thread_metadata or {})
-            _status_thread_metadata["reply_to_message_id"] = event_message_id
+            _status_thread_metadata: Optional[Dict[str, Any]] = {
+                "thread_id": _progress_thread_id,
+                "reply_to_message_id": event_message_id,
+            }
+        else:
+            _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

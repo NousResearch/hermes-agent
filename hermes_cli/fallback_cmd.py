@@ -1,6 +1,6 @@
 """hermes fallback — manage the fallback provider chain (tried in order when the primary fails).
 
-Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remove``, ``clear``.
+Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``swap``, ``remove``, ``clear``.
 """
 from __future__ import annotations
 
@@ -42,6 +42,23 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
     entry: Dict[str, Any] = {"provider": provider, "model": model}
     entry.update({key: value for key in ("base_url", "api_mode") if (value := (model_cfg.get(key) or "").strip())})
     return entry
+
+
+def _apply_fallback_to_model_cfg(model_cfg: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Promote a fallback while retaining only safe, supported routing fields."""
+    updated = dict(model_cfg)
+    updated["provider"] = entry["provider"]
+    updated["default"] = entry["model"]
+    updated.pop("model", None)
+    for key in ("base_url", "api_mode"):
+        value = (entry.get(key) or "").strip()
+        if value:
+            updated[key] = value
+        else:
+            updated.pop(key, None)
+    # Never move an expanded inline key between config paths.
+    updated.pop("api_key", None)
+    return updated
 
 
 def _snapshot_auth_active_provider() -> Any:
@@ -171,7 +188,43 @@ def cmd_fallback_add(args) -> None:
     save_config(final_cfg)
     print(f"\n  Added fallback: {_format_entry(new_entry)}")
     print(f"  Chain is now {_entries(len(chain))} long.\n")
-    print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
+    print("  Run `hermes fallback list` to view, `hermes fallback swap` to promote, or `hermes fallback remove` to delete.")
+
+
+def cmd_fallback_swap(args) -> None:
+    """Swap the primary model with a selected fallback (default: #1)."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        print("\n  config.model is not a dict; refusing to guess primary model shape.")
+        print("  Run `hermes model` to choose a primary model, then retry `hermes fallback swap`.")
+        raise SystemExit(2)
+    primary_entry = _extract_fallback_from_model_cfg(model_cfg)
+    if not primary_entry:
+        print("\n  Could not extract current primary provider/model from config.model.")
+        print("  Run `hermes model` to choose a primary model, then retry `hermes fallback swap`.")
+        raise SystemExit(2)
+    chain = _read_chain(config)
+    if not chain:
+        print("\n  No fallback providers configured — nothing to swap.")
+        print("  Add one with:  hermes fallback add")
+        raise SystemExit(2)
+    raw_index = getattr(args, "fallback_index", None)
+    index = 0 if raw_index in (None, "") else int(raw_index) - 1
+    if index < 0 or index >= len(chain):
+        print(f"\n  Fallback index out of range: {index + 1}. Choose 1-{len(chain)}.")
+        raise SystemExit(2)
+    promoted = dict(chain[index])
+    config["model"] = _apply_fallback_to_model_cfg(model_cfg, promoted)
+    chain[index] = primary_entry
+    _write_chain(config, chain)
+    save_config(config)
+    print(f"\n  Swapped primary with fallback #{index + 1}.")
+    print(f"  New primary:     {_format_entry(promoted)}")
+    print(f"  New fallback #{index + 1}: {_format_entry(primary_entry)}\n")
+    print("  Restart Hermes for the new primary model to take effect.")
 
 
 def cmd_fallback_remove(args) -> None:  # noqa: ARG001
@@ -221,12 +274,12 @@ def cmd_fallback(args) -> None:
     handler = _SUBCOMMANDS.get(sub)
     if handler is None:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, swap, remove, clear")
         raise SystemExit(2)
     handler(args)
 
 
 _SUBCOMMANDS = {
     **dict.fromkeys((None, "", "list", "ls"), cmd_fallback_list), "add": cmd_fallback_add,
-    **dict.fromkeys(("remove", "rm"), cmd_fallback_remove), "clear": cmd_fallback_clear,
+    "swap": cmd_fallback_swap, **dict.fromkeys(("remove", "rm"), cmd_fallback_remove), "clear": cmd_fallback_clear,
 }

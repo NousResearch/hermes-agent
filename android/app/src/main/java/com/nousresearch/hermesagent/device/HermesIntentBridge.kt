@@ -1,18 +1,12 @@
 package com.nousresearch.hermesagent.device
 
 import android.content.ActivityNotFoundException
-import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.provider.Browser
-import androidx.core.content.FileProvider
-import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 
 object HermesIntentBridge {
     fun performIntentJson(context: Context, payload: JSONObject): JSONObject {
@@ -30,9 +24,8 @@ object HermesIntentBridge {
             return successJson(intentTaskAction, payload, "Android intent payload is valid")
         }
 
+        val intent = buildIntent(intentTaskAction, payload)
         val appContext = context.applicationContext
-        val builtIntent = buildIntent(appContext, intentTaskAction, payload)
-        val intent = builtIntent.intent
         return when (intentTaskAction) {
             INTENT_TASK_SEND_BROADCAST -> runCatching {
                 appContext.sendBroadcast(intent)
@@ -42,24 +35,9 @@ object HermesIntentBridge {
                 errorJson(exitCode = 1, action = intentTaskAction, message = error.message ?: error.javaClass.simpleName)
             }
             else -> runCatching {
-                val localBackendRelease = releaseLocalBackendForExternalActivity(appContext, intentTaskAction)
                 appContext.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 DeviceStateWriter.write(appContext)
-                successJson(intentTaskAction, payload, "Started Android intent").also { result ->
-                    if (intentTaskAction == INTENT_TASK_OPEN_URI) {
-                        result.put("external_activity_handoff", true)
-                        localBackendRelease?.let { result.put("local_backend_release", it) }
-                    }
-                    builtIntent.resolvedContentUri?.let { result.put("resolved_content_uri", it.toString()) }
-                    builtIntent.resolvedMimeType?.let { result.put("resolved_mime_type", it) }
-                    builtIntent.resolvedUriScheme?.let { result.put("resolved_uri_scheme", it) }
-                    if (builtIntent.servedLocalFile) {
-                        result.put("served_local_file", true)
-                    }
-                    if (builtIntent.grantedUriPackages.isNotEmpty()) {
-                        result.put("granted_uri_packages", JSONArray(builtIntent.grantedUriPackages))
-                    }
-                }
+                successJson(intentTaskAction, payload, "Started Android intent")
             }.getOrElse { error ->
                 val message = when (error) {
                     is ActivityNotFoundException -> "No activity can handle this Android intent"
@@ -70,29 +48,12 @@ object HermesIntentBridge {
         }
     }
 
-    private fun releaseLocalBackendForExternalActivity(
-        context: Context,
-        intentTaskAction: String,
-    ): JSONObject? {
-        if (intentTaskAction != INTENT_TASK_OPEN_URI) {
-            return null
-        }
-        val priorStatus = OnDeviceBackendManager.currentStatus()
-        OnDeviceBackendManager.stopAll()
-        DeviceStateWriter.write(context)
-        return JSONObject()
-            .put("released", priorStatus.started)
-            .put("backend", priorStatus.backendKind.persistedValue)
-            .put("model", priorStatus.modelName)
-            .put("base_url", priorStatus.baseUrl)
-    }
-
     fun normalizeIntentTaskAction(action: String): String? {
         val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
         return INTENT_TASK_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in INTENT_TASK_ACTIONS }
     }
 
-    private fun buildIntent(context: Context, intentTaskAction: String, payload: JSONObject): BuiltIntent {
+    private fun buildIntent(intentTaskAction: String, payload: JSONObject): Intent {
         val intent = Intent()
         val intentAction = payload.optString("intent_action").ifBlank {
             if (intentTaskAction == INTENT_TASK_OPEN_URI) Intent.ACTION_VIEW else ""
@@ -100,31 +61,11 @@ object HermesIntentBridge {
         if (intentAction.isNotBlank()) {
             intent.action = intentAction
         }
-        var resolvedOpenUri: ResolvedOpenUri? = null
         payload.optString("data_uri").takeIf { it.isNotBlank() }?.let { rawUri ->
-            val resolved = resolveOpenUri(context, intentTaskAction, rawUri)
-            resolvedOpenUri = resolved
-            if (resolved.mimeType.isNullOrBlank()) {
-                intent.data = resolved.uri
-            } else {
-                intent.setDataAndType(resolved.uri, resolved.mimeType)
-            }
-            if (resolved.grantReadPermission) {
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+            intent.data = Uri.parse(rawUri)
         }
-        if (intentTaskAction == INTENT_TASK_OPEN_URI) {
-            intent.putExtra(Browser.EXTRA_APPLICATION_ID, context.packageName)
-        }
-        if (intentTaskAction == INTENT_TASK_OPEN_URI && shouldAddBrowsableCategory(resolvedOpenUri?.uri ?: intent.data)) {
-            intent.addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-        val explicitPackageName = payload.optString("package_name").takeIf { it.isNotBlank() }
-        explicitPackageName?.let { packageName ->
+        payload.optString("package_name").takeIf { it.isNotBlank() }?.let { packageName ->
             intent.setPackage(packageName)
-        }
-        if (explicitPackageName == null && resolvedOpenUri?.preferBrowserPackage == true) {
-            preferredBrowserPackage(context)?.let { intent.setPackage(it) }
         }
         resolveComponent(payload)?.let { component ->
             intent.component = component
@@ -147,146 +88,7 @@ object HermesIntentBridge {
                 }
             }
         }
-        val grantedPackages = if (resolvedOpenUri?.grantReadPermission == true) {
-            grantContentUriReadAccess(context, intent, resolvedOpenUri.uri)
-        } else {
-            emptyList()
-        }
-        return BuiltIntent(
-            intent = intent,
-            resolvedContentUri = resolvedOpenUri?.uri?.takeIf { resolvedOpenUri?.grantReadPermission == true },
-            resolvedMimeType = resolvedOpenUri?.mimeType,
-            resolvedUriScheme = resolvedOpenUri?.uri?.scheme,
-            servedLocalFile = resolvedOpenUri?.servedLocalFile == true,
-            grantedUriPackages = grantedPackages,
-        )
-    }
-
-    private fun resolveOpenUri(context: Context, intentTaskAction: String, rawUri: String): ResolvedOpenUri {
-        if (intentTaskAction != INTENT_TASK_OPEN_URI) {
-            return ResolvedOpenUri(Uri.parse(rawUri))
-        }
-        val parsed = Uri.parse(rawUri)
-        val localFile = localHermesFile(context, rawUri, parsed) ?: return ResolvedOpenUri(parsed)
-        localHtmlHttpUri(localFile)?.let { httpUri ->
-            return ResolvedOpenUri(
-                uri = httpUri,
-                preferBrowserPackage = true,
-                servedLocalFile = true,
-            )
-        }
-        val contentUri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.files",
-            localFile,
-        )
-        return ResolvedOpenUri(
-            uri = contentUri,
-            mimeType = mimeTypeFor(localFile),
-            grantReadPermission = true,
-            preferBrowserPackage = localFile.extension.equals("html", ignoreCase = true) ||
-                localFile.extension.equals("htm", ignoreCase = true),
-        )
-    }
-
-    private fun localHermesFile(context: Context, rawUri: String, parsed: Uri): File? {
-        val candidate = when {
-            parsed.scheme == "file" -> parsed.path?.let(::File)
-            parsed.scheme.isNullOrBlank() && File(rawUri).isAbsolute -> File(rawUri)
-            parsed.scheme.isNullOrBlank() -> {
-                val state = HermesLinuxSubsystemBridge.ensureInstalled(context)
-                val homePath = state.optString("home_path").ifBlank {
-                    File(context.filesDir, "hermes-home/workspace").absolutePath
-                }
-                File(homePath, rawUri)
-            }
-            else -> null
-        } ?: return null
-        val canonical = candidate.canonicalFile
-        val hermesRoot = File(context.filesDir, "hermes-home").canonicalFile
-        return canonical.takeIf { file ->
-            (file == hermesRoot || file.path.startsWith(hermesRoot.path + File.separator)) && file.isFile
-        }
-    }
-
-    private fun mimeTypeFor(file: File): String {
-        return when (file.extension.lowercase()) {
-            "html", "htm" -> "text/html"
-            "txt", "log", "md" -> "text/plain"
-            "json" -> "application/json"
-            "js" -> "application/javascript"
-            "css" -> "text/css"
-            "svg" -> "image/svg+xml"
-            "png" -> "image/png"
-            "jpg", "jpeg" -> "image/jpeg"
-            "gif" -> "image/gif"
-            else -> "*/*"
-        }
-    }
-
-    private fun localHtmlHttpUri(file: File): Uri? {
-        if (!file.extension.equals("html", ignoreCase = true) && !file.extension.equals("htm", ignoreCase = true)) {
-            return null
-        }
-        return HermesLocalFileHttpServer.shareFile(file, mimeTypeFor(file))
-    }
-
-    private fun shouldAddBrowsableCategory(uri: Uri?): Boolean {
-        return uri?.scheme?.lowercase() in BROWSABLE_URI_SCHEMES
-    }
-
-    private fun preferredBrowserPackage(context: Context): String? {
-        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-        val packageManager = context.packageManager
-        val resolved = packageManager.resolveActivity(browserIntent, PackageManager.MATCH_DEFAULT_ONLY)
-            ?.activityInfo
-            ?.packageName
-            .orEmpty()
-
-        val candidates = packageManager
-            .queryIntentActivities(browserIntent, PackageManager.MATCH_DEFAULT_ONLY)
-            .mapNotNull { it.activityInfo?.packageName }
-            .distinct()
-        return selectPreferredBrowserPackage(resolved, candidates)
-    }
-
-    internal fun selectPreferredBrowserPackage(resolvedPackage: String, candidatePackages: List<String>): String? {
-        val resolved = resolvedPackage.takeUnless { it == "android" || it == "com.android.intentresolver" }
-        if (!resolved.isNullOrBlank()) {
-            return resolved
-        }
-        val preferredPackages = listOf(
-            "com.android.chrome",
-            "com.chrome.beta",
-            "com.chrome.dev",
-            "org.mozilla.firefox",
-            "org.mozilla.firefox_beta",
-            "com.brave.browser",
-            "com.microsoft.emmx",
-        )
-        return preferredPackages.firstOrNull { it in candidatePackages } ?: candidatePackages.firstOrNull()
-    }
-
-    private fun grantContentUriReadAccess(context: Context, intent: Intent, uri: Uri): List<String> {
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.clipData = ClipData.newUri(context.contentResolver, "Hermes file", uri)
-
-        val packageManager = context.packageManager
-        val targetPackages = linkedSetOf<String>()
-        intent.component?.packageName?.takeIf { it.isNotBlank() }?.let(targetPackages::add)
-        intent.`package`?.takeIf { it.isNotBlank() }?.let(targetPackages::add)
-        if (targetPackages.isEmpty()) {
-            packageManager
-                .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-                .mapNotNull { it.activityInfo?.packageName?.takeIf(String::isNotBlank) }
-                .forEach(targetPackages::add)
-        }
-        targetPackages.forEach { packageName ->
-            context.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        return targetPackages.toList()
+        return intent
     }
 
     private fun validatePayload(payload: JSONObject): String? {
@@ -424,27 +226,9 @@ object HermesIntentBridge {
             .put("extras", payload.optJSONObject("extras") ?: JSONObject())
     }
 
-    private data class ResolvedOpenUri(
-        val uri: Uri,
-        val mimeType: String? = null,
-        val grantReadPermission: Boolean = false,
-        val preferBrowserPackage: Boolean = false,
-        val servedLocalFile: Boolean = false,
-    )
-
-    private data class BuiltIntent(
-        val intent: Intent,
-        val resolvedContentUri: Uri? = null,
-        val resolvedMimeType: String? = null,
-        val resolvedUriScheme: String? = null,
-        val servedLocalFile: Boolean = false,
-        val grantedUriPackages: List<String> = emptyList(),
-    )
-
     private const val INTENT_TASK_START_ACTIVITY = "start_activity"
     private const val INTENT_TASK_OPEN_URI = "open_uri"
     private const val INTENT_TASK_SEND_BROADCAST = "send_broadcast"
-    private val BROWSABLE_URI_SCHEMES = setOf("http", "https")
     private val INTENT_TASK_ACTIONS = listOf(
         INTENT_TASK_START_ACTIVITY,
         INTENT_TASK_OPEN_URI,

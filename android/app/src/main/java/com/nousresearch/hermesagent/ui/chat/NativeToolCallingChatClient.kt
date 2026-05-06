@@ -317,7 +317,7 @@ class NativeToolCallingChatClient(
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
                     "For Tasker-style Shizuku actions, android_system_tool can run grant_runtime_permission, revoke_runtime_permission, force_stop_app, enable_app, disable_app, and set_app_enabled with explicit package_name, permission, or enabled arguments. " +
-                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, saved file action, safe saved Android settings action, saved visible-UI action, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks, run them manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted triggers, and expand saved variables in commands, file content, UI selectors, package names, trigger packages, and notification or time event fields. " +
+                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, saved file action, safe saved Android settings action, saved visible-UI action, saved Android intent, broadcast, URI, activity launch, or saved app-launch action, call android_automation_tool. It can save shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku package-permission tasks, run them manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted triggers, and expand saved variables in commands, file content, UI selectors, intent fields, package names, trigger packages, and notification or time event fields. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -364,7 +364,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, and Shizuku/Sui package-permission tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted phone-state triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access.",
+                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku/Sui package-permission tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted phone-state triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access.",
                             )
                             .put(
                                 "parameters",
@@ -377,7 +377,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_shizuku_action_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
+                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_shizuku_action_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "id",
@@ -395,7 +395,7 @@ class NativeToolCallingChatClient(
                                                 "command",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Shell command for create_shell_task, alternate system action value for create_system_action_task, or alternate package name for create_app_launch_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                                    .put("description", "Shell command for create_shell_task, alternate system action value for create_system_action_task, alternate package name for create_app_launch_task, or alternate intent action for create_intent_task. Saved variables can be referenced as %NAME or {{NAME}}."),
                                             )
                                             .put(
                                                 "path",
@@ -434,6 +434,24 @@ class NativeToolCallingChatClient(
                                                     .put("description", "Saved Shizuku/Sui package or permission action for create_shizuku_action_task: grant_runtime_permission, revoke_runtime_permission, force_stop_app, enable_app, disable_app, or set_app_enabled. Requires user-started Shizuku/Sui and granted Hermes permission when run."),
                                             )
                                             .put(
+                                                "intent_task_action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Saved Android intent mode for create_intent_task: start_activity, open_uri, or send_broadcast. Aliases include create_activity_task, create_uri_task, and create_broadcast_task."),
+                                            )
+                                            .put(
+                                                "intent_action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android Intent action for create_intent_task, for example android.intent.action.VIEW or a custom broadcast action. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "data_uri",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android Intent data URI for create_intent_task, for example https://example.com or package:com.example.app. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
                                                 "text_contains",
                                                 JSONObject()
                                                     .put("type", "string")
@@ -455,7 +473,38 @@ class NativeToolCallingChatClient(
                                                 "package_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Package name for create_app_launch_task or create_shizuku_action_task, or saved UI selector package-name fragment for create_ui_action_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                                    .put("description", "Package name for create_app_launch_task, create_shizuku_action_task, create_intent_task, or saved UI selector package-name fragment for create_ui_action_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "class_name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Activity class name for create_intent_task start_activity. Use a fully qualified class or a package-relative .ClassName."),
+                                            )
+                                            .put(
+                                                "component",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Flattened Android component for create_intent_task, such as com.example/.MainActivity."),
+                                            )
+                                            .put(
+                                                "category",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional Android Intent category for create_intent_task."),
+                                            )
+                                            .put(
+                                                "categories",
+                                                JSONObject()
+                                                    .put("type", "array")
+                                                    .put("description", "Optional Android Intent categories for create_intent_task.")
+                                                    .put("items", JSONObject().put("type", "string")),
+                                            )
+                                            .put(
+                                                "extras",
+                                                JSONObject()
+                                                    .put("type", "object")
+                                                    .put("description", "Optional primitive string, number, or boolean extras for create_intent_task. String values can reference saved variables as %NAME or {{NAME}}."),
                                             )
                                             .put(
                                                 "permission",

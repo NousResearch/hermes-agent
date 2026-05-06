@@ -275,6 +275,145 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun intentAutomationStartsExplicitHermesActivity() {
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_intent_task",
+                JSONObject()
+                    .put("label", "Start activity smoke")
+                    .put("intent_task_action", "start_activity")
+                    .put("package_name", app.packageName)
+                    .put("class_name", "com.nousresearch.hermesagent.MainActivity")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("intent", created.getJSONObject("automation").getString("action_type"))
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", created.getJSONObject("automation").getString("id")),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        val result = run.getJSONObject("result")
+        assertEquals("start_activity", result.getString("action"))
+        assertEquals(app.packageName, result.getString("package_name"))
+        assertEquals("com.nousresearch.hermesagent.MainActivity", result.getString("class_name"))
+        assertEquals(0, run.getJSONObject("automation").getInt("last_exit_code"))
+    }
+
+    @Test
+    fun intentAutomationSendsBroadcastAndExpandsVariables() {
+        val packageVariable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%TARGET_PACKAGE")
+                    .put("value", app.packageName),
+            ),
+        )
+        assertTrue(packageVariable.toString(), packageVariable.getBoolean("success"))
+
+        val actionVariable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%BROADCAST_SUFFIX")
+                    .put("value", "AUTOMATION_SMOKE"),
+            ),
+        )
+        assertTrue(actionVariable.toString(), actionVariable.getBoolean("success"))
+
+        val messageVariable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%BROADCAST_MESSAGE")
+                    .put("value", "broadcast-ok"),
+            ),
+        )
+        assertTrue(messageVariable.toString(), messageVariable.getBoolean("success"))
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_broadcast_task",
+                JSONObject()
+                    .put("label", "Broadcast smoke")
+                    .put("intent_action", app.packageName + ".%BROADCAST_SUFFIX")
+                    .put("package_name", "%TARGET_PACKAGE")
+                    .put(
+                        "extras",
+                        JSONObject()
+                            .put("message", "%BROADCAST_MESSAGE")
+                            .put("count", 7)
+                            .put("enabled", true),
+                    )
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("intent", created.getJSONObject("automation").getString("action_type"))
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", created.getJSONObject("automation").getString("id")),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        val result = run.getJSONObject("result")
+        assertEquals("send_broadcast", result.getString("action"))
+        assertEquals(app.packageName + ".AUTOMATION_SMOKE", result.getString("intent_action"))
+        assertEquals(app.packageName, result.getString("package_name"))
+        assertEquals(3, result.getInt("extras_count"))
+        assertEquals("broadcast-ok", result.getJSONObject("extras").getString("message"))
+    }
+
+    @Test
+    fun intentAutomationRejectsUnsafeDefinitions() {
+        val missingUri = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_intent_task",
+                JSONObject().put("intent_task_action", "open_uri"),
+            ),
+        )
+        assertFalse(missingUri.toString(), missingUri.getBoolean("success"))
+        assertTrue(missingUri.getString("error").contains("data_uri"))
+
+        val unsupported = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_intent_task",
+                JSONObject().put("intent_task_action", "toggle_airplane_mode"),
+            ),
+        )
+        assertFalse(unsupported.toString(), unsupported.getBoolean("success"))
+        assertTrue(unsupported.getString("error").contains("Unsupported Android intent task action"))
+
+        val badPackage = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_intent_task",
+                JSONObject()
+                    .put("intent_task_action", "start_activity")
+                    .put("package_name", "bad\u0000package"),
+            ),
+        )
+        assertFalse(badPackage.toString(), badPackage.getBoolean("success"))
+        assertTrue(badPackage.getString("error").contains("NUL"))
+    }
+
+    @Test
     fun shizukuActionAutomationExpandsVariablesAndFailsSafelyAtPrivilegeBoundary() {
         val packageVariable = JSONObject(
             HermesAutomationBridge.performActionJson(

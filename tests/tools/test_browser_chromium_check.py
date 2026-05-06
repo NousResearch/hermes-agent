@@ -15,8 +15,12 @@ from tools import browser_tool as bt
 
 
 @pytest.fixture(autouse=True)
-def _reset_chromium_cache():
+def _reset_chromium_cache(monkeypatch):
     bt._cached_chromium_installed = None
+    monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.delenv("CAMOFOX_URL", raising=False)
+    monkeypatch.setattr(bt.shutil, "which", lambda _cmd: None)
     yield
     bt._cached_chromium_installed = None
 

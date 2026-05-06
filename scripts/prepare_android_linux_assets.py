@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import posixpath
 import shutil
 import sys
-import tempfile
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from hermes_android.linux_assets import (
     parse_packages_index,
     resolve_dependency_closure,
     serializable_manifest,
+    strip_termux_prefix,
     TERMUX_PACKAGES_INDEX_TEMPLATE,
     verify_sha256,
     write_manifest,
@@ -97,6 +99,102 @@ def mirror_extracted_tree(extracted_root: Path, staging_prefix: Path) -> list[di
     return links
 
 
+def _archive_termux_relative(path: str) -> str | None:
+    normalized = posixpath.normpath(str(path).replace("\\", "/"))
+    relative = strip_termux_prefix(normalized)
+    if relative is None:
+        return None
+    relative = posixpath.normpath(relative)
+    if relative == ".":
+        return ""
+    if relative.startswith("../"):
+        return None
+    return relative
+
+
+def _staging_destination(staging_prefix: Path, relative: str) -> Path:
+    parts = [part for part in relative.split("/") if part and part != "."]
+    if any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe archive member path: {relative!r}")
+    destination = staging_prefix.joinpath(*parts)
+    destination.resolve(strict=False).relative_to(staging_prefix.resolve(strict=False))
+    return destination
+
+
+def _normalize_archive_link_target(source_relative: str, target: str) -> str | None:
+    direct = _archive_termux_relative(target)
+    if direct:
+        return direct
+    if direct == "":
+        return None
+
+    normalized = str(target).replace("\\", "/")
+    if normalized.startswith("/"):
+        return None
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source_relative), normalized))
+    if resolved == "." or resolved.startswith("../"):
+        return None
+    return resolved
+
+
+def _normalize_archive_hardlink_target(source_relative: str, target: str) -> str | None:
+    direct = _archive_termux_relative(target)
+    if direct:
+        return direct
+    if direct == "":
+        return None
+
+    normalized = posixpath.normpath(str(target).replace("\\", "/").lstrip("./"))
+    if normalized and normalized != "." and not normalized.startswith("../"):
+        return normalized
+    return _normalize_archive_link_target(source_relative, target)
+
+
+def mirror_data_tar(data_tar: tarfile.TarFile, staging_prefix: Path) -> list[dict]:
+    links: list[dict] = []
+    staging_prefix.mkdir(parents=True, exist_ok=True)
+
+    for member in sorted(data_tar.getmembers(), key=lambda item: item.name):
+        relative = _archive_termux_relative(member.name)
+        if relative is None:
+            continue
+        if relative == "":
+            staging_prefix.mkdir(parents=True, exist_ok=True)
+            continue
+
+        destination = _staging_destination(staging_prefix, relative)
+
+        if member.isdir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if member.issym():
+            target = _normalize_archive_link_target(relative, member.linkname)
+            if target:
+                links.append({"path": relative, "target": target})
+            continue
+
+        if member.islnk():
+            target = _normalize_archive_hardlink_target(relative, member.linkname)
+            if target:
+                links.append({"path": relative, "target": target})
+            continue
+
+        if not member.isfile():
+            continue
+
+        file_obj = data_tar.extractfile(member)
+        if file_obj is None:
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = normalize_text_shebang(file_obj.read())
+        destination.write_bytes(payload)
+        if relative.startswith(("bin/", "libexec/")) or member.mode & 0o111:
+            destination.chmod(0o755)
+
+    return links
+
+
 def prune_staging_prefix(prefix_dir: Path) -> None:
     removable = [
         prefix_dir / "include",
@@ -129,10 +227,8 @@ def prepare_assets(output_dir: Path) -> None:
             payload = download_bytes(package.download_url)
             verify_sha256(payload, package.sha256)
             data_bytes, data_name = load_data_tar_bytes_from_deb(payload)
-            with tempfile.TemporaryDirectory() as extracted_dir:
-                with open_data_tar(data_bytes, data_name) as tar:
-                    tar.extractall(extracted_dir)
-                links.extend(mirror_extracted_tree(Path(extracted_dir), prefix_dir))
+            with open_data_tar(data_bytes, data_name) as tar:
+                links.extend(mirror_data_tar(tar, prefix_dir))
 
         prune_staging_prefix(prefix_dir)
         for extra_dir in [prefix_dir / "home", prefix_dir / "tmp"]:

@@ -1,8 +1,11 @@
 import subprocess
 import sys
+import tarfile
+from io import BytesIO
 from pathlib import Path
 
 from hermes_android.linux_assets import serializable_manifest
+from scripts.prepare_android_linux_assets import mirror_data_tar
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +55,34 @@ def test_linux_asset_manifest_normalizes_windows_link_targets():
         {"path": "bin/sh", "target": "bin/busybox"},
         {"path": "lib/libreadline.so.8", "target": "lib/libreadline.so.8.3"},
     ]
+
+
+def test_prepare_android_linux_assets_mirrors_absolute_termux_symlinks(tmp_path):
+    archive = BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        directory = tarfile.TarInfo("./data/data/com.termux/files/usr/bin")
+        directory.type = tarfile.DIRTYPE
+        tar.addfile(directory)
+
+        payload = b"#!/data/data/com.termux/files/usr/bin/bash\necho ok\n"
+        file_info = tarfile.TarInfo("./data/data/com.termux/files/usr/bin/bzdiff")
+        file_info.mode = 0o755
+        file_info.size = len(payload)
+        tar.addfile(file_info, BytesIO(payload))
+
+        link_info = tarfile.TarInfo("./data/data/com.termux/files/usr/bin/bzcmp")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "/data/data/com.termux/files/usr/bin/bzdiff"
+        tar.addfile(link_info)
+
+    archive.seek(0)
+    prefix = tmp_path / "prefix"
+    with tarfile.open(fileobj=archive, mode="r:") as tar:
+        links = mirror_data_tar(tar, prefix)
+
+    assert (prefix / "bin" / "bzdiff").read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho ok\n"
+    assert not (prefix / "bin" / "bzcmp").exists()
+    assert links == [{"path": "bin/bzcmp", "target": "bin/bzdiff"}]
 
 
 def test_android_linux_subsystem_recreates_windows_manifest_links():

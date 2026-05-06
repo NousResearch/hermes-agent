@@ -257,7 +257,7 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "deepseek")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
@@ -343,6 +343,61 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "to prevent CLI tools from hanging on prompts.\n"
     "- **Keep going:** Work autonomously until the task is fully resolved. "
     "Don't stop with a plan — execute it.\n"
+)
+
+# DeepSeek V3/V4-specific operational guidance.  Counters known failure modes:
+# completion bias (treats exit-code-0 as success), verification skipping,
+# yes-man framing, and the one-tool-call constraint required by the Hermes
+# parser (DeepSeek's tool-call output gets truncated to the last call when
+# multiple are emitted in a single turn).
+DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE = (
+    "# DeepSeek operational directives\n"
+    "<single_tool_call>\n"
+    "Emit EXACTLY ONE tool call per response. Never bundle multiple tool "
+    "calls in one turn. The Hermes transport discards all but the last when "
+    "more than one is emitted, silently losing your work. If a task needs N "
+    "actions, take N turns.\n"
+    "</single_tool_call>\n"
+    "\n"
+    "<doubt_success>\n"
+    "Exit code 0 is NOT proof of success. A command that ran without error "
+    "is not the same as a command that achieved its intended effect. After "
+    "every state-changing action, run a separate verification tool call "
+    "that observes the resulting state (file contents, service status, "
+    "HTTP response, query result). Do not claim completion until you have "
+    "shown that observation in the conversation.\n"
+    "</doubt_success>\n"
+    "\n"
+    "<no_completion_theatre>\n"
+    "Never write 'I have configured...', 'This should now work...', 'The "
+    "service has been restarted...' without quoting the verification output "
+    "that proves it. If you have not run a verification tool call, you have "
+    "not completed the task — you have only attempted it. Phrasing a guess "
+    "as a result is a hallucination.\n"
+    "</no_completion_theatre>\n"
+    "\n"
+    "<read_before_write>\n"
+    "Before modifying any file under /etc/, any database, any service "
+    "config, or any file containing credentials, create a dated backup "
+    "first and state the rollback command in the same response. The "
+    "backup-first protocol in HERMES.md / CLAUDE.md is a hard rule, not a "
+    "guideline. If a backup cannot be created first, the action cannot "
+    "proceed.\n"
+    "</read_before_write>\n"
+    "\n"
+    "<no_yes_man>\n"
+    "If the user's instruction conflicts with what the code, file system, "
+    "or live system actually shows, surface the conflict and ask. Do not "
+    "agree-and-proceed with an instruction that is contradicted by "
+    "observable state. Helpfulness without accuracy is harm.\n"
+    "</no_yes_man>\n"
+    "\n"
+    "<verify_before_finishing>\n"
+    "Before ending your turn, ask yourself: did I run a verification tool "
+    "call that confirms the user's request was satisfied? If no, run one "
+    "now. The default ending of a turn is one more verification call, not "
+    "a summary.\n"
+    "</verify_before_finishing>"
 )
 
 # Model name substrings that should use the 'developer' role instead of

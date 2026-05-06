@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -1045,6 +1046,9 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_grok(self):
         assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_deepseek(self):
+        assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
@@ -1082,6 +1086,48 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+class TestDeepSeekModelOperationalGuidance:
+    """Tests for DeepSeek V3/V4-specific operational guidance."""
+
+    def test_guidance_covers_single_tool_call(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "single_tool_call" in text
+        assert "one tool call" in text
+        assert "discards" in text or "drops" in text
+
+    def test_guidance_covers_doubt_success(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "doubt_success" in text
+        assert "exit code 0" in text
+        assert "verification" in text or "verify" in text
+
+    def test_guidance_covers_completion_theatre(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "no_completion_theatre" in text
+        assert "configured" in text or "should" in text
+
+    def test_guidance_covers_backup_first(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "read_before_write" in text
+        assert "backup" in text
+        assert "rollback" in text
+
+    def test_guidance_covers_no_yes_man(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "no_yes_man" in text
+        assert "conflict" in text
+
+    def test_guidance_uses_xml_tags(self):
+        assert "<single_tool_call>" in DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE
+        assert "</single_tool_call>" in DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE
+        assert "<doubt_success>" in DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE
+        assert "</doubt_success>" in DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE
+
+    def test_guidance_is_string(self):
+        assert isinstance(DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE, str)
+        assert len(DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE) > 100
 
 
 # =========================================================================

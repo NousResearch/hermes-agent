@@ -80,6 +80,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
+    "claude-cli",
     "openai-codex",
 })
 
@@ -434,7 +435,16 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             # if the Copilot-specific path is unavailable for any reason.
             pass
 
-    # --- Copilot / Copilot ACP / openai-codex fallback:
+    if provider == "claude-cli":
+        if "/" in name:
+            prefix, bare = name.split("/", 1)
+            if prefix.lower() in {"anthropic", "claude", "claude-cli"} and bare:
+                name = bare
+        if name.startswith("claude-"):
+            return name.replace(".", "-")
+        return name
+
+    # --- Copilot / Copilot ACP / Claude CLI / openai-codex fallback:
     #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
@@ -470,4 +480,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

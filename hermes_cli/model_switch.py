@@ -1340,10 +1340,18 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+
+                status = get_external_process_provider_status(hermes_slug)
+                has_creds = bool(status.get("logged_in") or status.get("configured"))
+            except Exception as exc:
+                logger.debug("External process status check failed for %s: %s", hermes_slug, exc)
         if not has_creds:
             continue
 
-        if hermes_slug in {"copilot", "copilot-acp"}:
+        if hermes_slug in {"copilot", "copilot-acp", "claude-cli"}:
             model_ids = provider_model_ids(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.

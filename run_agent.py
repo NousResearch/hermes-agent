@@ -1441,7 +1441,7 @@ class AIAgent:
                     client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
-                if self.provider == "copilot-acp":
+                if self.provider in {"copilot-acp", "claude-cli"}:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -5586,6 +5586,17 @@ class AIAgent:
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "claude-cli" or str(client_kwargs.get("base_url", "")).startswith("claude-cli://"):
+            from agent.claude_cli_client import ClaudeCLIClient
+
+            client = ClaudeCLIClient(**client_kwargs)
+            logger.info(
+                "Claude CLI client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),
@@ -11384,6 +11395,8 @@ class AIAgent:
                         self.provider == "copilot-acp"
                         or str(self.base_url or "").lower().startswith("acp://copilot")
                         or str(self.base_url or "").lower().startswith("acp+tcp://")
+                        or self.provider == "claude-cli"
+                        or str(self.base_url or "").lower().startswith("claude-cli://")
                     ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():

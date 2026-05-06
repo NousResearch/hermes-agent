@@ -175,6 +175,7 @@ class TestProviderLabel:
         assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("claude-cli") == "Claude Code CLI"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -246,6 +247,12 @@ class TestProviderModelIds:
         assert "gemini-3.1-pro-preview" in ids
         assert "copilot-acp" not in ids
         assert "claude-opus-4.6" not in ids
+
+    def test_claude_cli_returns_static_cli_aliases(self):
+        ids = provider_model_ids("claude-cli")
+
+        assert ids[:3] == ["sonnet", "opus", "haiku"]
+        assert "claude-sonnet-4-6" in ids
 
 
 # -- fetch_api_models --------------------------------------------------------

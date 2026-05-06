@@ -31,6 +31,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("claude-cli", "Claude Code CLI", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -385,6 +386,24 @@ class TestApiKeyProviderStatus:
         assert status["args"] == ["--acp", "--stdio", "--debug"]
         assert status["base_url"] == "acp://copilot"
 
+    def test_claude_cli_status_checks_auth(self, monkeypatch):
+        class _Result:
+            stdout = '{"loggedIn": true}'
+            stderr = ""
+            returncode = 0
+
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setattr("hermes_cli.auth.subprocess.run", lambda *a, **kw: _Result())
+
+        status = get_external_process_provider_status("claude-cli")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "claude"
+        assert status["resolved_command"] == "/usr/local/bin/claude"
+        assert status["args"] == ["--no-session-persistence", "--tools", ""]
+        assert status["base_url"] == "claude-cli://local"
+
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
 
@@ -489,6 +508,18 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
+
+    def test_resolve_claude_cli_with_local_cli(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("claude-cli")
+
+        assert creds["provider"] == "claude-cli"
+        assert creds["api_key"] == "claude-cli"
+        assert creds["base_url"] == "claude-cli://local"
+        assert creds["command"] == "/usr/local/bin/claude"
+        assert creds["args"] == ["--no-session-persistence", "--tools", ""]
         assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
@@ -711,6 +742,20 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_claude_cli_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="claude-cli")
+
+        assert result["provider"] == "claude-cli"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "claude-cli"
+        assert result["base_url"] == "claude-cli://local"
+        assert result["command"] == "/usr/local/bin/claude"
+        assert result["args"] == ["--no-session-persistence", "--tools", ""]
 
 
 # =============================================================================

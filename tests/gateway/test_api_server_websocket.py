@@ -172,6 +172,27 @@ class TestWebSocketAgentMessage:
                 assert interrupted.is_set()
                 mock_agent.interrupt.assert_called_once_with("WebSocket client disconnected")
 
+    @pytest.mark.asyncio
+    async def test_message_send_rejects_unknown_history_role(self, adapter):
+        app = _create_ws_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                ws = await cli.ws_connect("/v1/ws")
+                await ws.send_json({
+                    "id": "msg-2",
+                    "type": "agent.message.send",
+                    "text": "hello",
+                    "conversation_history": [{"role": "tool", "content": "not allowed"}],
+                })
+
+                frame = await ws.receive_json(timeout=3)
+                assert frame["id"] == "msg-2"
+                assert frame["type"] == "agent.message.error"
+                assert frame["code"] == "invalid_request"
+                assert "conversation_history[0] role" in frame["message"]
+                mock_create.assert_not_called()
+                await ws.close()
+
 
 class TestWebSocketSessions:
     @pytest.mark.asyncio
@@ -209,6 +230,26 @@ class TestWebSocketSessions:
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "hi"},
             ]
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_session_list_rejects_non_integer_limit(self, adapter):
+        fake_db = MagicMock()
+        adapter._session_db = fake_db
+
+        app = _create_ws_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            ws = await cli.ws_connect("/v1/ws")
+
+            await ws.send_json({"id": "list-2", "type": "session.list", "limit": "5"})
+            frame = await ws.receive_json(timeout=3)
+            assert frame == {
+                "id": "list-2",
+                "type": "agent.message.error",
+                "code": "invalid_request",
+                "message": "limit must be an integer",
+            }
+            fake_db.list_sessions_rich.assert_not_called()
             await ws.close()
 
     @pytest.mark.asyncio

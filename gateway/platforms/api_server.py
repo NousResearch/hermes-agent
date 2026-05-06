@@ -71,6 +71,7 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+WS_CONVERSATION_HISTORY_ROLES = frozenset({"user", "assistant", "system"})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1760,13 +1761,17 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._ws_send_error(ws, frame.get("id"), "session_db_unavailable", "Session database unavailable")
             return
 
-        try:
-            limit = max(1, min(100, int(frame.get("limit", 20))))
-            offset = max(0, int(frame.get("offset", 0)))
-        except (TypeError, ValueError):
-            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "limit and offset must be integers")
+        limit_value = frame.get("limit", 20)
+        offset_value = frame.get("offset", 0)
+        if not isinstance(limit_value, int):
+            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "limit must be an integer")
+            return
+        if not isinstance(offset_value, int):
+            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "offset must be an integer")
             return
 
+        limit = max(1, min(100, limit_value))
+        offset = max(0, offset_value)
         sessions = db.list_sessions_rich(limit=limit, offset=offset)
         await ws.send_json({
             "id": frame.get("id"),
@@ -1848,7 +1853,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     f"conversation_history[{i}] must have role and content",
                 )
                 return
-            conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            role = str(entry["role"])
+            if role not in WS_CONVERSATION_HISTORY_ROLES:
+                await self._ws_send_error(
+                    ws,
+                    frame_id,
+                    "invalid_request",
+                    f"conversation_history[{i}] role must be one of {sorted(WS_CONVERSATION_HISTORY_ROLES)}",
+                )
+                return
+            conversation_history.append({"role": role, "content": str(entry["content"])})
 
         loop = asyncio.get_running_loop()
         delta_q: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
@@ -1982,6 +1996,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                 elif msg.type == WSMsgType.ERROR:
                     logger.debug("[api_server] WebSocket closed with exception: %s", ws.exception())
+                    if not ws.closed:
+                        try:
+                            await self._ws_send_error(
+                                ws,
+                                None,
+                                "connection_error",
+                                str(ws.exception() or "WebSocket connection error"),
+                            )
+                        except Exception:
+                            pass
         finally:
             for agent_ref in list(active_agents.values()):
                 try:

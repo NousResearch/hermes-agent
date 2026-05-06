@@ -1,9 +1,18 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI-compatible shim that forwards Hermes requests to ACP servers.
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+Supports two backends:
+- "claude" (default): Claude Code ACP format (copilot --acp --stdio).
+  Sends the entire conversation as a single text prompt block.
+- "opencode": OpenCode ACP format (opencode acp).
+  Sends messages as individual parts with annotations. System messages
+  are tagged with audience: ['assistant'] so OpenCode can extract them
+  as the 'system' parameter to session.prompt().
+
+Set HERMES_ACP_BACKEND=opencode to enable OpenCode mode.
+Each request starts a short-lived ACP session, sends the formatted
+conversation as a single prompt, collects text chunks, and converts
+the result back into the minimal shape Hermes expects from an OpenAI
+client.
 """
 
 from __future__ import annotations
@@ -331,6 +340,7 @@ class CopilotACPClient:
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        self._acp_backend = os.getenv("HERMES_ACP_BACKEND", "claude").strip().lower()
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
@@ -388,6 +398,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            messages=messages,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -413,7 +424,30 @@ class CopilotACPClient:
             model=model or "copilot-acp",
         )
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _build_opencode_prompt_parts(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Format messages as ACP prompt parts with annotations for OpenCode backend.
+
+        System messages are tagged with audience: ['assistant'] so OpenCode
+        can extract them as the 'system' parameter to session.prompt().
+        """
+        parts: list[dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "unknown").strip().lower()
+            content = msg.get("content")
+            if not content:
+                continue
+            text = _render_message_content(content)
+            if not text:
+                continue
+            part: dict[str, Any] = {"type": "text", "text": text}
+            if role == "system":
+                part["annotations"] = {"audience": ["assistant"]}
+            parts.append(part)
+        return parts
+
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, messages: list[dict[str, Any]] | None = None) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -540,16 +574,22 @@ class CopilotACPClient:
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+
+            if self._acp_backend == "opencode" and messages:
+                prompt_parts = self._build_opencode_prompt_parts(messages)
+            else:
+                prompt_parts = [
+                    {
+                        "type": "text",
+                        "text": prompt_text,
+                    }
+                ]
+
             _request(
                 "session/prompt",
                 {
                     "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        }
-                    ],
+                    "prompt": prompt_parts,
                 },
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,

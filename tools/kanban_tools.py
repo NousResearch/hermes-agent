@@ -145,6 +145,20 @@ def _normalize_profile(value: Any) -> Optional[str]:
     return text
 
 
+def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
+    value = args.get(name)
+    if value is None:
+        return default, None
+    if isinstance(value, bool):
+        return value, None
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True, None
+    if text in ("false", "0", "no"):
+        return False, None
+    return default, f"{name} must be a boolean or 'true'/'false'"
+
+
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
     """Compact task shape for board-listing tools."""
     parents = kb.parent_ids(conn, task.id)
@@ -250,7 +264,9 @@ def _handle_list(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     status = args.get("status")
     tenant = args.get("tenant")
-    include_archived = bool(args.get("include_archived"))
+    include_archived, bool_error = _parse_bool_arg(args, "include_archived")
+    if bool_error:
+        return tool_error(bool_error)
     limit = args.get("limit")
     if limit is not None:
         try:

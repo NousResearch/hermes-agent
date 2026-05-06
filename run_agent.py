@@ -4375,6 +4375,15 @@ class AIAgent:
                 "system_prompt": self._cached_system_prompt or "",
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
+                "input_tokens": self.session_input_tokens,
+                "output_tokens": self.session_output_tokens,
+                "cache_read_tokens": self.session_cache_read_tokens,
+                "cache_write_tokens": self.session_cache_write_tokens,
+                "reasoning_tokens": self.session_reasoning_tokens,
+                "prompt_tokens": self.session_prompt_tokens,
+                "api_call_count": self.session_api_calls,
+                "estimated_cost_usd": self.session_estimated_cost_usd,
+                "cost_status": self.session_cost_status,
                 "messages": cleaned,
             }
 

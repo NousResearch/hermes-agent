@@ -54,6 +54,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
 | `hermes backup` | Back up Hermes home directory to a zip file. |
+| `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
 | `hermes import` | Restore a Hermes backup from a zip file. |
 | `hermes logs` | View, tail, and filter agent/gateway/error log files. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
@@ -578,6 +579,44 @@ hermes backup -o /tmp/hermes.zip        # Full backup to specific path
 hermes backup --quick                   # Quick state-only snapshot
 hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
 ```
+
+## `hermes checkpoints`
+
+```bash
+hermes checkpoints [COMMAND]
+```
+
+Inspect and manage the shadow git store at `~/.hermes/checkpoints/` — the storage layer behind the in-session `/rollback` command. Safe to run any time; does not require the agent to be running.
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` (default) | Show total size, project count, and per-project breakdown. Bare `hermes checkpoints` is equivalent. |
+| `list` | Alias for `status`. |
+| `prune` | Force a cleanup sweep — delete orphan and stale projects, GC the store, enforce the size cap. Ignores the 24h idempotency marker. |
+| `clear` | Delete the entire checkpoint base. Irreversible; asks for confirmation unless `-f`. |
+| `clear-legacy` | Delete only the `legacy-<timestamp>/` archives produced by the v1→v2 migration. |
+
+### Options
+
+| Option | Subcommand | Description |
+|--------|------------|-------------|
+| `--limit N` | `status`, `list` | Max projects to list (default 20). |
+| `--retention-days N` | `prune` | Drop projects whose `last_touch` is older than N days (default 7). |
+| `--max-size-mb N` | `prune` | After the orphan/stale pass, drop the oldest commit per project until total store size ≤ N MB (default 500). |
+| `--keep-orphans` | `prune` | Skip deleting projects whose working directory no longer exists. |
+| `-f`, `--force` | `clear`, `clear-legacy` | Skip the confirmation prompt. |
+
+### Examples
+
+```bash
+hermes checkpoints                                  # status overview
+hermes checkpoints prune --retention-days 3         # aggressive cleanup
+hermes checkpoints prune --max-size-mb 200          # tighten size cap once
+hermes checkpoints clear-legacy -f                  # drop v1 archive dirs
+hermes checkpoints clear -f                         # wipe everything
+```
+
+See [Checkpoints and `/rollback`](../user-guide/checkpoints-and-rollback.md) for the full architecture and the in-session commands.
 
 ## `hermes import`
 

@@ -67,6 +67,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("arcee-ai/trinity-large-thinking",  ""),
     ("openai/gpt-5.5-pro",              ""),
     ("openai/gpt-5.4-nano",             ""),
+    ("deepseek/deepseek-v4-pro",        ""),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -185,6 +186,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.5-pro",
         "openai/gpt-5.4-nano",
+        "deepseek/deepseek-v4-pro",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.

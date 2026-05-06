@@ -1970,9 +1970,8 @@ class TestKimiTemperatureOmitted:
         assert kwargs["model"] == "kimi-for-coding"
         assert "temperature" not in kwargs
 
-    def test_auto_routed_kimi_for_coding_async_call_omits_temperature(self):
-        import asyncio
-
+    @pytest.mark.asyncio
+    async def test_auto_routed_kimi_for_coding_async_call_omits_temperature(self):
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"
         response = MagicMock()

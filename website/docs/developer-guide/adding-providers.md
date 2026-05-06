@@ -121,7 +121,7 @@ When you add a plugin and it calls `register_provider()`, the following wire up 
 
 User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
 
-See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and `plugins/model-providers/README.md` for the full contract.
+See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](/docs/developer-guide/model-provider-plugin) for field reference, hook idioms, and end-to-end examples.
 
 ## Full path: OAuth and complex providers
 

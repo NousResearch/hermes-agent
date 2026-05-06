@@ -1706,7 +1706,7 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
     """Return True when provider_id maps to a profile with auth_type='api_key'.
 
     Used as a catch-all in select_provider_and_model() so that new providers
-    declared in providers/*.py automatically dispatch to _model_flow_api_key_provider
+    declared in plugins/model-providers/<name>/ automatically dispatch to _model_flow_api_key_provider
     without requiring an explicit elif branch here.
     """
     try:

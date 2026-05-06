@@ -134,6 +134,74 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsNotificationPostedTriggerRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_app_launch_task",
+                org.json.JSONObject()
+                    .put("id", "auto-notification")
+                    .put("package_name", "com.nousresearch.hermesagent.missing")
+                    .put("trigger", "notification")
+                    .put("trigger_package_name", "com.example.sender"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(TRIGGER_NOTIFICATION_POSTED, created.getJSONObject("automation").getString("trigger_type"))
+        assertEquals("com.example.sender", created.getJSONObject("automation").getString("trigger_package_name"))
+
+        val missed = org.json.JSONObject(
+            HermesAutomationBridge.runNotificationPostedTriggerJson(
+                context,
+                "com.example.other",
+                "Ignored",
+                "No match",
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+
+        val matched = org.json.JSONObject(
+            HermesAutomationBridge.runNotificationPostedTriggerJson(
+                context,
+                "com.example.sender",
+                "Tasker title",
+                "Tasker body",
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertFalse(matched.getJSONArray("results").getJSONObject(0).getBoolean("success"))
+        assertEquals("com.example.sender", store.getVariable("NOTIFICATION_PACKAGE"))
+        assertEquals("Tasker title", store.getVariable("NOTIFICATION_TITLE"))
+        assertEquals("Tasker body", store.getVariable("NOTIFICATION_TEXT"))
+
+        val generic = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "notification_posted"),
+            ),
+        )
+        assertFalse(generic.toString(), generic.getBoolean("success"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shell_task",
+                org.json.JSONObject()
+                    .put("command", "printf no")
+                    .put("trigger", "notification_posted"),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+    }
+
+    @Test
     fun bridgeCreatesFileAndSystemActionRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

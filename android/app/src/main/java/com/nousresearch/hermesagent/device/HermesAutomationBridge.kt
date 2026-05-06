@@ -24,6 +24,12 @@ object HermesAutomationBridge {
                 context,
                 stringArgument(arguments, "trigger_package_name", "package_name", "packageName", "package", "app_package").orEmpty(),
             )
+            "run_notification_posted_trigger", "trigger_notification_posted", "notification_posted" -> runNotificationPostedTriggerJson(
+                context = context,
+                packageName = stringArgument(arguments, "trigger_package_name", "package_name", "packageName", "package", "app_package").orEmpty(),
+                title = stringArgument(arguments, "notification_title", "title", allowEmpty = true).orEmpty(),
+                text = stringArgument(arguments, "notification_text", "text", "content", allowEmpty = true).orEmpty(),
+            )
             "delete", "remove" -> deleteJson(context, arguments.optString("id"))
             "enable" -> setEnabledJson(context, arguments.optString("id"), true)
             "disable", "pause" -> setEnabledJson(context, arguments.optString("id"), false)
@@ -228,6 +234,9 @@ object HermesAutomationBridge {
         if (triggerType == TRIGGER_APP_FOREGROUND && triggerPackageName.isBlank()) {
             return errorJson("app_foreground trigger requires trigger_package_name")
         }
+        if (triggerType == TRIGGER_NOTIFICATION_POSTED && triggerPackageName.isBlank()) {
+            return errorJson("notification_posted trigger requires trigger_package_name")
+        }
         val now = System.currentTimeMillis()
         val record = HermesAutomationRecord(
             id = arguments.optString("id").ifBlank { "auto_${UUID.randomUUID().toString().replace("-", "").take(16)}" },
@@ -275,6 +284,9 @@ object HermesAutomationBridge {
         if (normalizedTrigger == TRIGGER_APP_FOREGROUND) {
             return errorJson("app_foreground trigger requires run_app_foreground_trigger with trigger_package_name or package_name")
         }
+        if (normalizedTrigger == TRIGGER_NOTIFICATION_POSTED) {
+            return errorJson("notification_posted trigger requires run_notification_posted_trigger with trigger_package_name or package_name")
+        }
         val store = HermesAutomationStore(context)
         val records = store.list()
             .filter { record -> record.enabled && record.triggerType == normalizedTrigger }
@@ -314,6 +326,45 @@ object HermesAutomationBridge {
             .put("success", true)
             .put("trigger", TRIGGER_APP_FOREGROUND)
             .put("package_name", foregroundPackageName)
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runNotificationPostedTriggerJson(
+        context: Context,
+        packageName: String,
+        title: String = "",
+        text: String = "",
+    ): String {
+        val notificationPackageName = packageName.trim()
+        if (notificationPackageName.isBlank()) {
+            return errorJson("notification_posted trigger requires a package name")
+        }
+        if (notificationPackageName.indexOf('\u0000') >= 0) {
+            return errorJson("notification_posted package name must not contain NUL bytes")
+        }
+        val store = HermesAutomationStore(context)
+        store.setVariable("NOTIFICATION_PACKAGE", notificationPackageName)
+        store.setVariable("NOTIFICATION_TITLE", title)
+        store.setVariable("NOTIFICATION_TEXT", text)
+        val variables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_NOTIFICATION_POSTED &&
+                    triggerPackageMatches(record.triggerPackageName, notificationPackageName, variables)
+            }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_NOTIFICATION_POSTED))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_NOTIFICATION_POSTED)
+            .put("package_name", notificationPackageName)
+            .put("notification_title", title.take(MAX_EVENT_VALUE_CHARS))
+            .put("notification_text", text.take(MAX_EVENT_VALUE_CHARS))
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -593,6 +644,7 @@ object HermesAutomationBridge {
         "run",
         "run_trigger",
         "run_app_foreground_trigger",
+        "run_notification_posted_trigger",
         "delete",
         "enable",
         "disable",
@@ -610,6 +662,7 @@ object HermesAutomationBridge {
         TRIGGER_BATTERY_LOW,
         TRIGGER_BATTERY_OKAY,
         TRIGGER_APP_FOREGROUND,
+        TRIGGER_NOTIFICATION_POSTED,
     )
     private val TRIGGER_SYNONYMS = mapOf(
         "boot_completed" to TRIGGER_BOOT,
@@ -630,6 +683,11 @@ object HermesAutomationBridge {
         "app_opened" to TRIGGER_APP_FOREGROUND,
         "foreground_app" to TRIGGER_APP_FOREGROUND,
         "package_foreground" to TRIGGER_APP_FOREGROUND,
+        "notification" to TRIGGER_NOTIFICATION_POSTED,
+        "notification_posted" to TRIGGER_NOTIFICATION_POSTED,
+        "notification_received" to TRIGGER_NOTIFICATION_POSTED,
+        "posted_notification" to TRIGGER_NOTIFICATION_POSTED,
+        "notify" to TRIGGER_NOTIFICATION_POSTED,
     )
     private val PRIVILEGED_SHELL_ACTIONS = setOf("run_privileged_shell", "shizuku_shell", "privileged_shell")
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")
@@ -653,4 +711,5 @@ object HermesAutomationBridge {
     private const val AUTOMATION_TIMEOUT_SECONDS = 30
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_RESULT_CHARS = 2_000
+    private const val MAX_EVENT_VALUE_CHARS = 500
 }

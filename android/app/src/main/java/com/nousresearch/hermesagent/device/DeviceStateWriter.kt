@@ -32,6 +32,9 @@ object DeviceStateWriter {
             put("accessibility_enabled", HermesAccessibilityController.isServiceEnabled(context))
             put("accessibility_connected", HermesAccessibilityController.isServiceConnected())
             put("foreground_package_name", HermesAccessibilityController.currentForegroundPackageName())
+            put("last_notification_package_name", HermesNotificationController.currentPackageName())
+            put("last_notification_title", HermesNotificationController.currentTitle())
+            put("last_notification_text", HermesNotificationController.currentText())
             put(
                 "available_global_actions",
                 JSONArray(HermesGlobalAction.values().map { action -> action.name.lowercase() }),
@@ -60,6 +63,8 @@ object DeviceStateWriter {
             put("nfc_enabled", systemStatus.nfcEnabled)
             put("overlay_permission_granted", systemStatus.overlayPermissionGranted)
             put("notification_permission_granted", systemStatus.notificationPermissionGranted)
+            put("notification_listener_enabled", systemStatus.notificationListenerEnabled)
+            put("notification_listener_connected", systemStatus.notificationListenerConnected)
             put("background_persistence_enabled", systemStatus.backgroundPersistenceEnabled)
             put("runtime_service_running", systemStatus.runtimeServiceRunning)
             put("resizable_window_support", systemStatus.resizableWindowSupport)

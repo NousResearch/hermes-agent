@@ -10,6 +10,7 @@ plugins {
 val repoRoot = rootDir.parentFile
 val hermesVersionFile = repoRoot.resolve("hermes_cli/__init__.py")
 val releaseTag = System.getenv("HERMES_RELEASE_TAG").orEmpty().trim()
+val generatedPythonBuildLibDir = repoRoot.resolve("build/lib")
 val hermesWheelDir = layout.buildDirectory.dir("hermes-wheel")
 val generatedHermesLinuxAssetsDir = layout.buildDirectory.dir("generated/hermes-linux-assets")
 val generatedHermesNativeLibsDir = layout.buildDirectory.dir("generated/hermes-native-libs")
@@ -214,6 +215,14 @@ val prepareHermesAndroidWheel = tasks.register<Exec>("prepareHermesAndroidWheel"
     outputs.file(wheelDir.resolve(hermesWheelName()))
     doFirst {
         wheelDir.mkdirs()
+        val repoRootPath = repoRoot.canonicalFile.toPath()
+        val buildLibPath = generatedPythonBuildLibDir.canonicalFile.toPath()
+        check(buildLibPath.startsWith(repoRootPath)) {
+            "Refusing to remove Python build output outside repository: $buildLibPath"
+        }
+        if (generatedPythonBuildLibDir.exists()) {
+            generatedPythonBuildLibDir.deleteRecursively()
+        }
     }
     commandLine(
         resolvedBuildPython(),

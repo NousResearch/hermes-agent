@@ -8,7 +8,7 @@ Android-focused maintenance release.
 - Expose Shizuku privileged shell availability in Android status and native model tool-calling schemas.
 - Add connected-test coverage for Shizuku shell permission-state reporting on devices without Shizuku.
 - Make the Android visual harness tolerate transient cold-start ANR dialogs by tapping `Wait` during readiness polling.
-- Document the Shizuku/Tinker capability map and the current Hermes support boundary.
+- Document the Shizuku/Tasker capability map and the current Hermes support boundary.
 
 ## Validation
 

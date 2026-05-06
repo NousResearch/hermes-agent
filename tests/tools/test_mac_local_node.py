@@ -1459,3 +1459,243 @@ def test_mac_ui_local_clipboard_write_is_allowed_but_read_and_osascript_require_
     assert osascript["ok"] is False
     assert osascript["error_code"] == "APPROVAL_REQUIRED"
     assert len(calls) == 1
+
+
+def test_mac_agent_local_rejects_unknown_kind_and_untrusted_workdir(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
+
+    trusted = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    trusted.mkdir()
+    outside.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    unknown = json.loads(
+        handle_mac_agent_local(
+            {"action": "spawn", "kind": "browser", "workdir": str(trusted), "prompt": "review this"},
+            policy=policy,
+        )
+    )
+    outside_payload = json.loads(
+        handle_mac_agent_local(
+            {"action": "spawn", "kind": "codex", "workdir": str(outside), "prompt": "review this"},
+            policy=policy,
+        )
+    )
+
+    assert unknown["ok"] is False
+    assert unknown["error_code"] == "ACTION_DENIED"
+    assert outside_payload["ok"] is False
+    assert outside_payload["error_code"] == "PATH_DENIED"
+
+
+def test_mac_agent_local_requires_configured_sandbox_wrapper_before_spawn(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    missing_wrapper = json.loads(
+        handle_mac_agent_local(
+            {"action": "spawn", "kind": "codex", "workdir": str(trusted), "prompt": "review this"},
+            policy=policy,
+        )
+    )
+
+    assert missing_wrapper["ok"] is False
+    assert missing_wrapper["error_code"] == "APPROVAL_REQUIRED"
+    assert "wrapper" in missing_wrapper["message"]
+
+
+def test_mac_agent_local_spawn_uses_stdin_shell_free_command_and_filtered_env(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    outside_marker = tmp_path / "outside-marker"
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    monkeypatch.setenv(
+        "HERMES_MAC_AGENT_CODEX_COMMAND",
+        f"{sys.executable} -c \"import sys; print(sys.stdin.read())\"",
+    )
+    monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_SANDBOXED", "1")
+    captured = {}
+
+    class FakeStdin:
+        def __init__(self):
+            self.data = ""
+            self.closed = False
+
+        def write(self, data):
+            self.data += data
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env", {})
+        captured["stdin_arg"] = kwargs.get("stdin")
+        captured["start_new_session"] = kwargs.get("start_new_session")
+
+        class FakeProcess:
+            pid = 123
+            stdin = FakeStdin()
+            stdout = None
+            stderr = None
+
+            def poll(self):
+                return None
+
+        captured["process"] = FakeProcess()
+        return captured["process"]
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    prompt = f"review safely $(touch {outside_marker})"
+    payload = json.loads(
+        handle_mac_agent_local(
+            {
+                "action": "spawn",
+                "kind": "codex",
+                "mode": "review",
+                "workdir": str(trusted),
+                "prompt": prompt,
+            },
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert prompt not in captured["argv"]
+    assert captured["process"].stdin.data == prompt
+    assert captured["process"].stdin.closed is True
+    assert captured["stdin_arg"] is subprocess.PIPE
+    assert captured["cwd"] == str(trusted.resolve())
+    assert captured["env"]["HERMES_MAC_AGENT_MODE"] == "review"
+    assert "HOME" not in captured["env"]
+    assert captured["start_new_session"] is True
+    assert not outside_marker.exists()
+
+
+def test_mac_agent_local_manages_worker_logs_status_and_kill(monkeypatch, tmp_path):
+    import sys
+    import time
+
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    monkeypatch.setenv(
+        "HERMES_MAC_AGENT_CODEX_COMMAND",
+        f"{sys.executable} -u -c \"import time, sys; print('ready', flush=True); sys.stdin.read(); time.sleep(5)\"",
+    )
+    monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_SANDBOXED", "1")
+
+    spawned = json.loads(
+        handle_mac_agent_local(
+            {"action": "spawn", "kind": "codex", "mode": "read_only", "workdir": str(trusted), "prompt": "inspect"},
+            policy=policy,
+        )
+    )
+    agent_id = spawned["agent_id"]
+    try:
+        for _ in range(20):
+            logs = json.loads(handle_mac_agent_local({"action": "logs", "agent_id": agent_id}, policy=policy))
+            if "ready" in logs.get("stdout", ""):
+                break
+            time.sleep(0.05)
+        status = json.loads(handle_mac_agent_local({"action": "status", "agent_id": agent_id}, policy=policy))
+        killed = json.loads(handle_mac_agent_local({"action": "kill", "agent_id": agent_id}, policy=policy))
+        missing = json.loads(handle_mac_agent_local({"action": "status", "agent_id": agent_id}, policy=policy))
+
+        assert spawned["ok"] is True
+        assert logs["ok"] is True
+        assert logs["stdout"] == "ready\n"
+        assert status["ok"] is True
+        assert status["running"] is True
+        assert killed["ok"] is True
+        assert missing["ok"] is False
+        assert missing["error_code"] == "PROCESS_NOT_FOUND"
+    finally:
+        handle_mac_agent_local({"action": "kill", "agent_id": agent_id}, policy=policy)
+
+
+def test_mac_agent_local_prompt_delivery_timeout_cleans_untracked_process(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    from tools import mac_local_node
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_COMMAND", f"{sys.executable} -c \"import sys; sys.stdin.read()\"")
+    monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_SANDBOXED", "1")
+    monkeypatch.setattr(mac_local_node, "AGENT_PROMPT_DELIVERY_TIMEOUT_SECONDS", 0.01)
+    before_ids = set(mac_local_node._MANAGED_AGENTS)
+    captured = {}
+
+    class BlockingStdin:
+        def write(self, data):
+            time.sleep(0.2)
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeProcess:
+        pid = 999999
+        stdin = BlockingStdin()
+        stdout = None
+        stderr = None
+        returncode = None
+        terminated = False
+        killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    def fake_popen(argv, **kwargs):
+        captured["stdin_arg"] = kwargs.get("stdin")
+        captured["process"] = FakeProcess()
+        return captured["process"]
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    payload = json.loads(
+        handle_mac_agent_local(
+            {"action": "spawn", "kind": "codex", "mode": "review", "workdir": str(trusted), "prompt": "inspect"},
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is False
+    assert payload["error_code"] == "TIMEOUT"
+    assert captured["stdin_arg"] is subprocess.PIPE
+    assert captured["process"].terminated is True
+    assert set(mac_local_node._MANAGED_AGENTS) == before_ids

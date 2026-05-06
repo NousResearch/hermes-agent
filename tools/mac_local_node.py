@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -50,6 +51,7 @@ STRUCTURED_ERROR_CODES = [
 MAX_TERMINAL_OUTPUT_CHARS = 50_000
 MAX_TERMINAL_INPUT_CHARS = 16_384
 _MANAGED_PROCESSES: dict[str, "ManagedProcess"] = {}
+_MANAGED_AGENTS: dict[str, dict[str, Any]] = {}
 
 # Keep these as data so tests can assert the intentionally small surface.
 REMOVED_STANDALONE_TOOL_NAMES = frozenset(
@@ -1617,6 +1619,268 @@ def handle_mac_ui_local(args: dict[str, Any] | None = None, *, policy: MacLocalP
     return _invalid_action_result("mac_ui", action, UI_ACTIONS)
 
 
+AGENT_KINDS = frozenset({"codex", "claude", "opencode", "pi"})
+AGENT_MODES = frozenset({"read_only", "review", "dev_autonomous"})
+DEFAULT_AGENT_COMMANDS = {
+    "codex": ["codex", "exec"],
+    "claude": ["claude", "-p"],
+    "opencode": ["opencode", "run"],
+    "pi": ["pi", "run"],
+}
+MAX_AGENT_PROMPT_CHARS = 20_000
+AGENT_PROMPT_DELIVERY_TIMEOUT_SECONDS = 5.0
+
+
+def _mac_agent_error(action: str, error_code: str, message: str, **extra: Any) -> str:
+    return _error_payload("mac_agent", action, error_code, message, **extra)
+
+
+def _mac_agent_not_found(action: str, agent_id: str | None) -> str:
+    return _mac_agent_error(action, "PROCESS_NOT_FOUND", "Managed agent was not found.", agent_id=agent_id)
+
+
+def _agent_command_template(kind: str) -> list[str]:
+    override = os.getenv(f"HERMES_MAC_AGENT_{kind.upper()}_COMMAND", "").strip()
+    if not override:
+        return []
+    try:
+        return shlex.split(override)
+    except ValueError:
+        return []
+
+
+def _agent_sandbox_wrapper_configured(kind: str) -> bool:
+    return os.getenv(f"HERMES_MAC_AGENT_{kind.upper()}_SANDBOXED", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _agent_executable_available(executable: str) -> bool:
+    path = Path(executable)
+    if path.is_absolute():
+        return path.exists() and os.access(path, os.X_OK)
+    return shutil.which(executable) is not None
+
+
+def _agent_spawn_args(args: dict[str, Any], policy: MacLocalPolicy) -> tuple[str, str, str, str, list[str]] | str:
+    kind = str(args.get("kind") or "")
+    if kind not in AGENT_KINDS:
+        return _mac_agent_error("spawn", "ACTION_DENIED", "Unsupported local coding-agent kind.", kind=kind, allowed_kinds=sorted(AGENT_KINDS))
+    mode = str(args.get("mode") or "review")
+    if mode not in AGENT_MODES:
+        return _mac_agent_error("spawn", "ACTION_DENIED", "Unsupported local coding-agent mode.", mode=mode, allowed_modes=sorted(AGENT_MODES))
+    workdir = _canonical_for_payload(str(args.get("workdir") or ""))
+    verdict = policy.classify_path(workdir, "spawn")
+    policy_error = _policy_error_for_tool_path("mac_agent", "spawn", workdir, verdict)
+    if policy_error:
+        return policy_error
+    if not Path(workdir).exists() or not Path(workdir).is_dir():
+        return _mac_agent_error("spawn", "PATH_DENIED", "Agent workdir must be an existing directory.", path=workdir)
+    prompt = str(args.get("prompt") or "")
+    if not prompt.strip():
+        return _mac_agent_error("spawn", "ACTION_DENIED", "Agent prompt is required.", workdir=workdir)
+    if len(prompt) > MAX_AGENT_PROMPT_CHARS:
+        return _mac_agent_error("spawn", "ACTION_DENIED", f"Agent prompt exceeds {MAX_AGENT_PROMPT_CHARS} character limit.", workdir=workdir)
+    if policy._contains_secret_path_text(prompt):
+        return _mac_agent_error("spawn", "SECRET_DENIED", "Agent prompt mentions secret/auth paths.", workdir=workdir)
+    argv = _agent_command_template(kind)
+    if not argv:
+        return _mac_agent_error(
+            "spawn",
+            "APPROVAL_REQUIRED",
+            "Configure a sandbox wrapper in HERMES_MAC_AGENT_<KIND>_COMMAND before spawning local coding agents.",
+            kind=kind,
+            default_command=DEFAULT_AGENT_COMMANDS[kind],
+        )
+    if not _agent_sandbox_wrapper_configured(kind):
+        return _mac_agent_error(
+            "spawn",
+            "APPROVAL_REQUIRED",
+            "Local coding-agent wrapper must be marked sandboxed with HERMES_MAC_AGENT_<KIND>_SANDBOXED=1.",
+            kind=kind,
+        )
+    if not _agent_executable_available(argv[0]):
+        return _mac_agent_error("spawn", "ACTION_DENIED", "Local coding-agent executable is not installed or not on PATH.", kind=kind, executable=argv[0])
+    return kind, mode, workdir, prompt, argv
+
+
+def _cleanup_failed_agent_process(process: subprocess.Popen[str], managed: ManagedProcess | None = None) -> None:
+    _terminate_process_group(process)
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    if managed is not None:
+        _collect_managed_output(managed)
+
+
+def _deliver_agent_prompt(process: subprocess.Popen[str], prompt: str) -> str | None:
+    if process.stdin is None:
+        return _mac_agent_error("spawn", "ACTION_DENIED", "Agent wrapper did not expose stdin for prompt delivery.")
+    errors: list[BaseException] = []
+
+    def write_prompt() -> None:
+        try:
+            process.stdin.write(prompt)
+            process.stdin.flush()
+            process.stdin.close()
+        except BaseException as exc:  # noqa: BLE001 - thread communicates exact failure to caller.
+            errors.append(exc)
+
+    writer = threading.Thread(target=write_prompt, daemon=True)
+    writer.start()
+    writer.join(timeout=AGENT_PROMPT_DELIVERY_TIMEOUT_SECONDS)
+    if writer.is_alive():
+        return _mac_agent_error(
+            "spawn",
+            "TIMEOUT",
+            f"Agent prompt delivery exceeded {AGENT_PROMPT_DELIVERY_TIMEOUT_SECONDS:g}s.",
+        )
+    if errors:
+        return _mac_agent_error("spawn", "ACTION_DENIED", f"Agent prompt could not be delivered over stdin: {errors[0]}")
+    return None
+
+
+def _mac_agent_spawn(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    parsed = _agent_spawn_args(args, policy)
+    if isinstance(parsed, str):
+        return parsed
+    kind, mode, workdir, prompt, argv = parsed
+    env = _safe_terminal_env()
+    env["HERMES_MAC_AGENT_MODE"] = mode
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=workdir,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return _mac_agent_error("spawn", "ACTION_DENIED", f"Local coding agent could not be started: {exc}", kind=kind, workdir=workdir)
+    managed = ManagedProcess(process, [], [], cwd=workdir, policy=policy)
+    _start_output_threads(managed)
+    prompt_error = _deliver_agent_prompt(process, prompt)
+    if prompt_error:
+        _cleanup_failed_agent_process(process, managed)
+        return prompt_error
+    agent_id = f"macagent-{uuid.uuid4().hex[:12]}"
+    _MANAGED_AGENTS[agent_id] = {
+        "managed": managed,
+        "kind": kind,
+        "mode": mode,
+        "workdir": workdir,
+        "started_at": time.time(),
+        "prompt_length": len(prompt),
+        "argv_preview": argv + ["<stdin-prompt>"],
+    }
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "spawn",
+            "agent_id": agent_id,
+            "kind": kind,
+            "mode": mode,
+            "workdir": workdir,
+            "pid": process.pid,
+            "started_at": _MANAGED_AGENTS[agent_id]["started_at"],
+            "prompt_length": len(prompt),
+            "argv_preview": argv + ["<stdin-prompt>"],
+        }
+    )
+
+
+def _mac_agent_status(args: dict[str, Any]) -> str:
+    action = "status"
+    agent_id = str(args.get("agent_id") or "")
+    entry = _MANAGED_AGENTS.get(agent_id)
+    if entry is None:
+        return _mac_agent_not_found(action, agent_id)
+    managed: ManagedProcess = entry["managed"]
+    exit_code = managed.process.poll()
+    return json.dumps(
+        {
+            "ok": True,
+            "action": action,
+            "agent_id": agent_id,
+            "kind": entry["kind"],
+            "mode": entry["mode"],
+            "workdir": entry["workdir"],
+            "running": exit_code is None,
+            "exit_code": exit_code,
+            "started_at": entry["started_at"],
+        }
+    )
+
+
+def _mac_agent_logs(args: dict[str, Any]) -> str:
+    action = "logs"
+    agent_id = str(args.get("agent_id") or "")
+    entry = _MANAGED_AGENTS.get(agent_id)
+    if entry is None:
+        return _mac_agent_not_found(action, agent_id)
+    managed: ManagedProcess = entry["managed"]
+    exit_code = managed.process.poll()
+    if exit_code is not None:
+        _collect_managed_output(managed)
+    stdout, stderr, stdout_truncated, stderr_truncated = _consume_managed_poll_output(managed)
+    return json.dumps(
+        {
+            "ok": exit_code == 0 or exit_code is None,
+            "action": action,
+            "agent_id": agent_id,
+            "running": exit_code is None,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "output_limit_exceeded": managed.output_limit_exceeded,
+        }
+    )
+
+
+def _mac_agent_kill(args: dict[str, Any]) -> str:
+    action = "kill"
+    agent_id = str(args.get("agent_id") or "")
+    entry = _MANAGED_AGENTS.pop(agent_id, None)
+    if entry is None:
+        return _mac_agent_not_found(action, agent_id)
+    managed: ManagedProcess = entry["managed"]
+    _terminate_process_group(managed.process)
+    try:
+        managed.process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(managed.process)
+        managed.process.wait(timeout=5)
+    _collect_managed_output(managed)
+    return json.dumps({"ok": True, "action": action, "agent_id": agent_id, "exit_code": managed.process.returncode})
+
+
+def handle_mac_agent_local(args: dict[str, Any] | None = None, *, policy: MacLocalPolicy | None = None) -> str:
+    """Spawn and manage local coding-agent workers without shell interpolation."""
+
+    action = _extract_action(args)
+    if action not in AGENT_ACTIONS:
+        return _invalid_action_result("mac_agent", action, AGENT_ACTIONS)
+    safe_args = args if isinstance(args, dict) else {}
+    active_policy = policy or MacLocalPolicy.default()
+    if action == "spawn":
+        return _mac_agent_spawn(safe_args, active_policy)
+    if action == "status":
+        return _mac_agent_status(safe_args)
+    if action == "logs":
+        return _mac_agent_logs(safe_args)
+    if action == "kill":
+        return _mac_agent_kill(safe_args)
+    return _invalid_action_result("mac_agent", action, AGENT_ACTIONS)
+
+
 def _handle_placeholder(tool: str, args: dict[str, Any] | None, allowed_actions: list[str]) -> str:
     action = _extract_action(args)
     if action not in allowed_actions:
@@ -1655,6 +1919,8 @@ def handle_mac_ui(args: dict[str, Any] | None = None, **_: Any) -> str:
 
 
 def handle_mac_agent(args: dict[str, Any] | None = None, **_: Any) -> str:
+    if os.getenv("HERMES_MAC_LOCAL_NODE_EXECUTE_LOCAL", "").lower() in {"1", "true", "yes", "on"}:
+        return handle_mac_agent_local(args)
     return _handle_placeholder("mac_agent", args, AGENT_ACTIONS)
 
 

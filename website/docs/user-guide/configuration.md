@@ -83,7 +83,7 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
@@ -1167,6 +1167,20 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_metadata_footer: false  # Gateway: append a runtime-context footer to final replies
+  language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | ja | de | es | fr | tr | uk
+```
+
+### UI language for static messages
+
+The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+
+Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
+
+You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
+
+```yaml
+display:
+  language: zh   # CLI approval prompts appear in Chinese
 ```
 
 | Mode | What you see |

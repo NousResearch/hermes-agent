@@ -781,6 +781,11 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # UI language for static user-facing messages (approval prompts, a
+        # handful of gateway slash-command replies).  Does NOT affect agent
+        # responses, log lines, tool outputs, or slash-command descriptions.
+        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+        "language": "en",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
@@ -3947,6 +3952,7 @@ _FALLBACK_COMMENT = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3978,6 +3984,7 @@ _COMMENTED_SECTIONS = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -4835,3 +4842,45 @@ def config_command(args):
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")
         sys.exit(1)
+
+
+# ── Profile-driven env var injection ─────────────────────────────────────────
+# Any provider registered in providers/ with auth_type="api_key" automatically
+# gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
+# Runs once at import time.
+
+_profile_env_vars_injected = False
+
+
+def _inject_profile_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    """
+    global _profile_env_vars_injected
+    if _profile_env_vars_injected:
+        return
+    _profile_env_vars_injected = True
+    try:
+        from providers import list_providers
+        for _pp in list_providers():
+            if _pp.auth_type not in ("api_key",):
+                continue
+            for _var in _pp.env_vars:
+                if _var in OPTIONAL_ENV_VARS:
+                    continue
+                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
+                OPTIONAL_ENV_VARS[_var] = {
+                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
+                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                    "url": _pp.signup_url or None,
+                    "password": _is_key,
+                    "category": "provider",
+                    "advanced": True,
+                }
+    except Exception:
+        pass
+
+
+# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
+_inject_profile_env_vars()

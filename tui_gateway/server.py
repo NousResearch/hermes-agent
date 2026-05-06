@@ -157,7 +157,9 @@ _LONG_HANDLERS = frozenset(
 )
 
 try:
-    _rpc_pool_workers = max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4"))
+    _rpc_pool_workers = max(
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+    )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
 _pool = concurrent.futures.ThreadPoolExecutor(
@@ -304,12 +306,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     _notify_session_boundary("on_session_finalize", session_id)
 
     # Mark session ended in DB so it doesn't linger as a ghost row in /resume.
-    # Adapted from #18283 (luyao618) and #18299 (Bartok9).
-    if session_key:
+    # Use session_id (from agent.session_id) not session_key — after compression,
+    # session_key may be stale (the ended parent) while session_id is the live
+    # continuation. Fix for #20001.
+    if session_id:
         try:
             db = _get_db()
             if db is not None:
-                db.end_session(session_key, end_reason)
+                db.end_session(session_id, end_reason)
         except Exception:
             pass
 
@@ -565,7 +569,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     register_gateway_notify,
                     load_permanent_allowlist,
                 )
-                register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+
+                register_gateway_notify(
+                    key, lambda data: _emit("approval.request", sid, data)
+                )
                 notify_registered = True
                 load_permanent_allowlist()
             except Exception:
@@ -596,6 +603,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 if notify_registered:
                     try:
                         from tools.approval import unregister_gateway_notify
+
                         unregister_gateway_notify(key)
                     except Exception:
                         pass
@@ -875,6 +883,9 @@ def _load_show_reasoning() -> bool:
 
 
 def _load_tool_progress_mode() -> str:
+    env = os.environ.get("HERMES_TUI_TOOL_PROGRESS", "").strip().lower()
+    if env in {"off", "new", "all", "verbose"}:
+        return env
     raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
     if raw is False:
         return "off"
@@ -936,7 +947,11 @@ def _load_enabled_toolsets() -> list[str] | None:
             from hermes_cli.tools_config import _parse_enabled_flag
 
             raw_cfg = read_raw_config()
-            mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
+            mcp_servers = (
+                raw_cfg.get("mcp_servers")
+                if isinstance(raw_cfg.get("mcp_servers"), dict)
+                else {}
+            )
             for name, server_cfg in mcp_servers.items():
                 if not isinstance(server_cfg, dict):
                     continue
@@ -950,7 +965,11 @@ def _load_enabled_toolsets() -> list[str] | None:
 
         mcp_valid = [name for name in unresolved if name in mcp_names]
         disabled = [name for name in unresolved if name in mcp_disabled]
-        unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+        unknown = [
+            name
+            for name in unresolved
+            if name not in mcp_names and name not in mcp_disabled
+        ]
         valid = built_in + mcp_valid
 
         if unknown:
@@ -971,7 +990,9 @@ def _load_enabled_toolsets() -> list[str] | None:
         if valid:
             return valid
 
-        fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+        fallback_notice = (
+            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+        )
 
     try:
         from hermes_cli.config import load_config
@@ -1175,7 +1196,13 @@ def _compress_session_history(
     return len(history) - len(compressed), usage
 
 
-def _sync_session_key_after_compress(sid: str, session: dict) -> None:
+def _sync_session_key_after_compress(
+    sid: str,
+    session: dict,
+    *,
+    clear_pending_title: bool = True,
+    restart_slash_worker: bool = True,
+) -> None:
     """Re-anchor session_key when AIAgent._compress_context rotates session_id.
 
     AIAgent._compress_context ends the current SessionDB session and creates
@@ -1184,7 +1211,14 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
     approval routing, slash worker init, DB title/history lookups, yolo
     state).  Without this sync, those operations would target the ended
     parent session while the agent writes to the new continuation session.
-    Mirrors HermesCLI._manual_compress's session_id sync.
+
+    Policy flags:
+        clear_pending_title: True for manual /compress (title belongs to old
+            session). False for post-turn auto-compression (preserve user
+            intent so pending_title can be applied to the continuation).
+        restart_slash_worker: True for manual /compress and post-turn
+            auto-compression (worker holds stale session key). False only
+            if the caller manages the worker lifecycle separately.
     """
     agent = session.get("agent")
     new_session_id = getattr(agent, "session_id", None) or ""
@@ -1229,11 +1263,13 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
         # don't keep targeting the ended row.
         session["session_key"] = new_session_id
 
-    session["pending_title"] = None
-    try:
-        _restart_slash_worker(session)
-    except Exception:
-        pass
+    if clear_pending_title:
+        session["pending_title"] = None
+    if restart_slash_worker:
+        try:
+            _restart_slash_worker(session)
+        except Exception:
+            pass
 
 
 def _get_usage(agent) -> dict:
@@ -1698,8 +1734,26 @@ def _apply_personality_to_session(
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
+    try:
+        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
+        if env_max > 0:
+            return env_max
+    except (TypeError, ValueError):
+        pass
     agent_cfg = cfg.get("agent") or {}
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+
+
+def _parse_tui_skills_env() -> list[str]:
+    raw = os.environ.get("HERMES_TUI_SKILLS", "")
+    skills: list[str] = []
+    seen: set[str] = set()
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if item and item not in seen:
+            seen.add(item)
+            skills.append(item)
+    return skills
 
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
@@ -1771,6 +1825,20 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
+    startup_skills = _parse_tui_skills_env()
+    if startup_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            startup_skills,
+            task_id=session_id or key,
+        )
+        if missing_skills:
+            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+        if skills_prompt:
+            system_prompt = "\n\n".join(
+                part for part in (system_prompt, skills_prompt) if part
+            ).strip()
     model, requested_provider = _resolve_startup_runtime()
     runtime = resolve_runtime_provider(
         requested=requested_provider,
@@ -1795,6 +1863,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         session_id=session_id or key,
         session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         **_agent_cbs(sid),
     )
 
@@ -1839,10 +1911,8 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     # prompt_toolkit; the TUI has no equivalent print surface, so without
     # this callback the review would write the skill/memory change silently.
     try:
-        agent.background_review_callback = (
-            lambda message, _sid=sid: _emit(
-                "review.summary", _sid, {"text": str(message)}
-            )
+        agent.background_review_callback = lambda message, _sid=sid: _emit(
+            "review.summary", _sid, {"text": str(message)}
         )
     except Exception:
         # Bare AIAgents that don't expose the attribute (unlikely, but keep
@@ -2252,7 +2322,71 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
-    return _ok(rid, _get_usage(agent) if agent is not None else {"calls": 0, "input": 0, "output": 0, "total": 0})
+    return _ok(
+        rid,
+        (
+            _get_usage(agent)
+            if agent is not None
+            else {"calls": 0, "input": 0, "output": 0, "total": 0}
+        ),
+    )
+
+
+@method("session.status")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    from hermes_constants import display_hermes_home
+
+    key = session.get("session_key") or params.get("session_id") or ""
+    agent = session.get("agent")
+    meta = {}
+    db = _get_db()
+    if db and key:
+        try:
+            meta = db.get_session(key) or {}
+        except Exception:
+            meta = {}
+
+    def _dt(value, fallback: datetime | None = None) -> datetime:
+        if value:
+            try:
+                return datetime.fromtimestamp(float(value))
+            except Exception:
+                pass
+        return fallback or datetime.now()
+
+    created = _dt(meta.get("started_at"))
+    updated = created
+    for field in ("updated_at", "last_updated_at", "last_activity_at"):
+        if meta.get(field):
+            updated = _dt(meta.get(field), created)
+            break
+
+    usage = _get_usage(agent) if agent is not None else {}
+    provider = getattr(agent, "provider", None) or "unknown"
+    model = getattr(agent, "model", None) or "(unknown)"
+    lines = [
+        "Hermes TUI Status",
+        "",
+        f"Session ID: {key}",
+        f"Path: {display_hermes_home()}",
+    ]
+    title = (meta.get("title") or "").strip()
+    if title:
+        lines.append(f"Title: {title}")
+    lines.extend(
+        [
+            f"Model: {model} ({provider})",
+            f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
+            f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
+            f"Tokens: {int(usage.get('total') or 0):,}",
+            f"Agent Running: {'Yes' if session.get('running') else 'No'}",
+        ]
+    )
+    return _ok(rid, {"output": "\n".join(lines)})
 
 
 @method("session.history")
@@ -2358,7 +2492,9 @@ def _(rid, params: dict) -> dict:
             after_count = len(messages)
             # Re-read system prompt + tools after compression — _compress_context
             # may have rebuilt the system prompt (_cached_system_prompt=None).
-            _sys_prompt_after = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            _sys_prompt_after = (
+                getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            )
             _tools_after = getattr(_agent, "tools", None) or _tools
             after_tokens = (
                 estimate_request_tokens_rough(
@@ -2806,7 +2942,15 @@ def _(rid, params: dict) -> dict:
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            _emit("error", sid, {"message": err.get("error", {}).get("message", "agent initialization failed")})
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
             with session["history_lock"]:
                 session["running"] = False
             return
@@ -2850,7 +2994,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     base_url=getattr(agent, "base_url", "") or "",
                     api_key=getattr(agent, "api_key", "") or "",
                     provider=getattr(agent, "provider", "") or "",
-                    config_context_length=getattr(agent, "_config_context_length", None),
+                    config_context_length=getattr(
+                        agent, "_config_context_length", None
+                    ),
                 )
                 ctx = preprocess_context_references(
                     prompt,
@@ -2965,6 +3111,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 "History changed during this turn — the response above is visible "
                                 "but was not saved to session history."
                             )
+
+                # If auto-compression fired inside run_conversation(), agent.session_id
+                # may have rotated. Sync session_key before downstream title/goal/finalize
+                # handling uses it. Preserve pending_title (user intent) so it can be
+                # applied to the continuation. Restart slash worker so subsequent
+                # worker-backed commands (/title etc.) target the live session.
+                # Fix for #20001.
+                _sync_session_key_after_compress(
+                    sid, session, clear_pending_title=False, restart_slash_worker=True,
+                )
+
                 raw = result.get("final_response", "")
                 status = (
                     "interrupted"
@@ -2996,18 +3153,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # ("✓ Goal achieved" / "⏸ budget exhausted") is surfaced as
             # a system line so the user sees progress regardless of
             # outcome. Mirrors gateway/run._post_turn_goal_continuation.
-            if (
-                status == "complete"
-                and isinstance(raw, str)
-                and raw.strip()
-            ):
+            if status == "complete" and isinstance(raw, str) and raw.strip():
                 try:
                     from hermes_cli.goals import GoalManager
 
                     sid_key = session.get("session_key") or ""
                     if sid_key:
                         try:
-                            goals_cfg = (_load_cfg().get("goals") or {})
+                            goals_cfg = _load_cfg().get("goals") or {}
                             goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
                         except Exception:
                             goal_max_turns = 20
@@ -3017,7 +3170,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         )
                         if goal_mgr.is_active():
                             decision = goal_mgr.evaluate_after_turn(
-                                raw, user_initiated=True,
+                                raw,
+                                user_initiated=True,
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
@@ -3042,11 +3196,21 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if _pending and status == "complete":
                 _pdb = _get_db()
                 if _pdb:
+                    _session_key = session.get("session_key") or sid
                     try:
-                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
+                        if _pdb.set_session_title(_session_key, _pending):
                             session["pending_title"] = None
+                    except ValueError as exc:
+                        # Invalid/duplicate title — non-retryable, drop it.
+                        # Auto-title will take over. Fix for #19029.
+                        session["pending_title"] = None
+                        logger.info(
+                            "Dropping pending title for session %s: %s",
+                            _session_key, exc,
+                        )
                     except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                        # Transient DB failure — keep pending_title for retry.
+                        pass
 
             if (
                 status == "complete"
@@ -3540,7 +3704,9 @@ def _(rid, params: dict) -> dict:
             arg = str(value or "").strip().lower()
             if arg in ("show", "on"):
                 cfg = _load_cfg()
-                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
                 sections = (
                     display.get("sections")
                     if isinstance(display.get("sections"), dict)
@@ -3556,7 +3722,9 @@ def _(rid, params: dict) -> dict:
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in ("hide", "off"):
                 cfg = _load_cfg()
-                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
                 sections = (
                     display.get("sections")
                     if isinstance(display.get("sections"), dict)
@@ -3587,7 +3755,9 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4002, f"unknown details_mode: {value}")
         cfg = _load_cfg()
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
-        sections = display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        sections = (
+            display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        )
         display["details_mode"] = nv
         for section in _DETAIL_SECTION_NAMES:
             sections[section] = nv
@@ -3914,6 +4084,7 @@ def _(rid, params: dict) -> dict:
         if not user_confirm:
             try:
                 from hermes_cli.config import load_config as _load_config
+
                 _cfg = _load_config()
                 _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
                 _confirm_required = True
@@ -3927,15 +4098,18 @@ def _(rid, params: dict) -> dict:
                 # Ink's ops.ts reads ``status`` and prints ``message`` to
                 # the transcript; a follow-up invocation with confirm=true
                 # (or an `always` choice that flips the config) proceeds.
-                return _ok(rid, {
-                    "status": "confirm_required",
-                    "message": (
-                        "⚠️  /reload-mcp invalidates the prompt cache (next "
-                        "message re-sends full input tokens). Reply `/reload-mcp "
-                        "now` to proceed, or `/reload-mcp always` to proceed and "
-                        "silence this prompt permanently."
-                    ),
-                })
+                return _ok(
+                    rid,
+                    {
+                        "status": "confirm_required",
+                        "message": (
+                            "⚠️  /reload-mcp invalidates the prompt cache (next "
+                            "message re-sends full input tokens). Reply `/reload-mcp "
+                            "now` to proceed, or `/reload-mcp always` to proceed and "
+                            "silence this prompt permanently."
+                        ),
+                    },
+                )
 
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
@@ -3951,6 +4125,7 @@ def _(rid, params: dict) -> dict:
         if bool(params.get("always", False)):
             try:
                 from cli import save_config_value as _save_cfg
+
                 _save_cfg("approvals.mcp_reload_confirm", False)
             except Exception as _exc:
                 logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
@@ -3987,7 +4162,6 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
         "set-home",
         "update",
         "commands",
-        "status",
         "approve",
         "deny",
     }
@@ -4013,6 +4187,8 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+_WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
+
 
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
@@ -4031,13 +4207,13 @@ def _(rid, params: dict) -> dict:
         cat_order: list[str] = []
 
         for cmd in COMMAND_REGISTRY:
+            if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
+                continue
+
             c = f"/{cmd.name}"
             canon[c.lower()] = c
             for a in cmd.aliases:
                 canon[f"/{a}".lower()] = c
-
-            if cmd.name in _TUI_HIDDEN:
-                continue
 
             desc = _build_description(cmd)
             all_pairs.append([c, desc])
@@ -4335,7 +4511,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4001, "no session key")
 
         try:
-            goals_cfg = (_load_cfg().get("goals") or {})
+            goals_cfg = _load_cfg().get("goals") or {}
             max_turns = int(goals_cfg.get("max_turns", 20) or 20)
         except Exception:
             max_turns = 20
@@ -4392,6 +4568,21 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
+    if name in ("snapshot", "snap"):
+        subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
+        if subcommand in {"restore", "rewind"}:
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "/snapshot restore is blocked in the TUI because it changes "
+                        "config/state on disk while the live agent has cached settings. "
+                        "Run it in the classic CLI, then restart the TUI."
+                    ),
+                },
+            )
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
@@ -4929,6 +5120,7 @@ def _(rid, params: dict) -> dict:
 
         # Build final list in CANONICAL_PROVIDERS order, merging auth data
         from hermes_cli.auth import PROVIDER_REGISTRY as _auth_reg
+
         ordered: list = []
         for entry in CANONICAL_PROVIDERS:
             if entry.slug in authed_map:
@@ -4936,24 +5128,30 @@ def _(rid, params: dict) -> dict:
             else:
                 pconfig = _auth_reg.get(entry.slug)
                 auth_type = pconfig.auth_type if pconfig else "api_key"
-                key_env = pconfig.api_key_env_vars[0] if (pconfig and pconfig.api_key_env_vars) else ""
+                key_env = (
+                    pconfig.api_key_env_vars[0]
+                    if (pconfig and pconfig.api_key_env_vars)
+                    else ""
+                )
                 if auth_type == "api_key" and key_env:
                     warning = f"paste {key_env} to activate"
                 else:
                     warning = f"run `hermes model` to configure ({auth_type})"
-                ordered.append({
-                    "slug": entry.slug,
-                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
-                    "is_current": entry.slug == current_provider,
-                    "is_user_defined": False,
-                    "models": [],
-                    "total_models": 0,
-                    "source": "built-in",
-                    "authenticated": False,
-                    "auth_type": auth_type,
-                    "key_env": key_env,
-                    "warning": warning,
-                })
+                ordered.append(
+                    {
+                        "slug": entry.slug,
+                        "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+                        "is_current": entry.slug == current_provider,
+                        "is_user_defined": False,
+                        "models": [],
+                        "total_models": 0,
+                        "source": "built-in",
+                        "authenticated": False,
+                        "auth_type": auth_type,
+                        "key_env": key_env,
+                        "warning": warning,
+                    }
+                )
 
         # Append user-defined/custom providers not in canonical list
         ordered.extend(authed_extra)
@@ -4999,9 +5197,10 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4002, f"unknown provider: {slug}")
         if pconfig.auth_type != "api_key":
             return _err(
-                rid, 4003,
+                rid,
+                4003,
                 f"{pconfig.name} uses {pconfig.auth_type} auth — "
-                f"run `hermes model` to configure"
+                f"run `hermes model` to configure",
             )
         if not pconfig.api_key_env_vars:
             return _err(rid, 4004, f"no env var defined for {pconfig.name}")
@@ -5011,6 +5210,7 @@ def _(rid, params: dict) -> dict:
         save_env_value(env_var, api_key)
         # Also set in current process so list_authenticated_providers sees it
         import os
+
         os.environ[env_var] = api_key
 
         # Refresh provider data
@@ -5094,11 +5294,14 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4005, f"no credentials found for {slug}")
 
         provider_name = pconfig.name if pconfig else slug
-        return _ok(rid, {
-            "slug": slug,
-            "name": provider_name,
-            "disconnected": True,
-        })
+        return _ok(
+            rid,
+            {
+                "slug": slug,
+                "name": provider_name,
+                "disconnected": True,
+            },
+        )
     except Exception as e:
         return _err(rid, 5035, str(e))
 
@@ -5183,6 +5386,15 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}"
         )
+
+    if _cmd_base in _WORKER_BLOCKED_COMMANDS:
+        subcommand = _cmd_arg.split(maxsplit=1)[0].lower() if _cmd_arg else ""
+        if subcommand in {"restore", "rewind"}:
+            return _err(
+                rid,
+                4018,
+                "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
+            )
 
     try:
         from agent.skill_commands import get_skill_commands
@@ -5433,8 +5645,17 @@ def _(rid, params: dict) -> dict:
             voice_cfg = _voice_cfg_dict()
             threshold = voice_cfg.get("silence_threshold")
             duration = voice_cfg.get("silence_duration")
-            safe_threshold = threshold if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) else 200
-            safe_duration = duration if isinstance(duration, (int, float)) and not isinstance(duration, bool) else 3.0
+            safe_threshold = (
+                threshold
+                if isinstance(threshold, (int, float))
+                and not isinstance(threshold, bool)
+                else 200
+            )
+            safe_duration = (
+                duration
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                else 3.0
+            )
             start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
@@ -5734,7 +5955,9 @@ def _browser_connect(rid, params: dict) -> dict:
 
     raw_url = params.get("url")
     if raw_url is not None and not isinstance(raw_url, str):
-        return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
+        return _err(
+            rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}"
+        )
     url = (raw_url or "").strip() or DEFAULT_BROWSER_CDP_URL
 
     sid = params.get("session_id") or ""
@@ -6185,6 +6408,31 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4017, f"unknown skills action: {action}")
     except Exception as e:
         return _err(rid, 5024, str(e))
+
+
+@method("skills.reload")
+def _(rid, params: dict) -> dict:
+    try:
+        from agent.skill_commands import reload_skills
+
+        result = reload_skills()
+        added = result.get("added") or []
+        removed = result.get("removed") or []
+        total = int(result.get("total") or 0)
+
+        lines = ["Reloading skills..."]
+        if not added and not removed:
+            lines.append("No new skills detected.")
+        if added:
+            lines.append("Added skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in added)
+        if removed:
+            lines.append("Removed skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in removed)
+        lines.append(f"{total} skill(s) available")
+        return _ok(rid, {"output": "\n".join(lines), "result": result})
+    except Exception as e:
+        return _err(rid, 5025, str(e))
 
 
 # ── Methods: shell ───────────────────────────────────────────────────

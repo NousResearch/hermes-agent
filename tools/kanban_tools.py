@@ -79,6 +79,19 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
     return env_tid or None
 
 
+def _worker_run_id(task_id: str) -> Optional[int]:
+    """Return this worker's dispatcher run id when it is scoped to task_id."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -210,6 +223,20 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    created_cards = args.get("created_cards")
+    if created_cards is not None:
+        if isinstance(created_cards, str):
+            # Accept a single id as a string for convenience.
+            created_cards = [created_cards]
+        if not isinstance(created_cards, (list, tuple)):
+            return tool_error(
+                f"created_cards must be a list of task ids, got "
+                f"{type(created_cards).__name__}"
+            )
+        # Normalise: strings only, stripped, non-empty.
+        created_cards = [
+            str(c).strip() for c in created_cards if str(c).strip()
+        ]
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -221,10 +248,24 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
-            ok = kb.complete_task(
-                conn, tid,
-                result=result, summary=summary, metadata=metadata,
-            )
+            try:
+                ok = kb.complete_task(
+                    conn, tid,
+                    result=result, summary=summary, metadata=metadata,
+                    created_cards=created_cards,
+                    expected_run_id=_worker_run_id(tid),
+                )
+            except kb.HallucinatedCardsError as hall_err:
+                # Structured rejection — surface the phantom ids so the
+                # worker can retry with a corrected list or drop the
+                # field. Audit event already landed in the DB.
+                return tool_error(
+                    f"kanban_complete blocked: the following created_cards "
+                    f"do not exist or were not created by this worker: "
+                    f"{', '.join(hall_err.phantom)}. "
+                    f"Either omit them, use only ids returned from successful "
+                    f"kanban_create calls, or remove the created_cards field."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
@@ -254,7 +295,11 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
-            ok = kb.block_task(conn, tid, reason=reason)
+            ok = kb.block_task(
+                conn, tid,
+                reason=reason,
+                expected_run_id=_worker_run_id(tid),
+            )
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
@@ -283,7 +328,12 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
-            ok = kb.heartbeat_worker(conn, tid, note=note)
+            ok = kb.heartbeat_worker(
+                conn,
+                tid,
+                note=note,
+                expected_run_id=_worker_run_id(tid),
+            )
             if not ok:
                 return tool_error(
                     f"could not heartbeat {tid} (unknown id or not running)"
@@ -452,7 +502,11 @@ KANBAN_COMPLETE_SCHEMA = {
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required."
+        "``summary`` or ``result`` is required. If you created new "
+        "tasks via ``kanban_create`` during this run, list their ids "
+        "in ``created_cards`` — the kernel verifies them so phantom "
+        "references are caught before they leak into downstream "
+        "automation."
     ),
     "parameters": {
         "type": "object",
@@ -485,6 +539,22 @@ KANBAN_COMPLETE_SCHEMA = {
                     "task.result). Use ``summary`` instead when "
                     "possible; this exists for compatibility with "
                     "callers that still set --result on the CLI."
+                ),
+            },
+            "created_cards": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional structured manifest of task ids you "
+                    "created via ``kanban_create`` during this run. "
+                    "The kernel verifies each id exists and was "
+                    "created by this worker's profile; any phantom "
+                    "id blocks the completion with an error listing "
+                    "what went wrong (auditable in the task's events). "
+                    "Only list ids you got back from a successful "
+                    "``kanban_create`` call — do not invent or "
+                    "remember ids from prose. Omit the field if you "
+                    "did not create any cards."
                 ),
             },
         },

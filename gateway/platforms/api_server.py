@@ -521,9 +521,15 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    if context:
+        subset["_context"] = context
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -1164,7 +1170,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                context={
+                    "endpoint": "chat_completions",
+                    "session_id": provided_session_id or "",
+                    "session_key": gateway_session_key or "",
+                },
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2164,6 +2178,10 @@ class APIServerAdapter(BasePlatformAdapter):
             fp = _make_request_fingerprint(
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                context={
+                    "endpoint": "responses",
+                    "session_key": gateway_session_key or "",
+                },
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)

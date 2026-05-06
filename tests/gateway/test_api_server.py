@@ -2464,6 +2464,150 @@ class TestConversationParameter:
 
 
 # ---------------------------------------------------------------------------
+# Idempotency session isolation
+# ---------------------------------------------------------------------------
+
+
+class TestIdempotencySessionIsolation:
+    @pytest.mark.asyncio
+    async def test_chat_completion_idempotency_key_is_scoped_by_session_key(self, auth_adapter):
+        calls = []
+
+        async def fake_run_agent(**kwargs):
+            session_key = kwargs["gateway_session_key"]
+            calls.append(session_key)
+            return (
+                {"final_response": f"private answer for {session_key}", "messages": [], "api_calls": 1},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "same prompt"}]}
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = fake_run_agent
+
+                resp_a = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Key": "user-a",
+                    },
+                    json=body,
+                )
+                data_a = await resp_a.json()
+                resp_b = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Key": "user-b",
+                    },
+                    json=body,
+                )
+                data_b = await resp_b.json()
+
+        assert resp_a.status == 200
+        assert resp_b.status == 200
+        assert calls == ["user-a", "user-b"]
+        assert data_a["choices"][0]["message"]["content"] == "private answer for user-a"
+        assert data_b["choices"][0]["message"]["content"] == "private answer for user-b"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_idempotency_key_is_scoped_by_session_id(self, auth_adapter):
+        calls = []
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+
+        async def fake_run_agent(**kwargs):
+            session_id = kwargs["session_id"]
+            calls.append(session_id)
+            return (
+                {"final_response": f"answer for {session_id}", "messages": [], "api_calls": 1},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "same prompt"}]}
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = fake_run_agent
+
+                resp_a = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Id": "transcript-a",
+                    },
+                    json=body,
+                )
+                data_a = await resp_a.json()
+                resp_b = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Id": "transcript-b",
+                    },
+                    json=body,
+                )
+                data_b = await resp_b.json()
+
+        assert resp_a.status == 200
+        assert resp_b.status == 200
+        assert calls == ["transcript-a", "transcript-b"]
+        assert data_a["choices"][0]["message"]["content"] == "answer for transcript-a"
+        assert data_b["choices"][0]["message"]["content"] == "answer for transcript-b"
+
+    @pytest.mark.asyncio
+    async def test_responses_idempotency_key_is_scoped_by_session_key(self, auth_adapter):
+        calls = []
+
+        async def fake_run_agent(**kwargs):
+            session_key = kwargs["gateway_session_key"]
+            calls.append(session_key)
+            return (
+                {"final_response": f"response for {session_key}", "messages": [], "api_calls": 1},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "input": "same prompt", "store": False}
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = fake_run_agent
+
+                resp_a = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Key": "user-a",
+                    },
+                    json=body,
+                )
+                resp_b = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Key": "user-b",
+                    },
+                    json=body,
+                )
+
+        assert resp_a.status == 200
+        assert resp_b.status == 200
+        assert calls == ["user-a", "user-b"]
+
+
+# ---------------------------------------------------------------------------
 # X-Hermes-Session-Id header (session continuity)
 # ---------------------------------------------------------------------------
 
@@ -2749,4 +2893,3 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
-

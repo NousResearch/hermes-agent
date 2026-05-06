@@ -1680,21 +1680,46 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
 def _apply_personality_to_session(
     sid: str, session: dict, new_prompt: str
 ) -> tuple[bool, dict | None]:
+    """Apply a personality change to an existing session without resetting history.
+
+    Updates the agent's ephemeral system prompt in-place so the new personality
+    takes effect on the next turn.  The cached base system prompt is left intact
+    (ephemeral_system_prompt is appended at API-call time, not baked into the
+    cache), which preserves prompt-cache hits.
+
+    Also injects a system-role marker into the conversation history so the model
+    knows to pivot its style from this point forward (without this, LLMs tend to
+    continue the tone established by earlier messages in the transcript).
+
+    Returns (history_reset, info) — history_reset is always False since we
+    preserve the conversation.
+    """
     if not session:
         return False, None
 
-    try:
-        info = _reset_session_agent(sid, session)
-        return True, info
-    except Exception:
-        if session.get("agent"):
-            agent = session["agent"]
-            agent.ephemeral_system_prompt = new_prompt or None
-            agent._cached_system_prompt = None
-            info = _session_info(agent)
-            _emit("session.info", sid, info)
-            return False, info
-        return False, None
+    agent = session.get("agent")
+    if agent:
+        agent.ephemeral_system_prompt = new_prompt or None
+        # Inject a pivot marker into history so the model sees the change point.
+        # This prevents it from pattern-matching its prior style.
+        if new_prompt:
+            marker = (
+                "[System: The user has changed the assistant's personality. "
+                "From this point forward, adopt the following persona and respond "
+                f"accordingly: {new_prompt}]"
+            )
+        else:
+            marker = (
+                "[System: The user has cleared the personality overlay. "
+                "From this point forward, respond in your normal default style.]"
+            )
+        with session["history_lock"]:
+            session["history"].append({"role": "user", "content": marker})
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        info = _session_info(agent)
+        _emit("session.info", sid, info)
+        return False, info
+    return False, None
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:

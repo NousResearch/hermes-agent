@@ -204,6 +204,10 @@ class _BotState:
         self.meet_surface: dict = {}
         self.meet_surface_at: Optional[float] = None
         self.admission_evidence: Optional[dict] = None
+        self.interaction_log_path = out_dir / "interaction_log.jsonl"
+        self.trace_path = out_dir / "playwright_trace.zip"
+        self.video_dir = out_dir / "videos"
+        self.video_path: Optional[str] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
@@ -270,6 +274,10 @@ class _BotState:
             "meetSurfaceAt": self.meet_surface_at,
             "meetSurface": self.meet_surface,
             "admissionEvidence": self.admission_evidence,
+            "interactionLogPath": str(self.interaction_log_path),
+            "playwrightTracePath": str(self.trace_path),
+            "videoDir": str(self.video_dir),
+            "videoPath": self.video_path,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -404,6 +412,10 @@ def _enable_captions_js() -> str:
     """
     return r"""
     (() => {
+      const bodyText = document.body ? document.body.innerText || '' : '';
+      if (/Gemini is (recording|taking notes)|Gemini.*recording|Gemini.*notes/i.test(bodyText)) {
+        return 'blocked_gemini_consent';
+      }
       const candidates = Array.from(document.querySelectorAll('button,[role="button"]'));
       const direct = candidates.find((b) => {
         const label = `${b.getAttribute('aria-label') || ''} ${b.innerText || ''}`;
@@ -538,12 +550,22 @@ def _set_caption_language_js(language: str) -> str:
 
       const directCaptionSettings = clickFirst(['open caption settings', 'caption settings', '자막 설정']);
       if (directCaptionSettings) evidence.directCaptionSettings = directCaptionSettings.clicked;
-      const more = clickFirst(['more options', 'more actions', '기타 옵션', '더보기']);
-      if (more) evidence.moreOptions = more.clicked;
-      const settings = clickFirst(['^settings$', 'settings', '^설정$', '설정']);
-      if (settings) evidence.settings = settings.clicked;
-      const captions = clickFirst(['^captions$', 'captions', '^자막$', '자막']);
-      if (captions) evidence.captions = captions.clicked;
+      // Prefer the direct caption-settings button. Opening More options / generic
+      // Settings after that creates popover churn and can block Meet's stay/Join
+      // prompt. Only fall back to the generic path when the direct control is
+      // absent. Also do NOT click generic "captions" controls after the direct
+      // caption-settings button: in-call Meet exposes "Turn off captions", and
+      // a loose /captions/ match toggles captions off.
+      let more = null;
+      let settings = null;
+      let captions = null;
+      if (!directCaptionSettings) {{
+        // Avoid generic Meet settings fallback in the live loop. The same label
+        // currently matches "Video settings"/device menus and causes repeated
+        // popover churn. Language selection is best-effort; caption capture is
+        // more important than forcing this setting.
+        return {{result: 'skipped_no_direct_caption_settings', evidence}};
+      }}
 
       const afterOpenText = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
       evidence.afterOpenTail = afterOpenText.slice(-1600);
@@ -558,6 +580,10 @@ def _set_caption_language_js(language: str) -> str:
       }});
       if (languageControl) {{
         evidence.languageControl = labelOf(languageControl).slice(0, 200);
+        const currentLanguageVisible = target && evidence.languageControl.toLowerCase().includes(String(target).toLowerCase());
+        if (currentLanguageVisible) {{
+          return {{result: 'already_visible_after_open', evidence}};
+        }}
         languageControl.click();
       }}
       const options = Array.from(document.querySelectorAll('button,[role=\"button\"],[role=\"option\"],[role=\"menuitemradio\"],[role=\"menuitem\"],li,div[role=\"listitem\"]'));
@@ -579,6 +605,9 @@ def _set_caption_language(page, state: "_BotState", language: str) -> bool:
         state.set_caption_language(requested, "skipped", {})
         return False
     try:
+        if _has_gemini_recording_consent(page):
+            state.set_caption_language(requested, "blocked_gemini_consent", {"reason": "Gemini recording consent dialog is active"})
+            return False
         outcome = page.evaluate(_set_caption_language_js(requested)) or {}
         if not isinstance(outcome, dict):
             outcome = {"result": str(outcome)}
@@ -640,7 +669,14 @@ def _set_caption_language(page, state: "_BotState", language: str) -> bool:
             except Exception as e:
                 evidence = {"initial": evidence, "keyboardFallback": {**keyboard_evidence, "error": str(e)}}
         state.set_caption_language(requested, result, evidence)
-        return result in ("already_visible", "already_visible_after_open", "clicked_language_option", "keyboard_search_selected")
+        if result in ("already_visible", "already_visible_after_open", "clicked_language_option", "keyboard_search_selected", "skipped_no_direct_caption_settings"):
+            try:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(150)
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        return result in ("already_visible", "already_visible_after_open", "clicked_language_option", "keyboard_search_selected", "skipped_no_direct_caption_settings")
     except Exception as e:
         state.set_caption_language(requested, f"failed:{type(e).__name__}", {"error": str(e)})
         return False
@@ -651,6 +687,9 @@ def _enable_and_probe_captions(page, state: "_BotState", out_dir: Path) -> bool:
     result: Optional[str] = None
     try:
         result = page.evaluate(_enable_captions_js())
+        if result == "blocked_gemini_consent":
+            state.set_caption_probe(result=result, region_found=False, observer_attached=False)
+            return False
         if result not in ("clicked", "clicked_direct"):
             try:
                 page.keyboard.press("c")
@@ -863,6 +902,83 @@ def _mac_audio_device_index(device_name: str) -> str:
     return "0"
 
 
+def _install_interaction_recorder(context, state: "_BotState") -> None:
+    """Install browser-side event logging before Meet loads.
+
+    This records user/bot/browser interactions at the DOM-event level so we can
+    debug Material UI mis-clicks from artifacts rather than visual guesswork.
+    Events are drained into ``interaction_log.jsonl`` by
+    ``_drain_interaction_events``.
+    """
+    state.video_dir.mkdir(parents=True, exist_ok=True)
+    script = r"""
+    (() => {
+      if (window.__hermesInteractionRecorderInstalled) return;
+      window.__hermesInteractionRecorderInstalled = true;
+      window.__hermesInteractionEvents = window.__hermesInteractionEvents || [];
+      const pathOf = (el) => {
+        const parts = [];
+        let node = el;
+        for (let i = 0; node && i < 8 && node.nodeType === Node.ELEMENT_NODE; i++, node = node.parentElement) {
+          const tag = (node.tagName || '').toLowerCase();
+          const id = node.id ? `#${node.id}` : '';
+          const role = node.getAttribute && node.getAttribute('role') ? `[role="${node.getAttribute('role')}"]` : '';
+          const aria = node.getAttribute && node.getAttribute('aria-label') ? `[aria-label="${node.getAttribute('aria-label')}"]` : '';
+          parts.push(`${tag}${id}${role}${aria}`.slice(0, 180));
+        }
+        return parts.join(' < ');
+      };
+      const labelOf = (el) => `${el && el.getAttribute ? el.getAttribute('aria-label') || '' : ''} ${el ? (el.innerText || el.textContent || '') : ''}`.replace(/\s+/g, ' ').trim().slice(0, 500);
+      const record = (type, ev) => {
+        const el = ev.target && ev.target.closest ? (ev.target.closest('button,[role="button"],a,[role="menuitem"],[aria-label]') || ev.target) : ev.target;
+        let rect = null;
+        try {
+          const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+          if (r) rect = {x: r.x, y: r.y, width: r.width, height: r.height};
+        } catch (_) {}
+        window.__hermesInteractionEvents.push({
+          ts: Date.now() / 1000,
+          type,
+          key: ev.key || null,
+          code: ev.code || null,
+          x: ev.clientX ?? null,
+          y: ev.clientY ?? null,
+          tag: el && el.tagName || null,
+          role: el && el.getAttribute ? el.getAttribute('role') : null,
+          aria: el && el.getAttribute ? el.getAttribute('aria-label') : null,
+          text: labelOf(el),
+          path: pathOf(el),
+          rect,
+          url: location.href,
+        });
+        if (window.__hermesInteractionEvents.length > 1000) window.__hermesInteractionEvents.splice(0, 500);
+      };
+      for (const type of ['pointerdown', 'mousedown', 'click', 'keydown']) {
+        window.addEventListener(type, (ev) => record(type, ev), true);
+      }
+    })();
+    """
+    try:
+        context.add_init_script(script)
+    except Exception as e:
+        state.set(error=f"interaction recorder init failed: {e}")
+
+
+def _drain_interaction_events(page, state: "_BotState", *, note: str = "") -> None:
+    try:
+        events = page.evaluate("() => { const q = window.__hermesInteractionEvents || []; window.__hermesInteractionEvents = []; return q; }")
+    except Exception:
+        return
+    if not events:
+        return
+    with state.interaction_log_path.open("a", encoding="utf-8") as f:
+        for event in events:
+            if isinstance(event, dict):
+                if note:
+                    event["note"] = note
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
 def _open_browser_context(pw, *, headed: bool, chrome_args: list, context_args: dict, chrome_profile: str = ""):
     """Open a Playwright browser context for Meet.
 
@@ -995,6 +1111,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 os.environ[k] = v
             context_args = {
                 "viewport": {"width": 1280, "height": 800},
+                "record_video_dir": str(state.video_dir),
+                "record_video_size": {"width": 1280, "height": 800},
                 "user_agent": (
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1010,6 +1128,11 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 context_args=context_args,
                 chrome_profile=chrome_profile,
             )
+            _install_interaction_recorder(context, state)
+            try:
+                context.tracing.start(screenshots=True, snapshots=True, sources=False)
+            except Exception as e:
+                state.set(error=f"trace start failed: {e}")
             page = context.new_page()
 
             try:
@@ -1031,6 +1154,18 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             if state.error:
                 state.set(exited=True, leave_reason="join_button_not_found")
                 return 6
+
+            # If a Gemini recording/taking-notes consent card appears right
+            # after admission, handle it before any caption/language keyboard
+            # fallback. On this Meet surface, stray key events can activate the
+            # dialog's focused/default button (observed as leaving the call).
+            for _ in range(5):
+                if _try_gemini_recording_join_now(page):
+                    page.wait_for_timeout(500)
+                    break
+                if not _has_gemini_recording_consent(page):
+                    break
+                page.wait_for_timeout(300)
 
             # Install caption observer and attempt to enable captions. We do
             # not report captioning=true until the Meet caption region exists
@@ -1133,9 +1268,19 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
                 if state.in_call:
                     _dismiss_got_it(page)
-                    _ensure_prejoin_listen_only(page)
-                    _try_stay_in_call(page)
-                    if state.caption_language_set_result not in ("already_visible", "already_visible_after_open", "clicked_language_option", "skipped"):
+                    if _try_gemini_recording_join_now(page):
+                        time.sleep(0.5)
+                        continue
+                    # Do not run prejoin mic/camera hygiene after admission.
+                    # In-call Meet surfaces contain participant/device controls
+                    # such as "More options for Joohyun", "Video settings", and
+                    # camera buttons; probing them as prejoin controls causes
+                    # visible popover churn and can look like an infinite loop.
+                    clicked_stay_prompt = _try_stay_in_call(page)
+                    if clicked_stay_prompt:
+                        time.sleep(0.5)
+                        continue
+                    if state.caption_language_set_result not in ("already_visible", "already_visible_after_open", "clicked_language_option", "keyboard_search_selected", "skipped_no_direct_caption_settings", "skipped"):
                         _set_caption_language(page, state, caption_language)
                     if (now - last_surface_refresh) > 5.0:
                         last_surface_refresh = now
@@ -1212,6 +1357,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                         last_audio_out_at=getattr(rt["session"], "last_audio_out_at", None),
                     )
 
+                _drain_interaction_events(page, state)
+
                 time.sleep(1.0)
 
             # Try to leave cleanly — click "Leave call" button if present.
@@ -1223,7 +1370,28 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             except Exception:
                 pass
 
+            try:
+                _drain_interaction_events(page, state, note="before_clean_leave")
+            except Exception:
+                pass
+
+            try:
+                context.tracing.stop(path=str(state.trace_path))
+            except Exception as e:
+                state.set(error=f"trace stop failed: {e}")
+
+            video = None
+            try:
+                video = page.video
+            except Exception:
+                video = None
+
             context.close()
+            if video is not None:
+                try:
+                    state.set(video_path=video.path())
+                except Exception:
+                    pass
             if browser is not None:
                 browser.close()
             # v2: teardown realtime speaker + audio bridge.
@@ -1453,22 +1621,34 @@ def _detect_denied(page) -> bool:
         return False
 
 
-def _try_stay_in_call(page) -> bool:
-    """Click Meet's auto-end prompt when the tab looks alone.
+def _has_gemini_recording_consent(page) -> bool:
+    try:
+        text = page.evaluate("() => document.body ? document.body.innerText || '' : ''") or ""
+        return bool(re.search(r"Gemini is (recording|taking notes)|Gemini.*recording|Gemini.*notes", text, re.I))
+    except Exception:
+        return False
 
-    Same-account Companion Mode can show "Your call is ending soon" even while
-    the user's primary tab is present. If Meet offers an affirmative stay
-    action, click it so transcription tests do not die before captions arrive.
+
+def _try_gemini_recording_join_now(page) -> bool:
+    """Accept Gemini recording/taking-notes consent without ever clicking Leave.
+
+    The consent card can show sibling buttons "Leave" and "Join now". Generic
+    text/role locators have proven too risky on this Material surface, so this
+    function enumerates visible buttons and clicks only an exact affirmative
+    label. It is intentionally narrow and should run before any generic join or
+    stay prompt handler.
     """
-    probe = r"""
+    script = r"""
     (() => {
       const text = document.body ? document.body.innerText || '' : '';
-      const buttons = Array.from(document.querySelectorAll('button'));
-      const buttonText = buttons.map((button) => `${button.getAttribute('aria-label') || ''} ${button.innerText || ''}`).join(' ');
-      if (!/call is ending soon|stay in the call|통화.*곧.*종료|계속.*통화/i.test(`${text} ${buttonText}`)) return false;
+      if (!/Gemini is (recording|taking notes)|Gemini.*recording|Gemini.*notes/i.test(text)) return false;
+      const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const labelOf = (el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`.replace(/\s+/g, ' ').trim();
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
       for (const button of buttons) {
-        const label = `${button.getAttribute('aria-label') || ''} ${button.innerText || ''}`;
-        if (/stay|keep|continue|join now|계속|유지|지금 참여/i.test(label)) {
+        const label = labelOf(button);
+        if (/leave|나가기|퇴장/i.test(label)) continue;
+        if (/\bjoin now\b/i.test(label) || /지금 참여|참여하기/i.test(label)) {
           button.click();
           return true;
         }
@@ -1477,7 +1657,84 @@ def _try_stay_in_call(page) -> bool:
     })();
     """
     try:
-        return bool(page.evaluate(probe))
+        return bool(page.evaluate(script))
+    except Exception:
+        return False
+
+
+def _try_stay_in_call(page) -> bool:
+    """Click Meet's auto-end / Gemini notes prompt when the tab looks alone.
+
+    Same-account Companion Mode can show "Your call is ending soon" and/or a
+    "Gemini is taking notes" consent card with "Leave" / "Join now" even while
+    the user's primary tab is present. Prefer the affirmative Join/Stay action
+    and never click Leave.
+    """
+    # Playwright's locator click is more reliable than DOM ``el.click()`` for
+    # some Google Material text buttons. Use it first, but only when the page
+    # text proves we are handling the stay/consent prompt.
+    try:
+        text = page.evaluate("() => document.body ? document.body.innerText || '' : ''") or ""
+        # Only click explicit affirmative text buttons. Meet also exposes
+        # non-action/negative controls via aria-labels (e.g. "Your call is
+        # ending soon", "Leave call"). A broad DOM fallback previously made it
+        # possible to hit the wrong control and immediately leave the meeting.
+        if re.search(r"call is ending soon|stay in the call|통화.*곧.*종료|계속.*통화", text, re.I):
+            for pattern in (r"^Join now$", r"^Stay$", r"^Continue$", r"^Keep.*", r"^계속.*", r"^지금 참여$", r"^참여$"):
+                try:
+                    loc = page.get_by_role("button", name=re.compile(pattern, re.I)).last
+                    if loc.count():
+                        # Extra negative guard against Material buttons whose
+                        # accessible name includes both affirmative and Leave.
+                        label = loc.evaluate("(el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`")
+                        if re.search(r"leave|나가기|퇴장", label or "", re.I):
+                            continue
+                        loc.click(timeout=1_000, force=True)
+                        return True
+                except Exception:
+                    pass
+            # Meet's auto-end prompt can expose the actionable stay surface as
+            # a single icon/button whose accessible name is only "Your call is
+            # ending soon". This is distinct from the red "Leave call" button;
+            # click it as a last resort to keep the companion tab alive.
+            for pattern in (r"^Your call is ending soon$", r"^Stay in the call$", r"통화.*곧.*종료"):
+                try:
+                    loc = page.get_by_role("button", name=re.compile(pattern, re.I)).last
+                    if loc.count():
+                        label = loc.evaluate("(el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`")
+                        if re.search(r"leave call|hang up|나가기|퇴장", label or "", re.I):
+                            continue
+                        loc.click(timeout=1_000, force=True)
+                        return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Testable/browser-side fallback for environments without Playwright's
+    # get_by_role API and for Material buttons that evade role locators. Keep it
+    # narrow: require the stay prompt text and click only explicit affirmative
+    # labels, never Leave/Hang up controls.
+    script = r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      if (!/call is ending soon|stay in the call|통화.*곧.*종료|계속.*통화/i.test(text)) return false;
+      const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const labelOf = (el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`.replace(/\s+/g, ' ').trim();
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+      for (const button of buttons) {
+        const label = labelOf(button);
+        if (/leave|hang up|나가기|퇴장/i.test(label)) continue;
+        if (/\bjoin now\b|\bstay\b|\bcontinue\b|\bkeep\b|지금 참여|참여|계속/i.test(label)) {
+          button.click();
+          return true;
+        }
+      }
+      return false;
+    })();
+    """
+    try:
+        return bool(page.evaluate(script))
     except Exception:
         return False
 
@@ -1534,7 +1791,29 @@ def _ensure_prejoin_listen_only(page) -> None:
     "Turn on microphone" / "Turn on camera", that means the device is already
     muted/off and must be left alone. This keeps the bot safe for the user's
     expected mode: camera off, microphone off, transcribe-only.
+
+    This must be a strict prejoin-only helper. In-call Meet surfaces expose
+    similarly named participant/device controls ("More options", "Video
+    settings", camera controls), and clicking them after admission creates
+    visible popover churn.
     """
+    try:
+        admitted = bool(page.evaluate(
+            """
+            () => {
+              const text = document.body ? document.body.innerText || '' : '';
+              const labels = Array.from(document.querySelectorAll('button,[role="button"]'))
+                .map((el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`)
+                .join(' ');
+              return /leave call|hang up|통화에서 나가기/i.test(`${text} ${labels}`)
+                && !/join now|ask to join|join here too|참여 요청/i.test(`${text} ${labels}`);
+            }
+            """
+        ))
+        if admitted:
+            return
+    except Exception:
+        pass
     for label in ("Turn off microphone", "Turn off camera"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first

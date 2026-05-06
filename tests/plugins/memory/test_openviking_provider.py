@@ -77,7 +77,7 @@ class _FakePrefetchClient:
         return {"result": {"memories": [], "resources": []}}
 
 
-def test_viking_client_defaults_use_hermes_user(monkeypatch):
+def test_viking_client_defaults_use_default_user(monkeypatch):
     monkeypatch.delenv("OPENVIKING_ACCOUNT", raising=False)
     monkeypatch.delenv("OPENVIKING_USER", raising=False)
     monkeypatch.delenv("OPENVIKING_AGENT", raising=False)
@@ -85,8 +85,17 @@ def test_viking_client_defaults_use_hermes_user(monkeypatch):
     client = _VikingClient("http://127.0.0.1:1933", api_key="dev")
 
     assert client._headers()["X-OpenViking-Account"] == "default"
-    assert client._headers()["X-OpenViking-User"] == "hermes"
+    assert client._headers()["X-OpenViking-User"] == "default"
     assert client._headers()["X-OpenViking-Agent"] == "hermes"
+
+
+
+def test_provider_initial_defaults_use_default_user():
+    provider = OpenVikingMemoryProvider()
+
+    assert provider._account == "default"
+    assert provider._user == "default"
+    assert provider._agent == "hermes"
 
 
 

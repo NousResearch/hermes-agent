@@ -29,7 +29,7 @@ All config via environment variables in `.env`:
 | `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
 | `OPENVIKING_API_KEY` | (none) | API key (optional) |
 | `OPENVIKING_ACCOUNT` | `default` | Tenant account for API requests |
-| `OPENVIKING_USER` | `hermes` | Tenant user for API requests |
+| `OPENVIKING_USER` | `default` | Tenant user for API requests |
 | `OPENVIKING_AGENT` | `hermes` | Tenant agent for API requests |
 
 ## Behavior notes

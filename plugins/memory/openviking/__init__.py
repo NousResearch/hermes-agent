@@ -11,7 +11,7 @@ Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
   OPENVIKING_ACCOUNT   — Tenant account (default: default)
-  OPENVIKING_USER      — Tenant user (default: hermes)
+  OPENVIKING_USER      — Tenant user (default: default)
   OPENVIKING_AGENT     — Tenant agent (default: hermes)
 
 Capabilities:
@@ -90,7 +90,7 @@ class _VikingClient:
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
         self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = user or os.environ.get("OPENVIKING_USER", "hermes")
+        self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._agent = agent or os.environ.get("OPENVIKING_AGENT", "hermes")
         self._httpx = _get_httpx()
         if self._httpx is None:
@@ -265,7 +265,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._endpoint = ""
         self._api_key = ""
         self._account = "default"
-        self._user = "hermes"
+        self._user = "default"
         self._agent = "hermes"
         self._session_id = ""
         self._turn_count = 0
@@ -306,8 +306,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
             {
                 "key": "user",
-                "description": "OpenViking user ID within the account ([hermes], used when local mode, OPENVIKING_API_KEY is empty)",
-                "default": "hermes",
+                "description": "OpenViking user ID within the account ([default], used when local mode, OPENVIKING_API_KEY is empty)",
+                "default": "default",
                 "env_var": "OPENVIKING_USER",
             },
             {
@@ -445,7 +445,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
         self._api_key = os.environ.get("OPENVIKING_API_KEY", "")
         self._account = os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = os.environ.get("OPENVIKING_USER", "hermes")
+        self._user = os.environ.get("OPENVIKING_USER", "default")
         self._agent = os.environ.get("OPENVIKING_AGENT", "hermes")
         self._session_id = session_id
         self._turn_count = 0

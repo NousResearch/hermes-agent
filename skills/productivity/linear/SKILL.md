@@ -18,7 +18,7 @@ Manage Linear issues, projects, and teams directly via the GraphQL API using `cu
 
 ## Setup
 
-1. Get a personal API key from **Linear Settings > API > Personal API keys**
+1. Get a personal API key from **Linear Settings > Account > Security & access > Personal API keys** (URL: https://linear.app/settings/account/security). Note: the org-level *Settings > API* page only shows OAuth apps and workspace-member keys, not personal keys.
 2. Set `LINEAR_API_KEY` in your environment (via `hermes setup` or your env config)
 
 ## API Basics

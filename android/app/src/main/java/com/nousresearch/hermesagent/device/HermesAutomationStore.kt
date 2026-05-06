@@ -22,6 +22,7 @@ data class HermesAutomationRecord(
     val lastExitCode: Int? = null,
     val lastSuccess: Boolean? = null,
     val lastResult: String = "",
+    val triggerData: String = "",
 ) {
     fun toJson(): JSONObject {
         return JSONObject()
@@ -42,6 +43,7 @@ data class HermesAutomationRecord(
             .put("last_exit_code", lastExitCode ?: JSONObject.NULL)
             .put("last_success", lastSuccess ?: JSONObject.NULL)
             .put("last_result", lastResult)
+            .put("trigger_data", triggerData)
     }
 
     companion object {
@@ -64,6 +66,7 @@ data class HermesAutomationRecord(
                 lastExitCode = if (json.isNull("last_exit_code")) null else json.optInt("last_exit_code"),
                 lastSuccess = if (json.isNull("last_success")) null else json.optBoolean("last_success"),
                 lastResult = json.optString("last_result"),
+                triggerData = json.optString("trigger_data"),
             )
         }
     }
@@ -188,5 +191,6 @@ const val TRIGGER_BATTERY_OKAY = "battery_okay"
 const val TRIGGER_APP_FOREGROUND = "app_foreground"
 const val TRIGGER_NOTIFICATION_POSTED = "notification_posted"
 const val TRIGGER_TIME = "time"
+const val TRIGGER_CALENDAR_EVENT = "calendar_event"
 const val TRIGGER_SHIZUKU_AVAILABLE = "shizuku_available"
 const val TRIGGER_SHIZUKU_UNAVAILABLE = "shizuku_unavailable"

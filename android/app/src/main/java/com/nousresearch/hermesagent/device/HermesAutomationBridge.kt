@@ -37,6 +37,10 @@ object HermesAutomationBridge {
                 title = stringArgument(arguments, "notification_title", "title", allowEmpty = true).orEmpty(),
                 text = stringArgument(arguments, "notification_text", "text", "content", allowEmpty = true).orEmpty(),
             )
+            "run_calendar_event_trigger", "trigger_calendar_event", "calendar_event", "calendar" -> runCalendarEventTriggerJson(
+                context = context,
+                arguments = arguments,
+            )
             "run_shizuku_state_trigger", "trigger_shizuku_state", "check_shizuku_trigger", "shizuku_state" -> runShizukuStateTriggerJson(
                 context = context,
                 requestedState = stringArgument(arguments, "shizuku_state", "state", "expected_state", "trigger_state").orEmpty(),
@@ -394,6 +398,10 @@ object HermesAutomationBridge {
         if (triggerType == TRIGGER_NOTIFICATION_POSTED && triggerPackageName.isBlank()) {
             return errorJson("notification_posted trigger requires trigger_package_name")
         }
+        val triggerData = buildTriggerData(arguments, triggerType)
+        if (triggerData.error != null) {
+            return errorJson(triggerData.error)
+        }
         val now = System.currentTimeMillis()
         val record = HermesAutomationRecord(
             id = arguments.optString("id").ifBlank { "auto_${UUID.randomUUID().toString().replace("-", "").take(16)}" },
@@ -409,6 +417,7 @@ object HermesAutomationBridge {
             enabled = recordEnabled(arguments),
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
+            triggerData = triggerData.data,
         )
         val store = HermesAutomationStore(context)
         store.upsert(record)
@@ -450,6 +459,9 @@ object HermesAutomationBridge {
         }
         if (normalizedTrigger == TRIGGER_NOTIFICATION_POSTED) {
             return errorJson("notification_posted trigger requires run_notification_posted_trigger with trigger_package_name or package_name")
+        }
+        if (normalizedTrigger == TRIGGER_CALENDAR_EVENT) {
+            return runCalendarEventTriggerJson(context, JSONObject())
         }
         if (normalizedTrigger == TRIGGER_SHIZUKU_AVAILABLE || normalizedTrigger == TRIGGER_SHIZUKU_UNAVAILABLE) {
             return runShizukuStateTriggerJson(context, normalizedTrigger)
@@ -532,6 +544,67 @@ object HermesAutomationBridge {
             .put("package_name", notificationPackageName)
             .put("notification_title", title.take(MAX_EVENT_VALUE_CHARS))
             .put("notification_text", text.take(MAX_EVENT_VALUE_CHARS))
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runCalendarEventTriggerJson(context: Context, arguments: JSONObject): String {
+        val calendarName = stringArgument(
+            arguments,
+            "calendar_name",
+            "calendarName",
+            "calendar",
+            "calendar_name_contains",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val title = stringArgument(
+            arguments,
+            "calendar_title",
+            "event_title",
+            "title",
+            "title_contains",
+            allowEmpty = true,
+        ).orEmpty()
+        val description = stringArgument(
+            arguments,
+            "calendar_description",
+            "event_description",
+            "description",
+            "description_contains",
+            allowEmpty = true,
+        ).orEmpty()
+        val location = stringArgument(
+            arguments,
+            "calendar_location",
+            "event_location",
+            "location",
+            "location_contains",
+            allowEmpty = true,
+        ).orEmpty()
+        calendarEventNulError(calendarName, title, description, location)?.let { error ->
+            return errorJson(error)
+        }
+        val store = HermesAutomationStore(context)
+        setCalendarEventVariables(store, calendarName, title, description, location)
+        val variables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_CALENDAR_EVENT &&
+                    calendarEventMatches(record.triggerData, variables, calendarName, title, description, location)
+            }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_CALENDAR_EVENT))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_CALENDAR_EVENT)
+            .put("calendar_name", calendarName.take(MAX_EVENT_VALUE_CHARS))
+            .put("calendar_title", title.take(MAX_EVENT_VALUE_CHARS))
+            .put("calendar_description", description.take(MAX_EVENT_VALUE_CHARS))
+            .put("calendar_location", location.take(MAX_EVENT_VALUE_CHARS))
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -843,6 +916,71 @@ object HermesAutomationBridge {
         })
     }
 
+    private fun buildTriggerData(arguments: JSONObject, triggerType: String): TriggerDataResult {
+        if (triggerType != TRIGGER_CALENDAR_EVENT) {
+            return TriggerDataResult("")
+        }
+        val payload = JSONObject()
+        listOf(
+            copyCalendarTriggerFilter(
+                payload,
+                "calendar_name",
+                arguments,
+                "calendar_name",
+                "calendarName",
+                "calendar",
+                "calendar_name_contains",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "title_contains",
+                arguments,
+                "title_contains",
+                "event_title",
+                "calendar_title",
+                "title",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "description_contains",
+                arguments,
+                "description_contains",
+                "event_description",
+                "calendar_description",
+                "description",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "location_contains",
+                arguments,
+                "location_contains",
+                "event_location",
+                "calendar_location",
+                "location",
+            ),
+        ).firstOrNull { it != null }?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        return TriggerDataResult(payload.toString())
+    }
+
+    private fun copyCalendarTriggerFilter(
+        payload: JSONObject,
+        targetKey: String,
+        arguments: JSONObject,
+        vararg sourceKeys: String,
+    ): String? {
+        val sourceKey = sourceKeys.firstOrNull { key -> arguments.has(key) && !arguments.isNull(key) } ?: return null
+        val value = arguments.optString(sourceKey).trim()
+        if (value.indexOf('\u0000') >= 0) {
+            return "$sourceKey must not contain NUL bytes"
+        }
+        if (value.isNotBlank()) {
+            payload.put(targetKey, value)
+        }
+        return null
+    }
+
     private fun expandIntentPayload(payload: JSONObject, variables: JSONObject): JSONObject {
         val expanded = JSONObject()
         INTENT_STRING_PAYLOAD_KEYS.forEach { key ->
@@ -903,6 +1041,47 @@ object HermesAutomationBridge {
     private fun triggerPackageMatches(savedPackageName: String, foregroundPackageName: String, variables: JSONObject): Boolean {
         val expanded = expandVariables(savedPackageName, variables).trim()
         return expanded.isNotBlank() && expanded.equals(foregroundPackageName, ignoreCase = true)
+    }
+
+    private fun calendarEventMatches(
+        triggerData: String,
+        variables: JSONObject,
+        calendarName: String,
+        title: String,
+        description: String,
+        location: String,
+    ): Boolean {
+        val filters = runCatching { JSONObject(triggerData.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        return textFilterMatches(filters.optString("calendar_name"), calendarName, variables) &&
+            textFilterMatches(filters.optString("title_contains"), title, variables) &&
+            textFilterMatches(filters.optString("description_contains"), description, variables) &&
+            textFilterMatches(filters.optString("location_contains"), location, variables)
+    }
+
+    private fun textFilterMatches(filter: String, value: String, variables: JSONObject): Boolean {
+        val expanded = expandVariables(filter, variables).trim()
+        if (expanded.isBlank() || expanded == "*") {
+            return true
+        }
+        if (expanded.indexOf('\u0000') >= 0) {
+            return false
+        }
+        return value.contains(expanded, ignoreCase = true)
+    }
+
+    private fun calendarEventNulError(
+        calendarName: String,
+        title: String,
+        description: String,
+        location: String,
+    ): String? {
+        return when {
+            calendarName.indexOf('\u0000') >= 0 -> "calendar_name must not contain NUL bytes"
+            title.indexOf('\u0000') >= 0 -> "calendar_title must not contain NUL bytes"
+            description.indexOf('\u0000') >= 0 -> "calendar_description must not contain NUL bytes"
+            location.indexOf('\u0000') >= 0 -> "calendar_location must not contain NUL bytes"
+            else -> null
+        }
     }
 
     private fun parseTimeArgument(arguments: JSONObject): TimeParseResult {
@@ -984,6 +1163,23 @@ object HermesAutomationBridge {
         store.setVariable("TIME_DAY", day)
     }
 
+    private fun setCalendarEventVariables(
+        store: HermesAutomationStore,
+        calendarName: String,
+        title: String,
+        description: String,
+        location: String,
+    ) {
+        store.setVariable("CALNAME", calendarName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALENDAR_NAME", calendarName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALTITLE", title.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALENDAR_TITLE", title.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALDESCR", description.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALENDAR_DESCRIPTION", description.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALLOC", location.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("CALENDAR_LOCATION", location.take(MAX_EVENT_VALUE_CHARS))
+    }
+
     private fun setShizukuEventVariables(
         store: HermesAutomationStore,
         status: HermesPrivilegedAccessStatus,
@@ -1060,6 +1256,7 @@ object HermesAutomationBridge {
         "run_trigger",
         "run_app_foreground_trigger",
         "run_notification_posted_trigger",
+        "run_calendar_event_trigger",
         "run_shizuku_state_trigger",
         "run_time_trigger",
         "delete",
@@ -1081,6 +1278,7 @@ object HermesAutomationBridge {
         TRIGGER_APP_FOREGROUND,
         TRIGGER_NOTIFICATION_POSTED,
         TRIGGER_TIME,
+        TRIGGER_CALENDAR_EVENT,
         TRIGGER_SHIZUKU_AVAILABLE,
         TRIGGER_SHIZUKU_UNAVAILABLE,
     )
@@ -1108,6 +1306,12 @@ object HermesAutomationBridge {
         "notification_received" to TRIGGER_NOTIFICATION_POSTED,
         "posted_notification" to TRIGGER_NOTIFICATION_POSTED,
         "notify" to TRIGGER_NOTIFICATION_POSTED,
+        "calendar" to TRIGGER_CALENDAR_EVENT,
+        "calendar_event" to TRIGGER_CALENDAR_EVENT,
+        "calendar_profile" to TRIGGER_CALENDAR_EVENT,
+        "calendar_trigger" to TRIGGER_CALENDAR_EVENT,
+        "event" to TRIGGER_CALENDAR_EVENT,
+        "event_calendar" to TRIGGER_CALENDAR_EVENT,
         "clock" to TRIGGER_TIME,
         "clock_time" to TRIGGER_TIME,
         "daily_time" to TRIGGER_TIME,
@@ -1128,6 +1332,7 @@ object HermesAutomationBridge {
     )
     private data class TimeParseResult(val minutes: Int?, val error: String? = null)
     private data class DaysParseResult(val daysCsv: String, val error: String? = null)
+    private data class TriggerDataResult(val data: String, val error: String? = null)
 
     private val TIME_ARGUMENT_KEYS = listOf(
         "time",

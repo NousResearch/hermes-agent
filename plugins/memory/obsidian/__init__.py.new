@@ -492,6 +492,52 @@ class ObsidianMemoryProvider(MemoryProvider):
             return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
         return ""
 
+    def on_agent_complete(self, agent_name: str, task: str, result: str) -> None:
+        """Log subagent work to Memory/agents/{date}/{agent_name}.md"""
+        if not self._agents_dir:
+            return
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        agent_dir = self._agents_dir / today
+        agent_dir.mkdir(exist_ok=True)
+
+        log_file = agent_dir / f"{agent_name}.md"
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        entry = f"""
+## {timestamp}
+**Task:** {task[:200]}
+**Result:** {result[:500]}
+---
+"""
+        try:
+            with open(log_file, "a") as f:
+                f.write(entry)
+            logger.debug("Agent log written: %s", log_file.name)
+        except OSError as e:
+            logger.debug("Agent log failed: %s", e)
+
+    def get_agent_logs(self, agent_name: str = "", date: str = "") -> str:
+        """Read agent logs. If no agent_name, returns all for the date."""
+        if not self._agents_dir:
+            return ""
+
+        target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        agent_dir = self._agents_dir / target_date
+        if not agent_dir.exists():
+            return f"No agent logs for {target_date}"
+
+        logs = []
+        files = [agent_dir / f"{agent_name}.md"] if agent_name else list(agent_dir.iterdir())
+
+        for f in files:
+            if f.exists() and f.suffix == ".md":
+                logs.append(f"### {f.stem}\n")
+                logs.append(f.read_text()[:1000])
+                logs.append("\n")
+
+        return "\n".join(logs) if logs else f"No logs found"
+
     def _archive_old_summaries(self, keep_days: int = 7) -> None:
         """Move summaries older than keep_days to an archive folder."""
         if not self._sessions_dir:

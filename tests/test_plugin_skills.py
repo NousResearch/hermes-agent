@@ -127,21 +127,54 @@ class TestPluginContextRegisterSkill:
 
         pm = PluginManager()
         monkeypatch.setattr(plugins_mod, "_plugin_manager", pm)
+        plugin_dir = tmp_path / "plugins" / "testplugin"
+        plugin_dir.mkdir(parents=True)
+        manifest_file = plugin_dir / "plugin.yaml"
+        manifest_file.write_text("name: testplugin\n")
         manifest = PluginManifest(
             name="testplugin",
             version="1.0.0",
             description="test",
             source="user",
+            path=str(manifest_file),
         )
         return PluginContext(manifest, pm)
 
     def test_happy_path(self, ctx, tmp_path):
-        skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
+        skill_md = tmp_path / "plugins" / "testplugin" / "skills" / "my-skill" / "SKILL.md"
         skill_md.parent.mkdir(parents=True)
         skill_md.write_text("---\nname: my-skill\n---\nContent.\n")
 
         ctx.register_skill("my-skill", skill_md, "A test skill")
-        assert ctx._manager.find_plugin_skill("testplugin:my-skill") == skill_md
+        assert ctx._manager.find_plugin_skill("testplugin:my-skill") == skill_md.resolve()
+
+    def test_rejects_skill_path_outside_plugin_dir(self, ctx, tmp_path):
+        md = tmp_path / "outside" / "SKILL.md"
+        md.parent.mkdir()
+        md.write_text("test")
+        with pytest.raises(ValueError, match="inside plugin directory"):
+            ctx.register_skill("leak", md)
+
+    def test_directory_manifest_path_rejects_sibling_plugin_skill(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        pm = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", pm)
+        plugins_root = tmp_path / "plugins"
+        plugin_a = plugins_root / "a"
+        plugin_b = plugins_root / "b"
+        plugin_a.mkdir(parents=True)
+        md = plugin_b / "skills" / "leak" / "SKILL.md"
+        md.parent.mkdir(parents=True)
+        md.write_text("test")
+        ctx = PluginContext(
+            PluginManifest(name="a", source="user", path=str(plugin_a)),
+            pm,
+        )
+
+        with pytest.raises(ValueError, match="inside plugin directory"):
+            ctx.register_skill("leak", md)
 
     def test_rejects_colon_in_name(self, ctx, tmp_path):
         md = tmp_path / "SKILL.md"

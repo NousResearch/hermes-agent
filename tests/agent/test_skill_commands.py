@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -111,7 +113,7 @@ class TestScanSkillCommands:
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
 
-    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+    def test_skips_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -122,8 +124,7 @@ class TestScanSkillCommands:
         with patch("tools.skills_tool.SKILLS_DIR", skills_root):
             result = scan_skill_commands()
 
-        assert "/knowledge-brain" in result
-        assert result["/knowledge-brain"]["name"] == "knowledge-brain"
+        assert "/knowledge-brain" not in result
 
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.

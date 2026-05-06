@@ -1021,6 +1021,20 @@ class TestBuildAnthropicKwargs:
         assert "claude-code-20250219" in betas
         assert "interleaved-thinking-2025-05-14" in betas
 
+    def test_fast_mode_omitted_for_unsupported_native_models(self):
+        """Do not send speed=fast to models Anthropic documents as unsupported."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+
+        assert "extra_body" not in kwargs or kwargs["extra_body"].get("speed") != "fast"
+        assert "fast-mode-2026-02-01" not in kwargs.get("extra_headers", {}).get("anthropic-beta", "")
+
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",

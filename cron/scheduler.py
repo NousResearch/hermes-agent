@@ -183,6 +183,22 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
+        if platform_key not in _KNOWN_DELIVERY_PLATFORMS:
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+            except Exception:
+                pass
+            try:
+                from gateway.platform_registry import platform_registry
+
+                platform_entry = platform_registry.get(platform_key)
+            except Exception:
+                platform_entry = None
+            if platform_entry is None:
+                return None
+
         from tools.send_message_tool import _parse_target_ref
 
         parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)

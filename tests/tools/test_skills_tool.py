@@ -267,7 +267,7 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
-    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+    def test_does_not_follow_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -278,8 +278,24 @@ class TestFindAllSkills:
         with patch("tools.skills_tool.SKILLS_DIR", skills_root):
             skills = _find_all_skills()
 
-        assert [s["name"] for s in skills] == ["knowledge-brain"]
-        assert skills[0]["category"] == "linked"
+        assert skills == []
+
+    def test_skips_symlinked_skill_md_outside_skills_root(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        skill_dir = skills_root / "safe"
+        skill_dir.mkdir()
+        secret = tmp_path / "secret.md"
+        secret.write_text("---\nname: safe\ndescription: leaked\n---\nSECRET")
+        try:
+            (skill_dir / "SKILL.md").symlink_to(secret)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        assert skills == []
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +330,7 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
-    def test_category_filter_finds_symlinked_category(self, tmp_path):
+    def test_category_filter_skips_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -327,9 +343,8 @@ class TestSkillsList:
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["count"] == 1
-        assert result["categories"] == ["linked"]
-        assert result["skills"][0]["name"] == "knowledge-brain"
+        assert result.get("count", 0) == 0
+        assert result.get("skills", []) == []
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +361,57 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_rejects_traversal_name(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        secret = tmp_path / "secret"
+        _make_skill(secret.parent, "secret")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("../secret")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "traversal" in result["error"]
+
+    def test_rejects_symlinked_skill_md_outside_skills_root(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        skill_dir = skills_root / "safe"
+        skill_dir.mkdir()
+        secret = tmp_path / "secret.md"
+        secret.write_text("---\nname: safe\n---\nSECRET OUTSIDE")
+        try:
+            (skill_dir / "SKILL.md").symlink_to(secret)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("safe")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "outside the trusted skills directories" in result["error"]
+
+    def test_rejects_legacy_md_symlink_outside_skills_root(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        category = skills_root / "legacy"
+        category.mkdir()
+        secret = tmp_path / "flat-secret.md"
+        secret.write_text("---\nname: flat\n---\nSECRET OUTSIDE")
+        try:
+            (category / "flat.md").symlink_to(secret)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("flat")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "outside the trusted skills directories" in result["error"]
 
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
@@ -496,7 +562,7 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
 
-    def test_view_finds_skill_in_symlinked_category_dir(self, tmp_path):
+    def test_view_skips_skill_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -508,8 +574,8 @@ class TestSkillView:
             raw = skill_view("knowledge-brain")
 
         result = json.loads(raw)
-        assert result["success"] is True
-        assert result["name"] == "knowledge-brain"
+        assert result["success"] is False
+        assert "not found" in result["error"]
 
     def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

@@ -555,3 +555,38 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+def test_explicit_delivery_target_rejects_unknown_platform():
+    from cron.scheduler import _resolve_delivery_targets
+
+    assert _resolve_delivery_targets({"deliver": "notaplatform:chat"}) == []
+
+
+def test_explicit_delivery_target_discovers_plugin_platform(monkeypatch):
+    from cron.scheduler import _resolve_delivery_targets
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    calls = []
+
+    def fake_discover_plugins():
+        calls.append(True)
+        platform_registry.register(
+            PlatformEntry(
+                name="plugcron",
+                label="PlugCron",
+                adapter_factory=lambda cfg: object(),
+                check_fn=lambda: True,
+            )
+        )
+
+    platform_registry.unregister("plugcron")
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", fake_discover_plugins)
+
+    try:
+        assert _resolve_delivery_targets({"deliver": "plugcron:chat"}) == [
+            {"platform": "plugcron", "chat_id": "chat", "thread_id": None}
+        ]
+        assert calls
+    finally:
+        platform_registry.unregister("plugcron")

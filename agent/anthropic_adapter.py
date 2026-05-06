@@ -1936,7 +1936,7 @@ def build_anthropic_kwargs(
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
     # output speed. Only for native Anthropic endpoints — third-party
     # providers would reject the unknown beta header and speed parameter.
-    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
+    if fast_mode and _supports_fast_mode(model) and not _is_third_party_anthropic_endpoint(base_url):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).

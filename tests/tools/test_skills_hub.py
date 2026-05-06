@@ -1576,3 +1576,44 @@ class TestDownloadDirectoryRecursive:
 
         assert "SKILL.md" in files
         assert "scripts/run.py" not in files  # lost due to rate limit
+
+
+def test_optional_source_rejects_sibling_prefix_traversal(tmp_path):
+    from tools.skills_hub import OptionalSkillSource
+
+    optional_dir = tmp_path / "optional-skills"
+    optional_dir.mkdir()
+    evil = tmp_path / "optional-skills-evil" / "evil"
+    evil.mkdir(parents=True)
+    (evil / "SKILL.md").write_text("---\nname: evil\n---\nsecret")
+
+    from unittest.mock import patch
+
+    with patch("hermes_constants.get_optional_skills_dir", return_value=optional_dir):
+        src = OptionalSkillSource()
+    assert src.fetch("official/../optional-skills-evil/evil") is None
+
+
+def test_optional_source_skips_symlinked_files_outside_skill_dir(tmp_path):
+    from tools.skills_hub import OptionalSkillSource
+
+    optional_dir = tmp_path / "optional-skills"
+    skill = optional_dir / "safe"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: safe\n---\nbody")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRET OUTSIDE")
+    try:
+        (skill / "references.md").symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+    from unittest.mock import patch
+
+    with patch("hermes_constants.get_optional_skills_dir", return_value=optional_dir):
+        src = OptionalSkillSource()
+    bundle = src.fetch("official/safe")
+
+    assert bundle is not None
+    assert "SKILL.md" in bundle.files
+    assert "references.md" not in bundle.files

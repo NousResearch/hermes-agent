@@ -2369,7 +2369,9 @@ class OptionalSkillSource(SkillSource):
         # Guard against path traversal (e.g. "official/../../etc")
         try:
             resolved = skill_dir.resolve()
-            if not str(resolved).startswith(str(self._optional_dir.resolve())):
+            optional_root = self._optional_dir.resolve()
+            resolved.relative_to(optional_root)
+            if optional_root == resolved:
                 return None
         except (OSError, ValueError):
             return None
@@ -2383,6 +2385,12 @@ class OptionalSkillSource(SkillSource):
         else:
             skill_dir = resolved
 
+        try:
+            skill_root = skill_dir.resolve()
+            skill_root.relative_to(optional_root)
+        except (OSError, ValueError):
+            return None
+
         files: Dict[str, Union[str, bytes]] = {}
         for f in skill_dir.rglob("*"):
             if (
@@ -2391,10 +2399,13 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
                 try:
-                    files[rel_path] = f.read_bytes()
-                except OSError:
+                    resolved_file = f.resolve()
+                    resolved_file.relative_to(skill_root)
+                    resolved_file.relative_to(optional_root)
+                    rel_path = str(f.relative_to(skill_dir))
+                    files[rel_path] = resolved_file.read_bytes()
+                except (OSError, ValueError):
                     continue
 
         if not files:

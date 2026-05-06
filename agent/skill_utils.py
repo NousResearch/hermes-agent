@@ -440,13 +440,25 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories and
+    skips symlink escapes so index generation never reads files outside the
+    trusted skills root.
     """
     matches = []
-    for root, dirs, files in os.walk(skills_dir, followlinks=True):
+    try:
+        skills_root = skills_dir.resolve()
+    except OSError:
+        return
+    for root, dirs, files in os.walk(skills_dir, followlinks=False):
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
-        if filename in files:
-            matches.append(Path(root) / filename)
+        if filename not in files:
+            continue
+        candidate = Path(root) / filename
+        try:
+            candidate.resolve().relative_to(skills_root)
+        except (OSError, ValueError):
+            continue
+        matches.append(candidate)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
 

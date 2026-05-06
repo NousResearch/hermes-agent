@@ -576,10 +576,23 @@ class PluginContext:
             )
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
+        skill_path = path.resolve()
+        manifest_path = Path(self.manifest.path or ".").resolve()
+        # Directory-discovered plugins store manifest.path as the plugin directory;
+        # tests and older callers may provide the manifest file path instead.
+        plugin_root = manifest_path.parent if manifest_path.is_file() else manifest_path
+        try:
+            skill_path.relative_to(plugin_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Plugin skill path must stay inside plugin directory: {path}"
+            ) from exc
+        if not skill_path.is_file():
+            raise FileNotFoundError(f"Plugin skill path is not a file: {path}")
 
         qualified = f"{self.manifest.name}:{name}"
         self._manager._plugin_skills[qualified] = {
-            "path": path,
+            "path": skill_path,
             "plugin": self.manifest.name,
             "bare_name": name,
             "description": description,

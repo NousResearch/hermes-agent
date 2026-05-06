@@ -1746,6 +1746,22 @@ class TestTitleLineage:
 class TestTitleSqlWildcards:
     """Titles containing SQL LIKE wildcards (%, _) must not cause false matches."""
 
+    def test_resolve_ignores_non_numeric_hash_suffix(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "my project")
+        time.sleep(0.01)
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "my project #notes")
+
+        assert db.resolve_session_by_title("my project") == "s1"
+
+    def test_next_title_ignores_non_numeric_hash_suffix(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "my project #notes")
+
+        assert db.get_next_title_in_lineage("my project") == "my project"
+
+
     def test_resolve_title_with_underscore(self, db):
         """A title like 'test_project' should not match 'testXproject #2'."""
         db.create_session("s1", "cli")

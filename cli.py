@@ -6279,6 +6279,10 @@ class HermesCLI:
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
 
+        if not cmd_lower or cmd_lower == "/":
+            self._console_print("[dim]Type /help for commands[/]")
+            return True
+
         # Resolve aliases via central registry so adding an alias is a one-line
         # change in hermes_cli/commands.py instead of touching every dispatch site.
         from hermes_cli.commands import resolve_command as _resolve_cmd

@@ -158,3 +158,12 @@ class TestSlashCommandPrefixMatching:
         mock_help.assert_called_once()
         printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
         assert "Ambiguous" not in printed
+
+
+def test_bare_slash_does_not_crash():
+    cli_obj = _make_cli()
+    printed = []
+    cli_obj._console_print = lambda msg: printed.append(msg)
+
+    assert cli_obj.process_command("/") is True
+    assert "Type /help" in printed[0]

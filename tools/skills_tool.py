@@ -951,16 +951,56 @@ def skill_view(
         skill_dir = None
         skill_md = None
 
+        requested_path = Path(name)
+        if requested_path.is_absolute() or ".." in requested_path.parts:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Invalid skill name '{name}': path traversal is not allowed.",
+                },
+                ensure_ascii=False,
+            )
+
+        trusted_roots = []
+        for search_dir in all_dirs:
+            try:
+                trusted_roots.append(search_dir.resolve())
+            except OSError:
+                continue
+
+        def _is_within_trusted_root(candidate: Path) -> bool:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                return False
+            for root in trusted_roots:
+                try:
+                    resolved.relative_to(root)
+                    return True
+                except ValueError:
+                    continue
+            return False
+
         # Search all dirs: local first, then external (first match wins)
         for search_dir in all_dirs:
             # Try direct path first (e.g., "mlops/axolotl")
             direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                skill_dir = direct_path
-                skill_md = direct_path / "SKILL.md"
+            try:
+                direct_resolved = direct_path.resolve()
+                direct_resolved.relative_to(search_dir.resolve())
+            except (OSError, ValueError):
+                continue
+            if direct_resolved.is_dir() and (direct_resolved / "SKILL.md").exists():
+                skill_dir = direct_resolved
+                skill_md = direct_resolved / "SKILL.md"
                 break
-            elif direct_path.with_suffix(".md").exists():
-                skill_md = direct_path.with_suffix(".md")
+            direct_md = direct_resolved.with_suffix(".md")
+            try:
+                direct_md.relative_to(search_dir.resolve())
+            except ValueError:
+                continue
+            if direct_md.exists():
+                skill_md = direct_md
                 break
 
         # Search by directory name across all dirs
@@ -997,6 +1037,28 @@ def skill_view(
                 },
                 ensure_ascii=False,
             )
+
+        try:
+            resolved_skill_md = skill_md.resolve()
+        except OSError as e:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Failed to resolve skill '{name}': {e}",
+                },
+                ensure_ascii=False,
+            )
+        if not _is_within_trusted_root(resolved_skill_md):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Skill '{name}' resolves outside the trusted skills directories.",
+                },
+                ensure_ascii=False,
+            )
+        skill_md = resolved_skill_md
+        if skill_dir:
+            skill_dir = skill_dir.resolve()
 
         # Read the file once — reused for platform check and main content below
         try:

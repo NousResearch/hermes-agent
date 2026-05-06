@@ -870,6 +870,9 @@ class SessionDB:
             )
             numbered = cursor.fetchall()
 
+        lineage_re = re.compile(rf"^{re.escape(title)} #\d+$")
+        numbered = [row for row in numbered if lineage_re.match(row["title"])]
+
         if numbered:
             # Return the most recent numbered variant
             return numbered[0]["id"]
@@ -900,15 +903,19 @@ class SessionDB:
             )
             existing = [row["title"] for row in cursor.fetchall()]
 
-        if not existing:
-            return base  # No conflict, use the base name as-is
-
-        # Find the highest number
+        lineage_re = re.compile(rf"^{re.escape(base)} #(\d+)$")
+        has_exact_base = False
         max_num = 1  # The unnumbered original counts as #1
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            if t == base:
+                has_exact_base = True
+                continue
+            m = lineage_re.match(t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
+
+        if not has_exact_base and max_num == 1:
+            return base  # No exact or numeric conflict; use the base name as-is
 
         return f"{base} #{max_num + 1}"
 

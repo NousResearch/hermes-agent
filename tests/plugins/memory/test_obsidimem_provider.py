@@ -245,3 +245,20 @@ def test_memory_write_cron_skipped_is_noop(monkeypatch, tmp_path, fake_client):
     assert p._write_thread is None
     obs_posts = [u for m, u, _ in fake_client.calls if m == "POST" and "/memory/observations" in u]
     assert obs_posts == []
+
+
+# ---------------------------------------------------------------------------
+# on_turn_start
+# ---------------------------------------------------------------------------
+
+def test_turn_start_does_not_raise(provider):
+    """on_turn_start must accept all ABC-specified call forms without raising."""
+    provider.on_turn_start(1, "hello")
+    provider.on_turn_start(2, "next turn", remaining_tokens=40000, model="qwen3")
+
+
+def test_turn_start_makes_no_api_calls(provider, fake_client):
+    """on_turn_start must not call the obsidimem API."""
+    fake_client.calls.clear()
+    provider.on_turn_start(1, "hello")
+    assert fake_client.calls == []

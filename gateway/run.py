@@ -6550,10 +6550,28 @@ class GatewayRunner:
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
 
+            _end_tool_names = []
+            try:
+                _seen_tool_names = set()
+                for _msg in agent_messages:
+                    if not isinstance(_msg, dict):
+                        continue
+                    for _tc in (_msg.get("tool_calls") or []):
+                        if not isinstance(_tc, dict):
+                            continue
+                        _fn = _tc.get("function") or {}
+                        _name = str(_fn.get("name") or _tc.get("name") or "").strip()
+                        if _name and _name not in _seen_tool_names:
+                            _end_tool_names.append(_name)
+                            _seen_tool_names.add(_name)
+            except Exception:
+                _end_tool_names = []
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "tool_names": _end_tool_names,
             })
             
             # Check for pending process watchers (check_interval on background processes)

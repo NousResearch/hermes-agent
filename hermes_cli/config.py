@@ -856,6 +856,15 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
+
+    # Realtime activity ledger. Sidecar JSONL for reporting/audit only; not
+    # persistent memory and not injected into normal prompts. Disabled by
+    # default because it writes user/assistant previews to disk.
+    "activity_ledger": {
+        "enabled": False,
+        "capture_turns": True,
+        "max_preview_chars": 500,
+    },
     
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the

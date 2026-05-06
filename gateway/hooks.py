@@ -45,7 +45,9 @@ class HookRegistry:
     def __init__(self):
         # event_type -> [handler_fn, ...]
         self._handlers: Dict[str, List[Callable]] = {}
+        self._builtin_handlers: Dict[str, List[Callable]] = {}
         self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._builtins_registered = False
 
     @property
     def loaded_hooks(self) -> List[dict]:
@@ -55,11 +57,21 @@ class HookRegistry:
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        Built-ins are process-local observers and must not block the main
+        gateway pipeline. They are intentionally not included in
+        ``loaded_hooks`` because that list represents user-installed hook
+        packages from HERMES_HOME.
         """
-        return
+        if self._builtins_registered:
+            return
+        try:
+            from gateway.activity_ledger import handle_gateway_hook
+
+            for event in ("agent:start", "agent:step", "agent:end"):
+                self._builtin_handlers.setdefault(event, []).append(handle_gateway_hook)
+            self._builtins_registered = True
+        except Exception as e:
+            print(f"[hooks] Error loading built-in activity ledger hook: {e}", flush=True)
 
     def discover_and_load(self) -> None:
         """
@@ -71,9 +83,8 @@ class HookRegistry:
           - HOOK.yaml with at least 'name' and 'events' keys
           - handler.py with a top-level 'handle' function (sync or async)
         """
-        self._register_builtin_hooks()
-
         if not HOOKS_DIR.exists():
+            self._register_builtin_hooks()
             return
 
         for hook_dir in sorted(HOOKS_DIR.iterdir()):
@@ -142,6 +153,8 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
+        self._register_builtin_hooks()
+
     def _resolve_handlers(self, event_type: str) -> List[Callable]:
         """Return all handlers that should fire for ``event_type``.
 
@@ -149,10 +162,12 @@ class HookRegistry:
         ``command:*`` matches ``command:reset``).
         """
         handlers = list(self._handlers.get(event_type, []))
+        handlers.extend(self._builtin_handlers.get(event_type, []))
         if ":" in event_type:
             base = event_type.split(":")[0]
             wildcard_key = f"{base}:*"
             handlers.extend(self._handlers.get(wildcard_key, []))
+            handlers.extend(self._builtin_handlers.get(wildcard_key, []))
         return handlers
 
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:

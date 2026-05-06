@@ -24,6 +24,26 @@ const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl 
 const PRECISION_WHEEL_MIN_GAP_MS = 80
 const PRECISION_WHEEL_STICKY_MS = 80
 
+export function applyVoiceRecordResponse(
+  response: null | VoiceRecordResponse,
+  starting: boolean,
+  voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
+  sys: (text: string) => void
+) {
+  if (!starting || !response?.status || response.status === 'recording') {
+    return
+  }
+
+  voice.setRecording(false)
+
+  if (response.status === 'busy') {
+    voice.setProcessing(true)
+    sys('voice: still transcribing; try again shortly')
+  } else {
+    voice.setProcessing(false)
+  }
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -186,14 +206,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       voice.setProcessing(false)
     }
 
-    gateway.rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid }).catch((e: Error) => {
-      // Revert optimistic UI on failure.
-      if (starting) {
-        voice.setRecording(false)
-      }
+    gateway
+      .rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid })
+      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys))
+      .catch((e: Error) => {
+        // Revert optimistic UI on failure.
+        if (starting) {
+          voice.setRecording(false)
+        }
 
-      actions.sys(`voice error: ${e.message}`)
-    })
+        actions.sys(`voice error: ${e.message}`)
+      })
   }
 
   useInput((ch, key) => {

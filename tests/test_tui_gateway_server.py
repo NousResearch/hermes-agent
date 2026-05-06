@@ -263,6 +263,29 @@ def test_voice_record_stop_forces_transcription(monkeypatch):
     assert captured["force_transcribe"] is True
 
 
+def test_voice_record_stop_updates_event_session_id(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: True,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(server, "_voice_event_sid", "old-session")
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop-session",
+            "method": "voice.record",
+            "params": {"action": "stop", "session_id": "new-session"},
+        }
+    )
+
+    assert resp["result"]["status"] == "stopped"
+    assert server._voice_event_sid == "new-session"
+
+
 def test_voice_record_start_reports_busy_when_stop_is_in_progress(monkeypatch):
     monkeypatch.setitem(
         sys.modules,

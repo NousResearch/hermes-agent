@@ -5679,6 +5679,9 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"status": "recording"})
 
         # action == "stop"
+        with _voice_sid_lock:
+            _voice_event_sid = params.get("session_id") or _voice_event_sid
+
         from hermes_cli.voice import stop_continuous
 
         stop_continuous(force_transcribe=True)

@@ -110,7 +110,11 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
   const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
-  const durationSegment = startedAt ? `· ${padTickerDuration(now - startedAt)}` : ''
+  // Leading space keeps a gap between the frame and the duration when the
+  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
+  // IS shown, its trailing padding already provides the gap, so the extra
+  // space is harmless.
+  const durationSegment = startedAt ? ` · ${padTickerDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>

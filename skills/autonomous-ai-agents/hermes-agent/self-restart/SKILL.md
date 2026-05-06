@@ -104,7 +104,25 @@ Same as C3 note above — Railway injects env vars at container **startup**. Upd
 ### Diagnosing Which Failure Mode
 ## References
 
-- `references/cloudflare-403-urllib.md` — Cloudflare WAF blocks urllib requests without User-Agent (this session's root cause fix)
+- `references/railway-restart-this-container.md` — IDs, Python restart code, "I'm back!" flag file trick, failure modes for this specific Railway deployment.
+
+## Pitfalls
+
+### Programmatic restarts don't fire the startup message
+`_send_restart_notification()` only fires when `/restart` was triggered from Telegram (the flag file is written by the command handler, not by the API call). Before calling the Railway API from inside the container, pre-create the flag:
+```python
+import json, os
+data = {'platform': 'telegram', 'chat_id': '8746106424'}
+path = os.path.join(os.environ.get('HERMES_HOME', '/opt/data'), '.restart_notify.json')
+with open(path, 'w') as f:
+    json.dump(data, f)
+```
+
+### Wrong Railway IDs in skill
+The skill may contain stale IDs. Cross-check against the Railway dashboard URL: `railway.app/project/<PROJECT_ID>/service/<SERVICE_ID>`. Current correct IDs are in `references/railway-restart-this-container.md`.
+
+### No curl/wget — Python only
+This container has no `curl` or `wget`. Use Python stdlib `urllib` with `User-Agent: railway-cli/4.44.0` header.
 
 ## Verification
 

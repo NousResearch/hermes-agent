@@ -152,6 +152,8 @@ class TestFeishuExecApproval:
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
+        assert state["command"] == "echo test"
+        assert state["description"] == "dangerous command"
 
     @pytest.mark.asyncio
     async def test_not_connected(self):
@@ -353,6 +355,13 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[1] = {
+            "session_key": "sess-1",
+            "message_id": "msg_001",
+            "chat_id": "oc_12345",
+            "command": "rm -rf /important",
+            "description": "dangerous deletion",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
             open_id="ou_bob",
@@ -367,13 +376,22 @@ class TestCardActionCallbackResponse:
         assert response.card.type == "raw"
         card = response.card.data
         assert card["header"]["template"] == "green"
-        assert "Approved once" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        assert "Approved once by Bob" in card["header"]["title"]["content"]
+        # Command content preserved in card elements
+        assert any("rm -rf /important" in el["content"] for el in card["elements"])
+        assert any("dangerous deletion" in el["content"] for el in card["elements"])
 
     def test_returns_card_for_deny_action(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[2] = {
+            "session_key": "sess-2",
+            "message_id": "msg_002",
+            "chat_id": "oc_12345",
+            "command": "rm -rf /",
+            "description": "dangerous",
+        }
         data = _make_card_action_data(
             {"hermes_action": "deny", "approval_id": 2},
         )
@@ -415,6 +433,13 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[3] = {
+            "session_key": "sess-3",
+            "message_id": "msg_003",
+            "chat_id": "oc_12345",
+            "command": "ls",
+            "description": "list",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_session", "approval_id": 3},
             open_id="ou_unknown",
@@ -424,7 +449,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "ou_unknown" in card["elements"][0]["content"]
+        # User name fallback to open_id is shown in the header
+        assert "ou_unknown" in card["header"]["title"]["content"]
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -440,5 +466,33 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "Old Name" not in card["elements"][0]["content"]
-        assert "ou_expired" in card["elements"][0]["content"]
+        # Expired cache name should not appear; open_id used as fallback in header
+        assert "Old Name" not in card["header"]["title"]["content"]
+        assert "ou_expired" in card["header"]["title"]["content"]
+
+    def test_fallback_when_state_already_popped(self, _patch_callback_card_types):
+        """Card must never render with only a header and empty elements.
+
+        Simulates the race condition where the async resolver has already
+        popped the approval state before the sync handler reads it.
+        """
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        # NOTE: approval_id 5 is NOT in _approval_state — simulates a
+        # duplicate callback or race where _resolve_approval already ran.
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 5},
+            open_id="ou_alice",
+        )
+        adapter._sender_name_cache["ou_alice"] = ("Alice", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        card = response.card.data
+        # Header should still be present with user name
+        assert "Approved once by Alice" in card["header"]["title"]["content"]
+        # Elements must NOT be empty — fallback status text is shown
+        assert len(card["elements"]) >= 1
+        assert any("Approved once" in el["content"] for el in card["elements"])

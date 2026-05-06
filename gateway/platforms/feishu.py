@@ -1850,6 +1850,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "command": cmd_preview,
+                    "description": description,
                 }
             return result
         except Exception as exc:
@@ -1857,22 +1859,34 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
+    def _build_resolved_approval_card(
+        *, choice: str, user_name: str,
+        command: str = "", description: str = "",
+    ) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        header_title = f"{icon} {label} by {user_name}" if user_name else f"{icon} {label}"
+        elements = []
+        if command:
+            cmd_block = f"```\n{command}\n```"
+            if description:
+                cmd_block += f"\n**Reason:** {description}"
+            elements.append({"tag": "markdown", "content": cmd_block})
+        if not elements:
+            # Fallback: always show at least the resolution status so
+            # the card never renders with an empty body (only header).
+            elements.append({
+                "tag": "markdown",
+                "content": f"{icon} **{label}**" + (f" by {user_name}" if user_name else ""),
+            })
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"{icon} {label}", "tag": "plain_text"},
+                "title": {"content": header_title, "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "elements": elements,
         }
 
     async def send_voice(
@@ -2403,6 +2417,12 @@ class FeishuAdapter(BasePlatformAdapter):
         open_id = str(getattr(operator, "open_id", "") or "")
         user_name = self._get_cached_sender_name(open_id) or open_id
 
+        # Snapshot approval state *before* scheduling async work.
+        # _resolve_approval runs on the adapter event-loop thread and pops
+        # the state.  If we read after scheduling, a tight race window
+        # exists where the pop has already happened → empty card elements.
+        state = self._approval_state.get(approval_id, {})
+
         self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name))
 
         if P2CardActionTriggerResponse is None:
@@ -2411,7 +2431,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if CallBackCard is not None:
             card = CallBackCard()
             card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            card.data = self._build_resolved_approval_card(
+                choice=choice, user_name=user_name,
+                command=state.get("command", ""),
+                description=state.get("description", ""),
+            )
             response.card = card
         return response
 

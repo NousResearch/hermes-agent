@@ -1,6 +1,7 @@
-import { Box, renderSync, ScrollBox, Text, type ScrollBoxHandle } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
 import { PassThrough } from 'stream'
+
+import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
+import React, { useLayoutEffect, useRef } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
@@ -50,6 +51,7 @@ const viewportIsMounted = (items: readonly Item[], virtualHistory: ReturnType<ty
 
 function Harness({ expose, items }: { expose: React.MutableRefObject<Exposed | null>; items: readonly Item[] }) {
   const scrollRef = useRef<ScrollBoxHandle | null>(null)
+
   const virtualHistory = useVirtualHistory(scrollRef, items, 80, {
     coldStartCount: 16,
     estimateHeight: index => items[index]?.height ?? 1,
@@ -83,11 +85,45 @@ function Harness({ expose, items }: { expose: React.MutableRefObject<Exposed | n
 }
 
 describe('useVirtualHistory offset cache reuse', () => {
+  it('recomputes offsets after a mounted row height changes', async () => {
+    const tall = [
+      { height: 6, key: 'a' },
+      { height: 6, key: 'b' },
+      { height: 6, key: 'c' }
+    ]
+
+    const short = tall.map(item => ({ ...item, height: 2 }))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(React.createElement(Harness, { expose, items: tall }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    try {
+      await delay(20)
+      expect(expose.current!.virtualHistory.offsets[tall.length]).toBe(18)
+
+      instance.rerender(React.createElement(Harness, { expose, items: short }))
+      await delay(40)
+
+      expect(expose.current!.virtualHistory.offsets[short.length]).toBe(6)
+      expect(expose.current!.virtualHistory.bottomSpacer).toBe(0)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
   it('ignores stale reused offset-array entries after the item count shrinks', async () => {
     const beforeShrink = Array.from({ length: 1400 }, (_, index) => ({ height: 1, key: `old${index}` }))
     const afterShrink = Array.from({ length: 800 }, (_, index) => ({ height: 7, key: `new${index}` }))
     const expose = { current: null as Exposed | null }
     const streams = makeStreams()
+
     const instance = renderSync(React.createElement(Harness, { expose, items: beforeShrink }), {
       patchConsole: false,
       stderr: streams.stderr as NodeJS.WriteStream,

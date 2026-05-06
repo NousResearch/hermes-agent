@@ -17,6 +17,10 @@ object HermesAutomationBridge {
             "create_system_action_task", "create_system_action", "system_action_task" -> createSystemActionTaskJson(context, arguments)
             "create_ui_action_task", "create_ui_action", "ui_action_task" -> createUiActionTaskJson(context, arguments)
             "create_app_launch_task", "create_app_launch", "launch_app_task" -> createAppLaunchTaskJson(context, arguments)
+            "create_intent_task", "create_android_intent_task", "intent_task" -> createIntentTaskJson(context, arguments)
+            "create_uri_task", "create_open_uri_task", "open_uri_task" -> createIntentTaskJson(context, arguments, "open_uri")
+            "create_broadcast_task", "create_send_broadcast_task", "broadcast_task" -> createIntentTaskJson(context, arguments, "send_broadcast")
+            "create_activity_task", "create_start_activity_task", "launch_activity_task" -> createIntentTaskJson(context, arguments, "start_activity")
             "create_shizuku_action_task", "create_shizuku_action", "create_privileged_action_task", "privileged_action_task" -> createShizukuActionTaskJson(context, arguments)
             "run", "run_now", "trigger" -> runAutomationJson(context, arguments.optString("id"), "manual")
             "run_trigger", "trigger_event", "run_event" -> runTriggerJson(
@@ -203,6 +207,61 @@ object HermesAutomationBridge {
             actionType = ACTION_TYPE_APP_LAUNCH,
             payload = packageName,
             defaultLabel = "Hermes app launch automation",
+        )
+    }
+
+    fun createIntentTaskJson(context: Context, arguments: JSONObject, defaultIntentTaskAction: String? = null): String {
+        val rawIntentTaskAction = stringArgument(
+            arguments,
+            "intent_task_action",
+            "intent_action_type",
+            "intent_mode",
+            "intent_type",
+            "task_action",
+        )?.trim().orEmpty().ifBlank {
+            defaultIntentTaskAction ?: inferIntentTaskAction(arguments)
+        }
+        val intentTaskAction = HermesIntentBridge.normalizeIntentTaskAction(rawIntentTaskAction)
+            ?: return errorJson("Unsupported Android intent task action: $rawIntentTaskAction. Use start_activity, open_uri, or send_broadcast")
+        val payload = JSONObject().put("intent_task_action", intentTaskAction)
+        putOptionalExpandedPayloadString(
+            payload,
+            "intent_action",
+            arguments,
+            "intent_action",
+            "android_intent_action",
+            "action_name",
+            "command",
+        )
+        putOptionalExpandedPayloadString(payload, "data_uri", arguments, "data_uri", "uri", "url", "data")
+        putOptionalExpandedPayloadString(
+            payload,
+            "package_name",
+            arguments,
+            "package_name",
+            "packageName",
+            "package",
+            "app_package",
+            "application_id",
+        )
+        putOptionalExpandedPayloadString(payload, "class_name", arguments, "class_name", "className", "activity_class")
+        putOptionalExpandedPayloadString(payload, "component", arguments, "component", "component_name", "componentName")
+        putOptionalExpandedPayloadString(payload, "category", arguments, "category", "intent_category")
+        copyStringArrayPayload(payload, arguments, "categories", "categories", "intent_categories")
+        copyExtrasPayload(payload, arguments)
+
+        val validation = HermesIntentBridge.performIntentJson(context, payload.put("__validate_only", true))
+        payload.remove("__validate_only")
+        if (!validation.optBoolean("success", false) && validation.optInt("exit_code", 1) == 64) {
+            return errorJson(validation.optString("error").ifBlank { "Invalid Android intent automation payload" })
+        }
+
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_INTENT,
+            payload = payload.toString(),
+            defaultLabel = "Hermes Android intent automation",
         )
     }
 
@@ -484,6 +543,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_SYSTEM_ACTION -> runSystemActionRecord(context, record, variables)
             ACTION_TYPE_UI_ACTION -> runUiActionRecord(record, variables)
             ACTION_TYPE_APP_LAUNCH -> HermesAppControlBridge.launchPackage(context, expandVariables(record.command, variables))
+            ACTION_TYPE_INTENT -> runIntentRecord(context, record, variables)
             ACTION_TYPE_SHIZUKU_ACTION -> runShizukuActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
@@ -569,6 +629,12 @@ object HermesAutomationBridge {
                 index = payload.optInt("index", 0),
             ),
         )
+    }
+
+    private fun runIntentRecord(context: Context, record: HermesAutomationRecord, variables: JSONObject): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved intent automation payload is invalid"))
+        return HermesIntentBridge.performIntentJson(context, expandIntentPayload(payload, variables))
     }
 
     private fun runShizukuActionRecord(context: Context, record: HermesAutomationRecord, variables: JSONObject): JSONObject {
@@ -710,6 +776,69 @@ object HermesAutomationBridge {
         stringArgument(arguments, *keys, allowEmpty = allowEmpty)?.let { value ->
             payload.put(targetKey, value)
         }
+    }
+
+    private fun inferIntentTaskAction(arguments: JSONObject): String {
+        if (stringArgument(arguments, "data_uri", "uri", "url", "data") != null &&
+            stringArgument(arguments, "class_name", "className", "activity_class", "component", "component_name", "componentName") == null
+        ) {
+            return "open_uri"
+        }
+        return "start_activity"
+    }
+
+    private fun copyStringArrayPayload(payload: JSONObject, arguments: JSONObject, targetKey: String, vararg sourceKeys: String) {
+        val sourceKey = sourceKeys.firstOrNull { key -> arguments.has(key) && !arguments.isNull(key) } ?: return
+        val raw = arguments.opt(sourceKey) ?: return
+        val values = when (raw) {
+            is JSONArray -> (0 until raw.length()).mapNotNull { index -> raw.optString(index).takeIf { it.isNotBlank() } }
+            else -> raw.toString().split(',', ';', '|', '\n').map { it.trim() }.filter { it.isNotBlank() }
+        }
+        if (values.isNotEmpty()) {
+            payload.put(targetKey, JSONArray(values))
+        }
+    }
+
+    private fun copyExtrasPayload(payload: JSONObject, arguments: JSONObject) {
+        val extras = arguments.optJSONObject("extras") ?: arguments.optJSONObject("intent_extras") ?: return
+        payload.put("extras", JSONObject().apply {
+            extras.keys().forEach { key ->
+                put(key, extras.opt(key))
+            }
+        })
+    }
+
+    private fun expandIntentPayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        INTENT_STRING_PAYLOAD_KEYS.forEach { key ->
+            if (payload.has(key) && !payload.isNull(key)) {
+                expanded.put(key, expandVariables(payload.optString(key), variables))
+            }
+        }
+        payload.optJSONArray("categories")?.let { categories ->
+            expanded.put(
+                "categories",
+                JSONArray().apply {
+                    for (index in 0 until categories.length()) {
+                        put(expandVariables(categories.optString(index), variables))
+                    }
+                },
+            )
+        }
+        payload.optJSONObject("extras")?.let { extras ->
+            expanded.put(
+                "extras",
+                JSONObject().apply {
+                    extras.keys().forEach { key ->
+                        when (val value = extras.opt(key)) {
+                            is String -> put(key, expandVariables(value, variables))
+                            else -> put(key, value)
+                        }
+                    }
+                },
+            )
+        }
+        return expanded
     }
 
     private fun recordsToJson(records: List<HermesAutomationRecord>): JSONArray {
@@ -864,6 +993,7 @@ object HermesAutomationBridge {
         "create_system_action_task",
         "create_ui_action_task",
         "create_app_launch_task",
+        "create_intent_task",
         "create_shizuku_action_task",
         "run",
         "run_trigger",
@@ -998,6 +1128,15 @@ object HermesAutomationBridge {
         "input_text" to "set_text",
         "scroll_down" to "scroll_forward",
         "scroll_up" to "scroll_backward",
+    )
+    private val INTENT_STRING_PAYLOAD_KEYS = listOf(
+        "intent_task_action",
+        "intent_action",
+        "data_uri",
+        "package_name",
+        "class_name",
+        "component",
+        "category",
     )
     private val TASKER_VARIABLE_PATTERN = Regex("%([A-Za-z_][A-Za-z0-9_]{1,63})")
     private val BRACE_VARIABLE_PATTERN = Regex("\\{\\{([A-Za-z_][A-Za-z0-9_]{0,63})\\}\\}")

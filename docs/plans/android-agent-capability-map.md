@@ -51,9 +51,9 @@ Agent Android implementation work.
 | Shizuku/Sui app and permission management | Present through explicit `android_system_tool` actions `grant_runtime_permission`, `revoke_runtime_permission`, `force_stop_app`, `enable_app`, `disable_app`, and `set_app_enabled`, and through saved `android_automation_tool` `create_shizuku_action_task` records. These validate package and permission names, refuse to disable or force-stop Hermes itself, expand saved variables at run time, and only execute through the user-granted Shizuku/Sui shell bridge. |
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
-| Tasker-style manual tasks/actions | Present for saved shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, and Shizuku/Sui package-permission records through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. |
+| Tasker-style manual tasks/actions | Present for saved shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, Android intent, and Shizuku/Sui package-permission records through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. Saved intent records cover explicit activity start, URI open, and package-targeted broadcast intents. |
 | Tasker-style profiles/triggers | Present for manual, interval, time-of-day with optional day-of-week restrictions, boot, power-connected, power-disconnected, battery-low, battery-okay, app-foreground, and notification-posted saved automation tasks. Time triggers expose `%TIME`, `%TIME_HOUR`, `%TIME_MINUTE`, and `%TIME_DAY` while running. App-foreground triggers require the user-enabled Hermes accessibility service and an explicit `trigger_package_name`; notification-posted triggers require user-enabled Hermes notification access and an explicit `trigger_package_name`. Location, deeper app-state, sensor, calendar, and plugin-profile triggers are not yet present. |
-| Tasker-style variables | Present as a durable Android automation variable table exposed through `android_automation_tool`; shell commands, file paths, file content, system-action names, UI selectors, UI text values, app package names, Shizuku package names, and Shizuku permission names can expand `%NAME` or `{{NAME}}` values at run time. |
+| Tasker-style variables | Present as a durable Android automation variable table exposed through `android_automation_tool`; shell commands, file paths, file content, system-action names, UI selectors, UI text values, app package names, Android intent action/data/package/component/category/extra string values, Shizuku package names, and Shizuku permission names can expand `%NAME` or `{{NAME}}` values at run time. |
 | Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
 | Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
 | Tasker Java/JavaScript code action | Partially present through app-workspace shell/Python and Shizuku shell. Arbitrary in-app Java execution is not exposed and should stay permission-gated. |
@@ -76,9 +76,10 @@ control available to consenting users.
 ## Next Tasker-Parity Work
 
 The next credible Tasker-parity feature after shell/file/system/UI/app-launch,
-saved Shizuku package/permission actions, variables, time/day triggers, basic
-phone-state triggers, app-foreground triggers, and notification-posted triggers
-should extend profile coverage with explicit user-visible records:
+saved Android intent actions, saved Shizuku package/permission actions,
+variables, time/day triggers, basic phone-state triggers, app-foreground
+triggers, and notification-posted triggers should extend profile coverage with
+explicit user-visible records:
 
 - location, calendar, sensor, and deeper app-state triggers,
 - tests proving scheduled/manual actions cannot mutate outside the Hermes app

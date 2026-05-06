@@ -5057,6 +5057,42 @@ class GatewayRunner:
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
+            # Clarify tool: if the agent is blocked waiting for the user to
+            # answer a clarify() question, the agent thread is parked on a
+            # threading.Event inside tools/clarify_bridge.py. Route any plain
+            # text message (i.e. not a slash command) directly to the clarify
+            # bridge instead of interrupting the agent or starting a new turn.
+            # Slash commands still pass through so /stop / /new / /approve etc.
+            # retain their usual semantics even while a clarify is live.
+            if (
+                not _cmd_def_inner
+                and event.message_type == MessageType.TEXT
+                and event.text is not None
+            ):
+                try:
+                    from tools.clarify_bridge import (
+                        has_blocking_clarify as _has_blocking_clarify,
+                        resolve_gateway_clarify as _resolve_gateway_clarify,
+                    )
+                    if _has_blocking_clarify(_quick_key):
+                        resolved = _resolve_gateway_clarify(_quick_key, event.text)
+                        if resolved:
+                            logger.info(
+                                "Clarify answered for session %s (len=%d)",
+                                _quick_key,
+                                len(event.text),
+                            )
+                            # Return None so no reply is sent — the user's
+                            # message IS the answer; the agent will resume
+                            # and produce its own response.
+                            return None
+                except Exception as _clarify_exc:
+                    logger.warning(
+                        "Clarify bridge routing failed for session %s: %s",
+                        _quick_key,
+                        _clarify_exc,
+                    )
+
             # /agents (/tasks alias) should be query-only and never interrupt.
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
@@ -12204,6 +12240,18 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
+        # Cancel any pending clarify so the blocked agent thread unblocks
+        # with a ClarifyUnavailable error instead of timing out silently.
+        # Safe to call unconditionally — no-op when nothing is pending.
+        try:
+            from tools.clarify_bridge import clear_session_clarifies
+            clear_session_clarifies(session_key)
+        except Exception as _clarify_exc:
+            logger.warning(
+                "Failed to clear clarify state for session %s: %s",
+                session_key,
+                _clarify_exc,
+            )
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         adapter = self.adapters.get(source.platform)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
@@ -13551,6 +13599,11 @@ class GatewayRunner:
                 set_current_session_key,
                 unregister_gateway_notify,
             )
+            from tools.clarify_bridge import (
+                gateway_clarify_callback as _build_gateway_clarify_callback,
+                register_gateway_clarify_notify,
+                unregister_gateway_clarify_notify,
+            )
 
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
@@ -13618,6 +13671,56 @@ class GatewayRunner:
                     ).result(timeout=15)
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
+
+            def _clarify_notify_sync(question: str, choices: Optional[list]) -> None:
+                """Send a clarify question to the user from the agent thread.
+
+                Mirrors ``_approval_notify_sync``: runs synchronously in the
+                agent thread, schedules the actual send on the event loop.
+                Must return quickly — the clarify bridge blocks on the
+                threading.Event separately, so latency here just delays the
+                user seeing the question.
+                """
+                # Pause typing for the same reason as approvals: users need to
+                # be able to type their answer, which some platforms (Slack
+                # Assistant API) block while "is thinking..." is active.
+                try:
+                    _status_adapter.pause_typing_for_chat(_status_chat_id)
+                except Exception:
+                    # pause_typing_for_chat is best-effort; adapters that
+                    # don't implement it (or fail) shouldn't block the send.
+                    pass
+
+                # Format: "🤔 <question>\n\n 1. choice A\n 2. choice B\n…\n\n(Reply with your answer.)"
+                parts = [f"🤔 **{question}**"]
+                if choices:
+                    parts.append("")
+                    for idx, choice in enumerate(choices, start=1):
+                        parts.append(f"  {idx}. {choice}")
+                    parts.append("")
+                    parts.append(
+                        "_Reply with a number or type your own answer._"
+                    )
+                else:
+                    parts.append("")
+                    parts.append("_Reply with your answer._")
+                msg = "\n".join(parts)
+
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            msg,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=15)
+                except Exception as _e:
+                    logger.error("Failed to send clarify question: %s", _e)
+                    # Re-raise so the bridge pops the entry; otherwise the
+                    # agent would block for 30 minutes waiting for an answer
+                    # to a question the user never saw.
+                    raise
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -13711,6 +13814,12 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            register_gateway_clarify_notify(_approval_session_key, _clarify_notify_sync)
+            # Wire the clarify tool into the agent for this turn. The callback
+            # blocks the agent thread until the user replies (handled by the
+            # inbound-message router, which routes plain text to
+            # resolve_gateway_clarify instead of starting a new turn).
+            agent.clarify_callback = _build_gateway_clarify_callback(_approval_session_key)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -13746,6 +13855,7 @@ class GatewayRunner:
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                unregister_gateway_clarify_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 

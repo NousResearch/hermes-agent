@@ -715,6 +715,29 @@ def _skill_should_show(
     return True
 
 
+def _load_tier_data() -> dict[str, str] | None:
+    """Load tier data from SkillTierManager, if tier management is enabled.
+
+    Returns ``{skill_name: tier}`` or ``None`` when tier management is
+    disabled in config or SkillTierManager is unavailable.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        if not cfg.get("skills", {}).get("tier_management", {}).get("enabled", False):
+            return None
+        from agent.skill_tier_manager import get_skill_manager
+        mgr = get_skill_manager()
+        mgr.load()
+        return {
+            name: meta.tier
+            for name, meta in mgr._store.skills.items()
+        }
+    except Exception as e:
+        logger.debug("Tier management not available: %s", e)
+        return None
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -889,7 +912,35 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
-    if not skills_by_category:
+    # ── Optional tier-based filtering ────────────────────────────────
+    # When skills.tier_management is enabled, separate skills into active
+    # (builtin + frequent) and archived sections.
+    tier_data = _load_tier_data()
+    if tier_data:
+        active_skills: set[str] = set()
+        archived_skills: set[str] = set()
+        for cat_skills in skills_by_category.values():
+            for name, _desc in cat_skills:
+                tier = tier_data.get(name, "archived")
+                if tier in ("builtin", "frequent"):
+                    active_skills.add(name)
+                else:
+                    archived_skills.add(name)
+
+        filtered: dict[str, list[tuple[str, str]]] = {}
+        archived: list[tuple[str, str]] = []
+        for category in sorted(skills_by_category.keys()):
+            for name, desc in skills_by_category[category]:
+                if name in active_skills:
+                    filtered.setdefault(category, []).append((name, desc))
+                else:
+                    archived.append((name, desc))
+        skills_by_category = filtered
+        _archived_list = archived
+    else:
+        _archived_list = None
+
+    if not skills_by_category and not _archived_list:
         result = ""
     else:
         index_lines = []
@@ -935,6 +986,18 @@ def build_skills_system_prompt(
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
+        )
+
+        if _archived_list:
+            archived_names = sorted(set(n for n, _d in _archived_list))
+            result += (
+                "\n"
+                "Archived skills (not loaded by default — use skill_view(name) if needed):\n"
+                + ", ".join(archived_names) + "\n"
+                "\n"
+            )
+
+        result += (
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )

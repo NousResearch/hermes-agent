@@ -1732,6 +1732,7 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self._iters_since_tier_eval = 0
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -1840,6 +1841,16 @@ class AIAgent:
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+        except Exception:
+            pass
+
+        # Tier evaluation interval (iterations between batch evaluates)
+        self._tier_eval_interval = 20
+        self._iters_since_tier_eval = 0
+        try:
+            tier_mgmt = _agent_cfg.get("skills", {}).get("tier_management", {})
+            if isinstance(tier_mgmt, dict):
+                self._tier_eval_interval = int(tier_mgmt.get("eval_interval", 20))
         except Exception:
             pass
 
@@ -14121,6 +14132,22 @@ class AIAgent:
                 and "skill_manage" in self.valid_tool_names):
             _should_review_skills = True
             self._iters_since_skill = 0
+
+        # Periodic tier evaluation (lightweight, no background thread needed)
+        if self._tier_eval_interval > 0:
+            self._iters_since_tier_eval += 1
+            if self._iters_since_tier_eval >= self._tier_eval_interval:
+                self._iters_since_tier_eval = 0
+                try:
+                    from agent.skill_tier_manager import get_skill_manager
+                    mgr = get_skill_manager()
+                    # Only evaluate if config has tier_management enabled
+                    from hermes_cli.config import load_config
+                    _cfg_maybe = load_config()
+                    if _cfg_maybe.get("skills", {}).get("tier_management", {}).get("enabled", False):
+                        mgr.evaluate_promotions()
+                except Exception:
+                    pass  # tier evaluation is best-effort
 
         # External memory provider: sync the completed turn + queue next prefetch.
         self._sync_external_memory_for_turn(

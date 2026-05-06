@@ -48,6 +48,11 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
             "background_color": "#1a1a2e",
         },
         "features": {
+            "app_home": {
+                "home_tab_enabled": False,
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": False,
+            },
             "bot_user": {
                 "display_name": bot_name[:80],
                 "always_online": True,
@@ -69,6 +74,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "files:read",
                     "files:write",
                     "groups:history",
+                    "groups:read",
                     "im:history",
                     "im:read",
                     "im:write",

@@ -25,7 +25,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          cache: gradle
 
       - name: Set up Python 3.13 for Chaquopy
         uses: actions/setup-python@v6

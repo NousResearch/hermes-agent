@@ -1265,6 +1265,28 @@ class BasePlatformAdapter(ABC):
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
 
+    def _resolve_reply_to(self, event: "MessageEvent") -> Optional[str]:
+        """Return the message ID to reply to, or None if reply threading is off.
+
+        Respects ``reply_to_mode`` from the platform config:
+          - ``"off"``   → never reply-thread (return None)
+          - ``"first"`` → reply to the triggering message (default)
+          - ``"all"``   → reply to the triggering message
+
+        For Feishu threads, uses ``reply_to_message_id`` when available
+        (preserves upstream behaviour for that platform).
+        """
+        if getattr(self.config, "reply_to_mode", "first") == "off":
+            return None
+        # Feishu threads use reply_to_message_id when in a thread context
+        if (
+            event.source.platform == Platform.FEISHU
+            and event.source.thread_id
+            and event.reply_to_message_id
+        ):
+            return event.reply_to_message_id
+        return event.message_id
+
     @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None
@@ -2506,13 +2528,7 @@ class BasePlatformAdapter(ABC):
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
-                    reply_to=(
-                        event.reply_to_message_id
-                        if event.source.platform == Platform.FEISHU
-                        and event.source.thread_id
-                        and event.reply_to_message_id
-                        else event.message_id
-                    ),
+                    reply_to=self._resolve_reply_to(event),
                     metadata=thread_meta,
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2612,13 +2628,7 @@ class BasePlatformAdapter(ABC):
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
-                            reply_to=(
-                                event.reply_to_message_id
-                                if event.source.platform == Platform.FEISHU
-                                and event.source.thread_id
-                                and event.reply_to_message_id
-                                else event.message_id
-                            ),
+                            reply_to=self._resolve_reply_to(event),
                             metadata=_thread_meta,
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2830,15 +2840,10 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = (
-                        event.reply_to_message_id
-                        if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
-                        else event.message_id
-                    )
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=_reply_anchor,
+                        reply_to=self._resolve_reply_to(event),
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)

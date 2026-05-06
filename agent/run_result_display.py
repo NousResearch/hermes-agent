@@ -8,13 +8,15 @@ assistant-authored ``final_response`` text.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 AgentResultStatus = Literal["complete", "partial", "error", "interrupted"]
 
 
 def _as_dict(result: object) -> dict[str, Any] | None:
-    return result if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        return None
+    return cast(dict[str, Any], result)
 
 
 def _redact(value: object) -> str:
@@ -95,10 +97,11 @@ def agent_result_error_metadata(result: object) -> dict[str, Any]:
 def agent_result_visible_text(result: object) -> str:
     if result is None:
         return ""
-    if not isinstance(result, dict):
+    data = _as_dict(result)
+    if data is None:
         return str(result)
 
-    response = result.get("final_response")
+    response = data.get("final_response")
     if response and response != "(empty)":
         return str(response)
 
@@ -108,4 +111,4 @@ def agent_result_visible_text(result: object) -> str:
             "Try again, rephrase, or switch models."
         )
 
-    return agent_result_display_error(result)
+    return agent_result_display_error(data)

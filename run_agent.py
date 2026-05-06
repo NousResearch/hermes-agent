@@ -4134,9 +4134,9 @@ class AIAgent:
         *,
         title: str,
         summary: str,
-        provider: str | None = None,
-        model: str | None = None,
-        base_url: str | None = None,
+        provider: object | None = None,
+        model: object | None = None,
+        base_url: object | None = None,
         detail: str | None = None,
     ) -> str:
         lines = [title, ""]
@@ -4168,9 +4168,9 @@ class AIAgent:
         partial: bool = False,
         error_kind: str = "provider_error",
         status_code: int | None = None,
-        provider: str | None = None,
-        model: str | None = None,
-        base_url: str | None = None,
+        provider: object | None = None,
+        model: object | None = None,
+        base_url: object | None = None,
         title: str = "Model request failed",
         detail: str | None = None,
         display_error: str | None = None,
@@ -4182,9 +4182,9 @@ class AIAgent:
         _provider_value = provider if provider is not None else self.provider
         _model_value = model if model is not None else self.model
         _base_value = base_url if base_url is not None else self.base_url
-        effective_provider = self._redact_failure_text(_provider_value) if _provider_value else _provider_value
-        effective_model = self._redact_failure_text(_model_value) if _model_value else _model_value
-        effective_base_url = self._redact_failure_text(_base_value) if _base_value else _base_value
+        effective_provider = self._redact_failure_text(_provider_value) if _provider_value else None
+        effective_model = self._redact_failure_text(_model_value) if _model_value else None
+        effective_base_url = self._redact_failure_text(_base_value) if _base_value else None
 
         result = {
             "final_response": None,

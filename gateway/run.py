@@ -39,6 +39,7 @@ from typing import Dict, Optional, Any, List, Union
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from gateway.usage_footer import maybe_append_usage_footer
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -970,6 +971,7 @@ class GatewayRunner:
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _service_restart_exit_fallback_armed: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -1033,6 +1035,7 @@ class GatewayRunner:
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._service_restart_exit_fallback_armed = False
         self._stop_task: Optional[asyncio.Task] = None
         
         # Track running agents per session for interrupt support
@@ -2593,6 +2596,23 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    def _arm_service_restart_exit_fallback(self) -> None:
+        """Force launchd-managed restarts to leave the old process behind."""
+        if self._service_restart_exit_fallback_armed:
+            return
+        self._service_restart_exit_fallback_armed = True
+
+        def _force_exit_after_teardown() -> None:
+            logger.warning(
+                "Forcing process exit with code %d after service restart teardown fallback",
+                GATEWAY_SERVICE_RESTART_EXIT_CODE,
+            )
+            os._exit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+        timer = threading.Timer(5.0, _force_exit_after_teardown)
+        timer.daemon = True
+        timer.start()
+
     def _detect_stale_code(self) -> bool:
         """Return True if source files on disk are newer than the running process.
 
@@ -3997,6 +4017,7 @@ class GatewayRunner:
             if self._restart_requested and self._restart_via_service:
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
+                self._arm_service_restart_exit_fallback()
 
             self._draining = False
             self._update_runtime_status("stopped", self._exit_reason)
@@ -13534,22 +13555,38 @@ class GatewayRunner:
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
+                    first_response = result.get("final_response", "")
+                    if (
+                        first_response
+                        and _previewed
+                        and _sc
+                        and not getattr(_sc, "final_response_sent", False)
+                    ):
+                        try:
+                            _previewed = await _sc.finalize_previewed_response(first_response)
+                        except Exception as e:
+                            logger.debug("Previewed response finalization failed: %s", e)
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
                     )
-                    first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
+                            first_response_to_send = maybe_append_usage_footer(adapter, first_response)
+                            send_result = await adapter.send(
                                 source.chat_id,
-                                first_response,
+                                first_response_to_send,
                                 metadata=_status_thread_metadata,
                             )
+                            if send_result is not None and not getattr(send_result, "success", True):
+                                logger.warning(
+                                    "Failed to send first response before queued message: %s",
+                                    getattr(send_result, "error", send_result),
+                                )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:

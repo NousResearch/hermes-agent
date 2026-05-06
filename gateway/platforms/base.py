@@ -2197,6 +2197,7 @@ class BasePlatformAdapter(ABC):
         metadata: Any = None,
         max_retries: int = 2,
         base_delay: float = 2.0,
+        include_usage_footer: bool = False,
     ) -> "SendResult":
         """
         Send a message with automatic retry for transient network errors.
@@ -2207,9 +2208,20 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
+        send_content = content
+        if include_usage_footer:
+            try:
+                from gateway.usage_footer import maybe_append_usage_footer
+                appended = maybe_append_usage_footer(self, content)
+                max_length = getattr(self, "MAX_MESSAGE_LENGTH", 4096)
+                if len(appended) <= max_length:
+                    send_content = appended
+            except Exception:
+                logger.debug("[%s] Usage footer append failed", self.name, exc_info=True)
+
         result = await self.send(
             chat_id=chat_id,
-            content=content,
+            content=send_content,
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -2236,7 +2248,7 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(delay)
                 result = await self.send(
                     chat_id=chat_id,
-                    content=content,
+                    content=send_content,
                     reply_to=reply_to,
                     metadata=metadata,
                 )
@@ -2261,9 +2273,19 @@ class BasePlatformAdapter(ABC):
 
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
+        fallback_content = f"(Response formatting failed, plain text:)\n\n{content[:3500]}"
+        if include_usage_footer:
+            try:
+                from gateway.usage_footer import maybe_append_usage_footer
+                appended_fallback = maybe_append_usage_footer(self, fallback_content)
+                max_length = getattr(self, "MAX_MESSAGE_LENGTH", 4096)
+                if len(appended_fallback) <= max_length:
+                    fallback_content = appended_fallback
+            except Exception:
+                logger.debug("[%s] Usage footer fallback append failed", self.name, exc_info=True)
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=fallback_content,
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -2815,6 +2837,7 @@ class BasePlatformAdapter(ABC):
                         content=text_content,
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
+                        include_usage_footer=True,
                     )
                     _record_delivery(result)
 

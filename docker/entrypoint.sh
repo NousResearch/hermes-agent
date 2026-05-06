@@ -313,7 +313,7 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_HOME_CHANNEL:-}" ]; then
 import os, urllib.parse, urllib.request
 data = urllib.parse.urlencode({
     "chat_id": os.environ["TELEGRAM_HOME_CHANNEL"],
-    "text": "\U0001f44b I'm back!",
+    "text": "I'm back!",
 }).encode("utf-8")
 req = urllib.request.Request(
     f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",

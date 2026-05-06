@@ -8725,49 +8725,19 @@ class GatewayRunner:
         return True
 
     async def _send_restart_notification(self) -> None:
-        """Notify the chat that initiated /restart that the gateway is back."""
+        """Clean up the /restart flag file; no chat message is sent.
+
+        Matching GordonClaw's pattern: the back-online announcement comes
+        solely from the entrypoint's "I'm back!" Telegram message on every
+        container start. The gateway used to send a second message when
+        /restart was issued from chat, but that duplicates the entrypoint
+        notification on chat-initiated restarts. We keep the flag-file
+        lifecycle (write on /restart, delete on next boot) so any
+        future consumers of `.restart_notify.json` still see correct
+        side effects, but no message is emitted here.
+        """
         notify_path = _hermes_home / ".restart_notify.json"
-        if not notify_path.exists():
-            return
-
-        try:
-            data = json.loads(notify_path.read_text())
-        except Exception:
-            notify_path.unlink(missing_ok=True)
-            return
-
-        platform_str = data.get("platform")
-        chat_id = data.get("chat_id")
-        thread_id = data.get("thread_id")
-
-        if not platform_str or not chat_id:
-            notify_path.unlink(missing_ok=True)
-            return
-
-        try:
-            platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
-            if not adapter:
-                logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
-                    platform_str,
-                )
-                notify_path.unlink(missing_ok=True)
-                return
-
-            metadata = {"thread_id": thread_id} if thread_id else None
-            await adapter.send(
-                chat_id,
-                "👋 I'm back!",
-                metadata=metadata,
-            )
-            logger.info(
-                "Sent restart notification to %s:%s",
-                platform_str,
-                chat_id,
-            )
-        finally:
-            notify_path.unlink(missing_ok=True)
+        notify_path.unlink(missing_ok=True)
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

@@ -3771,6 +3771,102 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    async def _handle_workspace_upload(self, request: "web.Request") -> "web.Response":
+        """POST /v1/workspace/upload — upload files to workspace uploads/ directory.
+
+        Multipart form-data, field name: 'file' (repeat for multiple files).
+        Limits: 10 files per request, 10MB per file.
+        Auto-renames duplicates with timestamp suffix.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        ws_root = Path(os.environ.get("HERMES_WORKSPACE",
+                       str(Path(os.environ.get("HERMES_HOME", "/opt/data")) / "workspace")))
+        upload_dir = ws_root / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        MAX_FILES = 10
+        MAX_BYTES = 10 * 1024 * 1024  # 10MB
+
+        result_files: list[dict] = []
+        file_count = 0
+
+        try:
+            reader = await request.multipart()
+            while True:
+                part = await asyncio.wait_for(reader.next(), timeout=30)
+                if part is None:
+                    break
+
+                if part.name != "file":
+                    await part.release()
+                    continue
+
+                file_count += 1
+                if file_count > MAX_FILES:
+                    await part.release()
+                    return web.json_response(
+                        {"error": {"message": f"Too many files (max {MAX_FILES})", "type": "invalid_request_error"}},
+                        status=400,
+                    )
+
+                filename = (part.filename or "upload").strip()
+                if not filename:
+                    filename = "upload"
+
+                # Read into memory (bounded by MAX_BYTES)
+                data = bytearray()
+                while True:
+                    chunk = await part.read_chunk(8192)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > MAX_BYTES:
+                        await part.release()
+                        return web.json_response(
+                            {"error": {"message": f"File '{filename}' exceeds 10MB limit", "type": "invalid_request_error"}},
+                            status=413,
+                        )
+
+                # Auto-rename existing files
+                target = upload_dir / filename
+                if target.exists():
+                    stem, suffix = target.stem, target.suffix
+                    ts = time.strftime("%Y%m%d%H%M%S")
+                    target = upload_dir / f"{stem}_{ts}{suffix}"
+
+                target.write_bytes(bytes(data))
+
+                rel_path = str(target.relative_to(ws_root))
+                result_files.append({
+                    "file_name": target.name,
+                    "path": rel_path,
+                    "url": f"/v1/workspace/download?path={rel_path}",
+                    "size": len(data),
+                })
+
+        except asyncio.TimeoutError:
+            return web.json_response(
+                {"error": {"message": "Upload timed out", "type": "invalid_request_error"}},
+                status=400,
+            )
+        except Exception as e:
+            logger.error("[api_server] Upload failed: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": f"Upload failed: {e}", "type": "server_error"}},
+                status=500,
+            )
+
+        if not result_files:
+            return web.json_response(
+                {"error": {"message": "No files uploaded", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        return web.json_response({"files": result_files})
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -3836,6 +3932,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/workspace", self._handle_workspace_list)
             self._app.router.add_get("/v1/workspace/download", self._handle_workspace_download)
             self._app.router.add_get("/v1/workspace/view", self._handle_workspace_view)
+            self._app.router.add_post("/v1/workspace/upload", self._handle_workspace_upload)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

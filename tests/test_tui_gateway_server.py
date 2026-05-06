@@ -1559,13 +1559,15 @@ def test_config_set_personality_rejects_unknown_name(monkeypatch):
     assert "Unknown personality" in resp["error"]["message"]
 
 
-def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
+def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
+    agent = types.SimpleNamespace(
+        ephemeral_system_prompt=None, _cached_system_prompt="old"
+    )
     session = _session(
-        agent=types.SimpleNamespace(),
+        agent=agent,
         history=[{"role": "user", "text": "hi"}],
         history_version=4,
     )
-    new_agent = types.SimpleNamespace(model="x")
     emits = []
 
     server._sessions["sid"] = session
@@ -1575,12 +1577,8 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
         lambda cfg=None: {"helpful": "You are helpful."},
     )
     monkeypatch.setattr(
-        server, "_make_agent", lambda sid, key, session_id=None: new_agent
-    )
-    monkeypatch.setattr(
         server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")}
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
 
@@ -1592,11 +1590,19 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
         }
     )
 
-    assert resp["result"]["history_reset"] is True
-    assert resp["result"]["info"] == {"model": "x"}
-    assert session["history"] == []
+    assert resp["result"]["history_reset"] is False
+    assert resp["result"]["info"] == {"model": "?"}
+    # History is preserved with a pivot marker appended
+    assert len(session["history"]) == 2
+    assert session["history"][0] == {"role": "user", "text": "hi"}
+    assert session["history"][1]["role"] == "user"
+    assert "personality" in session["history"][1]["content"].lower()
+    assert "You are helpful." in session["history"][1]["content"]
     assert session["history_version"] == 5
-    assert ("session.info", "sid", {"model": "x"}) in emits
+    # Agent's system prompt was updated in-place; cached prompt untouched
+    assert agent.ephemeral_system_prompt == "You are helpful."
+    assert agent._cached_system_prompt == "old"
+    assert ("session.info", "sid", {"model": "?"}) in emits
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):

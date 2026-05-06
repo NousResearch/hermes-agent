@@ -1743,7 +1743,7 @@ class GatewayRunner:
         self._shutdown_event.set()
 
     def _running_agent_count(self) -> int:
-        return len(self._running_agents)
+        return len(self._snapshot_running_agents())
 
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
@@ -2380,10 +2380,10 @@ class GatewayRunner:
             return snapshot, True
 
         deadline = asyncio.get_running_loop().time() + timeout
-        while self._running_agents and asyncio.get_running_loop().time() < deadline:
+        while self._running_agent_count() and asyncio.get_running_loop().time() < deadline:
             _maybe_update_status()
             await asyncio.sleep(0.1)
-        timed_out = bool(self._running_agents)
+        timed_out = bool(self._running_agent_count())
         _maybe_update_status(force=True)
         return snapshot, timed_out
 

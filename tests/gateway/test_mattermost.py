@@ -261,14 +261,61 @@ class TestMattermostSend:
         self.adapter._api_get.assert_awaited_once_with("posts/user_reply")
 
     @pytest.mark.asyncio
-    async def test_resolve_thread_root_falls_back_when_post_missing(self):
-        """If the post lookup fails (e.g. deleted), fall back to the original
-        id so callers see the same error they would have seen pre-fix."""
+    async def test_resolve_thread_root_does_not_cache_missing_lookup(self):
+        """A failed lookup may be transient, so it must not poison the cache."""
+        self.adapter._api_get = AsyncMock(
+            side_effect=[
+                {},
+                {"id": "ghost", "root_id": "thread_root"},
+            ]
+        )
+
+        first = await self.adapter._resolve_thread_root("ghost")
+        second = await self.adapter._resolve_thread_root("ghost")
+
+        assert first is None
+        assert second == "thread_root"
+        assert self.adapter._api_get.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_root_id_for_payload_falls_back_when_post_lookup_missing(self):
+        """If reply_to cannot be resolved and no metadata is available, keep
+        the pre-fix behaviour by using reply_to as root_id."""
+        self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={})
 
-        resolved = await self.adapter._resolve_thread_root("ghost")
+        root_id = await self.adapter._root_id_for_payload("ghost", None)
 
-        assert resolved == "ghost"
+        assert root_id == "ghost"
+
+    @pytest.mark.asyncio
+    async def test_root_id_for_payload_uses_metadata_when_reply_lookup_missing(self):
+        """If reply_to lookup fails but dispatcher metadata has the known
+        thread root, prefer that root over the unresolved reply id."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={})
+
+        root_id = await self.adapter._root_id_for_payload(
+            "user_reply",
+            {"thread_id": "thread_root"},
+        )
+
+        assert root_id == "thread_root"
+
+    @pytest.mark.asyncio
+    async def test_root_id_for_payload_skips_lookup_when_metadata_matches_reply_to(self):
+        """Top-level thread-mode posts already carry their own id as metadata,
+        so no API lookup is needed to prove they are the root."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock()
+
+        root_id = await self.adapter._root_id_for_payload(
+            "thread_root",
+            {"thread_id": "thread_root"},
+        )
+
+        assert root_id == "thread_root"
+        self.adapter._api_get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_threads_via_metadata_when_no_reply_to(self):
@@ -412,6 +459,7 @@ class TestMattermostSendTyping:
     async def test_send_typing_in_thread_uses_parent_id(self):
         """Forward metadata['thread_id'] as the API's parent_id so the
         indicator scopes to the user's thread instead of the main channel."""
+        self.adapter._reply_mode = "thread"
         await self.adapter.send_typing(
             "channel_1", metadata={"thread_id": "thread_root"}
         )
@@ -428,6 +476,20 @@ class TestMattermostSendTyping:
 
         payload = self.adapter._api_post.await_args.args[1]
         assert "parent_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_typing_ignores_thread_id_when_reply_mode_off(self):
+        """Reply mode off should keep typing indicators flat, matching sends."""
+        self.adapter._reply_mode = "off"
+
+        await self.adapter.send_typing(
+            "channel_1", metadata={"thread_id": "thread_root"}
+        )
+
+        self.adapter._api_post.assert_awaited_once_with(
+            "users/bot_uid/typing",
+            {"channel_id": "channel_1"},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +689,58 @@ class TestMattermostWebSocketParsing:
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
         assert msg_event.source.thread_id == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_top_level_channel_uses_post_id_as_thread_id(self):
+        """In thread reply mode, a top-level handled channel post becomes the
+        thread root for progress sends and session keying."""
+        self.adapter._reply_mode = "thread"
+        post_data = {
+            "id": "post_top",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Start a thread",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "post_top"
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_top_level_dm_does_not_create_thread_session(self):
+        """DMs keep their stable DM session unless Mattermost supplies a real
+        root_id on an existing thread reply."""
+        self.adapter._reply_mode = "thread"
+        post_data = {
+            "id": "post_dm_top",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": "DM message",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id is None
 
     @pytest.mark.asyncio
     async def test_invalid_post_json_ignored(self):

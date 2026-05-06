@@ -188,7 +188,7 @@ class MattermostAdapter(BasePlatformAdapter):
             infos = data.get("file_infos", [])
             return infos[0]["id"] if infos else None
 
-    async def _resolve_thread_root(self, post_id: str) -> str:
+    async def _resolve_thread_root(self, post_id: str) -> Optional[str]:
         """Return the thread root post id for ``post_id``.
 
         Mattermost rejects ``root_id`` values that reference a post which is
@@ -196,9 +196,13 @@ class MattermostAdapter(BasePlatformAdapter):
         ``"Invalid RootId parameter."``).  When the user replies inside an
         existing thread, ``post_id`` is the reply id, not the thread root —
         so we look it up and walk to its ``root_id``.  Top-level posts return
-        unchanged.  Results are cached per process; a missing/deleted post
-        falls back to ``post_id`` so callers see the same error they would
-        have seen without this resolver.
+        unchanged.  Successful results are cached per process.
+
+        Returns ``None`` if the lookup fails.  Callers can then fall back to
+        trusted thread metadata, or to ``post_id`` when no better context is
+        available.  Failed lookups are deliberately not cached because
+        ``_api_get`` returns ``{}`` for both missing posts and transient
+        network/API errors.
         """
         cached = getattr(self, "_thread_root_cache", None)
         if cached is None:
@@ -206,6 +210,8 @@ class MattermostAdapter(BasePlatformAdapter):
         if post_id in cached:
             return cached[post_id]
         info = await self._api_get(f"posts/{post_id}")
+        if not info:
+            return None
         resolved = (info.get("root_id") if info else "") or post_id
         cached[post_id] = resolved
         return resolved
@@ -229,12 +235,20 @@ class MattermostAdapter(BasePlatformAdapter):
         """
         if self._reply_mode != "thread":
             return None
+        metadata_thread_id = metadata.get("thread_id") if metadata else None
         if reply_to:
-            return await self._resolve_thread_root(reply_to)
-        if metadata and metadata.get("thread_id"):
+            if metadata_thread_id and metadata_thread_id == reply_to:
+                return metadata_thread_id
+            resolved = await self._resolve_thread_root(reply_to)
+            if resolved:
+                return resolved
+            if metadata_thread_id:
+                return metadata_thread_id
+            return reply_to
+        if metadata_thread_id:
             # event.source.thread_id is already a thread root post id, so
             # no resolution is required here.
-            return metadata["thread_id"]
+            return metadata_thread_id
         return None
 
     # ------------------------------------------------------------------
@@ -357,7 +371,11 @@ class MattermostAdapter(BasePlatformAdapter):
         instead of in the main channel.
         """
         payload: Dict[str, Any] = {"channel_id": chat_id}
-        if metadata and metadata.get("thread_id"):
+        if (
+            self._reply_mode == "thread"
+            and metadata
+            and metadata.get("thread_id")
+        ):
             payload["parent_id"] = metadata["thread_id"]
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
@@ -833,8 +851,19 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
+        # Thread support: if the post is in a thread, use root_id.  In
+        # thread reply mode, a handled top-level channel post will become the
+        # root of the bot's reply thread, so expose its own id as thread_id for
+        # progress/stream/media sends and session keying.  Keep DMs unthreaded
+        # here so they retain one stable DM session unless Mattermost supplies
+        # a real root_id on an in-thread DM reply.
         thread_id = post.get("root_id") or None
+        if (
+            thread_id is None
+            and self._reply_mode == "thread"
+            and channel_type_raw != "D"
+        ):
+            thread_id = post_id or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

@@ -188,6 +188,28 @@ class MattermostAdapter(BasePlatformAdapter):
             infos = data.get("file_infos", [])
             return infos[0]["id"] if infos else None
 
+    async def _resolve_thread_root(self, post_id: str) -> str:
+        """Return the thread root post id for ``post_id``.
+
+        Mattermost rejects ``root_id`` values that reference a post which is
+        itself a reply (``api.post.create_post.root_id.app_error`` →
+        ``"Invalid RootId parameter."``).  When the user replies inside an
+        existing thread, ``post_id`` is the reply id, not the thread root —
+        so we look it up and walk to its ``root_id``.  Top-level posts return
+        unchanged.  Results are cached per process; a missing/deleted post
+        falls back to ``post_id`` so callers see the same error they would
+        have seen without this resolver.
+        """
+        cached = getattr(self, "_thread_root_cache", None)
+        if cached is None:
+            cached = self._thread_root_cache = {}
+        if post_id in cached:
+            return cached[post_id]
+        info = await self._api_get(f"posts/{post_id}")
+        resolved = (info.get("root_id") if info else "") or post_id
+        cached[post_id] = resolved
+        return resolved
+
     # ------------------------------------------------------------------
     # Required overrides
     # ------------------------------------------------------------------
@@ -249,23 +271,6 @@ class MattermostAdapter(BasePlatformAdapter):
 
         logger.info("Mattermost: disconnected")
 
-
-    async def _resolve_root_id(self, post_id: str) -> str:
-        """Resolve a post_id to the thread root_id for Mattermost.
-
-        Mattermost requires root_id to be the *root* post of a thread.
-        If the post is a reply (has its own root_id), we must use that
-        root_id instead.  Using a reply's own ID as root_id causes
-        "Invalid RootId parameter" errors.
-        """
-        if not post_id:
-            return post_id
-        # Check if this post has a root_id (meaning it's a reply)
-        data = await self._api_get(f"posts/{post_id}")
-        if data and data.get("root_id"):
-            return data["root_id"]
-        return post_id
-
     async def send(
         self,
         chat_id: str,
@@ -288,10 +293,7 @@ class MattermostAdapter(BasePlatformAdapter):
             }
             # Thread support: reply_to is the root post ID.
             if reply_to and self._reply_mode == "thread":
-                # Ensure root_id points to the thread root, not a reply.
-                # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
-                payload["root_id"] = resolved_root
+                payload["root_id"] = await self._resolve_thread_root(reply_to)
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -317,10 +319,19 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """Send a typing indicator.
+
+        When ``metadata`` carries a ``thread_id`` (the dispatcher sets this
+        from ``event.source.thread_id``), forward it as Mattermost's
+        ``parent_id`` so the indicator appears inside the user's thread
+        instead of in the main channel.
+        """
+        payload: Dict[str, Any] = {"channel_id": chat_id}
+        if metadata and metadata.get("thread_id"):
+            payload["parent_id"] = metadata["thread_id"]
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
-            {"channel_id": chat_id},
+            payload,
         )
 
     async def edit_message(
@@ -471,7 +482,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "file_ids": [file_id],
         }
         if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = await self._resolve_root_id(reply_to)
+            payload["root_id"] = await self._resolve_thread_root(reply_to)
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -510,7 +521,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "file_ids": [file_id],
         }
         if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = await self._resolve_root_id(reply_to)
+            payload["root_id"] = await self._resolve_thread_root(reply_to)
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:

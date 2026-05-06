@@ -4190,16 +4190,26 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _safe_int(val: Optional[str]) -> Optional[int]:
+    """Parse a timestamp field to int, returning None on garbage like '%s'."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    age_since_created = now - int(task.created_at) if task.created_at else None
-    age_since_started = (
-        now - int(task.started_at) if task.started_at else None
-    )
+    created = _safe_int(task.created_at)
+    started = _safe_int(task.started_at)
+    completed = _safe_int(task.completed_at)
+    age_since_created = now - created if created else None
+    age_since_started = now - started if started else None
     time_to_complete = (
-        int(task.completed_at) - int(task.started_at or task.created_at)
-        if task.completed_at else None
+        completed - (started or created) if completed else None
     )
     return {
         "created_age_seconds": age_since_created,

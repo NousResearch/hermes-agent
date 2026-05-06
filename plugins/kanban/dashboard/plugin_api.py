@@ -145,7 +145,10 @@ def _task_dict(
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
-    d["age"] = kanban_db.task_age(task)
+    try:
+        d["age"] = kanban_db.task_age(task)
+    except Exception:
+        d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of

@@ -20,6 +20,10 @@ object HermesAutomationBridge {
                 context,
                 arguments.optString("trigger").ifBlank { arguments.optString("trigger_type") },
             )
+            "run_app_foreground_trigger", "trigger_app_foreground", "app_foreground" -> runAppForegroundTriggerJson(
+                context,
+                stringArgument(arguments, "trigger_package_name", "package_name", "packageName", "package", "app_package").orEmpty(),
+            )
             "delete", "remove" -> deleteJson(context, arguments.optString("id"))
             "enable" -> setEnabledJson(context, arguments.optString("id"), true)
             "disable", "pause" -> setEnabledJson(context, arguments.optString("id"), false)
@@ -210,6 +214,20 @@ object HermesAutomationBridge {
         if (triggerType == TRIGGER_INTERVAL && intervalMinutes == null) {
             return errorJson("interval trigger requires interval_minutes")
         }
+        val triggerPackageName = stringArgument(
+            arguments,
+            "trigger_package_name",
+            "triggerPackageName",
+            "profile_package_name",
+            "context_package_name",
+            "app_context_package",
+        )?.trim().orEmpty()
+        if (triggerPackageName.indexOf('\u0000') >= 0) {
+            return errorJson("trigger_package_name must not contain NUL bytes")
+        }
+        if (triggerType == TRIGGER_APP_FOREGROUND && triggerPackageName.isBlank()) {
+            return errorJson("app_foreground trigger requires trigger_package_name")
+        }
         val now = System.currentTimeMillis()
         val record = HermesAutomationRecord(
             id = arguments.optString("id").ifBlank { "auto_${UUID.randomUUID().toString().replace("-", "").take(16)}" },
@@ -218,6 +236,7 @@ object HermesAutomationBridge {
             command = payload,
             useShizuku = arguments.optBoolean("use_shizuku", false),
             triggerType = triggerType,
+            triggerPackageName = triggerPackageName,
             intervalMinutes = intervalMinutes,
             enabled = arguments.optBoolean("enabled", true),
             createdAtEpochMs = now,
@@ -253,6 +272,9 @@ object HermesAutomationBridge {
         val normalizedTrigger = normalizeTrigger(trigger) ?: return errorJson(
             "run_trigger requires one of: ${AUTOMATION_TRIGGERS.joinToString()}",
         )
+        if (normalizedTrigger == TRIGGER_APP_FOREGROUND) {
+            return errorJson("app_foreground trigger requires run_app_foreground_trigger with trigger_package_name or package_name")
+        }
         val store = HermesAutomationStore(context)
         val records = store.list()
             .filter { record -> record.enabled && record.triggerType == normalizedTrigger }
@@ -263,6 +285,35 @@ object HermesAutomationBridge {
         return JSONObject()
             .put("success", true)
             .put("trigger", normalizedTrigger)
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runAppForegroundTriggerJson(context: Context, packageName: String): String {
+        val foregroundPackageName = packageName.trim()
+        if (foregroundPackageName.isBlank()) {
+            return errorJson("app_foreground trigger requires a package name")
+        }
+        if (foregroundPackageName.indexOf('\u0000') >= 0) {
+            return errorJson("app_foreground package name must not contain NUL bytes")
+        }
+        val store = HermesAutomationStore(context)
+        val variables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_APP_FOREGROUND &&
+                    triggerPackageMatches(record.triggerPackageName, foregroundPackageName, variables)
+            }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_APP_FOREGROUND))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_APP_FOREGROUND)
+            .put("package_name", foregroundPackageName)
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -497,6 +548,11 @@ object HermesAutomationBridge {
         return TRIGGER_SYNONYMS[normalized] ?: normalized.takeIf { it in AUTOMATION_TRIGGERS }
     }
 
+    private fun triggerPackageMatches(savedPackageName: String, foregroundPackageName: String, variables: JSONObject): Boolean {
+        val expanded = expandVariables(savedPackageName, variables).trim()
+        return expanded.isNotBlank() && expanded.equals(foregroundPackageName, ignoreCase = true)
+    }
+
     private fun normalizeUiAction(action: String): String {
         val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
         return UI_ACTION_SYNONYMS[normalized] ?: normalized
@@ -536,6 +592,7 @@ object HermesAutomationBridge {
         "create_app_launch_task",
         "run",
         "run_trigger",
+        "run_app_foreground_trigger",
         "delete",
         "enable",
         "disable",
@@ -552,6 +609,7 @@ object HermesAutomationBridge {
         TRIGGER_POWER_DISCONNECTED,
         TRIGGER_BATTERY_LOW,
         TRIGGER_BATTERY_OKAY,
+        TRIGGER_APP_FOREGROUND,
     )
     private val TRIGGER_SYNONYMS = mapOf(
         "boot_completed" to TRIGGER_BOOT,
@@ -564,6 +622,14 @@ object HermesAutomationBridge {
         "battery_low_state" to TRIGGER_BATTERY_LOW,
         "battery_ok" to TRIGGER_BATTERY_OKAY,
         "battery_normal" to TRIGGER_BATTERY_OKAY,
+        "app" to TRIGGER_APP_FOREGROUND,
+        "application" to TRIGGER_APP_FOREGROUND,
+        "app_context" to TRIGGER_APP_FOREGROUND,
+        "app_changed" to TRIGGER_APP_FOREGROUND,
+        "app_launch" to TRIGGER_APP_FOREGROUND,
+        "app_opened" to TRIGGER_APP_FOREGROUND,
+        "foreground_app" to TRIGGER_APP_FOREGROUND,
+        "package_foreground" to TRIGGER_APP_FOREGROUND,
     )
     private val PRIVILEGED_SHELL_ACTIONS = setOf("run_privileged_shell", "shizuku_shell", "privileged_shell")
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")

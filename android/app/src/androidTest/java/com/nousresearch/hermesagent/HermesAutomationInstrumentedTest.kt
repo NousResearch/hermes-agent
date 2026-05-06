@@ -273,4 +273,38 @@ class HermesAutomationInstrumentedTest {
         assertEquals("launch_app", run.getJSONObject("result").getString("action"))
         assertEquals(app.packageName, run.getJSONObject("result").getString("package_name"))
     }
+
+    @Test
+    fun appForegroundTriggerRunsMatchingAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-app-foreground-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Foreground app smoke")
+                    .put("path", "hermes-app-foreground-trigger.txt")
+                    .put("content", "foreground-ok")
+                    .put("trigger", "app_foreground")
+                    .put("trigger_package_name", app.packageName),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("app_foreground", created.getJSONObject("automation").getString("trigger_type"))
+        assertEquals(app.packageName, created.getJSONObject("automation").getString("trigger_package_name"))
+
+        val missed = JSONObject(HermesAutomationBridge.runAppForegroundTriggerJson(app, "com.example.other"))
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+        assertFalse("Expected ${target.absolutePath} to stay absent", target.exists())
+
+        val matched = JSONObject(HermesAutomationBridge.runAppForegroundTriggerJson(app, app.packageName))
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("foreground-ok", target.readText())
+    }
 }

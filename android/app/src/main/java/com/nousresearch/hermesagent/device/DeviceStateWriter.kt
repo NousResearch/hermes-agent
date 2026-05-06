@@ -31,6 +31,7 @@ object DeviceStateWriter {
             put("shared_tree_label", capabilities.sharedFolderLabel)
             put("accessibility_enabled", HermesAccessibilityController.isServiceEnabled(context))
             put("accessibility_connected", HermesAccessibilityController.isServiceConnected())
+            put("foreground_package_name", HermesAccessibilityController.currentForegroundPackageName())
             put(
                 "available_global_actions",
                 JSONArray(HermesGlobalAction.values().map { action -> action.name.lowercase() }),

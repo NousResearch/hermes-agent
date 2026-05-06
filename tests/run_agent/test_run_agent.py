@@ -3429,6 +3429,38 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_end_turn_tool_batch_stops_without_followup_nudge(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="Let me check with my side and come back to you shortly.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        agent.client.chat.completions.create.return_value = resp1
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", return_value=True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("image")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 1
+        assert result["final_response"] == "Let me check with my side and come back to you shortly."
+        assert result["messages"][-1]["role"] == "assistant"
+        assert result["messages"][-1]["content"] == "(empty)"
+        assert not any("nudging to continue" in m.lower() for m in status_messages)
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

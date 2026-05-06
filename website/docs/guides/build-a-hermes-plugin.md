@@ -263,6 +263,7 @@ def register(ctx):
 **What `register()` does:**
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
+- Pass `end_turn=True` only for tools whose successful side effect may legitimately end the turn with no further model text (for example, escalation / handoff tools). Normal lookup or fetch tools should leave it at the default `False`.
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below

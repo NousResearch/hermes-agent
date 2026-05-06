@@ -28,9 +28,9 @@ def make_approval_callback(
     loop: asyncio.AbstractEventLoop,
     session_id: str,
     timeout: float = 60.0,
-) -> Callable[[str, str], str]:
+) -> Callable[..., str]:
     """
-    Return a hermes-compatible ``approval_callback(command, description) -> str``
+    Return a hermes-compatible ``approval_callback(command, description, *, allow_permanent=True) -> str``
     that bridges to the ACP client's ``request_permission`` call.
 
     Args:
@@ -40,12 +40,20 @@ def make_approval_callback(
         timeout: Seconds to wait for a response before auto-denying.
     """
 
-    def _callback(command: str, description: str) -> str:
+    def _callback(command: str, description: str, *, allow_permanent: bool = True) -> str:
         options = [
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once"),
-            PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"),
             PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
         ]
+        if allow_permanent:
+            options.insert(
+                1,
+                PermissionOption(
+                    option_id="allow_always",
+                    kind="allow_always",
+                    name="Allow always",
+                ),
+            )
         import acp as _acp
 
         tool_call = _acp.start_tool_call("perm-check", command, kind="execute")

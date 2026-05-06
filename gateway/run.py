@@ -5718,7 +5718,10 @@ class GatewayRunner:
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
                     _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _stt_meta = self._thread_metadata_for_source(
+                        source,
+                        reply_to_message_id=event.message_id,
+                    )
                     if _stt_adapter:
                         try:
                             _stt_msg = (
@@ -5845,6 +5848,17 @@ class GatewayRunner:
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
+
+        # Preserve the triggering platform message id on the current source so
+        # async side channels (background-process/watch notifications) can use
+        # Feishu/Lark's reply API later.  A topic id (omt_...) alone is not
+        # enough to reply inside a Feishu topic; the outbound path also needs a
+        # real message id (om_...) as reply_to_message_id.
+        if getattr(event, "message_id", None):
+            try:
+                source.message_id = event.message_id
+            except Exception:
+                pass
 
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
@@ -6197,7 +6211,10 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _hyg_meta = self._thread_metadata_for_source(
+                        source,
+                        reply_to_message_id=event.message_id,
+                    )
 
                     try:
                         from run_agent import AIAgent
@@ -7782,7 +7799,10 @@ class GatewayRunner:
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
-                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    metadata = self._thread_metadata_for_source(
+                        source,
+                        reply_to_message_id=event.message_id,
+                    )
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -8748,7 +8768,10 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _thread_meta = self._thread_metadata_for_source(
+                event.source,
+                reply_to_message_id=event.message_id,
+            )
 
             from gateway.platforms.base import should_send_media_as_audio
 
@@ -8909,7 +8932,12 @@ class GatewayRunner:
 
         # Fire-and-forget the background task
         _task = asyncio.create_task(
-            self._run_background_task(prompt, source, task_id)
+            self._run_background_task(
+                prompt,
+                source,
+                task_id,
+                reply_to_message_id=event.message_id,
+            )
         )
         self._background_tasks.add(_task)
         _task.add_done_callback(self._background_tasks.discard)
@@ -8918,7 +8946,12 @@ class GatewayRunner:
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
 
     async def _run_background_task(
-        self, prompt: str, source: "SessionSource", task_id: str
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        *,
+        reply_to_message_id: Optional[str] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -8928,7 +8961,10 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_metadata = self._thread_metadata_for_source(
+            source,
+            reply_to_message_id=reply_to_message_id,
+        )
 
         try:
             user_config = _load_gateway_config()
@@ -10743,7 +10779,10 @@ class GatewayRunner:
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
         adapter = self.adapters.get(source.platform)
-        metadata = self._thread_metadata_for_source(source)
+        metadata = self._thread_metadata_for_source(
+            source,
+            reply_to_message_id=event.message_id,
+        )
 
         used_buttons = False
         if adapter is not None:
@@ -10783,12 +10822,28 @@ class GatewayRunner:
         except Exception:
             return {}
 
-    def _thread_metadata_for_source(self, source) -> Optional[Dict[str, Any]]:
-        """Build the metadata dict platforms need for thread-aware replies."""
-        thread_id = getattr(source, "thread_id", None)
-        if thread_id is None:
+    def _thread_metadata_for_source(
+        self,
+        source,
+        *,
+        thread_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the metadata dict platforms need for thread-aware replies.
+
+        Feishu topic replies need both the topic id (``thread_id``) and the
+        originating message id.  The Feishu adapter uses the message id to call
+        the reply endpoint and ``thread_id`` to set ``reply_in_thread=True``;
+        sending a plain chat message with only ``thread_id`` creates a normal
+        group message outside the topic.
+        """
+        resolved_thread_id = thread_id if thread_id is not None else getattr(source, "thread_id", None)
+        if not resolved_thread_id:
             return None
-        return {"thread_id": thread_id}
+        metadata: Dict[str, Any] = {"thread_id": resolved_thread_id}
+        if getattr(source, "platform", None) == Platform.FEISHU and reply_to_message_id:
+            metadata["reply_to_message_id"] = reply_to_message_id
+        return metadata
 
 
     # ------------------------------------------------------------------
@@ -11487,6 +11542,7 @@ class GatewayRunner:
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            message_id=str(context.source.message_id) if getattr(context.source, "message_id", None) else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
@@ -11687,9 +11743,12 @@ class GatewayRunner:
         Falling back to the currently active foreground event is what causes
         cross-topic bleed, so don't do that.
         """
+        from dataclasses import replace
+
         from gateway.session import SessionSource
 
         session_key = str(evt.get("session_key") or "").strip()
+        message_id = str(evt.get("message_id") or evt.get("reply_to_message_id") or "").strip()
         derived_platform = ""
         derived_chat_type = ""
         derived_chat_id = ""
@@ -11699,6 +11758,8 @@ class GatewayRunner:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
+                    if message_id:
+                        return replace(entry.origin, message_id=message_id)
                     return entry.origin
             except Exception as exc:
                 logger.debug(
@@ -11745,6 +11806,7 @@ class GatewayRunner:
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
+            message_id=message_id or None,
         )
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
@@ -11773,6 +11835,7 @@ class GatewayRunner:
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
+                message_id=getattr(source, "message_id", None),
                 internal=True,
             )
             logger.info(
@@ -11806,6 +11869,7 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
+        message_id = watcher.get("message_id", "") or watcher.get("reply_to_message_id", "")
         user_id = watcher.get("user_id", "")
         user_name = watcher.get("user_name", "")
         agent_notify = watcher.get("notify_on_complete", False)
@@ -11856,6 +11920,7 @@ class GatewayRunner:
                         "platform": platform_name,
                         "chat_id": chat_id,
                         "thread_id": thread_id,
+                        "message_id": message_id,
                         "user_id": user_id,
                         "user_name": user_name,
                     })
@@ -11877,6 +11942,7 @@ class GatewayRunner:
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
                                 source=source,
+                                message_id=getattr(source, "message_id", None),
                                 internal=True,
                             )
                             logger.info(
@@ -11911,6 +11977,9 @@ class GatewayRunner:
                     if adapter and chat_id:
                         try:
                             send_meta = {"thread_id": thread_id} if thread_id else None
+                            if platform_name == Platform.FEISHU.value and message_id:
+                                send_meta = send_meta or {}
+                                send_meta["reply_to_message_id"] = message_id
                             await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
@@ -11932,6 +12001,9 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
+                        if platform_name == Platform.FEISHU.value and message_id:
+                            send_meta = send_meta or {}
+                            send_meta["reply_to_message_id"] = message_id
                         await adapter.send(chat_id, message_text, metadata=send_meta)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
@@ -12512,10 +12584,10 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
-        if source.thread_id:
-            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
-        else:
-            _thread_metadata = None
+        _thread_metadata = self._thread_metadata_for_source(
+            source,
+            reply_to_message_id=event_message_id,
+        )
 
         if _streaming_enabled:
             try:
@@ -12934,7 +13006,11 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata = self._thread_metadata_for_source(
+            source,
+            thread_id=_progress_thread_id,
+            reply_to_message_id=event_message_id,
+        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -13156,7 +13232,11 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = self._thread_metadata_for_source(
+            source,
+            thread_id=_progress_thread_id,
+            reply_to_message_id=event_message_id,
+        )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -13300,7 +13380,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_status_thread_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None

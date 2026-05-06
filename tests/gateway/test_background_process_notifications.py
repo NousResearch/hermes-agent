@@ -50,15 +50,17 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict(session_id="proc_test", thread_id=""):
+def _watcher_dict(session_id="proc_test", thread_id="", message_id="", platform="telegram"):
     d = {
         "session_id": session_id,
         "check_interval": 0,
-        "platform": "telegram",
+        "platform": platform,
         "chat_id": "123",
     }
     if thread_id:
         d["thread_id"] = thread_id
+    if message_id:
+        d["message_id"] = message_id
     return d
 
 
@@ -224,6 +226,34 @@ async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_feishu_thread_notification_passes_reply_message_id(monkeypatch, tmp_path):
+    """Feishu topic sends need both thread_id and an om_ reply target."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.FEISHU] = adapter
+
+    await runner._run_process_watcher(
+        _watcher_dict(platform="feishu", thread_id="omt_thread", message_id="om_origin")
+    )
+
+    assert adapter.send.await_count == 1
+    _, kwargs = adapter.send.call_args
+    assert kwargs["metadata"] == {
+        "thread_id": "omt_thread",
+        "reply_to_message_id": "om_origin",
+    }
+
+
+@pytest.mark.asyncio
 async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     """When thread_id is empty, metadata should be None (general topic)."""
     import tools.process_registry as pr_module
@@ -257,6 +287,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
             chat_id="-100",
             chat_type="group",
             thread_id="42",
+            message_id="om_origin",
             user_id="123",
             user_name="Emiliyan",
         )
@@ -276,6 +307,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.chat_id == "-100"
     assert synth_event.source.chat_type == "group"
     assert synth_event.source.thread_id == "42"
+    assert synth_event.message_id == "om_origin"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
 
@@ -319,6 +351,7 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
             chat_id="-100",
             chat_type="group",
             thread_id="42",
+            message_id="om_origin",
             user_id="proc_owner",
             user_name="alice",
         )
@@ -336,6 +369,7 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
     synth_event = adapter.handle_message.await_args.args[0]
     # Must route to thread 42 (process origin), NOT some other thread
     assert synth_event.source.thread_id == "42"
+    assert synth_event.message_id == "om_origin"
     assert synth_event.source.user_id == "proc_owner"
 
 

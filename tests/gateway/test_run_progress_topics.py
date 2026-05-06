@@ -65,6 +65,29 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class MediaCaptureAdapter(ProgressCaptureAdapter):
+    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": images,
+                "reply_to": None,
+                "metadata": metadata,
+            }
+        )
+
+    async def send_document(self, chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **kwargs):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": file_path,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="doc-1")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -212,6 +235,56 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_run_agent_progress_includes_reply_message_for_feishu_topic(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-thread",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu",
+        session_key="agent:main:feishu:group:oc_chat:omt-thread",
+        event_message_id="om_origin",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "omt-thread",
+        "reply_to_message_id": "om_origin",
+    }
+    assert all(
+        call["metadata"] == {
+            "thread_id": "omt-thread",
+            "reply_to_message_id": "om_origin",
+        }
+        for call in adapter.typing
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(monkeypatch, tmp_path):
     """Telegram DM progress must not reuse event message id as thread metadata."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -251,6 +324,104 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
     assert adapter.sent
     assert adapter.sent[0]["metadata"] is None
     assert all(call["metadata"] is None for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_post_stream_media_includes_reply_message_for_feishu_topic(tmp_path):
+    adapter = MediaCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    image_path = tmp_path / "poster.png"
+    image_path.write_bytes(b"fake image bytes")
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-thread",
+    )
+    event = MessageEvent(
+        message_id="om_origin",
+        source=source,
+        text=f"MEDIA:{image_path}",
+        message_type=MessageType.TEXT,
+    )
+
+    await runner._deliver_media_from_response(f"done\nMEDIA:{image_path}", event, adapter)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat",
+            "content": [(f"file://{image_path}", "")],
+            "reply_to": None,
+            "metadata": {
+                "thread_id": "omt-thread",
+                "reply_to_message_id": "om_origin",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_background_task_includes_reply_message_for_feishu_topic(monkeypatch, tmp_path):
+    class BackgroundFakeAgent:
+        def __init__(self, **kwargs):
+            self.tools = []
+
+        def run_conversation(self, **kwargs):
+            return {
+                "final_response": "done",
+                "messages": [],
+                "api_calls": 1,
+            }
+
+    async def run_inline(fn):
+        return fn()
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BackgroundFakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **kwargs: ("fake", {"api_key": "fake"}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_turn_agent_config",
+        lambda *args, **kwargs: {"model": "fake", "runtime": {"api_key": "fake"}},
+    )
+    monkeypatch.setattr(runner, "_resolve_session_reasoning_config", lambda **kwargs: None)
+    monkeypatch.setattr(runner, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(runner, "_run_in_executor_with_context", run_inline)
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-thread",
+    )
+
+    await runner._run_background_task(
+        "summarize this",
+        source,
+        "bg_test",
+        reply_to_message_id="om_origin",
+    )
+
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "omt-thread",
+        "reply_to_message_id": "om_origin",
+    }
 
 
 @pytest.mark.asyncio

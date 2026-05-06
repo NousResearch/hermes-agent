@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
@@ -227,6 +227,30 @@ class TestSessionEntryResumeFields:
 
 
 class TestMarkResumePending:
+    def test_list_resume_pending_returns_fresh_entries_with_origins(self, tmp_path):
+        store = _make_store(tmp_path)
+        fresh = store.get_or_create_session(_make_source(chat_id="fresh"))
+        stale = store.get_or_create_session(_make_source(chat_id="stale"))
+        missing_origin = store.get_or_create_session(_make_source(chat_id="missing-origin"))
+        suspended = store.get_or_create_session(_make_source(chat_id="suspended"))
+
+        store.mark_resume_pending(fresh.session_key, reason="restart_timeout")
+        store.mark_resume_pending(stale.session_key, reason="restart_timeout")
+        store.mark_resume_pending(missing_origin.session_key, reason="restart_timeout")
+        store.mark_resume_pending(suspended.session_key, reason="restart_timeout")
+        old = datetime.now() - timedelta(hours=3)
+        store._entries[stale.session_key].last_resume_marked_at = old
+        store._entries[missing_origin.session_key].origin = None
+        store._entries[suspended.session_key].suspended = True
+
+        pending = store.list_resume_pending(
+            window_secs=3600,
+            now=datetime.now().timestamp(),
+            allowed_reasons={"restart_timeout"},
+        )
+
+        assert [entry.session_key for entry in pending] == [fresh.session_key]
+
     def test_marks_existing_session(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
@@ -908,6 +932,78 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     calls = session_store.mark_resume_pending.call_args_list
     marked = {args[0][0] for args in calls}
     assert marked == {session_key_real}
+
+
+# ---------------------------------------------------------------------------
+# Gateway startup auto-resume
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_schedules_fresh_pending_sessions():
+    """Fresh resume_pending sessions should continue automatically after startup.
+
+    This closes the UX gap where restart recovery only happened if the user sent
+    another message after the gateway came back.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="resume-chat", thread_id="topic-1")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:group:resume-chat:topic-1",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store.list_resume_pending = MagicMock(return_value=[pending_entry])
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    runner.session_store.list_resume_pending.assert_called_once_with(
+        window_secs=_auto_continue_freshness_window(),
+        allowed_reasons={"restart_timeout", "shutdown_timeout"},
+    )
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert isinstance(event, MessageEvent)
+    assert event.internal is True
+    assert event.message_type == MessageType.TEXT
+    assert event.source == source
+    assert event.text.startswith("[System note: The gateway restarted")
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_when_adapter_unavailable():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="resume-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:resume-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store.list_resume_pending = MagicMock(return_value=[pending_entry])
+    runner.adapters = {}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

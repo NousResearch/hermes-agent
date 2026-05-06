@@ -498,16 +498,181 @@ When `context.engine == "dcp"`:
 
 Gateway hygiene is still a safety net. It may need a DCP-aware branch eventually because hygiene compression mutates gateway session history. For first PR, document the interaction and avoid making gateway hygiene call DCP unless there is a clean state path.
 
-## Prompt caching
+## Appendix: Prompt caching internals and DCP interaction
 
-DCP must be careful with prompt caching.
+### What Hermes prompt caching is
 
-Rules:
+Prompt caching in Hermes is Anthropic-specific. It is not a generic cache across all providers. It exploits Anthropic's prefix caching API, where the provider caches the stable prefix of a prompt across turns and bills reused tokens at a reduced rate (~25% of full input price).
 
-- Run DCP transform before cache-control marker placement.
+Non-Anthropic providers (OpenAI, Gemini, local models) do not participate. The cache-control logic is a no-op for them.
+
+### Policy decision
+
+`_anthropic_prompt_cache_policy()` in `run_agent.py` decides at init time whether caching is enabled and which layout to use. Returns `(should_cache, use_native_layout)`.
+
+Enabled when:
+- native Anthropic (provider=anthropic, api_mode=anthropic_messages)
+- OpenRouter serving Claude models
+- third-party Anthropic-compatible gateways serving Claude models
+- MiniMax on its Anthropic-compatible endpoint
+- Qwen/Alibaba on OpenCode/DashScope (OpenAI-wire, but they honor cache_control markers)
+
+Two layouts:
+- `use_native_layout=True` -- cache_control markers on inner content blocks. Required by native Anthropic API.
+- `use_native_layout=False` -- markers on the message envelope. Expected by OpenRouter and OpenAI-wire proxies.
+
+All other providers/models: caching off.
+
+### The system_and_3 strategy
+
+`apply_anthropic_cache_control()` in `agent/prompt_caching.py` is a pure function. Deep-copies the entire api_messages list, then places up to 4 `cache_control: {"type": "ephemeral"}` breakpoints:
+- breakpoint 1: system prompt (index 0 if role=="system")
+- breakpoints 2-4: last 3 non-system messages
+
+Anthropic allows a max of 4 breakpoints. The system prompt is the most stable (rarely changes). The last 3 messages form a rolling window that shifts forward each turn.
+
+TTL is configurable: "5m" (default) or "1h" (2x write cost, better for long pauses between turns).
+
+### How Anthropic prefix caching works
+
+Anthropic caches everything from the start of the prompt up to and including the message with a cache_control breakpoint. The cache key is the exact byte content of that prefix.
+
+Example across 3 turns:
+
+```
+Turn 1: [system] [msg1] [msg2] [msg3]
+                       ^bp2   ^bp3   ^bp4
+         Cache miss. Full price. Cache stored for [system..msg3].
+
+Turn 2: [system] [msg1] [msg2] [msg3] [msg4]
+                                         ^bp4
+         [system..msg3] is cached. Only [msg4] is full price.
+         New cache stored for [system..msg4].
+
+Turn 3: [system] [msg1] [msg2] [msg3] [msg4] [msg5]
+                                                 ^bp4
+         [system..msg4] is cached. Only [msg5] is full price.
+```
+
+The invariant: the prefix must be byte-for-byte identical. Any change to any cached message invalidates the entire cached prefix from that point forward.
+
+### How Hermes protects cache stability
+
+Several deliberate design choices in run_agent.py prevent cache churn:
+
+1. Shallow copy per message, not deep copy. `api_msg = msg.copy()` at line 11097 creates a provider-bound copy. The canonical `messages` list is never mutated by anything downstream.
+
+2. Plugin context injected into user message, not system prompt. Lines 11147-11150: "system prompt modifications break the prompt cache prefix." Plugin context from pre_llm_call hooks goes into the current turn's user message instead.
+
+3. Ephemeral system prompt appended once. ephemeral_system_prompt changes the system message, but only at setup time, not per-turn.
+
+4. Whitespace normalization. Lines 11215-11217 strip content whitespace on the API copy. Prevents accidental cache misses from trailing whitespace.
+
+5. Deterministic JSON serialization for tool_calls. Lines 11218-11240 re-serialize tool_call arguments with `sort_keys=True` and compact separators `(",",":")`. Same logical tool call always produces same bytes.
+
+6. Cache control deep-copies. `apply_anthropic_cache_control()` deep-copies the message list before placing markers, so the pre-cache messages are not aliased.
+
+### The full API-call pipeline
+
+This is the actual sequence in `run_agent.py` for every API call, showing where DCP was inserted:
+
+```
+messages (canonical, never mutated)
+  |
+  v
+api_messages = shallow copy of messages              (line 11095-11138)
+  - ephemeral context injected into user message
+  - reasoning content handled
+  - internal fields stripped (finish_reason, _thinking_prefill, etc.)
+  |
+  v
+system prompt prepended                              (line 11151-11152)
+  |
+  v
+prefill messages injected                            (line 11156-11159)
+  |
+  v
+DCP transform_api_messages()                         (line 11166-11175)
+  |
+  v
+apply_anthropic_cache_control()                      (line 11187-11191)
+  - deep copies api_messages
+  - places cache_control breakpoints
+  |
+  v
+_sanitize_api_messages()                             (line 11197)
+  - orphaned tool result safety net
+  |
+  v
+_drop_thinking_only_and_merge_users()                (line 11207)
+  - removes thinking-only assistant turns
+  |
+  v
+whitespace normalization + deterministic JSON        (line 11215-11240)
+  - strip content whitespace
+  - sort_keys=True on tool_call arguments
+  |
+  v
+surrogate sanitization                               (line 11246)
+  |
+  v
+API call
+```
+
+### Why DCP runs before cache-control injection
+
+The ordering DCP -> cache_control is not arbitrary. It matters because:
+
+1. Cache-control deep-copies the already-transformed messages and places breakpoints on the DCP-transformed shape. The provider sees the final combined form.
+
+2. If cache-control ran before DCP, Hermes would mark one prefix as cacheable, then DCP would rewrite it afterward. The cache-control decision would be stale or wrong.
+
+3. By running DCP first, Hermes computes cache-control over the final provider-bound prompt shape.
+
+### The cache risk with DCP
+
+The system_and_3 strategy places breakpoints on the system prompt and the last 3 messages. DCP's transforms (refs, compression placeholders, nudges) primarily affect older messages in the middle of the transcript.
+
+If DCP rewrites message content in the cached prefix region between turns, the cache breaks. Specifically:
+
+- If DCP compresses messages 5-20 into a block placeholder while messages 21-25 are the last 3 (breakpoint targets), the cached prefix `[system, msg1..msg22]` from the previous turn is now invalid because messages 5-20 changed. Cache miss. But the new shape `[system, msg1-placeholder..msg22]` gets cached for the next turn.
+
+- If DCP does nothing (no compression triggered), messages are identical to the previous turn and the cache works normally.
+
+- The worst case is DCP making small changes every turn. That would defeat caching entirely.
+
+### DCP's mitigation for cache churn
+
+The implementation tries to reduce churn by:
+
+1. Only compressing when the model explicitly calls the `compress` tool or when automatic strategies find actual duplicates/errors. Between compression events, the prefix stays stable.
+
+2. Automatic strategies (dedup, purge-errors) are recalculated only when state changes (compress tool call, new turn), not randomly every request.
+
+3. Compression block application is deterministic. Same active blocks always produce the same placeholder text.
+
+4. Refs are stable across turns within a session. `m0001` always refers to the same canonical message.
+
+5. Never appending moving counters or timestamps into the cached prefix.
+
+### What is not yet solved
+
+This does not prove every possible prompt-cache churn case is solved. Known open concerns:
+
+1. When DCP compresses a range that overlaps the cached prefix, the entire prefix invalidates for one turn. The next turn re-caches with the new shape. This is a one-turn penalty per compression event, which is acceptable.
+
+2. Nudges are appended to the live tail (not the cached prefix), so they should not cause churn. But this has not been instrumented or tested against real Anthropic cache behavior.
+
+3. Non-Anthropic providers do not use this cache system. DCP transforms still run for them, but there is no prompt cache to worry about.
+
+4. `apply_anthropic_cache_control` does `copy.deepcopy(api_messages)` internally. DCP transforms the first copy, then cache_control deep-copies again. Two full message copies exist briefly during each API call. For a 100k-token transcript this is noticeable but not catastrophic.
+
+### Rules for future DCP changes
+
+- Run DCP transform before cache-control marker placement (current ordering).
 - Avoid changing old stable content every turn.
-- Compression block application should be deterministic.
-- Dedup and purge should avoid churn. Prefer recalculating after compress tool calls or when state changes, not randomly every request.
+- Compression block application must be deterministic.
+- Dedup and purge must avoid churn. Recalculate after compress tool calls or when state changes, not randomly every request.
 - Never append moving counters into the cached prefix unless unavoidable.
 
 ## Tests

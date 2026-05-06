@@ -443,21 +443,29 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return parse_frontmatter(content)
 
 
-def _get_category_from_path(skill_path: Path) -> Optional[str]:
+def _get_category_from_path(
+    skill_path: Path,
+    dirs_to_check: Optional[List[Path]] = None,
+) -> Optional[str]:
     """
     Extract category from skill path based on directory structure.
 
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
+
+    ``dirs_to_check`` can be supplied by callers that already know the scan
+    roots (e.g. ``_find_all_skills``) to avoid re-reading config.yaml on
+    every invocation. When ``None``, the canonical lookup runs.
     """
-    # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
-    dirs_to_check = [SKILLS_DIR]
-    try:
-        from agent.skill_utils import get_external_skills_dirs
-        dirs_to_check.extend(get_external_skills_dirs())
-    except Exception:
-        pass
+    if dirs_to_check is None:
+        # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
+        # then fall back to external dirs from config.
+        dirs_to_check = [SKILLS_DIR]
+        try:
+            from agent.skill_utils import get_external_skills_dirs
+            dirs_to_check = dirs_to_check + list(get_external_skills_dirs())
+        except Exception:
+            pass
     for skills_dir in dirs_to_check:
         try:
             rel_path = skill_path.relative_to(skills_dir)
@@ -602,7 +610,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if len(description) > MAX_DESCRIPTION_LENGTH:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
-                category = _get_category_from_path(skill_md)
+                category = _get_category_from_path(skill_md, dirs_to_scan)
 
                 seen_names.add(name)
                 skills.append({

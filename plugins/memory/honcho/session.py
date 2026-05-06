@@ -1168,9 +1168,33 @@ class HonchoSessionManager:
             if peer_id is None:
                 logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
                 return None
+            if peer_id == session.assistant_peer_id:
+                peer_obj = self._get_or_create_peer(session.assistant_peer_id)
+                result = peer_obj.set_card(card)
+                logger.info("Updated self peer card for %s (%d facts)", peer_id, len(card))
+                return result
+
+            # Keep write semantics aligned with get_peer_card/search_context:
+            # when the assistant observes the user, honcho_profile reads the
+            # assistant's local card about the target peer via
+            # assistant.get_card(target=<user>). Updating the target peer's
+            # self-card only makes the immediate write response look green but
+            # a subsequent read returns empty. Write the observer-target card
+            # that the tool will read back.
+            if self._ai_observe_others:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                result = observer.set_card(card, target=peer_id)
+                logger.info(
+                    "Updated observer peer card for %s about %s (%d facts)",
+                    session.assistant_peer_id,
+                    peer_id,
+                    len(card),
+                )
+                return result
+
             peer_obj = self._get_or_create_peer(peer_id)
             result = peer_obj.set_card(card)
-            logger.info("Updated peer card for %s (%d facts)", peer_id, len(card))
+            logger.info("Updated self peer card for %s (%d facts)", peer_id, len(card))
             return result
         except Exception as e:
             logger.error("Failed to set peer card: %s", e)

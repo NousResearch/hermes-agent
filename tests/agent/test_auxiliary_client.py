@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -23,6 +24,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    shutdown_cached_clients,
 )
 
 
@@ -65,6 +67,45 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestCompressionAnthropicAuxiliary:
+    def test_compression_task_uses_native_anthropic_without_1m_beta(self, monkeypatch):
+        """Regression: compression is an auxiliary Anthropic call too.
+
+        Subscriptions without Anthropic's long-context beta rejected context
+        compression with HTTP 400 when the native client globally advertised
+        ``context-1m-2025-08-07``.  Title generation covered one auxiliary
+        path; this exercises the compression task specifically.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+        shutdown_cached_clients()
+
+        fake_response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="compact summary ok")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3),
+        )
+        fake_client = MagicMock(name="anthropic_client")
+        fake_client.messages.create.return_value = fake_response
+        fake_sdk = SimpleNamespace(Anthropic=MagicMock(return_value=fake_client))
+
+        with patch("agent.anthropic_adapter._anthropic_sdk", fake_sdk):
+            response = call_llm(
+                task="compression",
+                provider="anthropic",
+                model="claude-haiku-4-5-20251001",
+                messages=[{"role": "user", "content": "summarize"}],
+                max_tokens=64,
+            )
+
+        kwargs = fake_sdk.Anthropic.call_args.kwargs
+        betas = kwargs["default_headers"]["anthropic-beta"]
+        assert "context-1m-2025-08-07" not in betas
+        assert "interleaved-thinking-2025-05-14" in betas
+        assert response.choices[0].message.content == "compact summary ok"
+
+        shutdown_cached_clients()
 
 
 class TestReadCodexAccessToken:

@@ -835,7 +835,10 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         finally:
             _auth_lock_holder.depth = 0
             if fcntl:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
             elif msvcrt:
                 try:
                     lock_file.seek(0)

@@ -555,6 +555,84 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCalculatesAndRunsSavedSunriseSunsetActions() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val direct = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "calculate_sunrise_sunset",
+                org.json.JSONObject()
+                    .put("latitude", 51.5074)
+                    .put("longitude", -0.1278)
+                    .put("date", "2026-06-21")
+                    .put("timezone", "Europe/London"),
+            ),
+        )
+        assertTrue(direct.toString(), direct.getBoolean("success"))
+        assertEquals("calculate_sunrise_sunset", direct.getString("action"))
+        assertEquals("2026-06-21", direct.getString("date"))
+        assertEquals("Europe/London", direct.getString("timezone"))
+        assertEquals("normal", direct.getString("sun_state"))
+        assertTrue(direct.getString("sunrise").matches(Regex("\\d{2}:\\d{2}")))
+        assertTrue(direct.getString("sunset").matches(Regex("\\d{2}:\\d{2}")))
+        assertTrue(direct.getInt("daylight_minutes") in 900..1100)
+        assertEquals(direct.getString("sunrise"), store.getVariable("SUNRISE"))
+        assertEquals("51.5074", store.getVariable("SUN_LAT"))
+
+        assertTrue(store.setVariable("LATITUDE", "51.5074"))
+        assertTrue(store.setVariable("LONGITUDE", "-0.1278"))
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_sunrise_sunset_task",
+                org.json.JSONObject()
+                    .put("id", "auto-sun")
+                    .put("label", "Sun task")
+                    .put("latitude", "%LATITUDE")
+                    .put("longitude", "%LONGITUDE")
+                    .put("date", "2026-12-21")
+                    .put("timezone", "Europe/London")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(ACTION_TYPE_SUNRISE_SUNSET, created.getJSONObject("automation").getString("action_type"))
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-sun"),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        val result = run.getJSONObject("result")
+        assertEquals("sunrise_sunset", result.getString("action"))
+        assertEquals("2026-12-21", result.getString("date"))
+        assertTrue(result.getInt("daylight_minutes") in 400..600)
+        assertEquals("2026-12-21", store.getVariable("SUN_DATE"))
+        assertEquals("Europe/London", store.getVariable("SUN_TIMEZONE"))
+        assertEquals(result.getString("sunset"), store.getVariable("SUNSET"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "calculate_sunrise_sunset",
+                org.json.JSONObject()
+                    .put("latitude", 91)
+                    .put("longitude", 0)
+                    .put("date", "2026-06-21")
+                    .put("timezone", "UTC"),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+        assertTrue(rejected.getString("error").contains("latitude"))
+    }
+
+    @Test
     fun bridgeExportsAndImportsAutomationBundles() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

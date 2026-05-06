@@ -60,7 +60,7 @@ Agent Android implementation work.
 | Tasker Java/JavaScript/Java Code actions | Partially present through app-workspace shell/Python and Shizuku shell. Tasker 6.6.18's arbitrary Java Code action is not exposed and should stay permission-gated if implemented because imported arbitrary code is a high-risk review surface. |
 | Hermes automation bundle export/import | Present through `android_automation_tool` actions `export_automations` and `import_automations`. Bundles preserve saved Hermes records plus variables, validate imported action and trigger types, reject invalid NUL-bearing payloads, can merge or replace existing automations, and reschedule enabled imported records. Native Tasker XML/Data URI import remains not yet present. |
 | Tasker XML/Data URI import | Not yet present for native Tasker project/profile/task formats. |
-| Tasker 6.6.18 sunrise/sunset action | Not yet present as an offline astronomy action returning sunrise, sunset, dusk, dawn, solar noon, day/night state, and sunlight duration variables. |
+| Tasker 6.6.18 sunrise/sunset action | Present through `android_automation_tool` actions `calculate_sunrise_sunset` and `create_sunrise_sunset_task`. Hermes calculates sunrise, sunset, civil dawn/dusk, solar noon, day/night or polar state, and daylight duration offline from latitude, longitude, optional `YYYY-MM-DD` date, and optional timezone, then exposes `%SUNRISE`, `%SUNSET`, `%SUN_DAWN`, `%SUN_DUSK`, `%SOLAR_NOON`, `%SUN_DAYLIGHT_MINUTES`, `%SUN_STATE`, `%SUN_DATE`, `%SUN_TIMEZONE`, `%SUN_LAT`, and `%SUN_LON`. |
 | Tasker 6.6.18 extra trigger apps | Not yet present. Hermes can run explicit app-foreground, notification, calendar, location, sensor, and Shizuku-state dispatches, but does not yet accept standalone external trigger APK payloads with `%sa_trigger_id`, `%sa_referrer`, `%sa_extras`, and `%sa_trigger_package_name`. |
 | Tasker Logcat Entry with Shizuku | Not yet present as a saved profile trigger. Hermes can run Shizuku shell commands after user grant, but does not watch logcat as a background trigger source. |
 | Tasker notification advanced options | Partially present through notification-posted triggers. Hermes does not yet provide Tasker-style notification creation/live-update/grouping actions. |
@@ -91,7 +91,6 @@ explicit user-visible records:
 
 - Tasker XML/Data URI import into the Hermes bundle schema, starting with a
   safe subset of shell/file/intent/system actions and refusing arbitrary code,
-- offline sunrise/sunset calculation action plus event variables,
 - explicit external trigger receiver records for trusted trigger apps,
 - Shizuku-backed Logcat Entry triggers with a visible enable switch and bounded
   filters,

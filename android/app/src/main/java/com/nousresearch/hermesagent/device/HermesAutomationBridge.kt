@@ -5,11 +5,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
+import kotlin.math.acos
+import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tan
 
 object HermesAutomationBridge {
     fun performActionJson(context: Context, action: String, arguments: JSONObject = JSONObject()): String {
@@ -26,6 +32,8 @@ object HermesAutomationBridge {
             "create_broadcast_task", "create_send_broadcast_task", "broadcast_task" -> createIntentTaskJson(context, arguments, "send_broadcast")
             "create_activity_task", "create_start_activity_task", "launch_activity_task" -> createIntentTaskJson(context, arguments, "start_activity")
             "create_shizuku_action_task", "create_shizuku_action", "create_privileged_action_task", "privileged_action_task" -> createShizukuActionTaskJson(context, arguments)
+            "create_sunrise_sunset_task", "create_sun_task", "create_solar_task" -> createSunriseSunsetTaskJson(context, arguments)
+            "calculate_sunrise_sunset", "sunrise_sunset", "sun_times", "solar_times" -> calculateSunriseSunsetJson(context, arguments)
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
             "run", "run_now", "trigger" -> runAutomationJson(context, arguments.optString("id"), "manual")
@@ -447,6 +455,30 @@ object HermesAutomationBridge {
             defaultLabel = "Hermes Shizuku app automation",
             forceUseShizuku = true,
         )
+    }
+
+    fun createSunriseSunsetTaskJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { sunriseSunsetPayloadFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_sunrise_sunset_task arguments are invalid")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_SUNRISE_SUNSET,
+            payload = payload.toString(),
+            defaultLabel = "Hermes sunrise/sunset automation",
+        )
+    }
+
+    fun calculateSunriseSunsetJson(context: Context, arguments: JSONObject): String {
+        val store = HermesAutomationStore(context)
+        val variables = store.listVariables()
+        val input = runCatching { sunriseSunsetInputFromArguments(arguments, variables) }.getOrElse { error ->
+            return errorJson(error.message ?: "calculate_sunrise_sunset arguments are invalid")
+        }
+        val result = calculateSunriseSunset(input)
+        setSunriseSunsetVariables(store, input, result)
+        return sunriseSunsetResultJson(input, result, "calculate_sunrise_sunset").toString()
     }
 
     private fun createRecordJson(
@@ -907,6 +939,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_APP_LAUNCH -> HermesAppControlBridge.launchPackage(context, expandVariables(record.command, variables))
             ACTION_TYPE_INTENT -> runIntentRecord(context, record, variables)
             ACTION_TYPE_SHIZUKU_ACTION -> runShizukuActionRecord(context, record, variables)
+            ACTION_TYPE_SUNRISE_SUNSET -> runSunriseSunsetRecord(store, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1020,6 +1053,21 @@ object HermesAutomationBridge {
             actionArguments.put("timeout_seconds", payload.optInt("timeout_seconds", AUTOMATION_TIMEOUT_SECONDS))
         }
         return JSONObject(HermesPrivilegedAccessBridge.performStructuredActionJson(context, shizukuAction, actionArguments))
+    }
+
+    private fun runSunriseSunsetRecord(
+        store: HermesAutomationStore,
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+    ): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved sunrise_sunset automation payload is invalid"))
+        val input = runCatching { sunriseSunsetInputFromPayload(payload, variables) }.getOrElse { error ->
+            return JSONObject(errorJson(error.message ?: "Saved sunrise_sunset automation payload is invalid"))
+        }
+        val result = calculateSunriseSunset(input)
+        setSunriseSunsetVariables(store, input, result)
+        return sunriseSunsetResultJson(input, result, "sunrise_sunset")
     }
 
     fun deleteJson(context: Context, id: String): String {
@@ -1447,6 +1495,410 @@ object HermesAutomationBridge {
         }
         payload.put(targetKey, value)
         return null
+    }
+
+    private fun sunriseSunsetPayloadFromArguments(arguments: JSONObject): JSONObject {
+        val latitude = rawArgumentText(arguments, "latitude", "lat", "solar_latitude")
+            ?: throw IllegalArgumentException("create_sunrise_sunset_task requires latitude")
+        val longitude = rawArgumentText(arguments, "longitude", "lon", "lng", "solar_longitude")
+            ?: throw IllegalArgumentException("create_sunrise_sunset_task requires longitude")
+        validateSolarCoordinateText(latitude, "latitude", -90.0, 90.0, allowVariables = true)
+        validateSolarCoordinateText(longitude, "longitude", -180.0, 180.0, allowVariables = true)
+
+        val timezone = rawArgumentText(arguments, "timezone", "time_zone", "tz")
+        timezone?.let { validateSolarTimeZoneText(it, allowVariables = true) }
+        val validationTimeZone = if (timezone != null && !looksLikeVariableReference(timezone)) {
+            parseSolarTimeZone(timezone)
+        } else {
+            TimeZone.getDefault()
+        }
+        val date = rawArgumentText(arguments, "date", "day", "solar_date")
+        date?.let { validateSolarDateText(it, validationTimeZone, allowVariables = true) }
+
+        return JSONObject()
+            .put("latitude", latitude)
+            .put("longitude", longitude)
+            .apply {
+                if (!date.isNullOrBlank()) {
+                    put("date", date)
+                }
+                if (!timezone.isNullOrBlank()) {
+                    put("timezone", timezone)
+                }
+            }
+    }
+
+    private fun sunriseSunsetInputFromArguments(arguments: JSONObject, variables: JSONObject): SunriseSunsetInput {
+        val timezoneText = expandedArgumentText(arguments, variables, "timezone", "time_zone", "tz")
+        val timeZone = parseSolarTimeZone(timezoneText)
+        val date = parseSolarDate(expandedArgumentText(arguments, variables, "date", "day", "solar_date"), timeZone)
+        return SunriseSunsetInput(
+            latitude = parseSolarCoordinate(
+                expandedArgumentText(arguments, variables, "latitude", "lat", "solar_latitude")
+                    ?: throw IllegalArgumentException("calculate_sunrise_sunset requires latitude"),
+                "latitude",
+                -90.0,
+                90.0,
+            ),
+            longitude = parseSolarCoordinate(
+                expandedArgumentText(arguments, variables, "longitude", "lon", "lng", "solar_longitude")
+                    ?: throw IllegalArgumentException("calculate_sunrise_sunset requires longitude"),
+                "longitude",
+                -180.0,
+                180.0,
+            ),
+            date = date,
+            timeZone = timeZone,
+        )
+    }
+
+    private fun sunriseSunsetInputFromPayload(payload: JSONObject, variables: JSONObject): SunriseSunsetInput {
+        val timezoneText = expandedArgumentText(payload, variables, "timezone", "time_zone", "tz")
+        val timeZone = parseSolarTimeZone(timezoneText)
+        val date = parseSolarDate(expandedArgumentText(payload, variables, "date", "day", "solar_date"), timeZone)
+        return SunriseSunsetInput(
+            latitude = parseSolarCoordinate(
+                expandedArgumentText(payload, variables, "latitude", "lat", "solar_latitude")
+                    ?: throw IllegalArgumentException("sunrise_sunset automation requires latitude"),
+                "latitude",
+                -90.0,
+                90.0,
+            ),
+            longitude = parseSolarCoordinate(
+                expandedArgumentText(payload, variables, "longitude", "lon", "lng", "solar_longitude")
+                    ?: throw IllegalArgumentException("sunrise_sunset automation requires longitude"),
+                "longitude",
+                -180.0,
+                180.0,
+            ),
+            date = date,
+            timeZone = timeZone,
+        )
+    }
+
+    private fun calculateSunriseSunset(input: SunriseSunsetInput): SunriseSunsetResult {
+        val sunrise = calculateSolarEvent(input, SOLAR_OFFICIAL_ZENITH, isSunrise = true)
+        val sunset = calculateSolarEvent(input, SOLAR_OFFICIAL_ZENITH, isSunrise = false)
+        val dawn = calculateSolarEvent(input, SOLAR_CIVIL_ZENITH, isSunrise = true)
+        val dusk = calculateSolarEvent(input, SOLAR_CIVIL_ZENITH, isSunrise = false)
+        val daylightMinutes = if (sunrise.minutes != null && sunset.minutes != null) {
+            positiveMinuteDelta(sunrise.minutes, sunset.minutes)
+        } else {
+            null
+        }
+        val solarNoonMinutes = if (sunrise.minutes != null && daylightMinutes != null) {
+            normalizeMinutes(sunrise.minutes + (daylightMinutes / 2))
+        } else {
+            null
+        }
+        val officialSunStates = listOf(sunrise.polarState, sunset.polarState)
+        val sunState = when {
+            officialSunStates.contains(SOLAR_POLAR_DAY) -> SOLAR_POLAR_DAY
+            officialSunStates.contains(SOLAR_POLAR_NIGHT) -> SOLAR_POLAR_NIGHT
+            isSolarDateToday(input) && sunrise.minutes != null && sunset.minutes != null ->
+                if (isCurrentLocalTimeBetween(input.timeZone, sunrise.minutes, sunset.minutes)) "day" else "night"
+            else -> "normal"
+        }
+        return SunriseSunsetResult(
+            sunriseMinutes = sunrise.minutes,
+            sunsetMinutes = sunset.minutes,
+            dawnMinutes = dawn.minutes,
+            duskMinutes = dusk.minutes,
+            solarNoonMinutes = solarNoonMinutes,
+            daylightMinutes = daylightMinutes,
+            sunState = sunState,
+        )
+    }
+
+    private fun calculateSolarEvent(input: SunriseSunsetInput, zenithDegrees: Double, isSunrise: Boolean): SolarEventResult {
+        val longitudeHour = input.longitude / 15.0
+        val baseHour = if (isSunrise) 6.0 else 18.0
+        val approximateTime = input.date.dayOfYear + ((baseHour - longitudeHour) / 24.0)
+        val meanAnomaly = (0.9856 * approximateTime) - 3.289
+        val trueLongitude = normalizeDegrees(
+            meanAnomaly +
+                (1.916 * sin(Math.toRadians(meanAnomaly))) +
+                (0.020 * sin(2.0 * Math.toRadians(meanAnomaly))) +
+                282.634,
+        )
+        var rightAscension = normalizeDegrees(Math.toDegrees(kotlin.math.atan(0.91764 * tan(Math.toRadians(trueLongitude)))))
+        val longitudeQuadrant = floor(trueLongitude / 90.0) * 90.0
+        val ascensionQuadrant = floor(rightAscension / 90.0) * 90.0
+        rightAscension = (rightAscension + (longitudeQuadrant - ascensionQuadrant)) / 15.0
+
+        val sinDeclination = 0.39782 * sin(Math.toRadians(trueLongitude))
+        val cosDeclination = cos(asin(sinDeclination))
+        val latitudeRadians = Math.toRadians(input.latitude)
+        val cosHourAngle = (
+            cos(Math.toRadians(zenithDegrees)) -
+                (sinDeclination * sin(latitudeRadians))
+            ) / (cosDeclination * cos(latitudeRadians))
+        if (cosHourAngle > 1.0) {
+            return SolarEventResult(null, SOLAR_POLAR_NIGHT)
+        }
+        if (cosHourAngle < -1.0) {
+            return SolarEventResult(null, SOLAR_POLAR_DAY)
+        }
+
+        var hourAngle = Math.toDegrees(acos(cosHourAngle))
+        if (isSunrise) {
+            hourAngle = 360.0 - hourAngle
+        }
+        val localMeanTime = (hourAngle / 15.0) + rightAscension - (0.06571 * approximateTime) - 6.622
+        val universalTime = normalizeHours(localMeanTime - longitudeHour)
+        val offsetMinutes = input.timeZone.getOffset(input.date.middayEpochMs) / 60_000.0
+        return SolarEventResult(normalizeMinutes((universalTime * 60.0 + offsetMinutes).roundToInt()), null)
+    }
+
+    private fun sunriseSunsetResultJson(
+        input: SunriseSunsetInput,
+        result: SunriseSunsetResult,
+        action: String,
+    ): JSONObject {
+        val json = JSONObject()
+            .put("success", true)
+            .put("exit_code", 0)
+            .put("action", action)
+            .put("date", input.date.text)
+            .put("timezone", input.timeZone.id)
+            .put("latitude", input.latitude)
+            .put("longitude", input.longitude)
+            .put("sun_state", result.sunState)
+            .put("variables", sunriseSunsetVariablesJson(input, result))
+            .put("message", sunriseSunsetMessage(result))
+        putNullableSolarTime(json, "sunrise", result.sunriseMinutes)
+        putNullableSolarTime(json, "sunset", result.sunsetMinutes)
+        putNullableSolarTime(json, "dawn", result.dawnMinutes)
+        putNullableSolarTime(json, "dusk", result.duskMinutes)
+        putNullableSolarTime(json, "solar_noon", result.solarNoonMinutes)
+        if (result.daylightMinutes == null) {
+            json.put("daylight_minutes", JSONObject.NULL)
+        } else {
+            json.put("daylight_minutes", result.daylightMinutes)
+        }
+        return json
+    }
+
+    private fun setSunriseSunsetVariables(
+        store: HermesAutomationStore,
+        input: SunriseSunsetInput,
+        result: SunriseSunsetResult,
+    ) {
+        sunriseSunsetVariableValues(input, result).forEach { (name, value) ->
+            store.setVariable(name, value.take(MAX_EVENT_VALUE_CHARS))
+        }
+    }
+
+    private fun sunriseSunsetVariablesJson(input: SunriseSunsetInput, result: SunriseSunsetResult): JSONObject {
+        return JSONObject().apply {
+            sunriseSunsetVariableValues(input, result).forEach { (name, value) -> put(name, value) }
+        }
+    }
+
+    private fun sunriseSunsetVariableValues(
+        input: SunriseSunsetInput,
+        result: SunriseSunsetResult,
+    ): Map<String, String> {
+        val latitudeText = formatLocationNumber(input.latitude)
+        val longitudeText = formatLocationNumber(input.longitude)
+        val sunriseText = formatSolarClockTime(result.sunriseMinutes)
+        val sunsetText = formatSolarClockTime(result.sunsetMinutes)
+        val dawnText = formatSolarClockTime(result.dawnMinutes)
+        val duskText = formatSolarClockTime(result.duskMinutes)
+        val noonText = formatSolarClockTime(result.solarNoonMinutes)
+        val daylightText = result.daylightMinutes?.toString().orEmpty()
+        return linkedMapOf(
+            "SUNRISE" to sunriseText,
+            "SUNSET" to sunsetText,
+            "SUN_DAWN" to dawnText,
+            "SUN_DUSK" to duskText,
+            "CIVIL_DAWN" to dawnText,
+            "CIVIL_DUSK" to duskText,
+            "SOLAR_NOON" to noonText,
+            "SUN_DAYLIGHT_MINUTES" to daylightText,
+            "DAYLIGHT_MINUTES" to daylightText,
+            "SUN_STATE" to result.sunState,
+            "SUN_DATE" to input.date.text,
+            "SUN_TIMEZONE" to input.timeZone.id,
+            "SUN_LAT" to latitudeText,
+            "SUN_LON" to longitudeText,
+            "SUN_LOCATION" to "$latitudeText,$longitudeText",
+        )
+    }
+
+    private fun sunriseSunsetMessage(result: SunriseSunsetResult): String {
+        return when (result.sunState) {
+            SOLAR_POLAR_DAY -> "Sun does not set on this date at this location"
+            SOLAR_POLAR_NIGHT -> "Sun does not rise on this date at this location"
+            else -> "Sunrise ${formatSolarClockTime(result.sunriseMinutes)}, sunset ${formatSolarClockTime(result.sunsetMinutes)}"
+        }
+    }
+
+    private fun putNullableSolarTime(json: JSONObject, key: String, minutes: Int?) {
+        if (minutes == null) {
+            json.put(key, JSONObject.NULL)
+        } else {
+            json.put(key, formatSolarClockTime(minutes))
+        }
+    }
+
+    private fun rawArgumentText(arguments: JSONObject, vararg keys: String): String? {
+        val key = keys.firstOrNull { candidate -> arguments.has(candidate) && !arguments.isNull(candidate) } ?: return null
+        val raw = arguments.opt(key) ?: return null
+        return when (raw) {
+            is Number -> raw.toDouble().toString()
+            else -> raw.toString()
+        }.trim().takeIf { it.isNotBlank() }
+    }
+
+    private fun expandedArgumentText(arguments: JSONObject, variables: JSONObject, vararg keys: String): String? {
+        return rawArgumentText(arguments, *keys)
+            ?.let { value -> expandVariables(value, variables).trim() }
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun validateSolarCoordinateText(
+        raw: String,
+        label: String,
+        min: Double,
+        max: Double,
+        allowVariables: Boolean,
+    ) {
+        rejectNul(raw, label)
+        if (allowVariables && looksLikeVariableReference(raw)) {
+            return
+        }
+        parseSolarCoordinate(raw, label, min, max)
+    }
+
+    private fun validateSolarDateText(raw: String, timeZone: TimeZone, allowVariables: Boolean) {
+        rejectNul(raw, "date")
+        if (allowVariables && looksLikeVariableReference(raw)) {
+            return
+        }
+        parseSolarDate(raw, timeZone)
+    }
+
+    private fun validateSolarTimeZoneText(raw: String, allowVariables: Boolean) {
+        rejectNul(raw, "timezone")
+        if (allowVariables && looksLikeVariableReference(raw)) {
+            return
+        }
+        parseSolarTimeZone(raw)
+    }
+
+    private fun parseSolarCoordinate(raw: String, label: String, min: Double, max: Double): Double {
+        rejectNul(raw, label)
+        val value = raw.trim().toDoubleOrNull()
+            ?: throw IllegalArgumentException("sunrise/sunset $label must be a number")
+        require(value.isFinite() && value in min..max) {
+            "sunrise/sunset $label must be between ${formatLocationNumber(min)} and ${formatLocationNumber(max)}"
+        }
+        return value
+    }
+
+    private fun parseSolarTimeZone(raw: String?): TimeZone {
+        val requested = raw?.trim().orEmpty()
+        if (requested.indexOf('\u0000') >= 0) {
+            throw IllegalArgumentException("timezone must not contain NUL bytes")
+        }
+        val zoneId = when (requested.lowercase(Locale.US)) {
+            "", "local", "device", "system" -> TimeZone.getDefault().id
+            "z", "utc" -> "UTC"
+            else -> if (requested.startsWith("UTC+", ignoreCase = true) || requested.startsWith("UTC-", ignoreCase = true)) {
+                "GMT${requested.substring(3)}"
+            } else {
+                requested
+            }
+        }
+        if (zoneId !in AVAILABLE_TIME_ZONE_IDS && !GMT_OFFSET_ZONE_PATTERN.matches(zoneId)) {
+            throw IllegalArgumentException("timezone must be an IANA id like Europe/London, UTC, local, or a GMT offset")
+        }
+        return TimeZone.getTimeZone(zoneId)
+    }
+
+    private fun parseSolarDate(raw: String?, timeZone: TimeZone): SolarDate {
+        val value = raw?.trim().orEmpty().ifBlank { currentSolarDateText(timeZone) }
+        rejectNul(value, "date")
+        val match = SOLAR_DATE_PATTERN.matchEntire(value)
+            ?: throw IllegalArgumentException("sunrise/sunset date must use YYYY-MM-DD")
+        val year = match.groupValues[1].toInt()
+        val month = match.groupValues[2].toInt()
+        val day = match.groupValues[3].toInt()
+        val calendar = Calendar.getInstance(timeZone).apply {
+            isLenient = false
+            clear()
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, month - 1)
+            set(Calendar.DAY_OF_MONTH, day)
+            set(Calendar.HOUR_OF_DAY, 12)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val middayEpochMs = runCatching { calendar.timeInMillis }.getOrElse {
+            throw IllegalArgumentException("sunrise/sunset date must be a valid calendar date")
+        }
+        return SolarDate(
+            year = year,
+            month = month,
+            day = day,
+            text = String.format(Locale.US, "%04d-%02d-%02d", year, month, day),
+            dayOfYear = calendar.get(Calendar.DAY_OF_YEAR),
+            middayEpochMs = middayEpochMs,
+        )
+    }
+
+    private fun currentSolarDateText(timeZone: TimeZone): String {
+        val calendar = Calendar.getInstance(timeZone)
+        return String.format(
+            Locale.US,
+            "%04d-%02d-%02d",
+            calendar.get(Calendar.YEAR),
+            calendar.get(Calendar.MONTH) + 1,
+            calendar.get(Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    private fun normalizeDegrees(value: Double): Double {
+        val normalized = value % 360.0
+        return if (normalized < 0.0) normalized + 360.0 else normalized
+    }
+
+    private fun normalizeHours(value: Double): Double {
+        val normalized = value % 24.0
+        return if (normalized < 0.0) normalized + 24.0 else normalized
+    }
+
+    private fun normalizeMinutes(value: Int): Int {
+        val normalized = value % 1440
+        return if (normalized < 0) normalized + 1440 else normalized
+    }
+
+    private fun positiveMinuteDelta(start: Int, end: Int): Int {
+        val delta = normalizeMinutes(end - start)
+        return if (delta == 0) 1440 else delta
+    }
+
+    private fun formatSolarClockTime(minutes: Int?): String {
+        return minutes?.let { String.format(Locale.US, "%02d:%02d", it / 60, it % 60) }.orEmpty()
+    }
+
+    private fun isSolarDateToday(input: SunriseSunsetInput): Boolean {
+        val calendar = Calendar.getInstance(input.timeZone)
+        return calendar.get(Calendar.YEAR) == input.date.year &&
+            calendar.get(Calendar.MONTH) + 1 == input.date.month &&
+            calendar.get(Calendar.DAY_OF_MONTH) == input.date.day
+    }
+
+    private fun isCurrentLocalTimeBetween(timeZone: TimeZone, startMinutes: Int, endMinutes: Int): Boolean {
+        val now = Calendar.getInstance(timeZone)
+        val nowMinutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+        return if (startMinutes <= endMinutes) {
+            nowMinutes in startMinutes until endMinutes
+        } else {
+            nowMinutes >= startMinutes || nowMinutes < endMinutes
+        }
     }
 
     private fun expandIntentPayload(payload: JSONObject, variables: JSONObject): JSONObject {
@@ -2037,6 +2489,8 @@ object HermesAutomationBridge {
         "create_app_launch_task",
         "create_intent_task",
         "create_shizuku_action_task",
+        "create_sunrise_sunset_task",
+        "calculate_sunrise_sunset",
         "export_automations",
         "import_automations",
         "run",
@@ -2065,10 +2519,17 @@ object HermesAutomationBridge {
         ACTION_TYPE_APP_LAUNCH,
         ACTION_TYPE_INTENT,
         ACTION_TYPE_SHIZUKU_ACTION,
+        ACTION_TYPE_SUNRISE_SUNSET,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
         "privileged_action" to ACTION_TYPE_SHIZUKU_ACTION,
+        "sun" to ACTION_TYPE_SUNRISE_SUNSET,
+        "solar" to ACTION_TYPE_SUNRISE_SUNSET,
+        "sunrise" to ACTION_TYPE_SUNRISE_SUNSET,
+        "sunset" to ACTION_TYPE_SUNRISE_SUNSET,
+        "sun_times" to ACTION_TYPE_SUNRISE_SUNSET,
+        "solar_times" to ACTION_TYPE_SUNRISE_SUNSET,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,
@@ -2161,9 +2622,40 @@ object HermesAutomationBridge {
     private data class TimeParseResult(val minutes: Int?, val error: String? = null)
     private data class DaysParseResult(val daysCsv: String, val error: String? = null)
     private data class TriggerDataResult(val data: String, val error: String? = null)
+    private data class SolarDate(
+        val year: Int,
+        val month: Int,
+        val day: Int,
+        val text: String,
+        val dayOfYear: Int,
+        val middayEpochMs: Long,
+    )
+    private data class SunriseSunsetInput(
+        val latitude: Double,
+        val longitude: Double,
+        val date: SolarDate,
+        val timeZone: TimeZone,
+    )
+    private data class SolarEventResult(val minutes: Int?, val polarState: String?)
+    private data class SunriseSunsetResult(
+        val sunriseMinutes: Int?,
+        val sunsetMinutes: Int?,
+        val dawnMinutes: Int?,
+        val duskMinutes: Int?,
+        val solarNoonMinutes: Int?,
+        val daylightMinutes: Int?,
+        val sunState: String,
+    )
 
     private const val DEFAULT_LOCATION_RADIUS_METERS = 100.0
     private const val EARTH_RADIUS_METERS = 6_371_008.8
+    private const val SOLAR_OFFICIAL_ZENITH = 90.833
+    private const val SOLAR_CIVIL_ZENITH = 96.0
+    private const val SOLAR_POLAR_DAY = "polar_day"
+    private const val SOLAR_POLAR_NIGHT = "polar_night"
+    private val SOLAR_DATE_PATTERN = Regex("(\\d{4})-(\\d{2})-(\\d{2})")
+    private val GMT_OFFSET_ZONE_PATTERN = Regex("GMT[+-]\\d{1,2}(:?\\d{2})?")
+    private val AVAILABLE_TIME_ZONE_IDS = TimeZone.getAvailableIDs().toSet()
 
     private val TIME_ARGUMENT_KEYS = listOf(
         "time",

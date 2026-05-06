@@ -392,7 +392,7 @@ object HermesPrivilegedAccessBridge {
         return state !in setOf("false", "off", "disabled", "disable", "0")
     }
 
-    private fun normalizeStructuredAction(action: String): String? {
+    fun normalizeStructuredAction(action: String): String? {
         val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
         return STRUCTURED_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in STRUCTURED_PRIVILEGED_ACTIONS }
     }

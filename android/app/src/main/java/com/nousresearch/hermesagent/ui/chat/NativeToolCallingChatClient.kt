@@ -364,7 +364,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted phone-state triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access.",
+                                "Create, list, run, enable, disable, or delete saved Android automations and variables. Supports shell, file-write, file-delete, safe Android system-action, accessibility UI-action, app-launch, and Shizuku/Sui package-permission tasks; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted phone-state triggers; and Tasker-style %VARIABLE expansion. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access.",
                             )
                             .put(
                                 "parameters",
@@ -377,7 +377,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
+                                                    .put("description", "list, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_shizuku_action_task, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "id",
@@ -428,6 +428,12 @@ class NativeToolCallingChatClient(
                                                     .put("description", "Saved accessibility UI action for create_ui_action_task: click, long_click, focus, set_text, scroll_forward, scroll_backward, back, home, recents, notifications, or quick_settings."),
                                             )
                                             .put(
+                                                "shizuku_action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Saved Shizuku/Sui package or permission action for create_shizuku_action_task: grant_runtime_permission, revoke_runtime_permission, force_stop_app, enable_app, disable_app, or set_app_enabled. Requires user-started Shizuku/Sui and granted Hermes permission when run."),
+                                            )
+                                            .put(
                                                 "text_contains",
                                                 JSONObject()
                                                     .put("type", "string")
@@ -449,7 +455,13 @@ class NativeToolCallingChatClient(
                                                 "package_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Package name for create_app_launch_task, or saved UI selector package-name fragment for create_ui_action_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                                    .put("description", "Package name for create_app_launch_task or create_shizuku_action_task, or saved UI selector package-name fragment for create_ui_action_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "permission",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android runtime permission name for create_shizuku_action_task grant_runtime_permission or revoke_runtime_permission, for example android.permission.POST_NOTIFICATIONS. Saved variables can be referenced as %NAME or {{NAME}}."),
                                             )
                                             .put(
                                                 "index",
@@ -503,13 +515,31 @@ class NativeToolCallingChatClient(
                                                 "enabled",
                                                 JSONObject()
                                                     .put("type", "boolean")
-                                                    .put("description", "Whether a created automation starts enabled."),
+                                                    .put("description", "Whether a created automation starts enabled. For create_shizuku_action_task set_app_enabled, prefer target_enabled for the target app state and automation_enabled for the record state."),
+                                            )
+                                            .put(
+                                                "automation_enabled",
+                                                JSONObject()
+                                                    .put("type", "boolean")
+                                                    .put("description", "Explicit record enabled state for create_*_task. Useful when create_shizuku_action_task set_app_enabled also needs a target_enabled value."),
                                             )
                                             .put(
                                                 "use_shizuku",
                                                 JSONObject()
                                                     .put("type", "boolean")
                                                     .put("description", "Run this automation through Shizuku/Sui privileged shell. Requires Shizuku setup and user-granted permission."),
+                                            )
+                                            .put(
+                                                "target_enabled",
+                                                JSONObject()
+                                                    .put("type", "boolean")
+                                                    .put("description", "Target app enabled state for create_shizuku_action_task with set_app_enabled."),
+                                            )
+                                            .put(
+                                                "timeout_seconds",
+                                                JSONObject()
+                                                    .put("type", "integer")
+                                                    .put("description", "Optional timeout for Shizuku-backed saved package or permission actions, clamped by Hermes."),
                                             )
                                             .put(
                                                 "name",

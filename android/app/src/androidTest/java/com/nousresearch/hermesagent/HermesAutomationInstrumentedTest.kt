@@ -275,6 +275,101 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun shizukuActionAutomationExpandsVariablesAndFailsSafelyAtPrivilegeBoundary() {
+        val packageVariable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%TARGET_PACKAGE")
+                    .put("value", app.packageName),
+            ),
+        )
+        assertTrue(packageVariable.toString(), packageVariable.getBoolean("success"))
+
+        val permissionVariable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "TARGET_PERMISSION")
+                    .put("value", "android.permission.POST_NOTIFICATIONS"),
+            ),
+        )
+        assertTrue(permissionVariable.toString(), permissionVariable.getBoolean("success"))
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_shizuku_action_task",
+                JSONObject()
+                    .put("label", "Grant notification smoke")
+                    .put("shizuku_action", "grant_runtime_permission")
+                    .put("package_name", "%TARGET_PACKAGE")
+                    .put("permission", "{{TARGET_PERMISSION}}")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals("shizuku_action", automation.getString("action_type"))
+        assertTrue(automation.getBoolean("use_shizuku"))
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", automation.getString("id")),
+            ),
+        )
+        assertFalse(run.toString(), run.getBoolean("success"))
+        assertFalse(run.getJSONObject("automation").getBoolean("last_success"))
+        val result = run.getJSONObject("result")
+        assertEquals("grant_runtime_permission", result.getString("action"))
+        assertEquals(app.packageName, result.getString("package_name"))
+        assertEquals("android.permission.POST_NOTIFICATIONS", result.getString("permission"))
+        assertTrue(result.getString("adb_shell_command").contains("pm grant ${app.packageName} android.permission.POST_NOTIFICATIONS"))
+        assertTrue(result.optString("error").contains("Shizuku", ignoreCase = true))
+    }
+
+    @Test
+    fun shizukuActionAutomationRejectsUnsafeDefinitions() {
+        val unsupported = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_shizuku_action_task",
+                JSONObject()
+                    .put("shizuku_action", "toggle_airplane_mode")
+                    .put("package_name", app.packageName),
+            ),
+        )
+        assertFalse(unsupported.toString(), unsupported.getBoolean("success"))
+        assertTrue(unsupported.getString("error").contains("Unsupported saved Shizuku action"))
+
+        val missingPackage = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_shizuku_action_task",
+                JSONObject().put("shizuku_action", "force_stop_app"),
+            ),
+        )
+        assertFalse(missingPackage.toString(), missingPackage.getBoolean("success"))
+        assertTrue(missingPackage.getString("error").contains("package_name"))
+
+        val missingPermission = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_shizuku_action_task",
+                JSONObject()
+                    .put("shizuku_action", "grant_runtime_permission")
+                    .put("package_name", app.packageName),
+            ),
+        )
+        assertFalse(missingPermission.toString(), missingPermission.getBoolean("success"))
+        assertTrue(missingPermission.getString("error").contains("permission"))
+    }
+
+    @Test
     fun appForegroundTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

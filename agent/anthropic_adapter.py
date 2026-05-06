@@ -77,6 +77,10 @@ _ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
 _NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
 
+# Models that support Anthropic Fast Mode (speed=fast). Per Anthropic docs,
+# fast mode is currently supported on Opus 4.6 only.
+_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
+
 # ── Max output token limits per Anthropic model ───────────────────────
 # Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
@@ -216,25 +220,30 @@ def _forbids_sampling_params(model: str) -> bool:
     return any(v in model for v in _NO_SAMPLING_PARAMS_SUBSTRINGS)
 
 
-# Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
-# beta headers are still accepted (harmless no-op) but not required. Kept
-# here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
-# that still gate on the headers continue to get the enhanced features.
+def _supports_fast_mode(model: str) -> bool:
+    """Return True for models that support Anthropic Fast Mode (speed=fast).
+
+    Per Anthropic docs, fast mode is currently supported on Opus 4.6 only.
+    Sending ``speed: "fast"`` to any other Claude model (including Opus 4.7)
+    returns HTTP 400. This guard prevents silently 400'ing when stale config
+    or older callers leave fast mode enabled across a model upgrade.
+    """
+    return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+
+
+# Beta headers for enhanced features (sent with Anthropic-compatible clients).
+# As of Opus 4.7 (2026-04-16), these are GA on Claude 4.6+ — the beta headers
+# are still accepted (harmless no-op) but not required. Kept here so older
+# Claude (4.5, 4.1) + third-party Anthropic-compat endpoints that still gate
+# on the headers continue to get the enhanced features.
 #
-# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
-# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
-# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
-# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
-# at 200K even though model_metadata.py advertises 1M. The header is a harmless
-# no-op on endpoints where 1M is GA.
-#
-# Migration guide: remove these if you no longer support ≤4.5 models or once
-# Bedrock/Azure promote 1M to GA.
+# Do NOT include ``context-1m-2025-08-07`` in this generic/native list. Some
+# Anthropic subscriptions reject that long-context beta before the request body
+# is processed, which breaks short auxiliary tasks such as title generation.
+# Bedrock/Azure paths that still require the 1M gate opt in explicitly below.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
-    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
@@ -244,6 +253,7 @@ _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 # Bearer-auth (MiniMax) endpoints since they host their own models and
 # unknown Anthropic beta headers risk request rejection.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
+_BEDROCK_AZURE_BETAS = [*_COMMON_BETAS, _CONTEXT_1M_BETA]
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
@@ -468,6 +478,10 @@ def _common_betas_for_base_url(
 ) -> list[str]:
     """Return the beta headers that are safe for the configured endpoint.
 
+    Native Anthropic endpoints omit the 1M-context beta by default because not
+    every subscription has that beta. Bedrock/Azure paths that still need the
+    1M gate opt in explicitly.
+
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
     tool-use message triggers a connection error.  Strip that beta for
@@ -485,9 +499,15 @@ def _common_betas_for_base_url(
     reactive recovery loop in ``run_agent.py`` and issue-comment history on
     PR #17680 for the full rationale.
     """
-    if _requires_bearer_auth(base_url):
+    normalized = _normalize_base_url_text(base_url)
+    if _requires_bearer_auth(normalized):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in _COMMON_BETAS if b not in _stripped]
+    if normalized and "azure.com" in normalized.lower():
+        betas = _BEDROCK_AZURE_BETAS
+        if drop_context_1m_beta:
+            return [b for b in betas if b != _CONTEXT_1M_BETA]
+        return betas
     if drop_context_1m_beta:
         return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
     return _COMMON_BETAS
@@ -509,10 +529,9 @@ def build_anthropic_client(
     providers.
 
     ``drop_context_1m_beta=True`` strips ``context-1m-2025-08-07`` from the
-    client-level ``anthropic-beta`` header. Used by the reactive OAuth retry
-    path in ``run_agent.py`` when a subscription rejects the beta; leave at
-    its default on fresh clients so 1M-capable subscriptions keep the
-    capability.
+    client-level ``anthropic-beta`` header on endpoints that explicitly opt in
+    to it (Azure/Bedrock). Native Anthropic omits that beta by default so short
+    auxiliary calls do not fail on subscriptions without long-context access.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -627,7 +646,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
-        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+        default_headers={"anthropic-beta": ",".join(_BEDROCK_AZURE_BETAS)},
     )
 
 

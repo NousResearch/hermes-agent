@@ -3545,15 +3545,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return str(Path(hermes_home) / "workspace")
 
     def _resolve_workspace_path(self, raw_path: str) -> Optional[Path]:
-        """Resolve and validate a path within the workspace.
+        """解析并校验文件路径。
 
-        Returns the resolved Path if valid, None if it escapes the workspace.
+        绝对路径直接解析，相对路径在 workspace 下解析并限制不能逃逸。
+        返回解析后的 Path，校验失败返回 None。
         """
         if not raw_path or not raw_path.strip():
             return None
-        workspace = Path(self._get_workspace_root()).resolve()
+        stripped = raw_path.strip()
         try:
-            target = (workspace / raw_path.strip()).resolve()
+            path = Path(stripped)
+            if path.is_absolute():
+                return path.resolve()
+            workspace = Path(self._get_workspace_root()).resolve()
+            target = (workspace / stripped).resolve()
             target.relative_to(workspace)
             return target
         except (ValueError, OSError):

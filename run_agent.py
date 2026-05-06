@@ -4713,6 +4713,7 @@ class AIAgent:
                                 "role": "tool",
                                 "content": "[Result unavailable — see context summary above]",
                                 "tool_call_id": cid,
+                                "tool_name": tc.function.get("name", "unknown") if isinstance(tc, dict) else getattr(tc.function, "name", "unknown"),
                             })
             messages = patched
             logger.debug(
@@ -8056,6 +8057,7 @@ class AIAgent:
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
+                                "tool_name": function_name,
                                 "content": marker,
                             },
                         )
@@ -8363,6 +8365,7 @@ class AIAgent:
                     "role": "tool",
                     "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                     "tool_call_id": tc.id,
+                    "tool_name": tc.function.name,
                 })
             return
 
@@ -8628,6 +8631,7 @@ class AIAgent:
                 "role": "tool",
                 "content": function_result,
                 "tool_call_id": tc.id,
+                "tool_name": name,
             }
             messages.append(tool_msg)
 
@@ -8665,6 +8669,7 @@ class AIAgent:
                         "role": "tool",
                         "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
+                        "tool_name": skipped_name,
                     }
                     messages.append(skip_msg)
                 break

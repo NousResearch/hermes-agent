@@ -9515,6 +9515,11 @@ class AIAgent:
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
+                session_id=self.session_id or "",
+                scope=function_args.get("scope", ""),
+                source_reference=function_args.get("source_reference", ""),
+                project_id=function_args.get("project_id", ""),
+                approved_global=function_args.get("approved_global", False),
             )
             # Bridge: notify external memory provider of built-in memory writes
             if self._memory_manager and function_args.get("action") in ("add", "replace"):

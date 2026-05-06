@@ -248,6 +248,43 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="add", target="memory", content="via tool", store=store))
         assert result["success"] is True
 
+    def test_active_project_rejects_memory_write_without_scope(self, store, monkeypatch):
+        from hermes_cli import project_context as pc
+
+        active = pc.ActiveProjectContext(project_id="pci-010", project_name="AI optimization")
+        monkeypatch.setattr(pc, "load_project_context", lambda session_id: active)
+
+        result = json.loads(memory_tool(
+            action="add",
+            target="memory",
+            content="project fact",
+            store=store,
+            session_id="session-1",
+        ))
+
+        assert result["success"] is False
+        assert "active project context" in result["error"]
+
+    def test_active_project_allows_approved_memory_write(self, store, monkeypatch):
+        from hermes_cli import project_context as pc
+
+        active = pc.ActiveProjectContext(project_id="pci-010", project_name="AI optimization")
+        monkeypatch.setattr(pc, "load_project_context", lambda session_id: active)
+
+        result = json.loads(memory_tool(
+            action="add",
+            target="memory",
+            content="project fact",
+            store=store,
+            session_id="session-1",
+            scope="project",
+            source_reference="/capsules/010/source.md",
+            project_id="pci-010",
+            approved_global=True,
+        ))
+
+        assert result["success"] is True
+
     def test_replace_requires_old_text(self, store):
         result = json.loads(memory_tool(action="replace", content="new", store=store))
         assert result["success"] is False

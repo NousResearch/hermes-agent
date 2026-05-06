@@ -719,12 +719,36 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    session_id: str = "",
+    scope: str = "",
+    source_reference: str = "",
+    project_id: str = "",
+    approved_global: bool = False,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
 
     Returns JSON string with results.
     """
+    try:
+        from hermes_cli.project_context import DurableWriteIntent, validate_durable_write_intent
+        rejection = validate_durable_write_intent(
+            session_id=session_id or "",
+            intent=DurableWriteIntent(
+                tool_name="skill_manage",
+                action=action or "",
+                destination=name or "",
+                scope=scope or "",
+                source_reference=source_reference or "",
+                project_id=project_id or "",
+                approved_global=bool(approved_global),
+            ),
+        )
+        if rejection:
+            return tool_error(rejection, success=False)
+    except Exception:
+        logger.debug("skill durable write boundary check failed open", exc_info=True)
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -901,6 +925,23 @@ SKILL_MANAGE_SCHEMA = {
                     "rewriting) will have to guess at intent."
                 )
             },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "user", "project", "local", "none"],
+                "description": "Durable-write scope. Required when a project context is active."
+            },
+            "source_reference": {
+                "type": "string",
+                "description": "Capsule path, source note, issue, or explicit user instruction justifying this durable write. Required when a project context is active."
+            },
+            "project_id": {
+                "type": "string",
+                "description": "Active project id when the write is derived from project-local context."
+            },
+            "approved_global": {
+                "type": "boolean",
+                "description": "Set true only after explicit approval to promote project-derived content into global skills."
+            },
         },
         "required": ["action", "name"],
     },
@@ -924,6 +965,11 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        session_id=kw.get("session_id") or args.get("session_id", ""),
+        scope=args.get("scope", ""),
+        source_reference=args.get("source_reference", ""),
+        project_id=args.get("project_id", ""),
+        approved_global=args.get("approved_global", False)),
     emoji="📝",
 )

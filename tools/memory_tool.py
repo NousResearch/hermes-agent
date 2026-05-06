@@ -468,6 +468,11 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    session_id: str = "",
+    scope: str = "",
+    source_reference: str = "",
+    project_id: str = "",
+    approved_global: bool = False,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -479,6 +484,25 @@ def memory_tool(
 
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+
+    try:
+        from hermes_cli.project_context import DurableWriteIntent, validate_durable_write_intent
+        rejection = validate_durable_write_intent(
+            session_id=session_id or "",
+            intent=DurableWriteIntent(
+                tool_name="memory",
+                action=action or "",
+                destination=target,
+                scope=scope or "",
+                source_reference=source_reference or "",
+                project_id=project_id or "",
+                approved_global=bool(approved_global),
+            ),
+        )
+        if rejection:
+            return tool_error(rejection, success=False)
+    except Exception:
+        logger.debug("memory durable write boundary check failed open", exc_info=True)
 
     if action == "add":
         if not content:
@@ -558,6 +582,23 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "user", "project", "local", "none"],
+                "description": "Durable-write scope. Required when a project context is active."
+            },
+            "source_reference": {
+                "type": "string",
+                "description": "Capsule path, source note, issue, or explicit user instruction justifying this durable write. Required when a project context is active."
+            },
+            "project_id": {
+                "type": "string",
+                "description": "Active project id when the write is derived from project-local context."
+            },
+            "approved_global": {
+                "type": "boolean",
+                "description": "Set true only after explicit approval to promote project-derived content into global memory."
+            },
         },
         "required": ["action", "target"],
     },
@@ -576,7 +617,12 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        session_id=kw.get("session_id") or args.get("session_id", ""),
+        scope=args.get("scope", ""),
+        source_reference=args.get("source_reference", ""),
+        project_id=args.get("project_id", ""),
+        approved_global=args.get("approved_global", False)),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

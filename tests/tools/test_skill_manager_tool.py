@@ -524,6 +524,45 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "content" in result["error"].lower()
 
+    def test_active_project_rejects_skill_write_without_scope(self, tmp_path, monkeypatch):
+        from hermes_cli import project_context as pc
+
+        active = pc.ActiveProjectContext(project_id="pci-010", project_name="AI optimization")
+        monkeypatch.setattr(pc, "load_project_context", lambda session_id: active)
+
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+                session_id="session-1",
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "active project context" in result["error"]
+
+    def test_active_project_allows_approved_skill_write(self, tmp_path, monkeypatch):
+        from hermes_cli import project_context as pc
+
+        active = pc.ActiveProjectContext(project_id="pci-010", project_name="AI optimization")
+        monkeypatch.setattr(pc, "load_project_context", lambda session_id: active)
+
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+                session_id="session-1",
+                scope="project",
+                source_reference="/capsules/010/source.md",
+                project_id="pci-010",
+                approved_global=True,
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is True
+
     def test_patch_without_old_string(self, tmp_path):
         with _skill_dir(tmp_path):
             raw = skill_manage(action="patch", name="test")

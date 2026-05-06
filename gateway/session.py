@@ -293,6 +293,18 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
+    # Project context (if available) is loaded from SessionDB state_meta and
+    # appended to this dynamic context section.  It does not mutate the static
+    # base system prompt, preserving prompt-cache behavior across turns.
+    if context.session_id:
+        try:
+            from hermes_cli.project_context import load_project_context
+            active_project = load_project_context(context.session_id)
+            if active_project is not None:
+                lines.extend(active_project.prompt_lines())
+        except Exception:
+            logger.debug("failed to load active project context", exc_info=True)
+
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same

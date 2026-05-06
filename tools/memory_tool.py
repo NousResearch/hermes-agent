@@ -89,6 +89,144 @@ _INVISIBLE_CHARS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Memory hygiene — blocking checks for quality control
+# ---------------------------------------------------------------------------
+
+# Maximum allowed character count for a single memory entry before requiring
+# force=True. Values above this threshold almost always indicate a "spec dump"
+# that belongs in a project file with a one-line memory pointer.
+_HYGIENE_ENTRY_SIZE_LIMIT = 400
+
+# Minimum substring overlap length to flag a potential skill duplicate.
+_HYGIENE_SKILL_OVERLAP_MIN = 40
+
+
+def _check_entry_size(content: str) -> Optional[Dict[str, Any]]:
+    """Block oversized entries that should live in a project file instead.
+
+    Returns a hygiene_block dict if the entry exceeds _HYGIENE_ENTRY_SIZE_LIMIT,
+    otherwise None.
+    """
+    if len(content) > _HYGIENE_ENTRY_SIZE_LIMIT:
+        return {
+            "type": "oversize",
+            "size": len(content),
+            "limit": _HYGIENE_ENTRY_SIZE_LIMIT,
+            "message": (
+                f"Entry is {len(content)} chars, exceeding the {_HYGIENE_ENTRY_SIZE_LIMIT}-char "
+                f"per-entry limit. Large entries (specs, configs, full tool lists) belong in "
+                f"a project file with a one-line memory pointer. "
+                f"Use force=True with a force_reason to override."
+            ),
+        }
+    return None
+
+
+def _scan_skills_for_overlap(content: str) -> Optional[Dict[str, Any]]:
+    """Detect entries that duplicate content already declared in a skill's description.
+
+    Reads the ``description:`` field from every ``SKILL.md`` under
+    ``~/.hermes/skills/``.  Uses a bidirectional window scan: checks whether
+    any _HYGIENE_SKILL_OVERLAP_MIN-char substring of either the description OR
+    the content appears verbatim in the other string (case-insensitive).  This
+    catches both "I restated the skill" and "I quoted part of my entry that
+    the skill already covers" patterns.
+
+    Returns a hygiene_block dict if a match is found, otherwise None.
+    Silently skips unreadable skill files.
+    """
+    skills_root = get_hermes_home() / "skills"
+    if not skills_root.is_dir():
+        return None
+
+    content_lower = content.lower()
+    window = _HYGIENE_SKILL_OVERLAP_MIN
+
+    for skill_md in skills_root.rglob("SKILL.md"):
+        try:
+            raw = skill_md.read_text(errors="replace")
+        except OSError:
+            continue
+        # Extract the description: field value (YAML front-matter or plain text)
+        desc_match = re.search(r'^description:\s*(.+)', raw, re.MULTILINE | re.IGNORECASE)
+        if not desc_match:
+            continue
+        description = desc_match.group(1).strip().strip('"\'')
+        desc_lower = description.lower()
+
+        # Direction A: slide window over description, check if in content
+        if len(desc_lower) >= window:
+            for start in range(len(desc_lower) - window + 1):
+                fragment = desc_lower[start:start + window]
+                if fragment in content_lower:
+                    return {
+                        "type": "skill_duplicate",
+                        "matched_skill": str(skill_md),
+                        "fragment": description[start:start + window],
+                        "message": (
+                            f"Entry overlaps with skill description in {skill_md}. "
+                            f"The skill already declares this information. "
+                            f"Use force=True with a force_reason to override."
+                        ),
+                    }
+
+        # Direction B: slide window over content, check if in description
+        # This catches cases where content is longer than the description but
+        # contains a chunk that's verbatim in the skill.
+        if len(desc_lower) >= window and len(content_lower) >= window:
+            for start in range(len(content_lower) - window + 1):
+                fragment = content_lower[start:start + window]
+                if fragment in desc_lower:
+                    return {
+                        "type": "skill_duplicate",
+                        "matched_skill": str(skill_md),
+                        "fragment": content[start:start + window],
+                        "message": (
+                            f"Entry overlaps with skill description in {skill_md}. "
+                            f"The skill already declares this information. "
+                            f"Use force=True with a force_reason to override."
+                        ),
+                    }
+    return None
+
+
+def _scan_agents_md_for_overlap(content: str) -> Optional[Dict[str, Any]]:
+    """Detect entries that duplicate content already in AGENTS.md.
+
+    Checks whether any 40-char substring of content already appears in
+    AGENTS.md verbatim (case-insensitive).  AGENTS.md encodes project rules;
+    restating them in memory adds noise without value.
+
+    Returns a hygiene_block dict if a match is found, otherwise None.
+    """
+    agents_path = get_hermes_home() / "AGENTS.md"
+    if not agents_path.exists():
+        return None
+    try:
+        agents_text = agents_path.read_text(errors="replace").lower()
+    except OSError:
+        return None
+
+    content_lower = content.lower()
+    window = _HYGIENE_SKILL_OVERLAP_MIN
+    # Only slide over content substrings that are long enough to be meaningful
+    for start in range(len(content_lower) - window + 1):
+        fragment = content_lower[start:start + window]
+        if fragment in agents_text:
+            return {
+                "type": "agents_md_duplicate",
+                "fragment": content[start:start + window],
+                "message": (
+                    f"Entry overlaps with content already present in AGENTS.md. "
+                    f"AGENTS.md is the authoritative source for project rules; "
+                    f"restating them in memory is redundant. "
+                    f"Use force=True with a force_reason to override."
+                ),
+            }
+    return None
+
+
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
     # Check invisible unicode
@@ -221,8 +359,21 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+    def add(
+        self,
+        target: str,
+        content: str,
+        *,
+        force: bool = False,
+        force_reason: str = "",
+    ) -> Dict[str, Any]:
+        """Append a new entry. Returns error if it would exceed the char limit.
+
+        Blocking hygiene checks (oversize, skill duplicate, AGENTS.md duplicate)
+        reject entries that would add noise without value.  Pass ``force=True``
+        with a ``force_reason`` to bypass a block when the content genuinely
+        belongs in memory (e.g. a long-form spec that lives nowhere else).
+        """
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -231,6 +382,20 @@ class MemoryStore:
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        # Blocking hygiene checks — skip when force=True
+        if not force:
+            size_block = _check_entry_size(content)
+            if size_block:
+                return {"success": False, "hygiene_block": size_block, "error": size_block["message"]}
+
+            skill_block = _scan_skills_for_overlap(content)
+            if skill_block:
+                return {"success": False, "hygiene_block": skill_block, "error": skill_block["message"]}
+
+            agents_block = _scan_agents_md_for_overlap(content)
+            if agents_block:
+                return {"success": False, "hygiene_block": agents_block, "error": agents_block["message"]}
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions
@@ -468,6 +633,8 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    force: bool = False,
+    force_reason: str = "",
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -483,7 +650,7 @@ def memory_tool(
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        result = store.add(target, content, force=force, force_reason=force_reason)
 
     elif action == "replace":
         if not old_text:

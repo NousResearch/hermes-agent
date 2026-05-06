@@ -120,8 +120,9 @@ class TestMemoryStoreAdd:
         assert len(store.memory_entries) == 1  # Not duplicated
 
     def test_add_exceeding_limit_rejected(self, store):
-        # Fill up to near limit
-        store.add("memory", "x" * 490)
+        # Fill up to near limit (force=True to bypass per-entry hygiene size check;
+        # this test is exercising the total char-limit guard, not the hygiene block)
+        store.add("memory", "x" * 490, force=True, force_reason="test setup")
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
         assert "exceed" in result["error"].lower()

@@ -6382,18 +6382,20 @@ class GatewayRunner:
         event: MessageEvent,
         adapter,
     ) -> None:
-        """Extract MEDIA: tags and local file paths from a response and deliver them.
+        """Extract explicit MEDIA: tags from a response and deliver them.
 
         Called after streaming has already sent the text to the user, so the
         text itself is already delivered — this only handles file attachments
-        that the normal _process_message_background path would have caught.
+        explicitly requested via MEDIA: directives.
+
+        Bare local file paths mentioned in the response text (e.g. from tool
+        output) are intentionally NOT uploaded here to prevent unintended
+        file leakage.
         """
         from pathlib import Path
 
         try:
             media_files, _ = adapter.extract_media(response)
-            _, cleaned = adapter.extract_images(response)
-            local_files, _ = adapter.extract_local_files(cleaned)
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
 
@@ -6431,23 +6433,7 @@ class GatewayRunner:
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
-            for file_path in local_files:
-                try:
-                    ext = Path(file_path).suffix.lower()
-                    if ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
-                            chat_id=event.source.chat_id,
-                            image_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
-                            file_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)

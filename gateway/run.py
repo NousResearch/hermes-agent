@@ -6456,17 +6456,13 @@ class GatewayRunner:
 
             response = agent_result.get("final_response") or ""
 
-            # Convert the agent's internal "(empty)" sentinel into a
-            # user-friendly message.  "(empty)" means the model failed to
-            # produce visible content after exhausting all retries (nudge,
-            # prefill, empty-retry, fallback).  Sending the raw sentinel
-            # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
+                logger.warning(
+                    "Dropping empty agent response for %s chat=%s",
+                    _platform_name,
+                    source.chat_id or "unknown",
                 )
+                return None
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)

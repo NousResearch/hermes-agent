@@ -1,0 +1,24 @@
+# Hermes 靜態訊息目錄 -- 中文（繁體）
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  危險指令： {description}"
+  choose_long:     "      [o]僅此一次  |  [s]本次工作階段  |  [a]永久允許  |  [d]拒絕"
+  choose_short:    "      [o]僅此一次  |  [s]本次工作階段  |  [d]拒絕"
+  prompt_long:     "      選擇 [o/s/a/D]: "
+  prompt_short:    "      選擇 [o/s/D]: "
+  timeout:         "      ⏱ 逾時 — 已拒絕指令"
+  allowed_once:    "      ✓ 本次允許"
+  allowed_session: "      ✓ 本次工作階段內允許"
+  allowed_always:  "      ✓ 已加入永久允許清單"
+  denied:          "      ✗ 已拒絕"
+  cancelled:       "      ✗ 已取消"
+  blocklist_message: "此指令位於無條件封鎖清單中，無法核准。"
+
+gateway:
+  approval_expired: "⚠️ 核准已逾時（Agent 已不再等待）。請讓 Agent 重試。"
+  draining:         "⏳ 正在等待 {count} 個 Agent 完成後重啟..."
+  goal_cleared:     "✓ 目標已清除。"
+  no_active_goal:   "目前沒有執行中的目標。"
+  config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
+  config_save_failed: "⚠️ 無法儲存設定：{error}"

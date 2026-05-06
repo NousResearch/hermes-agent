@@ -108,6 +108,12 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+
+  /* Bridge Tailwind's font tokens to Hermes theme variables so that both
+     inherited font-family (html/body) and explicit font-sans/mono classes
+     render the active theme's typeface. Fixes #20380. */
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
 }
 
 #root {

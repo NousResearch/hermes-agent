@@ -34,6 +34,7 @@ display:
 |------|-------------|----------------|------------------|
 | `default` | Classic Hermes — gold and kawaii | `Hermes Agent` | Warm gold borders, cornsilk text, kawaii faces in spinners. The familiar caduceus banner. Clean and inviting. |
 | `ares` | War-god theme — crimson and bronze | `Ares Agent` | Deep crimson borders with bronze accents. Aggressive spinner verbs ("forging", "marching", "tempering steel"). Custom sword-and-shield ASCII art banner. |
+| `gaeilge` | Irish/Gaeilge theme — emerald, ivory, and orange | `Hermes as Gaeilge` | Irish tricolor palette with shamrock prompt/tool prefix, Gaeilge welcome/goodbye text, localized banner labels, and Irish-language spinner verbs. |
 | `mono` | Monochrome — clean grayscale | `Hermes Agent` | All grays — no color. Borders are `#555555`, text is `#c9d1d9`. Ideal for minimal terminal setups or screen recordings. |
 | `slate` | Cool blue — developer-focused | `Hermes Agent` | Royal blue borders (`#4169e1`), soft blue text. Calm and professional. No custom spinner — uses default faces. |
 | `daylight` | Light theme for bright terminals with dark text and cool blue accents | `Hermes Agent` | Designed for white or bright terminals. Dark slate text with blue borders, pale status surfaces, and a light completion menu that stays readable in light terminal profiles. |
@@ -97,6 +98,8 @@ Text strings used throughout the CLI interface.
 | `response_label` | Label on the response box header | ` ⚕ Hermes ` |
 | `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
+
+Additional optional branding keys can localize banner labels for a skin, such as `available_tools_label`, `available_skills_label`, `profile_label`, `session_label`, and `help_for_commands_label`. Missing keys always fall back to the default English text.
 
 ### Other top-level keys
 

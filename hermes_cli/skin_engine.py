@@ -195,6 +195,92 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "tool_prefix": "┊",
     },
+    "gaeilge": {
+        "name": "gaeilge",
+        "description": "Irish/Gaeilge theme — emerald, ivory, and orange",
+        "colors": {
+            "banner_border": "#169B62",
+            "banner_title": "#FFFFFF",
+            "banner_accent": "#FF883E",
+            "banner_dim": "#7FBF9B",
+            "banner_text": "#F7FFF7",
+            "ui_accent": "#FF883E",
+            "ui_label": "#FFFFFF",
+            "ui_ok": "#169B62",
+            "ui_error": "#E94B3C",
+            "ui_warn": "#FF883E",
+            "prompt": "#F7FFF7",
+            "input_rule": "#169B62",
+            "response_border": "#FF883E",
+            "status_bar_bg": "#0B2E1C",
+            "status_bar_text": "#F7FFF7",
+            "status_bar_strong": "#FFFFFF",
+            "status_bar_dim": "#7FBF9B",
+            "status_bar_good": "#169B62",
+            "status_bar_warn": "#FF883E",
+            "status_bar_bad": "#E94B3C",
+            "status_bar_critical": "#FF4F4F",
+            "session_label": "#FF883E",
+            "session_border": "#7FBF9B",
+        },
+        "spinner": {
+            "waiting_faces": ["(☘)", "(✦)", "(◌)", "(❋)", "(⌁)"],
+            "thinking_faces": ["(☘)", "(❋)", "(✦)", "(⌁)", "(◌)"],
+            "thinking_verbs": [
+                "ag smaoineamh", "ag fíodóireacht", "ag bailiú snáitheanna",
+                "ag léamh na gaoithe", "ag cumadh freagra", "ag cur ord ar na nótaí",
+                "ag lasadh na lóchrainne", "ag leanúint na slí",
+            ],
+            "wings": [
+                ["⟪☘", "☘⟫"],
+                ["⟪✦", "✦⟫"],
+                ["⟪❋", "❋⟫"],
+                ["⟪╸", "╺⟫"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Hermes as Gaeilge",
+            "framework_label": "Creatlach Gníomhairí AI",
+            "welcome": "Fáilte go Hermes as Gaeilge. Scríobh teachtaireacht nó /help le haghaidh orduithe.",
+            "goodbye": "Slán go fóill! ☘",
+            "response_label": " ☘ Hermes ",
+            "prompt_symbol": "☘",
+            "help_header": "(☘) Orduithe ar fáil",
+            "available_tools_label": "Uirlisí ar fáil",
+            "available_skills_label": "Scileanna ar fáil",
+            "mcp_servers_label": "Freastalaithe MCP",
+            "profile_label": "Próifíl",
+            "session_label": "Seisiún",
+            "context_label": "comhthéacs",
+            "provider_label": "Nous Research",
+            "tools_count_label": "uirlis(í)",
+            "failed_label": "theip",
+            "more_label": "eile",
+            "more_toolsets_template": "(agus {count} tacar uirlisí eile...)",
+            "no_skills_label": "Níl aon scil suiteáilte",
+            "tools_label": "uirlis",
+            "skills_label": "scil",
+            "mcp_servers_summary_label": "freastalaí MCP",
+            "help_for_commands_label": "/help le haghaidh orduithe",
+        },
+        "tool_prefix": "☘",
+        "banner_logo": """[bold #169B62]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗ ███████╗     ██████╗  █████╗ ███████╗██╗██╗      ██████╗ ███████╗[/]
+[bold #169B62]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝    ██╔════╝ ██╔══██╗██╔════╝██║██║     ██╔════╝ ██╔════╝[/]
+[#FFFFFF]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║███████╗    ██║  ███╗███████║█████╗  ██║██║     ██║  ███╗█████╗  [/]
+[#FF883E]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║╚════██║    ██║   ██║██╔══██║██╔══╝  ██║██║     ██║   ██║██╔══╝  [/]
+[bold #FF883E]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║███████║    ╚██████╔╝██║  ██║███████╗██║███████╗╚██████╔╝███████╗[/]
+[bold #FF883E]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝╚══════╝     ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝╚══════╝ ╚═════╝ ╚══════╝[/]""",
+        "banner_hero": """[#169B62]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#169B62]⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⣿⣿⣿⣦⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#FFFFFF]⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⠟⠋⠀☘⠀⠙⠻⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀[/]
+[#FFFFFF]⠀⠀⠀⠀⠀⠀⢠⣿⠏⠀⠀⠀⠀⠀⠀⠀⠀⠹⣿⡄⠀⠀⠀⠀⠀⠀[/]
+[#FF883E]⠀⠀⠀⠀⠀⠀⣿⡟⠀⠀⠀⣀⣀⣀⣀⠀⠀⠀⢻⣿⠀⠀⠀⠀⠀⠀[/]
+[#FF883E]⠀⠀⠀⠀⠀⠀⣿⡇⠀⠀⠈⠉⠉⠉⠉⠁⠀⠀⢸⣿⠀⠀⠀⠀⠀⠀[/]
+[#169B62]⠀⠀⠀⠀⠀⠀⢿⣧⠀⠀⠀⠀☘⠀⠀⠀⠀⣼⡿⠀⠀⠀⠀⠀⠀[/]
+[#FFFFFF]⠀⠀⠀⠀⠀⠀⠈⠻⣷⣄⡀⠀⠀⠀⠀⢀⣠⣾⠟⠁⠀⠀⠀⠀⠀⠀[/]
+[#FF883E]⠀⠀⠀⠀⠀⠀⠀⠀⠈⠙⠿⣿⣿⣿⠿⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[dim #7FBF9B]⠀⠀⠀⠀⠀⠀⠀⠀⠀fáilte isteach⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
     "ares": {
         "name": "ares",
         "description": "War-god theme — crimson and bronze",

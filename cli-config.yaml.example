@@ -933,6 +933,7 @@ display:
   # Built-in skins:
   #   default        — Classic Hermes gold/kawaii
   #   ares           — Crimson/bronze war-god theme with spinner wings
+  #   gaeilge        — Irish/Gaeilge emerald, ivory, and orange theme
   #   mono           — Clean grayscale monochrome
   #   slate          — Cool blue developer-focused
   #   daylight       — Bright light-mode theme

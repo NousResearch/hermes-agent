@@ -1,0 +1,26 @@
+# Catalóg teachtaireachtaí statacha Hermes -- Gaeilge
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  # Leid cheadaithe CLI -- taispeántar é nuair is gá d'úsáideoir ordú contúirteach a athbhreithniú.
+  dangerous_header: "⚠️  ORDÚ DÁINSÉARACH: {description}"
+  choose_long:     "      [o] uair amháin  |  [s] seisiún  |  [a] i gcónaí  |  [d] diúltaigh"
+  choose_short:    "      [o] uair amháin  |  [s] seisiún  |  [d] diúltaigh"
+  prompt_long:     "      Rogha [o/s/a/D]: "
+  prompt_short:    "      Rogha [o/s/D]: "
+  timeout:         "      ⏱ Chuaigh an t-am in éag — ordú diúltaithe"
+  allowed_once:    "      ✓ Ceadaithe uair amháin"
+  allowed_session: "      ✓ Ceadaithe don seisiún seo"
+  allowed_always:  "      ✓ Curtha leis an liosta buancheadaithe"
+  denied:          "      ✗ Diúltaithe"
+  cancelled:       "      ✗ Cealaithe"
+  blocklist_message: "Tá an t-ordú seo ar an liosta blocála neamhchoinníollach agus ní féidir é a cheadú."
+
+gateway:
+  # Freagraí teachtaire do shlais-orduithe agus d'athruithe intuigthe staid.
+  approval_expired: "⚠️ Chuaigh an ceadú in éag (níl an gníomhaire ag fanacht a thuilleadh). Iarr ar an ngníomhaire triail eile a bhaint as."
+  draining:         "⏳ Ag fanacht le {count} gníomhaire gníomhach a chríochnú roimh atosú..."
+  goal_cleared:     "✓ Sprioc glanta."
+  no_active_goal:   "Níl aon sprioc ghníomhach ann."
+  config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
+  config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"

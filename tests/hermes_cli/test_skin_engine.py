@@ -66,6 +66,18 @@ class TestBuiltinSkins:
         assert isinstance(wings[0], tuple)
         assert len(wings[0]) == 2
 
+    def test_gaeilge_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("gaeilge")
+        assert skin.name == "gaeilge"
+        assert skin.tool_prefix == "☘"
+        assert skin.get_color("banner_border") == "#169B62"
+        assert skin.get_color("banner_accent") == "#FF883E"
+        assert skin.get_branding("agent_name") == "Hermes as Gaeilge"
+        assert skin.get_branding("available_tools_label") == "Uirlisí ar fáil"
+        assert "ag smaoineamh" in skin.spinner["thinking_verbs"]
+
     def test_mono_skin_loads(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("mono")
@@ -134,6 +146,7 @@ class TestSkinManagement:
         names = [s["name"] for s in skins]
         assert "default" in names
         assert "ares" in names
+        assert "gaeilge" in names
         assert "mono" in names
         assert "slate" in names
         assert "daylight" in names

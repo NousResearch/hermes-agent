@@ -111,6 +111,16 @@ class TestCompactBannerSkinIntegration:
         assert "Poseidon Agent" in banner
         assert "NOUS HERMES" not in banner
 
+    def test_gaeilge_compact_banner_uses_localized_framework_label(self):
+        set_active_skin("gaeilge")
+
+        with patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=90)), \
+             patch.dict(_build_compact_banner.__globals__, {"format_banner_version_label": lambda: "Hermes Agent v0.1.0 (test)"}):
+            banner = _build_compact_banner()
+
+        assert "Hermes as Gaeilge" in banner
+        assert "Creatlach Gníomhairí AI" in banner
+
     def test_poseidon_compact_banner_uses_skin_colors(self):
         set_active_skin("poseidon")
         skin = get_active_skin()

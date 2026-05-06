@@ -1940,7 +1940,8 @@ def _build_compact_banner() -> str:
         tiny_line = "⚕ NOUS HERMES"
     else:
         agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
-        line1 = f"{agent_name} - AI Agent Framework"
+        framework_label = _skin.get_branding("framework_label", "AI Agent Framework") if _skin else "AI Agent Framework"
+        line1 = f"{agent_name} - {framework_label}"
         tiny_line = agent_name
 
     version_line = format_banner_version_label()

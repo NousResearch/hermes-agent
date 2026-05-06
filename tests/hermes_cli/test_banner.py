@@ -133,3 +133,66 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
+
+
+def test_build_welcome_banner_uses_gaeilge_skin_labels():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("gaeilge")
+    try:
+        with (
+            patch.object(
+                model_tools,
+                "check_tool_availability",
+                return_value=(["web"], []),
+            ),
+            patch.object(banner, "get_available_skills", return_value={}),
+            patch.object(banner, "get_update_result", return_value=None),
+            patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        ):
+            console = Console(
+                record=True, force_terminal=False, color_system=None, width=160
+            )
+            banner.build_welcome_banner(
+                console=console,
+                model="anthropic/test-model",
+                cwd="/tmp/project",
+                session_id="abc123",
+                tools=[{"function": {"name": "web_search"}}],
+                get_toolset_for_tool=lambda name: "web",
+            )
+
+        output = console.export_text()
+        assert "Uirlisí ar fáil" in output
+        assert "Scileanna ar fáil" in output
+        assert "Seisiún: abc123" in output
+        assert "/help le haghaidh orduithe" in output
+    finally:
+        set_active_skin("default")
+
+
+def test_build_welcome_banner_default_more_toolsets_text_unchanged():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("default")
+    toolsets = [f"toolset{i}" for i in range(10)]
+    tool_defs = [{"function": {"name": f"tool{i}"}} for i in range(10)]
+    tool_map = {f"tool{i}": toolsets[i] for i in range(10)}
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=180)
+        banner.build_welcome_banner(
+            console=console,
+            model="anthropic/test-model",
+            cwd="/tmp/project",
+            tools=tool_defs,
+            get_toolset_for_tool=lambda name: tool_map[name],
+        )
+
+    output = console.export_text()
+    assert "(and 2 more toolsets...)" in output
+    assert "(+ 2 more toolsets...)" not in output

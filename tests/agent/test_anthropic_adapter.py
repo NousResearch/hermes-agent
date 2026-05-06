@@ -90,6 +90,34 @@ class TestBuildAnthropicClient:
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
 
+    def test_force_drop_1m_beta_via_env(self, monkeypatch):
+        """HERMES_OAUTH_FORCE_DROP_1M_BETA=1 strips context-1m on every
+        build_anthropic_client call, including auxiliary ones that don't
+        thread drop_context_1m_beta=True. Required for Claude.ai OAuth
+        subscriptions where title_generator/summarization would otherwise
+        fail with "long context beta is not yet available"."""
+        monkeypatch.setenv("HERMES_OAUTH_FORCE_DROP_1M_BETA", "1")
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            # Note: drop_context_1m_beta defaults to False; the env var
+            # is what triggers the strip.
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            # Other OAuth betas remain intact.
+            assert "oauth-2025-04-20" in betas
+            assert "claude-code-20250219" in betas
+
+    def test_force_drop_1m_beta_default_off(self, monkeypatch):
+        """Without HERMES_OAUTH_FORCE_DROP_1M_BETA the 1M beta stays present
+        — the existing reactive recovery path remains the default behaviour."""
+        monkeypatch.delenv("HERMES_OAUTH_FORCE_DROP_1M_BETA", raising=False)
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-something")
@@ -1021,6 +1049,40 @@ class TestBuildAnthropicKwargs:
         assert "oauth-2025-04-20" in betas
         assert "claude-code-20250219" in betas
         assert "interleaved-thinking-2025-05-14" in betas
+
+    def test_oauth_no_mcp_prefix_env_skips_tool_renaming(self, monkeypatch):
+        """HERMES_OAUTH_NO_MCP_PREFIX=1 disables the mcp_ tool-name convention
+        on OAuth requests. Required for Claude.ai subscriptions where the
+        content filter rejects mcp_*-prefixed tools not registered with the
+        account's Claude Code MCP setup, surfacing as HTTP 400 'out of extra
+        usage' on every tool-bearing request."""
+        monkeypatch.setenv("HERMES_OAUTH_NO_MCP_PREFIX", "1")
+        tool = {"type": "function", "function": {"name": "read_file", "description": "...", "parameters": {"type": "object"}}}
+        kwargs = build_anthropic_kwargs(
+            model="claude-haiku-4-5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[tool],
+            max_tokens=200,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        # Tool name retained (no mcp_ prefix added)
+        assert kwargs["tools"][0]["name"] == "read_file"
+
+    def test_oauth_mcp_prefix_default_on(self, monkeypatch):
+        """Default behaviour preserved: without the env var, OAuth requests
+        still get the mcp_ prefix to mimic the Claude Code CLI convention."""
+        monkeypatch.delenv("HERMES_OAUTH_NO_MCP_PREFIX", raising=False)
+        tool = {"type": "function", "function": {"name": "read_file", "description": "...", "parameters": {"type": "object"}}}
+        kwargs = build_anthropic_kwargs(
+            model="claude-haiku-4-5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[tool],
+            max_tokens=200,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        assert kwargs["tools"][0]["name"] == "mcp_read_file"
 
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(

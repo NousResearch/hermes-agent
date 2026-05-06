@@ -309,6 +309,20 @@ _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for 
 _MCP_TOOL_PREFIX = "mcp_"
 
 
+def _oauth_mcp_prefix_enabled() -> bool:
+    """Whether to apply the Claude-Code mcp_ tool-name convention on OAuth.
+
+    Default True (the historical behaviour). Set HERMES_OAUTH_NO_MCP_PREFIX=1
+    to skip it — required for Claude.ai subscriptions whose server-side
+    content filter rejects mcp_*-prefixed tool names not registered with the
+    account's Claude Code MCP setup. Symptom is a misleading HTTP 400
+    "out of extra usage" on every request that carries 1+ tools.
+    """
+    import os as _os
+    val = (_os.environ.get("HERMES_OAUTH_NO_MCP_PREFIX") or "").strip().lower()
+    return val not in ("1", "true", "yes", "on")
+
+
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
     global _claude_code_version_cache
@@ -503,7 +517,15 @@ def _common_betas_for_base_url(
     if _requires_bearer_auth(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in _COMMON_BETAS if b not in _stripped]
-    if drop_context_1m_beta:
+    # HERMES_OAUTH_FORCE_DROP_1M_BETA=1 forces the strip on every
+    # build_anthropic_client call (including auxiliary clients like
+    # title_generator/summarization that don't thread drop_context_1m_beta=True
+    # explicitly). Without this, Claude.ai OAuth subscriptions hit
+    # "The long context beta is not yet available for this subscription"
+    # on any auxiliary call and the gateway/cron flow degrades.
+    import os as _os_for_drop
+    _force_drop = (_os_for_drop.environ.get("HERMES_OAUTH_FORCE_DROP_1M_BETA") or "").strip().lower() in ("1", "true", "yes", "on")
+    if drop_context_1m_beta or _force_drop:
         return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
     return _COMMON_BETAS
 
@@ -1845,23 +1867,27 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        if anthropic_tools:
-            for tool in anthropic_tools:
-                if "name" in tool:
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
+        # 3. Prefix tool names with mcp_ (Claude Code convention).
+        # Skipped when HERMES_OAUTH_NO_MCP_PREFIX=1 — Anthropic's content
+        # filter rejects mcp_* names not registered with the account's
+        # Claude Code MCP setup, surfacing as HTTP 400 "out of extra usage".
+        if _oauth_mcp_prefix_enabled():
+            if anthropic_tools:
+                for tool in anthropic_tools:
+                    if "name" in tool:
+                        tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+            # 4. Prefix tool names in message history (tool_use blocks).
+            for msg in anthropic_messages:
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "tool_use" and "name" in block:
+                                if not block["name"].startswith(_MCP_TOOL_PREFIX):
+                                    block["name"] = _MCP_TOOL_PREFIX + block["name"]
+                            elif block.get("type") == "tool_result" and "tool_use_id" in block:
+                                pass  # tool_result uses ID, not name
 
     kwargs: Dict[str, Any] = {
         "model": model,

@@ -4944,13 +4944,20 @@ class AIAgent:
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
         prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
-        # Tool-aware behavioral guidance: only inject when the tools are loaded
+        # Tool-aware behavioral guidance: only inject when the tools are loaded.
+        # When HERMES_OAUTH_COMPACT_GUIDANCE=1 is set (typically alongside
+        # HERMES_OAUTH_NO_MCP_PREFIX=1 on Claude.ai OAuth deployments), drop
+        # SKILLS_GUIDANCE — combined with MEMORY_GUIDANCE it trips Anthropic's
+        # server-side content filter and the request fails with a misleading
+        # HTTP 400 "out of extra usage".
+        import os as _os_for_compact
+        _compact = (_os_for_compact.environ.get("HERMES_OAUTH_COMPACT_GUIDANCE") or "").strip().lower() in ("1", "true", "yes", "on")
         tool_guidance = []
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
-        if "skill_manage" in self.valid_tool_names:
+        if "skill_manage" in self.valid_tool_names and not _compact:
             tool_guidance.append(SKILLS_GUIDANCE)
         # Kanban worker/orchestrator lifecycle — only present when the
         # dispatcher spawned this process (kanban_show check_fn gates on

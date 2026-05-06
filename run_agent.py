@@ -8956,6 +8956,29 @@ class AIAgent:
 
         return msg
 
+    @staticmethod
+    def _build_empty_assistant_placeholder() -> dict:
+        """Return a synthetic assistant message used only to keep history valid."""
+        return {
+            "role": "assistant",
+            "content": "(empty)",
+            "finish_reason": "stop",
+        }
+
+    @staticmethod
+    def _tool_batch_all_end_turn(tool_calls) -> bool:
+        """Return True when every tool in the batch can legally end the turn."""
+        if not tool_calls:
+            return False
+        from tools.registry import registry
+
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", None)
+            if not name or not registry.is_end_turn(name):
+                return False
+        return True
+
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
@@ -13491,6 +13514,9 @@ class AIAgent:
                     # flag so it can fire again if the model goes empty on
                     # a LATER tool round.
                     self._post_tool_empty_retried = False
+                    self._last_tool_calls_all_end_turn = self._tool_batch_all_end_turn(
+                        assistant_message.tool_calls
+                    )
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
@@ -13517,6 +13543,19 @@ class AIAgent:
                             f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                         )
                         messages.append({"role": "assistant", "content": final_response})
+                        break
+
+                    if self._last_tool_calls_all_end_turn:
+                        _turn_exit_reason = "end_turn_tool_batch"
+                        messages.append(self._build_empty_assistant_placeholder())
+                        clean = self._strip_think_blocks(turn_content).strip()
+                        if clean and getattr(self, "interim_assistant_callback", None) is not None:
+                            self._response_was_previewed = True
+                        final_response = clean
+                        self._last_content_with_tools = None
+                        self._last_content_tools_all_housekeeping = False
+                        self._last_tool_calls_all_end_turn = False
+                        self._empty_content_retries = 0
                         break
 
                     # Reset per-turn retry counters after successful tool

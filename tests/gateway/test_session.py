@@ -784,6 +784,24 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(second) == "agent:main:telegram:dm:100"
         assert build_session_key(first) != build_session_key(second)
 
+    def test_slack_dm_keys_include_workspace_scope(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            guild_id="T111",
+            chat_id="D123",
+            chat_type="dm",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            guild_id="T222",
+            chat_id="D123",
+            chat_type="dm",
+        )
+
+        assert build_session_key(first) == "agent:main:slack:dm:T111:D123"
+        assert build_session_key(second) == "agent:main:slack:dm:T222:D123"
+        assert build_session_key(first) != build_session_key(second)
+
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""
         source = SessionSource(
@@ -810,6 +828,28 @@ class TestWhatsAppSessionKeyConsistency:
 
         assert build_session_key(first) == "agent:main:discord:group:guild-123:alice"
         assert build_session_key(second) == "agent:main:discord:group:guild-123:bob"
+        assert build_session_key(first) != build_session_key(second)
+
+    def test_slack_channel_keys_include_workspace_scope(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            guild_id="T111",
+            chat_id="C123",
+            chat_type="group",
+            user_id="U1",
+            thread_id="1700000000.000100",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            guild_id="T222",
+            chat_id="C123",
+            chat_type="group",
+            user_id="U1",
+            thread_id="1700000000.000100",
+        )
+
+        assert build_session_key(first) == "agent:main:slack:group:T111:C123:1700000000.000100"
+        assert build_session_key(second) == "agent:main:slack:group:T222:C123:1700000000.000100"
         assert build_session_key(first) != build_session_key(second)
 
     def test_group_sessions_can_be_shared_when_isolation_disabled(self):

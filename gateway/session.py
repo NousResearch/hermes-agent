@@ -607,12 +607,16 @@ def build_session_key(
     This is the single source of truth for session key construction.
 
     DM rules:
+      - guild_id, when present, scopes the DM to a Discord guild / Slack
+        workspace / Matrix server before chat_id. This prevents channel/DM ID
+        collisions across multiple connected Slack workspaces.
       - DMs include chat_id when present, so each private conversation is isolated.
       - thread_id further differentiates threaded DMs within the same DM chat.
       - Without chat_id, thread_id is used as a best-effort fallback.
       - Without thread_id or chat_id, DMs share a single session.
 
     Group/channel rules:
+      - guild_id, when present, identifies the outer server/workspace scope.
       - chat_id identifies the parent group/channel.
       - user_id/user_id_alt isolates participants within that parent chat when available when
         ``group_sessions_per_user`` is enabled.
@@ -631,13 +635,17 @@ def build_session_key(
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
 
+        dm_parts = ["agent:main", platform, "dm"]
+        if source.guild_id:
+            dm_parts.append(str(source.guild_id))
         if dm_chat_id:
+            dm_parts.append(dm_chat_id)
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                dm_parts.append(source.thread_id)
+            return ":".join(dm_parts)
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            dm_parts.append(source.thread_id)
+        return ":".join(dm_parts)
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -647,6 +655,8 @@ def build_session_key(
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     key_parts = ["agent:main", platform, source.chat_type]
 
+    if source.guild_id:
+        key_parts.append(str(source.guild_id))
     if source.chat_id:
         key_parts.append(source.chat_id)
     if source.thread_id:

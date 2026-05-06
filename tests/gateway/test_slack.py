@@ -2159,7 +2159,7 @@ class TestAssistantThreadLifecycle:
 
         await assistant_adapter._handle_assistant_thread_lifecycle_event(event)
 
-        assert assistant_adapter._assistant_threads[("D123", "171.000")]["user_id"] == "U_USER"
+        assert assistant_adapter._assistant_threads[("T_TEAM", "D123", "171.000")]["user_id"] == "U_USER"
         mock_session_store.get_or_create_session.assert_called_once()
         source = mock_session_store.get_or_create_session.call_args[0][0]
         assert source.chat_id == "D123"
@@ -2170,7 +2170,7 @@ class TestAssistantThreadLifecycle:
 
     @pytest.mark.asyncio
     async def test_message_uses_cached_assistant_thread_identity(self, assistant_adapter):
-        assistant_adapter._assistant_threads[("D123", "171.000")] = {
+        assistant_adapter._assistant_threads[("T_TEAM", "D123", "171.000")] = {
             "channel_id": "D123",
             "thread_ts": "171.000",
             "user_id": "U_USER",

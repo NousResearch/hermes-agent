@@ -2739,6 +2739,57 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    def _schedule_resume_pending_sessions(self) -> int:
+        """Auto-continue fresh restart-interrupted sessions after startup.
+
+        ``resume_pending`` already preserves the transcript and injects the
+        recovery system note on the next user message.  This method closes the
+        restart UX gap by synthesizing that next message once adapters are back
+        online, so users do not have to send a placeholder ping after restart.
+        """
+        try:
+            entries = self.session_store.list_resume_pending(
+                window_secs=_auto_continue_freshness_window(),
+                allowed_reasons={"restart_timeout", "shutdown_timeout"},
+            )
+        except Exception as exc:
+            logger.warning("Failed to list resume-pending sessions: %s", exc)
+            return 0
+
+        scheduled = 0
+        for entry in entries:
+            source = getattr(entry, "origin", None)
+            platform = getattr(source, "platform", None)
+            adapter = self.adapters.get(platform) if platform is not None else None
+            if source is None or adapter is None:
+                logger.debug(
+                    "Skipping auto-resume for %s: adapter unavailable for %s",
+                    getattr(entry, "session_key", "?"),
+                    getattr(platform, "value", platform),
+                )
+                continue
+
+            event = MessageEvent(
+                text=(
+                    "[System note: The gateway restarted after interrupting "
+                    "this session. Resume the previous turn now. Reconcile "
+                    "the transcript first: if tool results are already present, "
+                    "process them before taking new action; never claim work "
+                    "completed unless it is visible in the transcript/tool output.]"
+                ),
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            task = asyncio.create_task(adapter.handle_message(event))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            scheduled += 1
+
+        if scheduled:
+            logger.info("Scheduled auto-resume for %d restart-interrupted session(s)", scheduled)
+        return scheduled
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -3126,6 +3177,12 @@ class GatewayRunner:
             await self._send_home_channel_startup_notifications(
                 skip_targets=skip_home_targets,
             )
+
+        # Automatically continue fresh sessions that were interrupted by the
+        # previous gateway restart/shutdown.  The resume_pending flag is cleared
+        # by the normal successful-turn path, so a failed auto-resume remains
+        # visible for manual recovery on the next user message.
+        self._schedule_resume_pending_sessions()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:

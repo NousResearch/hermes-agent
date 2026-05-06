@@ -940,6 +940,37 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
 
+        # 3. Remove tool messages at the start of the list (or after a non-assistant
+        #    message) that have no preceding assistant with tool_calls.  This handles
+        #    the boundary case where compress_end lands on a tool message whose parent
+        #    assistant was in the summarised region.  The orphan removal in step 1
+        #    catches tool results whose call_id no longer matches any surviving
+        #    assistant, but some providers (DeepSeek, etc.) additionally require that
+        #    every ``tool`` message is *immediately* preceded by the ``assistant``
+        #    message that issued the corresponding ``tool_calls``.
+        filtered: List[Dict[str, Any]] = []
+        last_assistant_had_calls = False
+        removed_boundary = 0
+        for msg in messages:
+            if msg.get("role") == "tool":
+                # Valid only if immediately preceded by an assistant with tool_calls
+                # or another tool message from the same group
+                if not last_assistant_had_calls and not (
+                    filtered and filtered[-1].get("role") == "tool"
+                ):
+                    removed_boundary += 1
+                    continue
+            filtered.append(msg)
+            last_assistant_had_calls = (
+                msg.get("role") == "assistant" and bool(msg.get("tool_calls"))
+            )
+        if removed_boundary and not self.quiet_mode:
+            logger.info(
+                "Compression sanitizer: removed %d tool message(s) at invalid boundary",
+                removed_boundary,
+            )
+        messages = filtered
+
         return messages
 
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:

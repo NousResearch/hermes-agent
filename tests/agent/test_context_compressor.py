@@ -969,3 +969,93 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestSanitizeToolPairsBoundary:
+    """Regression: tool messages at compression boundary cause HTTP 400.
+
+    After compression, the first message in the tail may be a ``tool``
+    message whose parent ``assistant`` was summarised away.  Some providers
+    (DeepSeek, etc.) require every ``tool`` message to be *immediately*
+    preceded by the ``assistant`` that issued the corresponding
+    ``tool_calls``.  The sanitizer must strip such boundary orphans.
+    """
+
+    def test_tool_message_at_start_is_removed(self, compressor):
+        """A tool message at position 0 (no preceding assistant) is removed."""
+        messages = [
+            {"role": "tool", "tool_call_id": "tc_orphan", "content": "result"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result = compressor._sanitize_tool_pairs(messages)
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+
+    def test_tool_message_after_summary_is_removed(self, compressor):
+        """A tool message after a summary (non-assistant-with-calls) is removed.
+
+        Simulates the post-compression layout: [...head..., summary, tool, ...tail].
+        """
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "summary of earlier turns"},
+            {"role": "tool", "tool_call_id": "tc_old", "content": "old result"},
+            {"role": "user", "content": "follow up"},
+            {"role": "assistant", "content": "answer"},
+        ]
+        result = compressor._sanitize_tool_pairs(messages)
+        # The orphaned tool(tc_old) should be removed — its parent assistant
+        # was summarised and no longer has matching tool_calls.
+        tool_msgs = [m for m in result if m.get("role") == "tool"]
+        assert len(tool_msgs) == 0
+
+    def test_valid_tool_group_preserved(self, compressor):
+        """A valid assistant→tool group is NOT affected by the boundary check."""
+        messages = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "tc_1", "content": "file contents"},
+            {"role": "user", "content": "thanks"},
+        ]
+        result = compressor._sanitize_tool_pairs(messages)
+        assert len(result) == 4
+        tool_msgs = [m for m in result if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+
+    def test_consecutive_orphaned_tools_at_boundary(self, compressor):
+        """Multiple consecutive orphaned tool messages at the boundary are all removed."""
+        messages = [
+            {"role": "assistant", "content": "summary"},
+            {"role": "tool", "tool_call_id": "tc_a", "content": "a"},
+            {"role": "tool", "tool_call_id": "tc_b", "content": "b"},
+            {"role": "user", "content": "next"},
+        ]
+        result = compressor._sanitize_tool_pairs(messages)
+        assert len(result) == 2
+        assert result[0]["role"] == "assistant"
+        assert result[1]["role"] == "user"
+
+    def test_mixed_valid_and_orphaned_tools(self, compressor):
+        """Valid tool group preserved; orphaned tools after it removed."""
+        messages = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc_good", "type": "function",
+                 "function": {"name": "foo", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "tc_good", "content": "ok"},
+            {"role": "assistant", "content": "summary"},
+            {"role": "tool", "tool_call_id": "tc_bad", "content": "orphan"},
+            {"role": "user", "content": "q2"},
+        ]
+        result = compressor._sanitize_tool_pairs(messages)
+        # tc_good is valid (preceded by assistant with tool_calls)
+        # tc_bad is orphaned (preceded by assistant without tool_calls)
+        tool_msgs = [m for m in result if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "tc_good"

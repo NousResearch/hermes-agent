@@ -2206,7 +2206,8 @@ async def delete_session_endpoint(session_id: str):
     from hermes_state import SessionDB
     db = SessionDB()
     try:
-        if not db.delete_session(session_id):
+        sessions_dir = get_hermes_home() / "sessions"
+        if not db.delete_session(session_id, sessions_dir=sessions_dir):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
     finally:

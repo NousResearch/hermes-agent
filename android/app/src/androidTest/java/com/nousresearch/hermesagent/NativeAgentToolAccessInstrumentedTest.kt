@@ -51,7 +51,7 @@ class NativeAgentToolAccessInstrumentedTest {
                 userText = "Create a file, delete a file, and inspect Android phone status.",
             )
 
-            assertEquals(4, result.executedToolCalls)
+            assertEquals(5, result.executedToolCalls)
             assertTrue(result.content, result.content.contains("native tool access ok"))
             assertTrue("Expected ${createFile.absolutePath}", createFile.isFile)
             assertEquals("native-create-ok", createFile.readText())
@@ -65,6 +65,8 @@ class NativeAgentToolAccessInstrumentedTest {
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("active_network_label"))
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("privileged_access"))
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("shizuku_binder_alive"))
+            assertTrue(toolMessages.toString(), toolMessages.toString().contains("grant_runtime_permission"))
+            assertTrue(toolMessages.toString(), toolMessages.toString().contains("requires package_name"))
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("available_ui_actions"))
             assertTrue(toolMessages.toString(), toolMessages.toString().contains("accessibility_service_enabled"))
         } finally {
@@ -169,6 +171,7 @@ class NativeAgentToolAccessInstrumentedTest {
                         .put(toolCall("call_create", "terminal_tool", JSONObject().put("command", createCommand)))
                         .put(toolCall("call_delete", "terminal_tool", JSONObject().put("command", deleteCommand)))
                         .put(toolCall("call_status", "android_system_tool", JSONObject().put("action", "status")))
+                        .put(toolCall("call_missing_package", "android_system_tool", JSONObject().put("action", "grant_runtime_permission")))
                         .put(toolCall("call_ui_status", "android_ui_tool", JSONObject().put("action", "status"))),
                 )
             return completionPayload(message, "tool_calls")

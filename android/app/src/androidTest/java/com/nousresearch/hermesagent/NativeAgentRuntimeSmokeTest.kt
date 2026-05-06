@@ -83,6 +83,13 @@ class NativeAgentRuntimeSmokeTest {
         assertTrue(status.has("active_network_label"))
         assertTrue(status.has("usb_host_supported"))
         assertTrue(actions.toString(), actions.toString().contains("start_background_runtime"))
+        assertTrue(
+            status.toString(),
+            status.getJSONObject("privileged_access")
+                .getJSONArray("available_privileged_actions")
+                .toString()
+                .contains("grant_runtime_permission"),
+        )
 
         val result = JSONObject(HermesSystemControlBridge.performActionJson("unsupported_smoke_action"))
         assertFalse(result.toString(), result.getBoolean("success"))

@@ -554,28 +554,54 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
-    def cleanup(self):
-        """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
+    def cleanup(self, wait: bool = False):
+        """Stop and remove container. Bind-mount dirs persist if persistent=True.
+        
+        Args:
+            wait: If True, wait for cleanup to complete. If False, run in background.
+        """
         if self._container_id:
             try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
-                )
-                subprocess.Popen(stop_cmd, shell=True)
+                if wait:
+                    # Synchronous cleanup - wait for container to stop and be removed
+                    logger.info("Cleaning up container %s synchronously...", self._container_id)
+                    subprocess.run(
+                        f"{self._docker_exe} stop {self._container_id}",
+                        shell=True, check=False, timeout=65, capture_output=True
+                    )
+                    subprocess.run(
+                        f"{self._docker_exe} rm -f {self._container_id}",
+                        shell=True, check=False, capture_output=True
+                    )
+                else:
+                    # Stop in background so cleanup doesn't block
+                    stop_cmd = (
+                        f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
+                        f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
+                    )
+                    subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
 
             if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
-                try:
-                    subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
-                    )
-                except Exception:
-                    pass
+                if wait:
+                    # Synchronous removal
+                    try:
+                        subprocess.run(
+                            f"{self._docker_exe} rm -f {self._container_id}",
+                            shell=True, check=False, capture_output=True
+                        )
+                    except Exception:
+                        pass
+                else:
+                    # Also schedule removal (stop only leaves it as stopped)
+                    try:
+                        subprocess.Popen(
+                            f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
+                            shell=True,
+                        )
+                    except Exception:
+                        pass
             self._container_id = None
 
         if not self._persistent:

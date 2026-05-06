@@ -3941,7 +3941,7 @@ class HermesCLI:
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
     def _handle_stop_command(self):
-        """Handle /stop — kill all running background processes.
+        """Handle /stop — kill all running background processes and clean up environments.
 
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
@@ -3958,6 +3958,34 @@ class HermesCLI:
         print(f"  Stopping {len(running)} background process(es)...")
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
+        
+        # Clean up environments (Docker containers, etc.)
+        _cleanup_environments(process_registry)
+
+    def _cleanup_environments(self, process_registry):
+        """Clean up all environment objects (Docker containers, etc.)"""
+        from tools.process_registry import process_registry as pr
+        
+        try:
+            sessions = pr.list_sessions()
+            cleaned = 0
+            
+            for session in sessions:
+                session_obj = pr.get(session.get("session_id", ""))
+                if session_obj and hasattr(session_obj, "env_ref") and session_obj.env_ref:
+                    try:
+                        # Call cleanup synchronously to ensure containers are actually removed
+                        if hasattr(session_obj.env_ref, "cleanup"):
+                            session_obj.env_ref.cleanup(wait=True)
+                            cleaned += 1
+                    except Exception as e:
+                        logger.warning("Failed to cleanup environment for session %s: %s", 
+                                     session.get("session_id", "?"), e)
+            
+            if cleaned > 0:
+                print(f"  🧹 Cleaned up {cleaned} environment(s).")
+        except Exception as e:
+            logger.warning("Failed to cleanup environments: %s", e)
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""

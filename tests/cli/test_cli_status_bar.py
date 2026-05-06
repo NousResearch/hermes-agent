@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from cli import HermesCLI, _format_codex_usage_label
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -12,6 +12,15 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.provider = None
+    cli_obj.base_url = ""
+    cli_obj.api_mode = None
+    cli_obj._codex_usage_label_cache = None
+    cli_obj._codex_usage_cache_expires = 0.0
+    cli_obj._codex_usage_fetch_inflight = False
+    cli_obj._codex_usage_retry_at = 0.0
+    import threading
+    cli_obj._codex_usage_lock = threading.Lock()
     return cli_obj
 
 
@@ -33,6 +42,7 @@ def _attach_agent(
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
         provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
+        api_mode=None,
         base_url="",
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
@@ -61,6 +71,41 @@ class TestCLIStatusBar:
         assert cli_obj._status_bar_context_style(50) == "class:status-bar-warn"
         assert cli_obj._status_bar_context_style(81) == "class:status-bar-bad"
         assert cli_obj._status_bar_context_style(95) == "class:status-bar-critical"
+
+    def test_format_codex_usage_label_shows_five_hour_and_weekly_bars(self):
+        payload = {
+            "rateLimits": {
+                "primary": {"usedPercent": 4, "windowDurationMins": 300},
+                "secondary": {"usedPercent": 86, "windowDurationMins": 10080},
+            }
+        }
+
+        label = _format_codex_usage_label(payload)
+
+        assert label == "Codex 5h [░░░░░] 4% W [████░] 86%"
+
+    def test_status_bar_uses_cached_codex_usage_for_codex_route(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "openai-codex"
+        cli_obj.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj._codex_usage_label_cache = "Codex 5h [█░░░░] 14% W [████░] 89%"
+        cli_obj._codex_usage_cache_expires = time.monotonic() + 3600.0
+
+        text = cli_obj._build_status_bar_text(width=160)
+        narrow_text = cli_obj._build_status_bar_text(width=80)
+
+        assert "Codex 5h [█░░░░] 14% W [████░] 89%" in text
+        assert "Codex 5h [█░░░░] 14% W [████░] 89%" in narrow_text
+
+    def test_status_bar_hides_codex_usage_for_explicit_non_codex_provider(self):
+        cli_obj = _make_cli(model="gpt-5.3-codex")
+        cli_obj.provider = "openrouter"
+        cli_obj._codex_usage_label_cache = "Codex 5h [█░░░░] 14% W [████░] 89%"
+        cli_obj._codex_usage_cache_expires = time.monotonic() + 3600.0
+
+        text = cli_obj._build_status_bar_text(width=160)
+
+        assert "Codex 5h" not in text
 
     def test_build_status_bar_text_for_wide_terminal(self):
         cli_obj = _attach_agent(

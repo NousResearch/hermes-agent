@@ -2213,3 +2213,106 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+# ---------------------------------------------------------------------------
+# /dashboard-plugins/<plugin>/<file> — Cache-Control on plugin assets.
+#
+# The dashboard plugin loader injects each plugin's bundle as a <script src>
+# exactly once per page lifecycle.  Without an explicit Cache-Control, the
+# browser's heuristic cache can serve a stale IIFE to the script tag even
+# after a hard refresh, leading to "function not defined" errors when a
+# plugin author ships an update under the same filename.  We send
+# ``Cache-Control: no-cache`` so the browser revalidates with the server
+# every load (ETag / Last-Modified come from FileResponse) — the server
+# returns 304 when unchanged and the full body when the bundle changed.
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardPluginAssetCacheControl:
+    """The /dashboard-plugins/<name>/<file> endpoint must send a
+    revalidation-friendly Cache-Control header so plugin updates are picked
+    up without manual cache clears."""
+
+    def _write_plugin(self, tmp_path, name, asset_relpath, asset_body):
+        import json
+        plug_root = tmp_path / "plugins" / name / "dashboard"
+        plug_root.mkdir(parents=True)
+        (plug_root / "manifest.json").write_text(json.dumps({
+            "name": name,
+            "label": name.title(),
+            "tab": {"path": f"/{name}"},
+            "entry": asset_relpath,
+        }))
+        asset_path = plug_root / asset_relpath
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_text(asset_body)
+        return plug_root
+
+    @pytest.fixture
+    def client_with_plugin(self, tmp_path, monkeypatch):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(
+            tmp_path,
+            "cachetest",
+            "dist/index.js",
+            "console.log('cachetest v1');",
+        )
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        web_server._get_dashboard_plugins(force_rescan=True)
+        client = TestClient(web_server.app)
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+        return client
+
+    def test_plugin_asset_returns_no_cache_header(self, client_with_plugin):
+        """Plugin asset response carries Cache-Control: no-cache so the
+        browser revalidates every load and picks up plugin updates."""
+        resp = client_with_plugin.get("/dashboard-plugins/cachetest/dist/index.js")
+        assert resp.status_code == 200
+        assert resp.text == "console.log('cachetest v1');"
+        cc = resp.headers.get("cache-control", "")
+        assert "no-cache" in cc.lower(), (
+            f"plugin asset must send Cache-Control with no-cache to avoid "
+            f"stale-bundle-after-update; got {cc!r}"
+        )
+
+    def test_plugin_asset_serves_correct_media_type(self, client_with_plugin):
+        """Sanity check that the existing media-type behavior is unchanged."""
+        resp = client_with_plugin.get("/dashboard-plugins/cachetest/dist/index.js")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/javascript")
+
+    def test_index_html_cache_control_unchanged(self, tmp_path, monkeypatch):
+        """Regression guard: index.html keeps its no-store/no-cache/
+        must-revalidate header; this PR only changes the plugin-asset
+        endpoint, not the SPA shell."""
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        # Stub out a minimal SPA dist so _serve_index has something to read.
+        web_dist = tmp_path / "dist"
+        web_dist.mkdir()
+        (web_dist / "index.html").write_text(
+            "<html><head></head><body>hi</body></html>"
+        )
+        (web_dist / "assets").mkdir()
+        from hermes_cli import web_server
+        monkeypatch.setattr(web_server, "WEB_DIST", web_dist)
+
+        from fastapi import FastAPI
+        app = FastAPI()
+        web_server.mount_spa(app)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        cc = resp.headers.get("cache-control", "")
+        assert "no-store" in cc
+        assert "no-cache" in cc
+        assert "must-revalidate" in cc
+

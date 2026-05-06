@@ -3964,7 +3964,21 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         ".woff": "font/woff",
     }
     media_type = content_types.get(suffix, "application/octet-stream")
-    return FileResponse(target, media_type=media_type)
+    # Use ``no-cache`` (not ``no-store``) so the browser keeps the asset in its
+    # cache but revalidates with the server on every load via ETag /
+    # Last-Modified, which ``FileResponse`` populates from file mtime.  The
+    # server returns 304 Not Modified when the bundle on disk is unchanged,
+    # and the full body when the plugin author ships an update.  Without this
+    # header, browsers may serve a stale plugin IIFE from the HTTP cache to
+    # ``<script>`` tags injected by the dashboard plugin loader, even after a
+    # hard refresh — leading to "function not defined" errors after a plugin
+    # update.  index.html uses ``no-store`` (line ~3237) for the same reason
+    # the SPA shell must never be cached.
+    return FileResponse(
+        target,
+        media_type=media_type,
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 def _mount_plugin_api_routes():

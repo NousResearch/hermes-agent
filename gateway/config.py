@@ -289,19 +289,48 @@ class PlatformConfig:
             result["home_channel"] = self.home_channel.to_dict()
         return result
     
+    # Top-level keys consumed directly by PlatformConfig itself; everything
+    # else found at the top level is treated as platform-specific and merged
+    # into ``extra`` so users can write the natural YAML structure
+    # (``platforms.api_server.port: 8643``) instead of having to nest under
+    # ``extra``.  Without this merge, top-level platform settings written by
+    # ``hermes config set platforms.<plat>.<key> <value>`` are silently
+    # ignored at gateway startup (issue #20501).
+    _RESERVED_TOP_LEVEL_KEYS = frozenset({
+        "enabled",
+        "token",
+        "api_key",
+        "home_channel",
+        "reply_to_mode",
+        "extra",
+    })
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+
+        # Merge top-level platform-specific keys into ``extra``.  Anything
+        # explicitly nested under ``extra`` wins so existing configs and the
+        # to_dict→from_dict roundtrip remain stable.
+        explicit_extra = data.get("extra") or {}
+        if not isinstance(explicit_extra, dict):
+            explicit_extra = {}
+        merged_extra: Dict[str, Any] = {}
+        for key, value in data.items():
+            if key in cls._RESERVED_TOP_LEVEL_KEYS:
+                continue
+            merged_extra[key] = value
+        merged_extra.update(explicit_extra)
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            extra=data.get("extra", {}),
+            extra=merged_extra,
         )
 
 

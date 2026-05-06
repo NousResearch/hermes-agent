@@ -57,6 +57,54 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"enabled": "false"})
         assert restored.enabled is False
 
+    def test_from_dict_merges_top_level_platform_keys_into_extra(self):
+        # Regression for #20501: ``hermes config set platforms.api_server.port
+        # 8643`` writes ``port`` at the top of the platform block, not nested
+        # under ``extra``.  Top-level platform-specific keys must be merged
+        # into ``extra`` so adapters that read ``config.extra.get("port")``
+        # see the configured value instead of silently using the default.
+        restored = PlatformConfig.from_dict({
+            "enabled": True,
+            "port": 8643,
+            "host": "127.0.0.1",
+            "key": "secret",
+            "cors_origins": ["*"],
+        })
+        assert restored.enabled is True
+        assert restored.extra["port"] == 8643
+        assert restored.extra["host"] == "127.0.0.1"
+        assert restored.extra["key"] == "secret"
+        assert restored.extra["cors_origins"] == ["*"]
+
+    def test_from_dict_explicit_extra_takes_precedence_over_top_level(self):
+        # Roundtrip stability: when both a top-level key and an explicit
+        # ``extra`` mapping are present, the nested ``extra`` value wins so
+        # configs produced by ``to_dict`` survive a from_dict round-trip
+        # unchanged even if a stale top-level key is also present.
+        restored = PlatformConfig.from_dict({
+            "enabled": True,
+            "port": 1111,
+            "extra": {"port": 2222, "other": "x"},
+        })
+        assert restored.extra["port"] == 2222
+        assert restored.extra["other"] == "x"
+
+    def test_from_dict_ignores_reserved_top_level_keys(self):
+        # ``token``, ``api_key``, ``home_channel``, ``reply_to_mode`` and
+        # ``enabled`` continue to be consumed as dedicated fields and must
+        # not pollute ``extra``.
+        restored = PlatformConfig.from_dict({
+            "enabled": True,
+            "token": "tok",
+            "api_key": "key",
+            "reply_to_mode": "all",
+            "port": 9000,
+        })
+        assert restored.token == "tok"
+        assert restored.api_key == "key"
+        assert restored.reply_to_mode == "all"
+        assert restored.extra == {"port": 9000}
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):

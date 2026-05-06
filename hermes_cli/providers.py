@@ -716,3 +716,13 @@ def resolve_provider_full(
         pass
 
     return None
+
+
+def custom_provider_slug(display_name: str) -> str:
+    """Build a canonical slug for a custom_providers entry.
+
+    Matches the convention used by runtime_provider and credential_pool
+    (``custom:<normalized-name>``).  Centralised here so all call-sites
+    produce identical slugs.
+    """
+    return "custom:" + display_name.strip().lower().replace(" ", "-")

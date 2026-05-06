@@ -180,6 +180,52 @@ def test_list_rejects_bad_limit(worker_env):
     assert json.loads(kt._handle_list({"limit": 0})).get("error")
 
 
+def test_list_parses_include_archived_string_false(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        live = kb.create_task(conn, title="live task", assignee="factory")
+        archived = kb.create_task(conn, title="archived task", assignee="factory")
+        assert kb.archive_task(conn, archived)
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_list({
+        "assignee": "factory",
+        "include_archived": "false",
+    })
+    ids = [t["id"] for t in json.loads(out)["tasks"]]
+    assert live in ids
+    assert archived not in ids
+
+
+def test_list_parses_include_archived_string_true(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        live = kb.create_task(conn, title="live task", assignee="factory")
+        archived = kb.create_task(conn, title="archived task", assignee="factory")
+        assert kb.archive_task(conn, archived)
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_list({
+        "assignee": "factory",
+        "include_archived": "true",
+    })
+    ids = [t["id"] for t in json.loads(out)["tasks"]]
+    assert live in ids
+    assert archived in ids
+
+
+def test_list_rejects_bad_include_archived(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_list({"include_archived": "sometimes"})
+    assert "include_archived must be" in json.loads(out).get("error", "")
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

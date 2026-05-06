@@ -9,6 +9,15 @@
   width: 100%;
 }
 
+/* Override the Nous DS global `code { background: var(--midground) }` rule
+   which paints an opaque cream/yellow fill on every <code> inside the board,
+   hiding the text underneath. Kanban uses <code> for event payloads, run-meta,
+   and log panes — those need transparent backgrounds. */
+.hermes-kanban code {
+  background: transparent;
+  color: inherit;
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {

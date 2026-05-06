@@ -7662,13 +7662,15 @@ class GatewayRunner:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
-                        current_provider=current_provider,
-                        current_base_url=current_base_url,
-                        current_model=current_model,
-                        user_providers=user_provs,
-                        custom_providers=custom_provs,
-                        max_models=50,
+                    providers = await self._run_in_executor_with_context(
+                        lambda: list_picker_providers(
+                            current_provider=current_provider,
+                            current_base_url=current_base_url,
+                            current_model=current_model,
+                            user_providers=user_provs,
+                            custom_providers=custom_provs,
+                            max_models=50,
+                        )
                     )
                 except Exception:
                     providers = []
@@ -7687,16 +7689,18 @@ class GatewayRunner:
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
-                        result = _switch_model(
-                            raw_input=model_id,
-                            current_provider=_cur_provider,
-                            current_model=_cur_model,
-                            current_base_url=_cur_base_url,
-                            current_api_key=_cur_api_key,
-                            is_global=False,
-                            explicit_provider=provider_slug,
-                            user_providers=user_provs,
-                            custom_providers=custom_provs,
+                        result = await _self._run_in_executor_with_context(
+                            lambda: _switch_model(
+                                raw_input=model_id,
+                                current_provider=_cur_provider,
+                                current_model=_cur_model,
+                                current_base_url=_cur_base_url,
+                                current_api_key=_cur_api_key,
+                                is_global=False,
+                                explicit_provider=provider_slug,
+                                user_providers=user_provs,
+                                custom_providers=custom_provs,
+                            )
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
@@ -7795,13 +7799,15 @@ class GatewayRunner:
             lines = [f"Current: `{current_model or 'unknown'}` on {provider_label}", ""]
 
             try:
-                providers = list_authenticated_providers(
-                    current_provider=current_provider,
-                    current_base_url=current_base_url,
-                    current_model=current_model,
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=5,
+                providers = await self._run_in_executor_with_context(
+                    lambda: list_authenticated_providers(
+                        current_provider=current_provider,
+                        current_base_url=current_base_url,
+                        current_model=current_model,
+                        user_providers=user_provs,
+                        custom_providers=custom_provs,
+                        max_models=5,
+                    )
                 )
                 for p in providers:
                     tag = " (current)" if p["is_current"] else ""
@@ -7822,16 +7828,18 @@ class GatewayRunner:
             return "\n".join(lines)
 
         # Perform the switch
-        result = _switch_model(
-            raw_input=model_input,
-            current_provider=current_provider,
-            current_model=current_model,
-            current_base_url=current_base_url,
-            current_api_key=current_api_key,
-            is_global=persist_global,
-            explicit_provider=explicit_provider,
-            user_providers=user_provs,
-            custom_providers=custom_provs,
+        result = await self._run_in_executor_with_context(
+            lambda: _switch_model(
+                raw_input=model_input,
+                current_provider=current_provider,
+                current_model=current_model,
+                current_base_url=current_base_url,
+                current_api_key=current_api_key,
+                is_global=persist_global,
+                explicit_provider=explicit_provider,
+                user_providers=user_provs,
+                custom_providers=custom_provs,
+            )
         )
 
         if not result.success:

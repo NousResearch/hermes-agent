@@ -205,6 +205,25 @@ def list_agent_created_skill_names() -> List[str]:
     return sorted(set(names))
 
 
+def list_archived_skill_names() -> List[str]:
+    """Enumerate skills that have been archived to ``~/.hermes/skills/.archive/``.
+
+    Scans the ``.archive/`` directory for SKILL.md files and reads their
+    frontmatter ``name:`` field. Returns an empty list when no archive
+    directory exists or no archived skills are found.
+    """
+    archive_root = _archive_dir()
+    if not archive_root.exists():
+        return []
+
+    names: List[str] = []
+    for skill_md in archive_root.rglob("SKILL.md"):
+        name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
+        if name:
+            names.append(name)
+    return sorted(set(names))
+
+
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
     """Parse the `name:` field from a SKILL.md YAML frontmatter."""
     try:

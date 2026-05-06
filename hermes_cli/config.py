@@ -2168,6 +2168,7 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        "tailscale_allowlist": [],  # Tailscale-User-Login values allowed through tailscale serve identity auth (empty = identity auth disabled)
     },
 
     # Privacy settings

@@ -268,7 +268,7 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or
-                embedded_ip in _CGNAT_NETWORK)
+                embedded_ip in CGNAT_NETWORK)
 
     # Standard IPv4/IPv6 address checking
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:

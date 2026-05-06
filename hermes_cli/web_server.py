@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import inspect
 import importlib.util
+import ipaddress
 import json
 import logging
 import math
@@ -48,7 +49,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -345,14 +346,91 @@ from hermes_cli.dashboard_auth.public_paths import (
 )
 
 
-def _has_valid_session_token(request: Request) -> bool:
-    """True if the request carries a valid dashboard session token.
+# Loopback peers seen by the ASGI scope. ``testclient`` is what Starlette's
+# TestClient reports; treat it as loopback so tests don't have to rewrite
+# request scope. Distinct from ``_LOOPBACK_HOST_VALUES`` (Host-header set,
+# defined below) which intentionally excludes the test artifact.
+_LOOPBACK_PEERS: frozenset = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
-    The dedicated session header avoids collisions with reverse proxies that
-    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
-    accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
+# Tailscale CGNAT block: tailnet peers connect from addresses in this range.
+# When ``tailscale serve`` reverse-proxies traffic it preserves the real peer
+# IP, so a connection from a tailnet client arrives with e.g. 100.112.255.106
+# rather than 127.0.0.1.
+from agent.networks import CGNAT_NETWORK
+
+
+_UNAUTHORIZED_HTML = (
+    "<!DOCTYPE html><html><head><meta charset=utf-8>"
+    "<title>401 Unauthorized</title>"
+    "<style>body{background:#000;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:system-ui,sans-serif}h1{font-size:4rem;font-weight:900}</style>"
+    "</head><body><h1>401 Unauthorized</h1></body></html>"
+)
+
+
+def _is_public_bind() -> bool:
+    """True when bound to all-interfaces (operator used --insecure)."""
+    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+
+
+def _is_tailscale_peer(ip: str | None) -> bool:
+    """True when *ip* is inside Tailscale's 100.64.0.0/10 CGNAT block."""
+    if not ip:
+        return False
+    try:
+        return ipaddress.ip_address(ip) in CGNAT_NETWORK
+    except ValueError:
+        return False
+
+
+def _dashboard_tailscale_allowlist() -> frozenset[str]:
+    """Return dashboard.tailscale_allowlist as a frozen set.
+
+    Reads through load_config(), which already caches on
+    (mtime_ns, size); we eat the deepcopy cost since auth runs once
+    per HTTP request / WS connection, not per frame.
     """
+    try:
+        allowlist = cfg_get(load_config(), "dashboard", "tailscale_allowlist", default=[])
+    except Exception:
+        return frozenset()
+    if not isinstance(allowlist, list):
+        return frozenset()
+    return frozenset(str(item) for item in allowlist)
+
+
+def _dashboard_unauthorized_response(request: Request):
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return HTMLResponse(status_code=401, content=_UNAUTHORIZED_HTML)
+
+
+def _host_only_from_header(host_header: str) -> str:
+    """Return the hostname portion of a Host header, lowercased."""
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):
+        close = h.find("]")
+        return h[1:close] if close != -1 else h.strip("[]")
+    return h.rsplit(":", 1)[0] if ":" in h else h
+
+
+def _host_header_is_tailnet(host_header: str) -> bool:
+    """True when Host targets a Tailscale MagicDNS name."""
+    return _host_only_from_header(host_header).endswith(".ts.net")
+
+
+def _is_loopback_http_request(request: Request) -> bool:
+    """True when the HTTP request comes from and targets local loopback."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in _LOOPBACK_PEERS:
+        return False
+    host_only = _host_only_from_header(request.headers.get("host", ""))
+    if not host_only:
+        return client_host == "testclient"
+    return host_only in _LOOPBACK_PEERS
+
+
+def _request_token_matches(request: Request) -> bool:
+    """True when the request carries the current dashboard bearer token."""
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
@@ -376,6 +454,58 @@ def _has_valid_query_token(request: Request, path: str) -> bool:
         return False
     token = request.query_params.get("token", "")
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+
+
+def _ws_token_matches(ws: "WebSocket") -> bool:
+    """True when the WebSocket carries the dashboard token in the query string."""
+    token = ws.query_params.get("token", "")
+    return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+
+
+def _dashboard_auth_decision(
+    client_host: str,
+    ts_login: str,
+    host_header: str,
+    token_matches: Callable[[], bool],
+) -> bool:
+    """Shared dashboard auth policy for HTTP and WebSocket transports.
+
+    Decision order:
+      0. Public bind (--insecure): operator opted into all-interfaces;
+         token-only, peer-agnostic.
+      1. Loopback peer with no Tailscale identity: token check (the
+         dominant case — local browser hitting localhost dashboard).
+      2. Trusted source (loopback or tailnet CGNAT) carrying a
+         Tailscale-User-Login header: allowlist lookup. Fail closed
+         when the allowlist is empty or the login isn't permitted —
+         do not fall through to the page-embedded token.
+      3. Trusted source whose Host targets a tailnet MagicDNS name:
+         token check. Covers Tailscale Serve / WebSocket paths that
+         preserve the peer CGNAT IP but strip identity headers.
+    """
+    if _is_public_bind():
+        return token_matches()
+
+    if client_host in _LOOPBACK_PEERS and not ts_login:
+        return token_matches()
+
+    trusted = client_host in _LOOPBACK_PEERS or _is_tailscale_peer(client_host)
+    if trusted and ts_login:
+        allowlist = _dashboard_tailscale_allowlist()
+        return bool(allowlist) and ts_login in allowlist
+    if trusted and _host_header_is_tailnet(host_header):
+        return token_matches()
+    return False
+
+
+def _has_valid_session_token(request: Request) -> bool:
+    """True if the HTTP request is allowed by the dashboard auth policy."""
+    return _dashboard_auth_decision(
+        client_host=request.client.host if request.client else "",
+        ts_login=request.headers.get("Tailscale-User-Login", ""),
+        host_header=request.headers.get("host", ""),
+        token_matches=lambda: _request_token_matches(request),
+    )
 
 
 def _require_token(request: Request) -> None:
@@ -452,23 +582,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """
     if not host_header:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _host_only_from_header(host_header)
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -479,7 +593,13 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        # tailscale serve proxies from 127.0.0.1 but the Host header
+        # carries the tailnet domain (e.g. machine.tailnet.ts.net).
+        if host_only.endswith(".ts.net"):
+            return True
+        return False
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -599,7 +719,7 @@ async def _dashboard_auth_gate(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require dashboard auth for HTML, assets, and protected API routes."""
     # A request already authenticated by the token-auth seam (a service caller
     # presenting a bearer token on a registered token route) carries
     # ``token_authenticated`` — never bounce it through the cookie/session gate.
@@ -611,13 +731,26 @@ async def auth_middleware(request: Request, call_next):
     if getattr(request.app.state, "auth_required", False):
         return await call_next(request)
     path = request.url.path
+    # The MCP OAuth callback completes a third-party redirect and cannot carry
+    # the dashboard session token. Keep this explicit exception alongside the
+    # shared public API allowlist introduced by the Tailscale auth policy.
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
-        if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Unauthorized"},
-            )
+    if path.startswith("/api/") and (
+        path in _PUBLIC_API_PATHS or is_mcp_oauth_callback
+    ):
+        return await call_next(request)
+    if path.startswith("/dashboard-plugins/"):
+        return await call_next(request)
+    if path.startswith("/api/") and _has_valid_query_token(request, path):
+        return await call_next(request)
+    if (
+        not path.startswith("/api/")
+        and _is_loopback_http_request(request)
+        and not request.headers.get("Tailscale-User-Login", "")
+    ):
+        return await call_next(request)
+    if not _has_valid_session_token(request):
+        return _dashboard_unauthorized_response(request)
     return await call_next(request)
 
 
@@ -16898,9 +17031,6 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
 
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-# Starlette's TestClient reports the peer as "testclient"; treat it as
-# loopback so tests don't need to rewrite request scope.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
@@ -16915,7 +17045,7 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     if getattr(app.state, "auth_required", False):
         return None
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    if bound_host and bound_host not in _LOOPBACK_HOST_VALUES:
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -16925,9 +17055,9 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
         # ws.client == None or "" — treating that as "allowed" would let
         # an unidentified peer reach a loopback-only surface.
         return f"missing_or_empty_peer bound={bound_host or '?'}"
-    if client_host in _LOOPBACK_HOSTS:
+    if client_host in _LOOPBACK_PEERS or _is_tailscale_peer(client_host):
         return None
-    return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
+    return f"peer_not_trusted peer={client_host} bound={bound_host or '?'}"
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -16962,7 +17092,7 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     # an actual loopback bind; otherwise the WS handshake is rejected even
     # though same-bind HTTP requests pass _is_accepted_host.
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    if bound_host and bound_host not in _LOOPBACK_HOST_VALUES:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -16970,7 +17100,28 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         # client_host on a loopback-bound dashboard with auth disabled
         # must be rejected, not accepted as a default-allow.
         return False
-    return client_host in _LOOPBACK_HOSTS
+    if _is_public_bind():
+        return True
+    return client_host in _LOOPBACK_PEERS or _is_tailscale_peer(client_host)
+
+async def _ws_gate(ws: "WebSocket") -> bool:
+    """Common pre-accept gate for every dashboard WebSocket route.
+
+    Closes the socket and returns False on failure; callers should
+    return immediately. Keeping this in one place means a new
+    WebSocket route can't accidentally skip auth or the embedded-chat
+    feature flag.
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return False
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return False
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return False
+    return True
 
 
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
@@ -17034,7 +17185,7 @@ def _ws_auth_mode() -> str:
     if getattr(app.state, "auth_required", False):
         return "gated"
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    if bound_host and bound_host not in _LOOPBACK_HOST_VALUES:
         return "insecure"
     return "loopback"
 
@@ -17115,11 +17266,26 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             )
             return "ticket_invalid", "ticket"
 
+    client_host = ws.client.host if ws.client else ""
+    ts_login = ws.headers.get("Tailscale-User-Login", "")
+    host_header = ws.headers.get("host", "")
     token = ws.query_params.get("token", "")
+
+    if _dashboard_auth_decision(
+        client_host=client_host,
+        ts_login=ts_login,
+        host_header=host_header,
+        token_matches=lambda: _ws_token_matches(ws),
+    ):
+        trusted = client_host in _LOOPBACK_PEERS or _is_tailscale_peer(client_host)
+        if trusted and ts_login:
+            return None, "tailscale_identity"
+        return None, "token"
+
+    if ts_login:
+        return "tailscale_not_allowed", "tailscale_identity"
     if not token:
         return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
     return "token_mismatch", "token"
 
 
@@ -18203,16 +18369,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
-        return
-
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
-    if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+    if not await _ws_gate(ws):
         return
 
     from tui_gateway.ws import handle_ws
@@ -18234,16 +18391,7 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
-        return
-
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
-    if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+    if not await _ws_gate(ws):
         return
 
     channel = _channel_or_close_code(ws)
@@ -18262,16 +18410,7 @@ async def pub_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
-        return
-
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
-    if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+    if not await _ws_gate(ws):
         return
 
     channel = _channel_or_close_code(ws)

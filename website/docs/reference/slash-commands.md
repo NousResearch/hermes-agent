@@ -47,7 +47,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/config` | Show current configuration |
-| `/model [model-name]` | Show or change the current model. Supports: `/model claude-sonnet-4`, `/model provider:model` (switch providers), `/model custom:model` (custom endpoint), `/model custom:name:model` (named custom provider), `/model custom` (auto-detect from endpoint). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider, exit the session and run `hermes model` from your terminal. |
+| `/model [model-name]` | Show or change the current model. Supports: `/model claude-sonnet-4`, `/model provider:model` (switch providers), `/model custom:model` (custom endpoint), `/model custom:name:model` (named custom provider), `/model custom` (auto-detect from endpoint), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider, exit the session and run `hermes model` from your terminal. |
 | `/personality` | Set a predefined personality |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. Options: `normal`, `fast`, `status`. |
@@ -124,6 +124,44 @@ Then type `/status`, `/deploy`, or `/inbox` in the CLI or a messaging platform. 
 
 String-only prompt shortcuts are not supported as quick commands. Put longer reusable prompts in a skill, or use `type: alias` to point at an existing slash command.
 
+### Custom model aliases
+
+Define your own short names for models you use often, then reach them with `/model <alias>` in the CLI or any messaging platform. Aliases work identically in both, on session-only (default) and `--global` switches.
+
+Two config formats are supported:
+
+**Full form** — pin an exact model, provider, and optionally a base URL. Put this in `~/.hermes/config.yaml`:
+
+```yaml
+model_aliases:
+  fav:
+    model: claude-sonnet-4.6
+    provider: anthropic
+  grok:
+    model: grok-4
+    provider: x-ai
+  ollama-qwen:
+    model: qwen3-coder:30b
+    provider: custom
+    base_url: http://localhost:11434/v1
+```
+
+**Short form** — `provider/model` in one string. Set from the shell without editing YAML:
+
+```bash
+hermes config set model.aliases.fav anthropic/claude-opus-4.6
+hermes config set model.aliases.grok x-ai/grok-4
+```
+
+Then in chat:
+
+```
+/model fav            # session-only
+/model grok --global  # also persists current-model change to config.yaml
+```
+
+User aliases take precedence over built-in short names, so naming an alias `sonnet`, `kimi`, `opus`, etc. will shadow the built-in. Alias names are case-insensitive.
+
 ### Alias Resolution
 
 Commands support prefix matching: typing `/h` resolves to `/help`, `/mod` resolves to `/model`. When a prefix is ambiguous (matches multiple commands), the first match in registry order wins. Full command names and registered aliases always take priority over prefix matches.
@@ -138,7 +176,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info. |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
-| `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), and auto-detect (`/model custom`). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider or set up API keys, use `hermes model` from your terminal (outside the chat session). |
+| `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), auto-detect (`/model custom`), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider or set up API keys, use `hermes model` from your terminal (outside the chat session). |
 | `/personality [name]` | Set a personality overlay for the session. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. |
 | `/retry` | Retry the last message. |

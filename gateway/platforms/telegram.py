@@ -3266,7 +3266,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     image_bytes = await file_obj.download_as_bytearray()
                     cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
                     event.media_urls = [cached_path]
-                    event.media_types = [f"image/{ext.lstrip('.')}"]
+                    event.media_types = [doc.mime_type]
                     event.message_type = MessageType.IMAGE
                     logger.info("[Telegram] Cached image document (%s) at %s", ext, cached_path)
                     await self.handle_message(event)

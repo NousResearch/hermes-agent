@@ -9,6 +9,22 @@ description: "Step-by-step guide to building a complete Hermes plugin with tools
 
 This guide walks through building a complete Hermes plugin from scratch. By the end you'll have a working plugin with multiple tools, lifecycle hooks, shipped data files, and a bundled skill — everything the plugin system supports.
 
+:::info Not sure which guide you need?
+Hermes has several distinct pluggable interfaces, each with its own doc. Use this map first:
+
+| If you want to add… | Read |
+|---|---|
+| Custom tools, hooks, slash commands, skills, or CLI subcommands | **This guide** (the general plugin surface) |
+| An **LLM / inference backend** (new provider) | [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) |
+| A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) |
+| A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) |
+| A **context-compression engine** | [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
+| An **image-generation backend** | See bundled examples in `plugins/image_gen/openai/` and `plugins/image_gen/xai/` |
+| A first-class **core** inference provider (not a plugin) | [Adding Providers](/docs/developer-guide/adding-providers) |
+
+TTS and STT backends are not currently plugin-extensible — they're built-in or user-declared via `tts.providers.<name>` with `type: command` in `config.yaml`.
+:::
+
 ## What you're building
 
 A **calculator** plugin with two tools:
@@ -669,9 +685,10 @@ This is the public, stable interface for tool dispatch from plugin commands. Plu
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). For specialized plugin types, see:
+- [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) — inference backends (add or override any LLM provider)
+- [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) — gateway channels (Discord, Telegram, IRC, Teams, …)
 - [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
 - [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
-- [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) — inference backends (add or override any LLM provider)
 :::
 
 ### Distribute via pip

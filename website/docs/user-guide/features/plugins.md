@@ -175,6 +175,28 @@ Hermes has four kinds of plugins:
 
 Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. Model providers are also plugins, but many load simultaneously; the user picks one at a time via `--provider` or `config.yaml`. General plugins can be enabled in any combination.
 
+## Pluggable interfaces — where to go for each
+
+The table above shows the four plugin categories, but within "General plugins" the `PluginContext` exposes several distinct extension points. Use this table to find the right doc for what you want to build:
+
+| Want to add… | Plugin kind | PluginContext API | Authoring guide |
+|---|---|---|---|
+| A **tool** the LLM can call | General | `ctx.register_tool()` | [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin) · [Adding Tools](/docs/developer-guide/adding-tools) |
+| A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | General | `ctx.register_hook()` | [Hooks reference](/docs/user-guide/features/hooks) · [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin) |
+| A **slash command** for the CLI / gateway | General | `ctx.register_command()` | [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin) · [Extending the CLI](/docs/developer-guide/extending-the-cli) |
+| A **subcommand** for `hermes <thing>` | General | `ctx.register_cli_command()` | [Extending the CLI](/docs/developer-guide/extending-the-cli) |
+| A bundled **skill** that your plugin ships | General | `ctx.register_skill()` | [Creating Skills](/docs/developer-guide/creating-skills) |
+| An **inference backend** (LLM provider: OpenAI-compatible, Codex, Anthropic-Messages, Bedrock) | Model provider | `register_provider(ProviderProfile(...))` | **[Model Provider Plugins](/docs/developer-guide/model-provider-plugin)** · [Adding Providers](/docs/developer-guide/adding-providers) |
+| A **gateway channel** (Discord / Telegram / IRC / Teams / etc.) | General (`kind: platform`) | `ctx.register_platform()` | [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) |
+| A **memory backend** (Honcho, Mem0, Supermemory, …) | Memory (`kind: exclusive`) | Subclass `MemoryProvider` | [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) |
+| A **context-compression strategy** | Context engine | `ctx.register_context_engine()` | [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
+| An **image-generation backend** (DALL·E, SDXL, …) | General (`kind: backend`) | `ctx.register_image_gen_provider()` | See bundled examples in `plugins/image_gen/openai/` and `plugins/image_gen/xai/` |
+| A **TTS or STT backend** | (not plugin-extensible yet) | Use `tts.providers.<name>` with `type: command` in `config.yaml` | [TTS setup](/docs/user-guide/features/tts) |
+
+:::note
+TTS and STT backends aren't wired through the plugin system yet — today they are either built-in (Edge, ElevenLabs, OpenAI, MiniMax, etc.) or user-declared via "command providers" in `~/.hermes/config.yaml`. A `register_tts_provider()` / `register_stt_provider()` hook may follow in a future release.
+:::
+
 ## NixOS declarative plugins
 
 On NixOS, plugins can be installed declaratively via the module options — no `hermes plugins install` needed. See the **[Nix Setup guide](/docs/getting-started/nix-setup#plugins)** for full details.

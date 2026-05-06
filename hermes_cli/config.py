@@ -574,21 +574,39 @@ DEFAULT_CONFIG = {
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once per
-    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    # When enabled, the agent takes a snapshot of the working directory once
+    # per conversation turn (on first write_file/patch call).  Use /rollback
+    # to restore.
+    #
+    # Defaults changed in v2 (single shared shadow store, real pruning):
+    #   - enabled: True -> False   (opt-in; most users never use /rollback)
+    #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
+    #   - auto_prune:   False -> True (orphans/stale pruned automatically)
+    # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
     "checkpoints": {
-        "enabled": True,
-        "max_snapshots": 50,  # Max checkpoints to keep per directory
-        # Auto-maintenance: shadow repos accumulate forever under
-        # ~/.hermes/checkpoints/ (one per cd'd working directory). Field
-        # reports put the typical offender at 1000+ repos / ~12 GB. When
-        # auto_prune is on, hermes sweeps at startup (at most once per
-        # min_interval_hours) and deletes:
-        #   * orphan repos: HERMES_WORKDIR no longer exists on disk
-        #   * stale repos:  newest mtime older than retention_days
-        # Opt-in so users who rely on /rollback against long-ago sessions
-        # never lose data silently.
-        "auto_prune": False,
+        "enabled": False,
+        # Max checkpoints to keep per working directory.  Pre-v2 this only
+        # limited the `/rollback` listing; v2 actually rewrites the ref and
+        # garbage-collects older commits.
+        "max_snapshots": 20,
+        # Hard ceiling on total ``~/.hermes/checkpoints/`` size (MB).  When
+        # exceeded, the oldest checkpoint per project is dropped in a
+        # round-robin pass until total size falls under the cap.
+        # 0 disables the size cap.
+        "max_total_size_mb": 500,
+        # Skip any single file larger than this when staging a checkpoint.
+        # Prevents accidental snapshotting of datasets, model weights, and
+        # other large generated assets.  0 disables the filter.
+        "max_file_size_mb": 10,
+        # Auto-maintenance: hermes sweeps the checkpoint base at startup
+        # (at most once per ``min_interval_hours``) and:
+        #   * deletes project entries whose workdir no longer exists (orphan)
+        #   * deletes project entries whose last_touch is older than
+        #     ``retention_days``
+        #   * GCs the single shared store to reclaim unreachable objects
+        #   * enforces ``max_total_size_mb`` across remaining projects
+        #   * deletes ``legacy-*`` archives older than ``retention_days``
+        "auto_prune": True,
         "retention_days": 7,
         "delete_orphans": True,
         "min_interval_hours": 24,

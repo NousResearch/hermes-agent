@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -167,6 +168,44 @@ def read_ui_xml(serial: str | None) -> str:
     return xml
 
 
+def center_from_bounds(bounds: str) -> tuple[int, int] | None:
+    try:
+        left_top, right_bottom = bounds.split("][", 1)
+        left, top = [int(part) for part in left_top.strip("[]").split(",", 1)]
+        right, bottom = [int(part) for part in right_bottom.strip("[]").split(",", 1)]
+        return ((left + right) // 2, (top + bottom) // 2)
+    except (AttributeError, ValueError):
+        return None
+
+
+def tap_first_ui_text(serial: str | None, xml: str, labels: tuple[str, ...]) -> bool:
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return False
+    for node in root.iter("node"):
+        text = node.attrib.get("text", "")
+        content_description = node.attrib.get("content-desc", "")
+        if text in labels or content_description in labels:
+            center = center_from_bounds(node.attrib.get("bounds", ""))
+            if center is None:
+                continue
+            run_adb(serial, "shell", "input", "tap", str(center[0]), str(center[1]), check=False)
+            return True
+    return False
+
+
+def continue_past_anr_dialog(serial: str | None, xml: str) -> bool:
+    if "isn&apos;t responding" not in xml and "isn't responding" not in xml:
+        return False
+    if "Wait" not in xml:
+        return False
+    if tap_first_ui_text(serial, xml, ("Wait",)):
+        print("Dismissed Android ANR dialog with Wait")
+        return True
+    return False
+
+
 def wait_for_ui_text(serial: str | None, ready_text: str, timeout_ms: int) -> bool:
     if not ready_text:
         return True
@@ -175,6 +214,9 @@ def wait_for_ui_text(serial: str | None, ready_text: str, timeout_ms: int) -> bo
         xml = read_ui_xml(serial)
         if ready_text in xml:
             return True
+        if xml and continue_past_anr_dialog(serial, xml):
+            time.sleep(1)
+            continue
         time.sleep(2)
     sys.stderr.write(f"Timed out waiting for UI text: {ready_text}\n")
     return False

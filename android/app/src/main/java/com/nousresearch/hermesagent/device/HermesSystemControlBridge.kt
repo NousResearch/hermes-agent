@@ -178,6 +178,11 @@ object HermesSystemControlBridge {
                     message = json.optString("message"),
                 )
             }
+            "run_privileged_shell" -> HermesSystemActionResult(
+                success = false,
+                action = action,
+                message = "run_privileged_shell is available through android_system_tool with an explicit command argument.",
+            )
             "start_background_runtime" -> {
                 DeviceCapabilityStore(appContext).saveBackgroundPersistenceEnabled(true)
                 HermesRuntimeService.start(appContext)

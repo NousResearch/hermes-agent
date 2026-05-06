@@ -8,6 +8,7 @@ import com.nousresearch.hermesagent.api.toJsonObject
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
 import com.nousresearch.hermesagent.device.HermesAccessibilityUiBridge
 import com.nousresearch.hermesagent.device.HermesGlobalAction
+import com.nousresearch.hermesagent.device.HermesPrivilegedAccessBridge
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.NativeAndroidShellTool
@@ -255,6 +256,15 @@ class NativeToolCallingChatClient(
             .orEmpty()
         return if (action.isBlank() || action == "status" || action == "read_status") {
             HermesSystemControlBridge.statusJson()
+        } else if (action == "run_privileged_shell" || action == "shizuku_shell" || action == "privileged_shell") {
+            val command = listOf("command", "cmd", "input")
+                .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
+                .orEmpty()
+            HermesPrivilegedAccessBridge.runShellCommandJson(
+                context = appContext,
+                command = command,
+                timeoutSeconds = toolCall.arguments.optInt("timeout_seconds", PRIVILEGED_TOOL_TIMEOUT_SECONDS),
+            )
         } else {
             HermesSystemControlBridge.performActionJson(action)
         }
@@ -340,6 +350,7 @@ class NativeToolCallingChatClient(
                     "file_write_tool writes UTF-8 text files in the Hermes app workspace. " +
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
+                    "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -513,9 +524,21 @@ class NativeToolCallingChatClient(
                                                     .put("type", "string")
                                                     .put(
                                                         "description",
-                                                        "Use status to read device state, or one of the available system actions returned in status.",
+                                                        "Use status to read device state, run_privileged_shell with a command argument for user-granted Shizuku/Sui shell execution, or one of the available system actions returned in status.",
                                                     ),
-                                            ),
+                                            )
+                                            .put(
+                                                "command",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Shell command for action run_privileged_shell. Requires running Shizuku/Sui and user-granted Hermes permission."),
+                                            )
+                                            .put(
+                                                "timeout_seconds",
+                                                JSONObject()
+                                                    .put("type", "integer")
+                                                    .put("description", "Optional timeout for run_privileged_shell, clamped by Hermes."),
+                                            )
                                     )
                                     .put("required", JSONArray().put("action")),
                             ),
@@ -598,6 +621,7 @@ class NativeToolCallingChatClient(
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 512
+        private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
         private const val MAX_TOOL_RESULT_CHARS = 12_000
         private const val DEFAULT_UI_SNAPSHOT_LIMIT = 80
         private val ANDROID_UI_ACTIONS = listOf(

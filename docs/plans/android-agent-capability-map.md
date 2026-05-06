@@ -19,10 +19,13 @@ Agent Android implementation work.
   commands, take screenshots with `screencap`, and record video with
   `screenrecord`.
 - Tinker by Shopify is a closed-source mobile AI creative-workflow app. Public
-  product pages describe mobile-first access to many AI tools, including image,
-  video, logo, music, 3D model, website, product-photo, virtual try-on, social
-  ad, project, sharing, remixing, and tool-chaining workflows. Sources:
-  https://www.shopify.com/news/introducing-tinker and https://www.tinker.com/
+  product pages and Shopify Help describe mobile-first access to 100+ AI tools,
+  including image, text, video, logo, product-photo, marketing-video, 3D model,
+  website, virtual try-on, social ad, artifact versioning, projects, sharing,
+  remixing, and tool-chaining workflows. Sources:
+  https://www.shopify.com/news/introducing-tinker,
+  https://www.tinker.com/, and
+  https://help.shopify.com/en/manual/promoting-marketing/tinker
 
 ## Hermes Support Map
 
@@ -32,7 +35,8 @@ Agent Android implementation work.
 | File creation/deletion/read/write | Present through native tool calls and app-workspace shell/file tools. |
 | Android status and safe settings panels | Present through `HermesSystemControlBridge`. |
 | Accessibility-based UI snapshot/action | Present through `HermesAccessibilityUiBridge` when the user enables the accessibility service; exposed to model tool-calling through `android_ui_tool`. |
-| Shizuku/Sui privileged setup | Added: `HermesPrivilegedAccessBridge` detects Shizuku/Sui, binder state, permission state, UID/root-vs-ADB identity, and exposes setup actions. |
+| Shizuku/Sui privileged setup | Present: `HermesPrivilegedAccessBridge` detects Shizuku/Sui, binder state, permission state, UID/root-vs-ADB identity, and exposes setup actions. |
+| Shizuku/Sui privileged shell execution | Present through `android_system_tool` action `run_privileged_shell` after the user starts Shizuku/Sui and grants Hermes permission. |
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
 | Tinker-style creative workflows | Partially present as tool-call architecture. Image/video/3D generation remains deferred in the Android build unless a local or user-configured remote provider is added. |

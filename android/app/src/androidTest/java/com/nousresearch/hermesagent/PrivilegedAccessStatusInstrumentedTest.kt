@@ -28,6 +28,10 @@ class PrivilegedAccessStatusInstrumentedTest {
         assertTrue(privileged.toString(), privileged.has("shizuku_privilege_label"))
         assertTrue(privileged.toString(), privileged.has("adb_start_command"))
         assertTrue(privileged.toString(), privileged.getJSONArray("available_privileged_actions").length() > 0)
+        assertTrue(
+            privileged.toString(),
+            privileged.getJSONArray("available_privileged_actions").toString().contains("run_privileged_shell"),
+        )
     }
 
     @Test
@@ -35,5 +39,16 @@ class PrivilegedAccessStatusInstrumentedTest {
         val result = HermesPrivilegedAccessBridge.performAction(app, "unsupported_privileged_probe")
         assertTrue(result.message, !result.success)
         assertTrue(result.message, result.message.contains("Unsupported privileged Android action"))
+    }
+
+    @Test
+    fun privilegedShellReportsPermissionStateWithoutCrash() {
+        val result = JSONObject(HermesPrivilegedAccessBridge.runShellCommandJson(app, "id", 1))
+        assertTrue(result.toString(), result.has("success"))
+        assertTrue(result.toString(), result.has("exit_code"))
+        if (!result.getBoolean("success")) {
+            assertTrue(result.toString(), result.has("error"))
+            assertTrue(result.toString(), result.has("shizuku_privilege_label"))
+        }
     }
 }

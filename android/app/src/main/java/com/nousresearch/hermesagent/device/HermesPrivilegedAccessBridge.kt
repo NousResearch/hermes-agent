@@ -1,13 +1,19 @@
 package com.nousresearch.hermesagent.device
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.IBinder
 import android.provider.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.io.File
 
 private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
@@ -42,6 +48,7 @@ private val DEFAULT_PRIVILEGED_ACTIONS = listOf(
     "open_shizuku_app",
     "open_shizuku_download",
     "request_shizuku_permission",
+    "run_privileged_shell",
 )
 
 object HermesPrivilegedAccessBridge {
@@ -109,6 +116,91 @@ object HermesPrivilegedAccessBridge {
         }
     }
 
+    fun runShellCommandJson(context: Context, command: String, timeoutSeconds: Int = DEFAULT_SHELL_TIMEOUT_SECONDS): String {
+        val status = readStatus(context)
+        if (!status.shizukuBinderAlive) {
+            return privilegedShellUnavailable(
+                "Shizuku is not running. Start Shizuku with root, ADB, or Android wireless debugging first.",
+                status,
+            )
+        }
+        if (!status.shizukuPermissionGranted) {
+            return privilegedShellUnavailable(
+                "Shizuku permission is not granted to Hermes Agent.",
+                status,
+            )
+        }
+        if (command.trim().isBlank()) {
+            return JSONObject()
+                .put("success", false)
+                .put("exit_code", 2)
+                .put("error", "run_privileged_shell requires a command argument")
+                .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+                .toString()
+        }
+        if (command.indexOf('\u0000') >= 0) {
+            return JSONObject()
+                .put("success", false)
+                .put("exit_code", 2)
+                .put("error", "run_privileged_shell command must not contain NUL bytes")
+                .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+                .toString()
+        }
+
+        val appContext = context.applicationContext
+        val componentName = ComponentName(appContext, HermesPrivilegedShellUserService::class.java)
+        val args = Shizuku.UserServiceArgs(componentName)
+            .tag("hermes_privileged_shell")
+            .processNameSuffix("privileged_shell")
+            .version(1)
+            .debuggable((appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+            .daemon(false)
+        val serviceRef = AtomicReference<IHermesPrivilegedShellService?>()
+        val latch = CountDownLatch(1)
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, service: IBinder) {
+                serviceRef.set(IHermesPrivilegedShellService.Stub.asInterface(service))
+                latch.countDown()
+            }
+
+            override fun onServiceDisconnected(name: ComponentName) {
+                serviceRef.set(null)
+            }
+        }
+
+        return runCatching {
+            Shizuku.bindUserService(args, connection)
+            if (!latch.await(SERVICE_CONNECT_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)) {
+                runCatching { Shizuku.unbindUserService(args, connection, true) }
+                return JSONObject()
+                    .put("success", false)
+                    .put("exit_code", 124)
+                    .put("error", "Timed out while connecting to Hermes Shizuku user service")
+                    .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+                    .toString()
+            }
+            val service = serviceRef.get()
+                ?: return JSONObject()
+                    .put("success", false)
+                    .put("exit_code", -1)
+                    .put("error", "Hermes Shizuku user service disconnected before command execution")
+                    .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+                    .toString()
+            val result = JSONObject(service.runCommand(command, timeoutSeconds))
+                .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+            runCatching { Shizuku.unbindUserService(args, connection, true) }
+            result.toString()
+        }.getOrElse { error ->
+            runCatching { Shizuku.unbindUserService(args, connection, true) }
+            JSONObject()
+                .put("success", false)
+                .put("exit_code", -1)
+                .put("error", error.message ?: error.javaClass.simpleName)
+                .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+                .toString()
+        }
+    }
+
     fun statusToJson(status: HermesPrivilegedAccessStatus): JSONObject {
         return JSONObject().apply {
             put("shizuku_installed", status.shizukuInstalled)
@@ -171,6 +263,18 @@ object HermesPrivilegedAccessBridge {
         }
     }
 
+    private fun privilegedShellUnavailable(message: String, status: HermesPrivilegedAccessStatus): String {
+        return JSONObject()
+            .put("success", false)
+            .put("exit_code", 13)
+            .put("error", message)
+            .put("shizuku_binder_alive", status.shizukuBinderAlive)
+            .put("shizuku_permission_granted", status.shizukuPermissionGranted)
+            .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+            .put("available_privileged_actions", JSONArray(status.availablePrivilegedActions))
+            .toString()
+    }
+
     private fun isPackageInstalled(context: Context, packageName: String): Boolean {
         return runCatching {
             context.packageManager.getPackageInfo(packageName, 0)
@@ -201,3 +305,6 @@ object HermesPrivilegedAccessBridge {
         }
     }
 }
+
+private const val DEFAULT_SHELL_TIMEOUT_SECONDS = 30
+private const val SERVICE_CONNECT_TIMEOUT_SECONDS = 10

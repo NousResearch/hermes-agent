@@ -6,9 +6,12 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -25,7 +28,9 @@ class FactRetriever:
     def __init__(
         self,
         store: MemoryStore,
-        temporal_decay_half_life: int = 0,  # days, 0 = disabled
+        temporal_decay_half_life: int = 0,  # days, 0 = disabled — fallback for unknown categories
+        decay_half_life_by_category: "dict[str, int] | None" = None,
+        reinforce_on_retrieval: bool = True,
         fts_weight: float = 0.4,
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
@@ -33,6 +38,8 @@ class FactRetriever:
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
+        self.half_life_by_category = dict(decay_half_life_by_category or {})
+        self.reinforce_on_retrieval = reinforce_on_retrieval
         self.hrr_dim = hrr_dim
 
         # Auto-redistribute weights if numpy unavailable
@@ -94,11 +101,14 @@ class FactRetriever:
                         + self.hrr_weight * hrr_sim)
 
             # Trust weighting
-            score = relevance * fact["trust_score"]
+            score = relevance * self._reinforced_trust(fact)
 
-            # Optional temporal decay
-            if self.half_life > 0:
-                score *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
+            # Optional temporal decay (per-category half-life if configured)
+            if self.half_life > 0 or self.half_life_by_category:
+                score *= self._temporal_decay(
+                    fact.get("updated_at") or fact.get("created_at"),
+                    fact.get("category"),
+                )
 
             fact["score"] = score
             scored.append(fact)
@@ -109,6 +119,7 @@ class FactRetriever:
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+        self._reinforce_facts([f["fact_id"] for f in results])
         return results
 
     def probe(
@@ -187,11 +198,13 @@ class FactRetriever:
             role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
+            fact["score"] = (sim + 1.0) / 2.0 * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def related(
         self,
@@ -258,11 +271,13 @@ class FactRetriever:
             # Take the max — entity could appear in either role
             best_sim = max(entity_role_sim, content_role_sim)
 
-            fact["score"] = (best_sim + 1.0) / 2.0 * fact["trust_score"]
+            fact["score"] = (best_sim + 1.0) / 2.0 * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def reason(
         self,
@@ -341,11 +356,13 @@ class FactRetriever:
                 entity_scores.append(sim)
 
             min_sim = min(entity_scores)
-            fact["score"] = (min_sim + 1.0) / 2.0 * fact["trust_score"]
+            fact["score"] = (min_sim + 1.0) / 2.0 * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def contradict(
         self,
@@ -484,11 +501,13 @@ class FactRetriever:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
             sim = hrr.similarity(target_vec, fact_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
+            fact["score"] = (sim + 1.0) / 2.0 * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def _fts_candidates(
         self,
@@ -578,12 +597,52 @@ class FactRetriever:
         union = len(set_a | set_b)
         return intersection / union if union > 0 else 0.0
 
-    def _temporal_decay(self, timestamp_str: str | None) -> float:
-        """Exponential decay: 0.5^(age_days / half_life_days).
+    @staticmethod
+    def _reinforced_trust(fact: dict) -> float:
+        """trust_score * (1 + 0.1 * min(helpful_count, 20)).
+        Cap at 20 keeps the multiplier in [1.0, 3.0] so a single hot fact
+        cannot dominate retrieval forever."""
+        base = float(fact.get("trust_score", 0) or 0)
+        hc = int(fact.get("helpful_count", 0) or 0)
+        return base * (1.0 + 0.1 * min(hc, 20))
 
-        Returns 1.0 if decay is disabled or timestamp is missing.
+    def _reinforce_facts(self, fact_ids: "list[int]") -> None:
+        """Atomic batched UPDATE of helpful_count for the given fact_ids.
+        No-op if reinforce_on_retrieval is False or list is empty.
+        Logs each increment at DEBUG (fact_id=N helpful_count: old → new)."""
+        if not self.reinforce_on_retrieval or not fact_ids:
+            return
+        placeholders = ",".join("?" * len(fact_ids))
+        try:
+            with self.store._lock:
+                cur = self.store._conn.execute(
+                    f"UPDATE facts SET helpful_count = helpful_count + 1 "
+                    f"WHERE fact_id IN ({placeholders}) "
+                    f"RETURNING fact_id, helpful_count",
+                    fact_ids,
+                )
+                for row in cur.fetchall():
+                    logger.debug("Reinforced fact_id=%d helpful_count: %d → %d",
+                                 row[0], row[1] - 1, row[1])
+                self.store._conn.commit()
+        except Exception as e:
+            logger.debug("Reinforce skipped: %s", e)
+
+    def _half_life_for(self, category: "str | None") -> int:
+        """Return the configured half-life (days) for a category, falling back
+        to the global temporal_decay_half_life. 0 = decay disabled for this
+        category."""
+        if category and category in self.half_life_by_category:
+            return int(self.half_life_by_category[category])
+        return int(self.half_life)
+
+    def _temporal_decay(self, timestamp_str: str | None, category: "str | None" = None) -> float:
+        """Exponential decay: 0.5^(age_days / half_life_for(category)).
+
+        Returns 1.0 if decay is disabled (half-life 0) or timestamp is missing.
         """
-        if not self.half_life or not timestamp_str:
+        half_life = self._half_life_for(category)
+        if not half_life or not timestamp_str:
             return 1.0
 
         try:
@@ -600,6 +659,6 @@ class FactRetriever:
             if age_days < 0:
                 return 1.0
 
-            return math.pow(0.5, age_days / self.half_life)
+            return math.pow(0.5, age_days / half_life)
         except (ValueError, TypeError):
             return 1.0

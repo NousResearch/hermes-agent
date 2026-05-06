@@ -298,6 +298,8 @@ class HolographicMemoryProvider(MemoryProvider):
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
+        decay_by_category = self._config.get("decay_half_life_by_category") or {}
+        reinforce_on_retrieval = bool(self._config.get("reinforce_on_retrieval", True))
 
         # Entity allowlist canonicalization (config-driven).
         allowlist = self._config.get("entity_allowlist") or []
@@ -314,6 +316,8 @@ class HolographicMemoryProvider(MemoryProvider):
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
+            decay_half_life_by_category=decay_by_category,
+            reinforce_on_retrieval=reinforce_on_retrieval,
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
         )

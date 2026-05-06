@@ -102,6 +102,35 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
+function clipboardCanReadText(): boolean {
+  return !!navigator.clipboard?.readText && window.isSecureContext;
+}
+
+function copyText(text: string): void {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch((err) => {
+      console.warn("[dashboard clipboard] direct copy failed:", err.message);
+    });
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } catch (err) {
+    console.warn("[dashboard clipboard] fallback copy failed:", err);
+  } finally {
+    textarea.remove();
+  }
+}
+
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -292,12 +321,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const binary = atob(payload);
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch((err) => {
-          // Most common reason: the Clipboard API requires a user gesture.
-          // This can fail when the OSC 52 response arrives outside the
-          // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
-        });
+        copyText(text);
       } catch (e) {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
@@ -315,7 +339,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
       // without a selection it passes through to the TUI so agents can still
       // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      // Paste: Cmd+V on macOS, Ctrl+Shift+V on others.  On non-secure
+      // dashboard origins (for example http://100.x.y.z over Tailscale),
+      // browsers block navigator.clipboard.readText(); in that case we let
+      // xterm's native paste event handle the key instead of swallowing it.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
@@ -325,9 +352,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // Direct writeText inside the keydown handler preserves the user
           // gesture — async round-trips through OSC 52 can lose activation
           // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
-          });
+          copyText(sel);
           // Clear xterm.js's highlight after copy (matches gnome-terminal).
           term.clearSelection();
           ev.preventDefault();
@@ -338,6 +363,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
+        if (!clipboardCanReadText()) return true;
         navigator.clipboard
           .readText()
           .then((text) => {

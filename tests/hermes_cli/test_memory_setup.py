@@ -175,9 +175,9 @@ class TestCmdSetupAddVsReplace:
         )
 
         # Two _curses_select calls:
-        #   1st = provider picker (pick "c", index 0)
+        #   1st = provider picker (pick "c", index 1 because "Remove" is at 0)
         #   2nd = add-vs-replace (pick "Add c alongside", index 0)
-        selections = iter([0, 0])
+        selections = iter([1, 0])
         monkeypatch.setattr(
             "hermes_cli.memory_setup._curses_select",
             lambda *args, **kwargs: next(selections)
@@ -200,9 +200,9 @@ class TestCmdSetupAddVsReplace:
         )
 
         # Two _curses_select calls:
-        #   1st = provider picker (pick "c", index 0)
+        #   1st = provider picker (pick "c", index 1 because "Remove" is at 0)
         #   2nd = add-vs-replace (pick "Replace all", index 1)
-        selections = iter([0, 1])
+        selections = iter([1, 1])
         monkeypatch.setattr(
             "hermes_cli.memory_setup._curses_select",
             lambda *args, **kwargs: next(selections)
@@ -225,9 +225,9 @@ class TestCmdSetupAddVsReplace:
             config_providers=["a"]
         )
 
-        # Pick "b" (index 1) — a is already active, b is new
+        # Pick "b" (index 2) — "Remove" at 0, "a" at 1, "b" at 2
         # Then add-vs-replace: "Add b alongside" (index 0)
-        selections = iter([1, 0])
+        selections = iter([2, 0])
         monkeypatch.setattr(
             "hermes_cli.memory_setup._curses_select",
             lambda *args, **kwargs: next(selections)
@@ -303,3 +303,75 @@ class TestMemoryRemoveCommand:
 
         from hermes_cli.plugins_cmd import _remove_memory_provider
         assert _remove_memory_provider("hindsight") is False
+
+
+class TestCmdSetupRemoveProvider:
+    """When user selects 'Remove a provider...' from the setup wizard."""
+
+    def _mock_providers(self, monkeypatch, *provider_tuples, config_providers=None):
+        """Mock the provider discovery, config loading, and dependencies.
+
+        provider_tuples: (name, desc, provider_instance) as from _get_available_providers.
+        config_providers: list of already-active provider names.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._get_available_providers",
+            lambda: list(provider_tuples)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._install_dependencies",
+            lambda name: None
+        )
+
+        mem = {}
+        if config_providers:
+            mem.update({"providers": list(config_providers),
+                        "provider": config_providers[0]})
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"memory": mem}
+        )
+
+        # Capture what gets saved
+        saved_config = {}
+        def fake_save(cfg):
+            saved_config["memory"] = cfg.get("memory", {})
+        monkeypatch.setattr("hermes_cli.config.save_config", fake_save)
+
+        # Silence input() for schema prompts (press Enter past all)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
+
+        return saved_config
+
+    def test_remove_provider_via_setup(self, tmp_path, monkeypatch):
+        """When user selects 'Remove a provider...' and unchecks one, it gets removed."""
+        from hermes_cli.memory_setup import _set_configured_providers
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home", lambda: tmp_path)
+
+        saved = self._mock_providers(
+            monkeypatch,
+            ("a", "local", _DummyProvider()),
+            ("b", "local", _DummyProvider()),
+            config_providers=["a", "b"],
+        )
+
+        # _curses_select calls:
+        # 1st = main picker: select "Remove a provider..." (index 0, since remove entry is first)
+        select_calls = iter([0])
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._curses_select",
+            lambda *args, **kwargs: next(select_calls),
+        )
+
+        checklist_result = {0}  # keep "a", remove "b"
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist",
+            lambda *args, **kwargs: checklist_result,
+        )
+
+        from hermes_cli.memory_setup import cmd_setup
+        cmd_setup(None)
+
+        assert saved.get("memory", {}).get("providers") == ["a"]

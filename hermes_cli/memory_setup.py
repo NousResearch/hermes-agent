@@ -290,6 +290,13 @@ def cmd_setup(args) -> None:
     # Build picker items (all available providers)
     items = []
     provider_names = []
+
+    # Add "Remove a provider..." option when providers are active
+    remove_idx = -1
+    if active:
+        items.append(("Remove a provider...", "— deactivate an active provider"))
+        remove_idx = 0
+
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
         provider_names.append(name)
@@ -307,7 +314,54 @@ def cmd_setup(args) -> None:
     if not pre_selected:
         pre_selected = {builtin_idx}
 
-    selected = _curses_select("Memory provider setup", items, default=pre_selected.pop() if len(pre_selected) == 1 else 0)
+    if remove_idx >= 0:
+        # Default to first active provider if any, otherwise 0 (the remove entry)
+        if pre_selected:
+            default_idx = min(pre_selected) + 1  # +1 for the remove entry offset
+        else:
+            default_idx = 0
+        selected = _curses_select("Memory provider setup", items, default=default_idx)
+    else:
+        selected = _curses_select("Memory provider setup", items, default=pre_selected.pop() if len(pre_selected) == 1 else 0)
+
+    # Handle "Remove a provider..." selection
+    if selected == remove_idx and remove_idx >= 0:
+        from hermes_cli.curses_ui import curses_checklist
+        from hermes_cli.plugins_cmd import _remove_memory_provider
+
+        remove_items = list(active)
+        if not remove_items:
+            print("\n  No active providers to remove.\n")
+            return
+
+        # All are pre-selected; user unchecks the ones to remove
+        remove_selected = curses_checklist(
+            title="Providers to KEEP (uncheck to remove)",
+            items=remove_items,
+            selected=set(range(len(remove_items))),
+        )
+
+        to_remove = [remove_items[i] for i in range(len(remove_items)) if i not in remove_selected]
+        if not to_remove:
+            print("\n  No changes made.\n")
+            return
+
+        for prov in to_remove:
+            _remove_memory_provider(prov)
+
+        remaining = _get_configured_providers(config)
+        if remaining:
+            print(f"\n  ✓ Removed: {', '.join(to_remove)}")
+            print(f"  Active providers: {', '.join(remaining)}")
+        else:
+            print(f"\n  ✓ Removed: {', '.join(to_remove)}")
+            print("  Active providers: (none — built-in only)")
+        print("  Start a new session to activate.\n")
+        return
+
+    # Adjust for the "Remove" entry offset
+    if remove_idx >= 0:
+        selected -= 1  # shift back since we prepended one entry
 
     # Built-in only
     if selected >= len(providers) or selected < 0:

@@ -1203,7 +1203,13 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
     model_cfg = _get_model_config()
     max_tokens = None
-    if isinstance(model_cfg, dict):
+    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+    if _env_mt:
+        try:
+            max_tokens = int(_env_mt)
+        except (ValueError, TypeError):
+            max_tokens = None
+    elif isinstance(model_cfg, dict):
         mt = model_cfg.get("max_tokens")
         if isinstance(mt, int):
             max_tokens = mt

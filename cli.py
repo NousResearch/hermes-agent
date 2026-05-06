@@ -4264,17 +4264,22 @@ class HermesCLI:
         from /stop (clean up background processes). See openai/codex#14602.
         """
         from tools.process_registry import process_registry
+        from tools.terminal_tool import cleanup_all_environments
 
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
-        if not running:
-            print("  No running background processes.")
-            return
+        if running:
+            print(f"  Stopping {len(running)} background process(es)...")
+            killed = process_registry.kill_all()
+            print(f"  ✅ Stopped {killed} process(es).")
 
-        print(f"  Stopping {len(running)} background process(es)...")
-        killed = process_registry.kill_all()
-        print(f"  ✅ Stopped {killed} process(es).")
+        cleaned = cleanup_all_environments()
+        if cleaned:
+            print(f"  Cleaned up {cleaned} terminal environment(s).")
+
+        if not running and not cleaned:
+            print("  No running background processes.")
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""

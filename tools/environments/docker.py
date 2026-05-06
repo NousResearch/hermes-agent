@@ -618,28 +618,48 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
+            container_id = self._container_id
+            removed = False
             try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
+                subprocess.run(
+                    [self._docker_exe, "stop", "-t", "10", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
                 )
-                subprocess.Popen(stop_cmd, shell=True)
+            except subprocess.TimeoutExpired:
+                logger.warning("Timed out stopping Docker container %s", container_id)
             except Exception as e:
-                logger.warning("Failed to stop container %s: %s", self._container_id, e)
+                logger.warning("Failed to stop Docker container %s: %s", container_id, e)
 
-            if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
-                try:
-                    subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
+            try:
+                result = subprocess.run(
+                    [self._docker_exe, "rm", "-f", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                stderr = (result.stderr or "").strip()
+                if result.returncode != 0 and "No such container" not in stderr:
+                    logger.warning(
+                        "Failed to remove Docker container %s: %s",
+                        container_id,
+                        stderr or result.returncode,
                     )
-                except Exception:
-                    pass
-            self._container_id = None
+                else:
+                    removed = True
+            except subprocess.TimeoutExpired:
+                logger.warning("Timed out removing Docker container %s", container_id)
+            except Exception as e:
+                logger.warning("Failed to remove Docker container %s: %s", container_id, e)
+
+            if removed:
+                self._container_id = None
+            else:
+                return False
 
         if not self._persistent:
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)
+        return True

@@ -1,8 +1,6 @@
 import logging
 from io import StringIO
 import subprocess
-import sys
-import types
 
 import pytest
 
@@ -203,25 +201,46 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When persistent=false, cleanup() must schedule docker stop + rm."""
+    """When persistent=false, cleanup() must stop and remove the container."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
-
-    popen_cmds = []
-    monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
-    )
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
     assert env._container_id
     container_id = env._container_id
 
-    env.cleanup()
+    assert env.cleanup() is True
+    assert env._container_id is None
 
-    # Should have stop and rm calls via Popen
-    stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
-    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    stop_cmds = [c for c, _ in calls if c[:3] == ["/usr/bin/docker", "stop", "-t"] and container_id in c]
+    rm_cmds = [c for c, _ in calls if c[:3] == ["/usr/bin/docker", "rm", "-f"] and container_id in c]
+    assert stop_cmds, f"cleanup() should stop {container_id}"
+    assert rm_cmds, f"cleanup() should remove {container_id}"
+
+
+def test_cleanup_reports_failure_and_keeps_container_id(monkeypatch):
+    """A failed docker rm must be visible to callers instead of losing tracking."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+            if cmd[1] == "stop":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd[1] == "rm":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="daemon busy")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(persistent_filesystem=False, task_id="failed-cleanup-task")
+    container_id = env._container_id
+
+    assert env.cleanup() is False
+    assert env._container_id == container_id
 
 
 class _FakePopen:

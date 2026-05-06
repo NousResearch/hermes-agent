@@ -1292,12 +1292,15 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             pass
 
         try:
+            cleanup_result = None
             if hasattr(env, 'cleanup'):
-                env.cleanup()
+                cleanup_result = env.cleanup()
             elif hasattr(env, 'stop'):
                 env.stop()
             elif hasattr(env, 'terminate'):
                 env.terminate()
+            if cleanup_result is False:
+                raise RuntimeError("environment cleanup reported failure")
 
             logger.info("Cleaned up inactive environment for task: %s", task_id)
 
@@ -1306,6 +1309,9 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             if "404" in error_str or "not found" in error_str.lower():
                 logger.info("Environment for task %s already cleaned up", task_id)
             else:
+                with _env_lock:
+                    _active_environments.setdefault(task_id, env)
+                    _last_activity.setdefault(task_id, current_time)
                 logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
@@ -1379,8 +1385,8 @@ def cleanup_all_environments():
     
     for task_id in task_ids:
         try:
-            cleanup_vm(task_id)
-            cleaned += 1
+            if cleanup_vm(task_id):
+                cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
     
@@ -1421,24 +1427,32 @@ def cleanup_vm(task_id: str):
         pass
 
     if env is None:
-        return
+        return False
 
     try:
+        cleanup_result = None
         if hasattr(env, 'cleanup'):
-            env.cleanup()
+            cleanup_result = env.cleanup()
         elif hasattr(env, 'stop'):
             env.stop()
         elif hasattr(env, 'terminate'):
             env.terminate()
+        if cleanup_result is False:
+            raise RuntimeError("environment cleanup reported failure")
 
         logger.info("Manually cleaned up environment for task: %s", task_id)
+        return True
 
     except Exception as e:
         error_str = str(e)
         if "404" in error_str or "not found" in error_str.lower():
             logger.info("Environment for task %s already cleaned up", task_id)
         else:
+            with _env_lock:
+                _active_environments.setdefault(task_id, env)
+                _last_activity.setdefault(task_id, time.time())
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+        return False
 
 
 def _atexit_cleanup():

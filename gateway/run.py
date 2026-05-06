@@ -13767,7 +13767,12 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                error_detail = result.get("error", "")
+                error_msg = (
+                    "(empty)"
+                    if error_detail == "Codex response remained incomplete after 3 continuation attempts"
+                    else (f"⚠️ {error_detail}" if error_detail else "")
+                )
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),

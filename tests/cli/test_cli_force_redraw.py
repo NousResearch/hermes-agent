@@ -9,6 +9,7 @@ objects — we're asserting the escape sequences the CLI sends, not that
 the terminal physically repainted.
 """
 
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -33,36 +34,78 @@ class TestForceFullRedraw:
         # Simulate HermesCLI before the TUI has ever been constructed.
         bare_cli._force_full_redraw()  # must not raise
 
-    def test_sends_full_clear_and_redraws_running_app(self, bare_cli):
+    def test_preserves_scrollback_and_redraws_running_app_inline(self, bare_cli, monkeypatch):
         app = MagicMock()
         app._is_running = True
-        out = app.renderer.output
+        fake_loop = types.SimpleNamespace(is_running=lambda: True)
+        app.loop = fake_loop
         bare_cli._app = app
+
+        fake_asyncio = types.ModuleType("asyncio")
+
+        class _Policy:
+            def get_event_loop(self):
+                return fake_loop
+
+        fake_asyncio.get_event_loop_policy = lambda: _Policy()
+        monkeypatch.setitem(__import__("sys").modules, "asyncio", fake_asyncio)
 
         bare_cli._force_full_redraw()
 
-        # Must erase screen, home cursor, and flush — in that order.
-        out.reset_attributes.assert_called_once()
-        out.erase_screen.assert_called_once()
-        out.cursor_goto.assert_called_once_with(0, 0)
-        out.flush.assert_called_once()
+        app.renderer.erase.assert_called_once_with(leave_alternate_screen=False)
+        app.renderer.clear.assert_not_called()
+        app._request_absolute_cursor_position.assert_called_once_with()
+        app._redraw.assert_called_once_with()
+        app.invalidate.assert_not_called()
 
-        # Must reset prompt_toolkit's tracked screen/cursor state so the
-        # next redraw starts from a clean (0, 0) origin.
-        app.renderer.reset.assert_called_once_with(leave_alternate_screen=False)
+    def test_cross_thread_redraw_hops_to_app_loop(self, bare_cli, monkeypatch):
+        class FakeLoop:
+            def __init__(self):
+                self.call_count = 0
 
-        # Running apps should repaint immediately rather than waiting for the
-        # next async invalidate tick, which can leave the old prompt bar behind.
+            def is_running(self):
+                return True
+
+            def call_soon_threadsafe(self, cb, *args):
+                self.call_count += 1
+                cb(*args)
+
+        fake_loop = FakeLoop()
+        app = MagicMock()
+        app._is_running = True
+        app.loop = fake_loop
+        bare_cli._app = app
+
+        fake_current_loop = types.SimpleNamespace(is_running=lambda: True)
+        fake_asyncio = types.ModuleType("asyncio")
+
+        class _Policy:
+            def get_event_loop(self):
+                return fake_current_loop
+
+        fake_asyncio.get_event_loop_policy = lambda: _Policy()
+        monkeypatch.setitem(__import__("sys").modules, "asyncio", fake_asyncio)
+
+        bare_cli._force_full_redraw()
+
+        assert fake_loop.call_count == 1
+        app.renderer.erase.assert_called_once_with(leave_alternate_screen=False)
+        app.renderer.clear.assert_not_called()
+        app._request_absolute_cursor_position.assert_called_once_with()
         app._redraw.assert_called_once_with()
         app.invalidate.assert_not_called()
 
     def test_falls_back_to_invalidate_when_app_not_running(self, bare_cli):
         app = MagicMock()
         app._is_running = False
+        app.loop = None
         bare_cli._app = app
 
         bare_cli._force_full_redraw()
 
+        app.renderer.erase.assert_called_once_with(leave_alternate_screen=False)
+        app.renderer.clear.assert_not_called()
+        app._request_absolute_cursor_position.assert_called_once_with()
         app._redraw.assert_not_called()
         app.invalidate.assert_called_once()
 
@@ -71,7 +114,7 @@ class TestForceFullRedraw:
         # propagate — otherwise a stray Ctrl+L would crash the CLI.
         app = MagicMock()
         app._is_running = False
-        app.renderer.output.erase_screen.side_effect = RuntimeError("boom")
+        app.renderer.erase.side_effect = RuntimeError("boom")
         bare_cli._app = app
 
         bare_cli._force_full_redraw()  # must not raise
@@ -82,11 +125,15 @@ class TestForceFullRedraw:
     def test_falls_back_to_invalidate_when_redraw_raises(self, bare_cli):
         app = MagicMock()
         app._is_running = True
+        app.loop = None
         app._redraw.side_effect = RuntimeError("boom")
         bare_cli._app = app
 
         bare_cli._force_full_redraw()  # must not raise
 
+        app.renderer.erase.assert_called_once_with(leave_alternate_screen=False)
+        app.renderer.clear.assert_not_called()
+        app._request_absolute_cursor_position.assert_called_once_with()
         app._redraw.assert_called_once_with()
         app.invalidate.assert_called_once()
 

@@ -2319,47 +2319,126 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _run_on_app_loop(self, callback, *, wait: bool = False, timeout: float = 1.0) -> bool:
+        """Run ``callback`` on prompt_toolkit's event loop.
+
+        ``process_loop`` executes slash commands on a background thread, but
+        prompt_toolkit rendering is only safe on the application's own loop.
+        Cross-thread redraws are what caused ``/redraw`` to stack duplicate
+        prompt bars in tmux: the worker thread cleared the terminal while the UI
+        thread still believed the old screen was active.
+
+        Returns True when the callback completed without raising. If ``wait`` is
+        True, block briefly for completion so callers can sequence follow-up
+        output (for example the ``✓ UI redrawn`` message) after the repaint.
+        """
+        app = getattr(self, "_app", None)
+        if not app:
+            return False
+        try:
+            loop = app.loop  # type: ignore[attr-defined]
+        except Exception:
+            loop = None
+
+        if loop is None or not getattr(loop, "is_running", lambda: False)():
+            try:
+                callback()
+                return True
+            except Exception:
+                return False
+
+        import asyncio as _asyncio
+
+        try:
+            current_loop = _asyncio.get_event_loop_policy().get_event_loop()
+        except Exception:
+            current_loop = None
+
+        if current_loop is loop:
+            try:
+                callback()
+                return True
+            except Exception:
+                return False
+
+        done = threading.Event()
+        errors: list[BaseException] = []
+
+        def _invoke() -> None:
+            try:
+                callback()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        try:
+            loop.call_soon_threadsafe(_invoke)
+        except Exception:
+            try:
+                callback()
+                return True
+            except Exception:
+                return False
+
+        if wait:
+            done.wait(timeout)
+            if not done.is_set():
+                return False
+        return not errors
+
     def _force_full_redraw(self) -> None:
-        """Force a clean full-screen repaint of the prompt_toolkit UI.
+        """Force a clean repaint of the prompt_toolkit UI without nuking scrollback.
 
-        Used to recover from terminal buffer drift caused by external
-        redraws we can't detect — e.g. macOS cmux / tmux tab switches,
-        ``clear`` issued from a subshell, or SSH window restores. These
-        wipe or repaint the terminal without firing SIGWINCH, so
-        prompt_toolkit's tracked ``_cursor_pos`` no longer matches reality
-        and the next incremental redraw stacks on top of stale content
-        (ghost status bars, duplicated prompts).
+        Hermes runs prompt_toolkit in ``full_screen=False`` mode, so the chat
+        transcript lives in the terminal's normal scrollback while PT only owns
+        the live prompt/status rows at the bottom. A destructive screen clear
+        (``erase_screen`` / ``renderer.clear()``) does remove ghost prompt bars,
+        but it also wipes the visible transcript from the screen — users then see
+        the message "change" or disappear while scrolling.
 
-        Bound to Ctrl+L and exposed as the ``/redraw`` slash command,
-        matching the standard terminal-UX convention (bash, zsh, fish,
-        vim, htop).
+        The safe recovery path is prompt_toolkit's own non-destructive erase:
+        clear only the rows PT currently owns, request a fresh cursor-position
+        baseline, then redraw on the app loop. That fixes prompt drift without
+        deleting visible history.
         """
         app = getattr(self, "_app", None)
         if not app:
             return
-        try:
+
+        def _redraw_now() -> None:
             renderer = app.renderer
-            out = renderer.output
-            out.reset_attributes()
-            out.erase_screen()
-            out.cursor_goto(0, 0)
-            out.flush()
-            # Drop prompt_toolkit's cached screen + cursor state so the
-            # next _redraw() starts from a known (0, 0) origin and
-            # re-renders every cell rather than diffing against stale.
-            renderer.reset(leave_alternate_screen=False)
-        except Exception:
-            pass
-        try:
+            try:
+                if hasattr(renderer, "erase"):
+                    renderer.erase(leave_alternate_screen=False)
+                else:
+                    out = renderer.output
+                    out.cursor_backward(getattr(renderer, "_cursor_pos", type("P", (), {"x": 0})()).x)
+                    out.cursor_up(getattr(renderer, "_cursor_pos", type("P", (), {"y": 0})()).y)
+                    out.erase_down()
+                    out.reset_attributes()
+                    out.enable_autowrap()
+                    out.flush()
+                    renderer.reset(leave_alternate_screen=False)
+                if hasattr(app, "_request_absolute_cursor_position"):
+                    app._request_absolute_cursor_position()
+            except Exception:
+                # Last-resort fallback: if the explicit erase path fails, still
+                # ask prompt_toolkit for a normal repaint rather than crashing.
+                pass
+
             if getattr(app, "_is_running", False) and hasattr(app, "_redraw"):
                 app._redraw()
             else:
                 app.invalidate()
+
+        if self._run_on_app_loop(_redraw_now, wait=True):
+            return
+
+        try:
+            app.invalidate()
         except Exception:
-            try:
-                app.invalidate()
-            except Exception:
-                pass
+            pass
 
     def _set_terminal_focus_reporting(self, enabled: bool) -> None:
         """Best-effort toggle for xterm focus-reporting mode (CSI ?1004 h/l).
@@ -5859,15 +5938,22 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
-    def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /model should be handled immediately on the UI thread."""
+    def _should_handle_ui_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when a UI-mutating slash command should stay on the PT loop.
+
+        Commands like ``/model`` and ``/redraw`` directly manipulate prompt_toolkit
+        widgets or renderer state. Running them through the background
+        ``process_loop`` adds an extra cross-thread hop and slash-command preview
+        print right before the UI mutation, which is exactly the pattern that can
+        leave duplicated prompt chrome behind.
+        """
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "model")
+            return bool(cmd and cmd.name in {"model", "redraw"})
         except Exception:
             return False
 
@@ -6396,7 +6482,6 @@ class HermesCLI:
             # tab switches, subshell ``clear``, SSH window restores, etc.
             # See issue #8688 (cmux). Ctrl+L is bound to the same helper.
             self._force_full_redraw()
-            _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
             self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -10164,9 +10249,10 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
-                if self._should_handle_model_command_inline(text, has_images=has_images):
+                # Handle UI-mutating commands directly on the UI thread so
+                # prompt_toolkit widget/renderer changes don't bounce through the
+                # background process loop first.
+                if self._should_handle_ui_command_inline(text, has_images=has_images):
                     if not self.process_command(text):
                         self._should_exit = True
                         if event.app.is_running:
@@ -11499,42 +11585,22 @@ class HermesCLI:
         )
         self._app = app  # Store reference for clarify_callback
 
-        # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # When the terminal shrinks (e.g. un-maximize), the emulator reflows
-        # the previously-rendered full-width rows (status bar, input rules)
-        # into multiple narrower rows.  prompt_toolkit's _on_resize handler
-        # only cursor_up()s by the stored layout height, missing the extra
-        # rows created by reflow — leaving ghost duplicates visible.
-        #
-        # It's not just column-shrink: widening, row-shrinking, and
-        # multiplexer-driven SIGWINCH-less redraws (cmux / tmux tab switch)
-        # all produce the same class of drift, where the renderer's tracked
-        # _cursor_pos.y no longer matches terminal reality. The only reliable
-        # recovery is a full screen-clear (\x1b[2J\x1b[H) before the next
-        # redraw, so we force one on every resize rather than trying to
-        # compute the exact drift.
+        # ── Keep resize recovery non-destructive ──────────────────────────
+        # Hermes uses prompt_toolkit in normal-screen mode, so historical chat
+        # content lives in scrollback above the live prompt widgets. When the
+        # terminal size changes we still need PT to throw away its stale cursor /
+        # screen bookkeeping, but we must not issue a raw ``erase_screen()`` or
+        # the visible transcript disappears. Wrap the stock handler only to keep
+        # resize failures isolated from the rest of the CLI.
         _original_on_resize = app._on_resize
 
-        def _resize_clear_ghosts():
-            renderer = app.renderer
+        def _resize_preserve_scrollback():
             try:
-                out = renderer.output
-                # Reset attributes, erase the entire screen, and home the
-                # cursor. This overwrites any reflowed status-bar rows or
-                # stale content the terminal kept from the prior layout.
-                out.reset_attributes()
-                out.erase_screen()
-                out.cursor_goto(0, 0)
-                out.flush()
-                # Tell the renderer its tracked position is fresh so its
-                # own erase() inside _on_resize doesn't cursor_up() past
-                # the top of the screen.
-                renderer.reset(leave_alternate_screen=False)
+                _original_on_resize()
             except Exception:
                 pass  # never break resize handling
-            _original_on_resize()
 
-        app._on_resize = _resize_clear_ghosts
+        app._on_resize = _resize_preserve_scrollback
 
         def spinner_loop():
             while not self._should_exit:

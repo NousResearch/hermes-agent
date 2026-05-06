@@ -71,7 +71,7 @@ def _make_cli():
 
 
 class TestSteerInlineDetector:
-    """_should_handle_steer_command_inline gates the busy-path fast dispatch."""
+    """Inline detectors gate the commands that must stay on the PT loop."""
 
     def test_detects_steer_when_agent_running(self):
         cli = _make_cli()
@@ -103,6 +103,21 @@ class TestSteerInlineDetector:
         cli = _make_cli()
         cli._agent_running = True
         assert cli._should_handle_steer_command_inline("/steer text", has_images=True) is False
+
+    def test_detects_redraw_inline(self):
+        cli = _make_cli()
+        assert cli._should_handle_ui_command_inline("/redraw") is True
+        assert cli._should_handle_ui_command_inline("/REDRAW") is True
+
+    def test_ignores_redraw_with_attached_images(self):
+        cli = _make_cli()
+        assert cli._should_handle_ui_command_inline("/redraw", has_images=True) is False
+
+    def test_ignores_other_ui_commands(self):
+        cli = _make_cli()
+        assert cli._should_handle_ui_command_inline("/help") is False
+        assert cli._should_handle_ui_command_inline("/clear") is False
+        assert cli._should_handle_ui_command_inline("") is False
 
 
 class TestSteerBusyPathDispatch:

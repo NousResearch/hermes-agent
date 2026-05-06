@@ -73,17 +73,21 @@ class TestChatCompletionsBuildKwargs:
         assert kw["tools"] == tools
 
     def test_openrouter_provider_prefs(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gpt-4o", messages=msgs,
-            is_openrouter=True,
+            provider_profile=profile,
             provider_preferences={"only": ["openai"]},
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
     def test_nous_tags(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, is_nous=True)
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
         assert kw["extra_body"]["tags"] == ["product=hermes-agent"]
 
     def test_reasoning_default(self, transport):
@@ -95,29 +99,36 @@ class TestChatCompletionsBuildKwargs:
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
     def test_nous_omits_disabled_reasoning(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gpt-4o", messages=msgs,
+            provider_profile=profile,
             supports_reasoning=True,
-            is_nous=True,
             reasoning_config={"enabled": False},
         )
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="llama3", messages=msgs,
+            provider_profile=profile,
             ollama_num_ctx=32768,
         )
         assert kw["extra_body"]["options"]["num_ctx"] == 32768
 
     def test_custom_think_false(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="qwen3", messages=msgs,
-            is_custom_provider=True,
+            provider_profile=profile,
             reasoning_config={"effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
@@ -304,23 +315,29 @@ class TestChatCompletionsBuildKwargs:
         assert kw["max_tokens"] == 2048
 
     def test_nvidia_default_max_tokens(self, transport):
+        """NVIDIA max_tokens=16384 is now set via ProviderProfile, not legacy flag."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("nvidia")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="glm-4.7", messages=msgs,
-            is_nvidia_nim=True,
+            model="nvidia/llama-3.1-405b-instruct",
+            messages=msgs,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
+            provider_profile=profile,
         )
-        # NVIDIA default: 16384
         assert kw["max_tokens"] == 16384
 
     def test_qwen_default_max_tokens(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("qwen-oauth")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="qwen3-coder-plus", messages=msgs,
-            is_qwen_portal=True,
+            provider_profile=profile,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
-        # Qwen default: 65536
+        # Qwen default: 65536 from profile.default_max_tokens
         assert kw["max_tokens"] == 65536
 
     def test_anthropic_max_output_for_claude_on_aggregator(self, transport):
@@ -343,14 +360,23 @@ class TestChatCompletionsBuildKwargs:
         assert kw["service_tier"] == "priority"
 
     def test_fixed_temperature(self, transport):
+        """Fixed temperature is now set via ProviderProfile.fixed_temperature."""
+        from providers.base import ProviderProfile
         msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, fixed_temperature=0.6)
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_profile=ProviderProfile(name="_t", fixed_temperature=0.6),
+        )
         assert kw["temperature"] == 0.6
 
     def test_omit_temperature(self, transport):
+        """Omit temperature is set via ProviderProfile with OMIT_TEMPERATURE sentinel."""
+        from providers.base import ProviderProfile, OMIT_TEMPERATURE
         msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, omit_temperature=True, fixed_temperature=0.5)
-        # omit wins
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_profile=ProviderProfile(name="_t", fixed_temperature=OMIT_TEMPERATURE),
+        )
         assert "temperature" not in kw
 
 
@@ -358,18 +384,22 @@ class TestChatCompletionsKimi:
     """Regression tests for the Kimi/Moonshot quirks migrated into the transport."""
 
     def test_kimi_max_tokens_default(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
-        # Kimi CLI default: 32000
+        # Kimi CLI default: 32000 from KimiProfile.default_max_tokens
         assert kw["max_tokens"] == 32000
 
     def test_kimi_reasoning_effort_top_level(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             reasoning_config={"effort": "high"},
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
@@ -387,17 +417,21 @@ class TestChatCompletionsKimi:
         assert "reasoning_effort" not in kw
 
     def test_kimi_thinking_enabled_extra_body(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
         assert kw["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_kimi_thinking_disabled_extra_body(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             reasoning_config={"enabled": False},
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )

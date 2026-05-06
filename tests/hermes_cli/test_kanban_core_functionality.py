@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -80,7 +82,7 @@ def test_no_idempotency_key_never_collides(kanban_home):
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 
-def test_spawn_failure_auto_blocks_after_limit(kanban_home):
+def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawnable):
     """N consecutive spawn failures on the same task → auto_blocked."""
     def _bad_spawn(task, ws):
         raise RuntimeError("no PATH")
@@ -94,7 +96,7 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home):
             assert tid not in res.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
-        assert task.spawn_failures == 3
+        assert task.consecutive_failures == 3
 
         # Two more ticks → fifth failure exceeds the limit.
         res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
@@ -103,15 +105,20 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home):
         assert tid in res2.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        assert task.spawn_failures >= 5
-        assert task.last_spawn_error and "no PATH" in task.last_spawn_error
+        assert task.consecutive_failures >= 5
+        assert task.last_failure_error and "no PATH" in task.last_failure_error
     finally:
         conn.close()
 
 
-def test_successful_spawn_resets_failure_counter(kanban_home):
-    """A successful spawn clears the counter so past failures don't count
-    against future retries of the same task."""
+def test_successful_spawn_does_not_reset_failure_counter(kanban_home, all_assignees_spawnable):
+    """Under unified consecutive-failure counting, a successful spawn
+    does NOT reset the counter — past failures stay on the books until
+    a successful completion. This is by design: it prevents a task
+    that keeps timing out after spawn from looping forever.
+    (Pre-unification behaviour was to reset on spawn success; see the
+    complete_task reset for the replacement point.)
+    """
     calls = [0]
     def _flaky_spawn(task, ws):
         calls[0] += 1
@@ -126,11 +133,12 @@ def test_successful_spawn_resets_failure_counter(kanban_home):
         kb.dispatch_once(conn, spawn_fn=_flaky_spawn, failure_limit=5)
         kb.dispatch_once(conn, spawn_fn=_flaky_spawn, failure_limit=5)
         task = kb.get_task(conn, tid)
-        assert task.spawn_failures == 2
+        assert task.consecutive_failures == 2
         kb.dispatch_once(conn, spawn_fn=_flaky_spawn, failure_limit=5)
         task = kb.get_task(conn, tid)
-        assert task.spawn_failures == 0
-        assert task.last_spawn_error is None
+        # Counter STAYS at 2 — spawn succeeded but run isn't complete yet.
+        assert task.consecutive_failures == 2
+        assert task.last_failure_error is not None
         # Task is now running with a pid.
         assert task.status == "running"
         assert task.worker_pid == 99999
@@ -138,7 +146,31 @@ def test_successful_spawn_resets_failure_counter(kanban_home):
         conn.close()
 
 
-def test_workspace_resolution_failure_also_counts(kanban_home):
+def test_successful_completion_resets_failure_counter(kanban_home, all_assignees_spawnable):
+    """A successful kb.complete_task wipes the counter — the task+profile
+    combination proved it can succeed, so past failures are history."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        # Simulate 2 prior failures on the record.
+        kb.write_txn_ctx = kb.write_txn
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 2, "
+                "last_failure_error = 'old failure' WHERE id = ?",
+                (tid,),
+            )
+        # Complete the task.
+        ok = kb.complete_task(conn, tid, summary="done")
+        assert ok
+        task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+    finally:
+        conn.close()
+
+
+def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spawnable):
     """`dir:` workspace with no path should fail workspace resolution AND
     count against the failure budget — not just crash the tick."""
     conn = kb.connect()
@@ -156,9 +188,9 @@ def test_workspace_resolution_failure_also_counts(kanban_home):
             )
         res = kb.dispatch_once(conn, failure_limit=3)
         task = kb.get_task(conn, tid)
-        assert task.spawn_failures == 1
+        assert task.consecutive_failures == 1
         assert task.status == "ready"
-        assert task.last_spawn_error and "workspace" in task.last_spawn_error
+        assert task.last_failure_error and "workspace" in task.last_failure_error
         # Run twice more → auto-blocked.
         kb.dispatch_once(conn, failure_limit=3)
         res = kb.dispatch_once(conn, failure_limit=3)
@@ -181,6 +213,20 @@ def test_pid_alive_helper():
     assert not kb._pid_alive(None)
     # A clearly-dead pid (very large, extremely unlikely to exist).
     assert not kb._pid_alive(2 ** 30)
+
+
+def test_pid_alive_detects_darwin_zombie(monkeypatch):
+    monkeypatch.setattr(kb.sys, "platform", "darwin")
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: None)
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-o", "stat=", "-p", "123"]
+        assert kwargs["stdout"] is subprocess.PIPE
+        return SimpleNamespace(returncode=0, stdout="Z+\n")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._pid_alive(123) is False
 
 
 def test_detect_crashed_workers_reclaims(kanban_home):
@@ -636,14 +682,21 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
                 conn, title="long job", assignee="worker",
                 max_runtime_seconds=1,  # one second cap
             )
-            # Spawn by hand: claim + set pid + set started_at to the past.
+            # Spawn by hand: claim + set pid + set active run start to the past.
             kb.claim_task(conn, tid)
             kb._set_worker_pid(conn, tid, os.getpid())   # any live pid works
-            # Backdate started_at so elapsed > limit.
+            # Backdate both the task-level first-start timestamp and the active
+            # run timestamp so elapsed > limit under the per-run runtime model.
+            old_started = int(time.time()) - 30
             with kb.write_txn(conn):
                 conn.execute(
                     "UPDATE tasks SET started_at = ? WHERE id = ?",
-                    (int(time.time()) - 30, tid),
+                    (old_started, tid),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? "
+                    "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                    (old_started, tid),
                 )
 
             timed_out = kb.enforce_max_runtime(conn, signal_fn=_signal_fn)
@@ -723,10 +776,16 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         )
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, os.getpid())
+        old_started = int(time.time()) - 30
         with kb.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
-                (int(time.time()) - 30, tid),
+                (old_started, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old_started, tid),
             )
         # Use enforce_max_runtime directly with our signal stub — dispatch_once
         # uses the default os.kill, but integration-wise calling
@@ -824,7 +883,7 @@ def test_recompute_ready_emits_promoted_not_ready(kanban_home):
         conn.close()
 
 
-def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home):
+def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home, all_assignees_spawnable):
     def _bad(task, ws):
         raise RuntimeError("nope")
     conn = kb.connect()
@@ -840,7 +899,7 @@ def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home):
         conn.close()
 
 
-def test_spawned_event_emitted_with_pid(kanban_home):
+def test_spawned_event_emitted_with_pid(kanban_home, all_assignees_spawnable):
     """Successful spawn must append a ``spawned`` event with the pid in
     the payload so humans tailing events see pid tracking."""
     def _spawn_returns_pid(task, ws):
@@ -899,8 +958,8 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_list_profiles_on_disk(tmp_path, monkeypatch):
-    """list_profiles_on_disk returns directories under ~/.hermes/profiles/
-    that contain a config.yaml."""
+    """list_profiles_on_disk returns the implicit default profile plus
+    named profiles under ~/.hermes/profiles/ that contain a config.yaml."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_HOME", raising=False)
     profiles = tmp_path / ".hermes" / "profiles"
@@ -914,7 +973,7 @@ def test_list_profiles_on_disk(tmp_path, monkeypatch):
     (profiles / "stray.txt").write_text("noise")
 
     names = kb.list_profiles_on_disk()
-    assert names == ["researcher", "writer"]
+    assert names == ["default", "researcher", "writer"]
 
 
 def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
@@ -928,7 +987,7 @@ def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
         (d / "config.yaml").write_text("model: {}\n")
 
     names = kb.list_profiles_on_disk()
-    assert names == ["researcher", "writer"]
+    assert names == ["default", "researcher", "writer"]
 
 
 def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
@@ -955,6 +1014,8 @@ def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
         conn.close()
 
     by_name = {d["name"]: d for d in data}
+    assert by_name["default"]["on_disk"] is True
+    assert by_name["default"]["counts"] == {}
     assert by_name["researcher"]["on_disk"] is True
     assert by_name["researcher"]["counts"] == {}
     assert by_name["writer"]["on_disk"] is True
@@ -1138,6 +1199,79 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
         conn.close()
 
 
+def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
+    """A worker from an earlier attempt cannot close a later retry."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry guarded", assignee="worker")
+
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+
+        assert not kb.complete_task(
+            conn,
+            tid,
+            summary="late stale completion",
+            expected_run_id=run1.id,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="current completion",
+            expected_run_id=run2.id,
+        )
+        runs = kb.list_runs(conn, tid)
+        assert [r.outcome for r in runs] == ["crashed", "completed"]
+        assert runs[-1].summary == "current completion"
+    finally:
+        conn.close()
+
+
+def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatch):
+    """Stale retry attempts cannot mutate the active run lifecycle."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry heartbeat guarded", assignee="worker")
+
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+
+        assert not kb.heartbeat_worker(conn, tid, note="late", expected_run_id=run1.id)
+        assert not kb.block_task(conn, tid, reason="late block", expected_run_id=run1.id)
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+        assert task.last_heartbeat_at is None
+
+        assert kb.heartbeat_worker(conn, tid, note="current", expected_run_id=run2.id)
+        assert kb.block_task(conn, tid, reason="current block", expected_run_id=run2.id)
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
 def test_run_on_block_with_reason(kanban_home):
     conn = kb.connect()
     try:
@@ -1154,7 +1288,7 @@ def test_run_on_block_with_reason(kanban_home):
         conn.close()
 
 
-def test_run_on_spawn_failure_records_failed_runs(kanban_home):
+def test_run_on_spawn_failure_records_failed_runs(kanban_home, all_assignees_spawnable):
     """Each spawn_failed event closes a run with outcome='spawn_failed',
     and the Nth failure closes a run with outcome='gave_up'."""
     def _bad(task, ws):
@@ -1369,6 +1503,48 @@ def test_cli_complete_with_summary_and_metadata(kanban_home):
         conn.close()
     assert r.summary == "done it"
     assert r.metadata == {"files": 3}
+
+
+def test_cli_edit_backfills_result_on_done_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.complete_task(conn, tid)
+    finally:
+        conn.close()
+
+    meta = '{"source": "dashboard-recovery"}'
+    out = run_slash(
+        "edit " + tid
+        + " --result \"DECIDED: done\""
+        + " --summary \"DECIDED: done\""
+        + " --metadata '" + meta + "'"
+    )
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.result == "DECIDED: done"
+    assert run.summary == "DECIDED: done"
+    assert run.metadata == {"source": "dashboard-recovery"}
+    assert events[-1].kind == "edited"
+
+
+def test_cli_edit_rejects_non_done_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --result nope")
+
+    assert "not done" in out
 
 
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
@@ -2726,3 +2902,501 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
             timeout=3.0,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Hallucination gate (created_cards verify + prose scan)
+# ---------------------------------------------------------------------------
+
+def test_complete_with_created_cards_all_verified_records_manifest(kanban_home):
+    """A completion with created_cards that all exist + belong to this
+    worker records them on the ``completed`` event payload."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        c1 = kb.create_task(conn, title="c1", assignee="x", created_by="alice")
+        c2 = kb.create_task(conn, title="c2", assignee="y", created_by="alice")
+        ok = kb.complete_task(
+            conn, parent,
+            summary="done, created c1+c2",
+            created_cards=[c1, c2],
+        )
+        assert ok is True
+        evs = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        completed = [e for e in evs if e["kind"] == "completed"]
+        assert len(completed) == 1
+        import json as _json
+        payload = _json.loads(completed[0]["payload"])
+        assert payload.get("verified_cards") == [c1, c2]
+    finally:
+        conn.close()
+
+
+def test_complete_with_phantom_created_cards_raises_and_audits(kanban_home):
+    """A completion claiming a card id that doesn't exist raises
+    HallucinatedCardsError, leaves the task in its prior state, and
+    records a ``completion_blocked_hallucination`` event for auditing."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        phantom_id = "t_deadbeefcafe"
+
+        with pytest.raises(kb.HallucinatedCardsError) as excinfo:
+            kb.complete_task(
+                conn, parent,
+                summary="claimed phantom",
+                created_cards=[real, phantom_id],
+            )
+        assert excinfo.value.phantom == [phantom_id]
+
+        # Task still in prior state (ready, not done).
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (parent,),
+        ).fetchone()
+        assert row["status"] == "ready"
+
+        # Audit event landed.
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "completion_blocked_hallucination" in kinds
+        assert "completed" not in kinds
+    finally:
+        conn.close()
+
+
+def test_complete_with_cross_worker_card_is_rejected(kanban_home):
+    """A card that exists but was created by a different worker profile
+    is treated as phantom (hallucinated attribution)."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        other = kb.create_task(conn, title="other", assignee="x", created_by="bob")
+
+        with pytest.raises(kb.HallucinatedCardsError) as excinfo:
+            kb.complete_task(
+                conn, parent,
+                summary="claiming someone else's card",
+                created_cards=[other],
+            )
+        assert excinfo.value.phantom == [other]
+    finally:
+        conn.close()
+
+
+def test_complete_accepts_cross_worker_card_when_linked_as_child(kanban_home):
+    """A card created by a different principal but explicitly linked as
+    a child of the completing task is accepted — the worker took
+    ownership via ``kanban_create(parents=[current_task])`` or an
+    explicit ``link_tasks`` call, which proves the relationship even
+    when ``created_by`` doesn't match.
+
+    (Relaxation salvaged from #20022 @LeonSGP43 — stricter version
+    would incorrectly reject legitimate orchestrator flows where a
+    specifier creates a card, then a worker picks it up and links it
+    to its own parent task.)
+    """
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        # Card created by a DIFFERENT principal (not alice, not parent).
+        other = kb.create_task(
+            conn, title="other", assignee="x", created_by="bob",
+            parents=[parent],  # explicitly links as child of the completing task
+        )
+
+        ok = kb.complete_task(
+            conn, parent,
+            summary="completed with linked child",
+            created_cards=[other],
+        )
+        assert ok is True
+        # The card should appear in the completed event's verified_cards list.
+        import json as _json
+        row = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id=? AND kind='completed' ORDER BY id DESC LIMIT 1",
+            (parent,),
+        ).fetchone()
+        payload = _json.loads(row["payload"])
+        assert other in payload.get("verified_cards", [])
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_flags_nonexistent_ids(kanban_home):
+    """Successful completion whose summary references a ``t_<hex>`` id
+    that doesn't resolve emits a ``suspected_hallucinated_references``
+    event. Does not block the completion."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        ok = kb.complete_task(
+            conn, parent,
+            summary="also saw t_abcd1234ffff failing in CI",
+        )
+        assert ok is True
+        kinds_and_payloads = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        kinds = [r["kind"] for r in kinds_and_payloads]
+        assert "suspected_hallucinated_references" in kinds
+        import json as _json
+        susp = [
+            _json.loads(r["payload"])
+            for r in kinds_and_payloads
+            if r["kind"] == "suspected_hallucinated_references"
+        ][0]
+        assert "t_abcd1234ffff" in susp["phantom_refs"]
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_ignores_existing_ids(kanban_home):
+    """Summaries referencing real task ids don't emit a warning."""
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="other", assignee="x")
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        ok = kb.complete_task(
+            conn, parent,
+            summary=f"depended on {other}, now done",
+        )
+        assert ok is True
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recovery helpers (reclaim + reassign)
+# ---------------------------------------------------------------------------
+
+def test_reclaim_task_resets_running_to_ready(kanban_home):
+    """Manual reclaim releases the claim, resets status, and emits a
+    ``reclaimed`` event even when claim_expires has not passed."""
+    import time
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="stuck", assignee="broken")
+        # Simulate a live claim (not expired).
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 12345, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 12345, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+
+        # release_stale_claims should NOT reclaim (not expired).
+        assert kb.release_stale_claims(conn) == 0
+
+        # reclaim_task should work immediately.
+        assert kb.reclaim_task(conn, t, reason="test reason") is True
+
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+        assert row["worker_pid"] is None
+
+        import json as _json
+        reclaim_evs = [
+            _json.loads(r["payload"])
+            for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='reclaimed'",
+                (t,),
+            )
+        ]
+        assert len(reclaim_evs) == 1
+        assert reclaim_evs[0].get("manual") is True
+        assert reclaim_evs[0].get("reason") == "test reason"
+    finally:
+        conn.close()
+
+
+def test_reclaim_task_returns_false_for_already_ready(kanban_home):
+    """Reclaiming a task that's not running returns False (no-op)."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="ready task", assignee="x")
+        assert kb.reclaim_task(conn, t) is False
+    finally:
+        conn.close()
+
+
+def test_reassign_task_refuses_running_without_reclaim_first(kanban_home):
+    """Without ``reclaim_first=True``, reassigning a running task is a
+    no-op returning False (matches assign_task's RuntimeError via
+    internal catch)."""
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="orig")
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=? WHERE id=?",
+            ("live", t),
+        )
+        conn.commit()
+        assert kb.reassign_task(conn, t, "new") is False
+        # Assignee unchanged.
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "orig"
+    finally:
+        conn.close()
+
+
+def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
+    """With ``reclaim_first=True``, a running task is reclaimed and
+    reassigned in one operation."""
+    import time
+    import secrets
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="switch me", assignee="orig")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+
+        assert kb.reassign_task(
+            conn, t, "new-profile",
+            reclaim_first=True, reason="switch model",
+        ) is True
+
+        row = conn.execute(
+            "SELECT assignee, status FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["assignee"] == "new-profile"
+        assert row["status"] == "ready"
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Unified failure counter — timeout + crash paths increment the same counter
+# as spawn failures, and the circuit breaker trips after N consecutive
+# failures regardless of which outcome caused them.
+# ---------------------------------------------------------------------------
+
+def test_enforce_max_runtime_increments_consecutive_failures(kanban_home, monkeypatch):
+    """A single timeout increments consecutive_failures by 1 (was the
+    infinite-respawn gap before unification)."""
+    import hermes_cli.kanban_db as _kb
+    state = {"sent_term": False}
+    def _alive(pid):
+        return not state["sent_term"]
+    def _signal(pid, sig):
+        import signal as _sig
+        if sig == _sig.SIGTERM:
+            state["sent_term"] = True
+    monkeypatch.setattr(_kb, "_pid_alive", _alive)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="overrun", assignee="worker",
+            max_runtime_seconds=1,
+        )
+        kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, os.getpid())
+        # Since PR #19473 (salvaged) changed enforce_max_runtime to read
+        # from task_runs.started_at (per-attempt) rather than
+        # tasks.started_at (lifetime), we need to backdate BOTH to
+        # guarantee the timeout fires regardless of which column the
+        # query pulls from.
+        with kb.write_txn(conn):
+            long_ago = int(time.time()) - 30
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?",
+                (long_ago, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (long_ago, tid),
+            )
+        before = kb.get_task(conn, tid)
+        assert before.consecutive_failures == 0
+
+        kb.enforce_max_runtime(conn, signal_fn=_signal)
+
+        after = kb.get_task(conn, tid)
+        assert after.consecutive_failures == 1
+        assert "elapsed" in (after.last_failure_error or "")
+        # Task status flipped back to ready (not yet past threshold).
+        assert after.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
+    """N consecutive timeouts with the unified counter should eventually
+    hit the failure_limit threshold and auto-block the task. This closes
+    the Forbidden-Seeds-reported gap where timeout loops never capped.
+    """
+    import hermes_cli.kanban_db as _kb
+    state = {"sent_term": False}
+    def _alive(pid):
+        return not state["sent_term"]
+    def _signal(pid, sig):
+        import signal as _sig
+        if sig == _sig.SIGTERM:
+            state["sent_term"] = True
+    monkeypatch.setattr(_kb, "_pid_alive", _alive)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="loop forever", assignee="slow-worker",
+            max_runtime_seconds=1,
+        )
+        # Drop the failure_limit to 3 so we don't need 5 timeouts.
+        # This uses the module-level DEFAULT; we simulate by calling
+        # _record_task_failure directly with a tight limit.
+        for _ in range(3):
+            # Fresh claim + "started long ago" each iteration.
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='running', claim_lock=?, "
+                    "claim_expires=?, worker_pid=?, started_at=? "
+                    "WHERE id=?",
+                    (
+                        f"{_kb._claimer_id().split(':', 1)[0]}:lock",
+                        int(time.time()) + 3600,
+                        os.getpid(),
+                        int(time.time()) - 30,
+                        tid,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO task_runs (task_id, status, claim_lock, "
+                    "claim_expires, worker_pid, started_at) "
+                    "VALUES (?, 'running', ?, ?, ?, ?)",
+                    (
+                        tid,
+                        f"{_kb._claimer_id().split(':', 1)[0]}:lock",
+                        int(time.time()) + 3600,
+                        os.getpid(),
+                        int(time.time()) - 30,
+                    ),
+                )
+                rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                conn.execute(
+                    "UPDATE tasks SET current_run_id=? WHERE id=?",
+                    (rid, tid),
+                )
+            state["sent_term"] = False
+            # Lower the threshold by monkeypatching the default.
+            monkeypatch.setattr(_kb, "DEFAULT_FAILURE_LIMIT", 3)
+            kb.enforce_max_runtime(conn, signal_fn=_signal)
+
+        final = kb.get_task(conn, tid)
+        # After 3 consecutive timeouts with failure_limit=3, task should
+        # be auto-blocked, not looping forever as ``ready``.
+        assert final.status == "blocked", \
+            f"expected blocked after 3 timeouts, got {final.status}"
+        assert final.consecutive_failures >= 3
+        # ``gave_up`` event emitted (plus 3 ``timed_out`` events).
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (tid,),
+            )
+        ]
+        assert kinds.count("timed_out") >= 3
+        assert "gave_up" in kinds
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_increments_counter(kanban_home):
+    """A single crash increments the consecutive_failures counter."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 99999)  # fake pid — not alive
+
+        kb.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 1
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_reclaim_task_clears_failure_counter(kanban_home):
+    """Operator reclaim wipes the counter so the next retry gets a fresh
+    budget."""
+    import secrets
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stuck", assignee="worker")
+        lock = secrets.token_hex(4)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='running', claim_lock=?, "
+                "claim_expires=?, worker_pid=?, consecutive_failures=4, "
+                "last_failure_error='prior issue' WHERE id=?",
+                (lock, int(time.time()) + 3600, 12345, tid),
+            )
+            conn.execute(
+                "INSERT INTO task_runs (task_id, status, claim_lock, "
+                "claim_expires, worker_pid, started_at) "
+                "VALUES (?, 'running', ?, ?, ?, ?)",
+                (tid, lock, int(time.time()) + 3600, 12345, int(time.time())),
+            )
+            rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                "UPDATE tasks SET current_run_id=? WHERE id=?",
+                (rid, tid),
+            )
+
+        ok = kb.reclaim_task(conn, tid, reason="operator fixed config")
+        assert ok
+
+        task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert task.status == "ready"
+    finally:
+        conn.close()

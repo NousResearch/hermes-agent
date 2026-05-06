@@ -308,6 +308,57 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
 
+    # --- reclaim / reassign (recovery) ---
+    p_reclaim = sub.add_parser(
+        "reclaim",
+        help="Release an active worker claim on a running task",
+    )
+    p_reclaim.add_argument("task_id")
+    p_reclaim.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
+    p_reassign = sub.add_parser(
+        "reassign",
+        help="Reassign a task to a different profile, optionally reclaiming first",
+    )
+    p_reassign.add_argument("task_id")
+    p_reassign.add_argument(
+        "profile",
+        help="New profile name (or 'none' to unassign)",
+    )
+    p_reassign.add_argument(
+        "--reclaim", action="store_true",
+        help="Release any active claim before reassigning (required if task is running)",
+    )
+    p_reassign.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
+    # --- diagnostics (board-wide health) ---
+    p_diag = sub.add_parser(
+        "diagnostics",
+        aliases=["diag"],
+        help="List active diagnostics on the current board",
+    )
+    p_diag.add_argument(
+        "--severity",
+        choices=["warning", "error", "critical"],
+        default=None,
+        help="Only show diagnostics at or above this severity",
+    )
+    p_diag.add_argument(
+        "--task",
+        default=None,
+        help="Only show diagnostics for one task id",
+    )
+    p_diag.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON (structured) instead of the default human table",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -342,6 +393,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+
+    p_edit = sub.add_parser(
+        "edit",
+        help="Edit recovery fields on an already-completed task",
+    )
+    p_edit.add_argument("task_id")
+    p_edit.add_argument(
+        "--result",
+        required=True,
+        help="Backfilled task result text for a done task",
+    )
+    p_edit.add_argument(
+        "--summary",
+        default=None,
+        help="Structured handoff summary. Falls back to --result if omitted.",
+    )
+    p_edit.add_argument(
+        "--metadata",
+        default=None,
+        help="JSON dict of structured facts to store on the latest completed run.",
+    )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
@@ -576,11 +648,16 @@ def kanban_command(args: argparse.Namespace) -> int:
         "ls":       _cmd_list,
         "show":     _cmd_show,
         "assign":   _cmd_assign,
+        "reclaim":  _cmd_reclaim,
+        "reassign": _cmd_reassign,
+        "diagnostics": _cmd_diagnostics,
+        "diag":     _cmd_diagnostics,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
         "comment":  _cmd_comment,
         "complete": _cmd_complete,
+        "edit":     _cmd_edit,
         "block":    _cmd_block,
         "unblock":  _cmd_unblock,
         "archive":  _cmd_archive,
@@ -866,7 +943,12 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
-        ok = kb.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None))
+        ok = kb.heartbeat_worker(
+            conn,
+            args.task_id,
+            note=getattr(args, "note", None),
+            expected_run_id=_worker_run_id_for(args.task_id),
+        )
     if not ok:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
         return 1
@@ -989,10 +1071,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id)
+        # Workers hand off via ``task_runs.summary`` (kanban-worker skill);
+        # ``tasks.result`` is left NULL unless the caller explicitly passed
+        # ``result=``. Surfacing the latest summary here keeps ``show`` from
+        # looking like a no-op when the worker actually did real work.
+        latest_summary = kb.latest_summary(conn, args.task_id)
 
     if getattr(args, "json", False):
         payload = {
             "task": _task_to_dict(task),
+            "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
             "comments": [
@@ -1038,6 +1126,31 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+
+    # Diagnostics section — surface active distress signals at the top
+    # of show output so CLI users see them before scrolling through
+    # comments / runs.
+    from hermes_cli import kanban_diagnostics as kd
+    diags = kd.compute_task_diagnostics(task, events, runs)
+    if diags:
+        sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+        print(f"\n  Diagnostics ({len(diags)}):")
+        for d in diags:
+            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.title}")
+            if d.data:
+                bits = []
+                for k, v in d.data.items():
+                    if isinstance(v, list):
+                        bits.append(f"{k}={','.join(str(x) for x in v)}")
+                    else:
+                        bits.append(f"{k}={v}")
+                if bits:
+                    print(f"       data: {' | '.join(bits)}")
+            # Only show suggested actions in show output to keep it tight;
+            # full list is available via `kanban diagnostics --task <id>`.
+            for a in d.actions:
+                if a.suggested:
+                    print(f"       → {a.label}")
     if task.started_at:
         print(f"  started:   {_fmt_ts(task.started_at)}")
     if task.completed_at:
@@ -1054,6 +1167,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print()
         print("Result:")
         print(task.result)
+    elif latest_summary:
+        # Worker handoff lives on the latest run, not on tasks.result.
+        # Surface it at top-level so a glance at ``hermes kanban show <id>``
+        # tells you what the worker did even if tasks.result is empty.
+        print()
+        print("Latest summary:")
+        print(latest_summary)
     if comments:
         print()
         print(f"Comments ({len(comments)}):")
@@ -1092,6 +1212,167 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    return 0
+
+
+def _cmd_reclaim(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.reclaim_task(
+            conn, args.task_id,
+            reason=getattr(args, "reason", None),
+        )
+    if not ok:
+        print(
+            f"cannot reclaim {args.task_id} (not running or unknown id)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Reclaimed {args.task_id}")
+    return 0
+
+
+def _cmd_reassign(args: argparse.Namespace) -> int:
+    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    with kb.connect() as conn:
+        ok = kb.reassign_task(
+            conn, args.task_id, profile,
+            reclaim_first=bool(getattr(args, "reclaim", False)),
+            reason=getattr(args, "reason", None),
+        )
+    if not ok:
+        print(
+            f"cannot reassign {args.task_id} "
+            f"(unknown id, or still running — pass --reclaim to release first)",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"Reassigned {args.task_id} to "
+        f"{profile or '(unassigned)'}"
+        + (" (claim reclaimed)" if getattr(args, "reclaim", False) else "")
+    )
+    return 0
+
+
+def _cmd_diagnostics(args: argparse.Namespace) -> int:
+    """List active diagnostics on the board. Wraps the same rule engine
+    the dashboard uses, so CLI output matches what the UI shows.
+    """
+    from hermes_cli import kanban_diagnostics as kd
+
+    with kb.connect() as conn:
+        # Either one-task mode or fleet mode.
+        if getattr(args, "task", None):
+            task = kb.get_task(conn, args.task)
+            if task is None:
+                print(f"no such task: {args.task}", file=sys.stderr)
+                return 1
+            diags_by_task = {
+                args.task: kd.compute_task_diagnostics(
+                    task,
+                    kb.list_events(conn, args.task),
+                    kb.list_runs(conn, args.task),
+                )
+            }
+        else:
+            # Fleet mode: pull all non-archived tasks + their events/runs.
+            rows = list(conn.execute(
+                "SELECT * FROM tasks WHERE status != 'archived'"
+            ).fetchall())
+            ids = [r["id"] for r in rows]
+            if not ids:
+                diags_by_task = {}
+            else:
+                placeholders = ",".join(["?"] * len(ids))
+                ev_by = {i: [] for i in ids}
+                for row in conn.execute(
+                    f"SELECT * FROM task_events WHERE task_id IN ({placeholders}) ORDER BY id",
+                    tuple(ids),
+                ):
+                    ev_by.setdefault(row["task_id"], []).append(row)
+                run_by = {i: [] for i in ids}
+                for row in conn.execute(
+                    f"SELECT * FROM task_runs WHERE task_id IN ({placeholders}) ORDER BY id",
+                    tuple(ids),
+                ):
+                    run_by.setdefault(row["task_id"], []).append(row)
+                diags_by_task = {}
+                for r in rows:
+                    tid = r["id"]
+                    dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []))
+                    if dl:
+                        diags_by_task[tid] = dl
+
+        # Severity filter.
+        sev = getattr(args, "severity", None)
+        if sev:
+            for tid in list(diags_by_task.keys()):
+                kept = [d for d in diags_by_task[tid] if d.severity == sev]
+                if kept:
+                    diags_by_task[tid] = kept
+                else:
+                    del diags_by_task[tid]
+
+        # Map task_id → title/status/assignee for the table output.
+        meta: dict[str, dict] = {}
+        if diags_by_task:
+            placeholders = ",".join(["?"] * len(diags_by_task))
+            for r in conn.execute(
+                f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({placeholders})",
+                tuple(diags_by_task.keys()),
+            ):
+                meta[r["id"]] = {
+                    "title": r["title"], "status": r["status"],
+                    "assignee": r["assignee"],
+                }
+
+    if getattr(args, "json", False):
+        out_json = [
+            {
+                "task_id": tid,
+                **meta.get(tid, {}),
+                "diagnostics": [d.to_dict() for d in dl],
+            }
+            for tid, dl in diags_by_task.items()
+        ]
+        print(json.dumps(out_json, indent=2, ensure_ascii=False))
+        return 0
+
+    if not diags_by_task:
+        print("No active diagnostics on this board.")
+        return 0
+
+    # Human-readable summary: grouped by task, severity-marked, with
+    # suggested actions inline.
+    sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
+    total = sum(len(dl) for dl in diags_by_task.values())
+    print(
+        f"{total} active diagnostic(s) across "
+        f"{len(diags_by_task)} task(s):\n"
+    )
+    for tid, dl in diags_by_task.items():
+        m = meta.get(tid, {})
+        title = m.get("title") or "(untitled)"
+        status = m.get("status") or "?"
+        assignee = m.get("assignee") or "(unassigned)"
+        print(f"  {tid}  {status:8s}  @{assignee:18s}  {title}")
+        for d in dl:
+            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.kind}: {d.title}")
+            if d.data:
+                # Compact key:value pairs on one line.
+                bits = []
+                for k, v in d.data.items():
+                    if isinstance(v, list):
+                        bits.append(f"{k}={','.join(str(x) for x in v)}")
+                    else:
+                        bits.append(f"{k}={v}")
+                if bits:
+                    print(f"       data: {' | '.join(bits)}")
+            # Suggested actions first.
+            for a in d.actions:
+                if a.suggested:
+                    print(f"       → {a.label}")
+        print()
     return 0
 
 
@@ -1143,6 +1424,18 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     return 0
 
 
+def _worker_run_id_for(task_id: str) -> Optional[int]:
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1179,12 +1472,41 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
+                expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_edit(args: argparse.Namespace) -> int:
+    raw_meta = getattr(args, "metadata", None)
+    metadata = None
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    with kb.connect() as conn:
+        if not kb.edit_completed_task_result(
+            conn,
+            args.task_id,
+            result=args.result,
+            summary=getattr(args, "summary", None),
+            metadata=metadata,
+        ):
+            print(
+                f"cannot edit {args.task_id} (unknown id or task is not done)",
+                file=sys.stderr,
+            )
+            return 1
+    print(f"Edited {args.task_id}")
+    return 0
 
 
 def _cmd_block(args: argparse.Namespace) -> int:
@@ -1196,7 +1518,12 @@ def _cmd_block(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
-            if not kb.block_task(conn, tid, reason=reason):
+            if not kb.block_task(
+                conn,
+                tid,
+                reason=reason,
+                expected_run_id=_worker_run_id_for(tid),
+            ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
@@ -1274,6 +1601,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
+            "skipped_nonspawnable": res.skipped_nonspawnable,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1293,6 +1621,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_nonspawnable:
+        print(
+            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            f"{', '.join(res.skipped_nonspawnable)}"
+        )
     return 0
 
 
@@ -1404,16 +1737,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             )
 
     def _ready_queue_nonempty() -> bool:
-        """Cheap SELECT — just asks whether there's at least one ready
-        task with an assignee that the dispatcher could have picked up."""
+        """Cheap probe — is there at least one ready+assigned+unclaimed
+        task whose assignee maps to a real Hermes profile (i.e. one the
+        dispatcher would actually try to spawn for)?
+
+        Filters out tasks assigned to control-plane lanes
+        (e.g. ``orion-cc``, ``orion-research``) that are pulled by
+        terminals via ``claim_task`` directly — those are correctly idle
+        from the dispatcher's perspective, not stuck.
+        """
         try:
             with kb.connect() as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM tasks "
-                    "WHERE status = 'ready' AND assignee IS NOT NULL "
-                    "    AND claim_lock IS NULL LIMIT 1"
-                ).fetchone()
-                return row is not None
+                return kb.has_spawnable_ready(conn)
         except Exception:
             return False
 

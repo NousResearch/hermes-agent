@@ -58,6 +58,44 @@ export function Banner({ t }: { t: Theme }) {
   )
 }
 
+// ── Collapsible helpers ──────────────────────────────────────────────
+
+function CollapseToggle({
+  count,
+  open,
+  suffix,
+  t,
+  title,
+  onToggle
+}: {
+  count?: number
+  open: boolean
+  suffix?: string
+  t: Theme
+  title: string
+  onToggle: () => void
+}) {
+  return (
+    <Box onClick={onToggle}>
+      <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
+      <Text bold color={t.color.accent}>
+        {title}
+      </Text>
+      {typeof count === 'number' ? (
+        <Text color={t.color.muted}> ({count})</Text>
+      ) : null}
+      {suffix ? (
+        <Text color={t.color.muted}> {suffix}</Text>
+      ) : null}
+    </Box>
+  )
+}
+
+// ── SessionPanel ─────────────────────────────────────────────────────
+
+const SKILLS_MAX = 8
+const TOOLSETS_MAX = 8
+
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -66,6 +104,12 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
+
+  // ── Local collapse state for each section ──
+  const [toolsOpen, setToolsOpen] = useState(true)
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const [systemOpen, setSystemOpen] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
 
   const truncLine = (pfx: string, items: string[]) => {
     let line = ''
@@ -85,35 +129,89 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
     return line
   }
 
-  const section = (title: string, data: Record<string, string[]>, max = 8, overflowLabel = 'more…') => {
-    const entries = Object.entries(data).sort()
-    const shown = entries.slice(0, max)
-    const overflow = entries.length - max
-    const skeleton = info.lazy && entries.length === 0
+  // ── Collapsible skills section ──
+  const skillEntries = Object.entries(info.skills).sort()
+  const skillsTotal = flat(info.skills).length
+  const skillsCatCount = skillEntries.length
+
+  const skillsBody = () => {
+    if (info.lazy && skillEntries.length === 0) {
+      return <InlineLoader label="scanning skills" t={t} />
+    }
+
+    const shown = skillEntries.slice(0, SKILLS_MAX)
+    const overflow = skillEntries.length - SKILLS_MAX
 
     return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold color={t.color.accent}>
-          Available {title}
-        </Text>
-
-        {skeleton ? (
-          <InlineLoader label={title === 'Tools' ? 'discovering tools' : 'scanning skills'} t={t} />
-        ) : (
-          shown.map(([k, vs]) => (
-            <Text key={k} wrap="truncate">
-              <Text color={t.color.muted}>{strip(k)}: </Text>
-              <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-            </Text>
-          ))
-        )}
-
-        {overflow > 0 && (
-          <Text color={t.color.muted}>
-            (and {overflow} {overflowLabel})
+      <>
+        {shown.map(([k, vs]) => (
+          <Text key={k} wrap="truncate">
+            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
+        ))}
+        {overflow > 0 && (
+          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
         )}
-      </Box>
+      </>
+    )
+  }
+
+  // ── Collapsible tools section ──
+  const toolEntries = Object.entries(info.tools).sort()
+  const toolsTotal = flat(info.tools).length
+
+  const toolsBody = () => {
+    const shown = toolEntries.slice(0, TOOLSETS_MAX)
+    const overflow = toolEntries.length - TOOLSETS_MAX
+
+    return (
+      <>
+        {shown.map(([k, vs]) => (
+          <Text key={k} wrap="truncate">
+            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+          </Text>
+        ))}
+        {overflow > 0 && (
+          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
+        )}
+      </>
+    )
+  }
+
+  // ── Collapsible MCP section ──
+  const mcpBody = () => (
+    <>
+      {(info.mcp_servers ?? []).map(s => (
+        <Text key={s.name} wrap="truncate">
+          <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+          <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
+          <Text color={t.color.muted}>: </Text>
+          {s.connected ? (
+            <Text color={t.color.text}>
+              {s.tools} tool{s.tools === 1 ? '' : 's'}
+            </Text>
+          ) : (
+            <Text color={t.color.error}>failed</Text>
+          )}
+        </Text>
+      ))}
+    </>
+  )
+
+  // ── System prompt body ──
+  const sysPromptLen = (info.system_prompt ?? '').length
+
+  const systemBody = () => {
+    if (sysPromptLen === 0) {
+      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+    }
+
+    return (
+      <Text color={t.color.muted}>
+        {info.system_prompt}
+      </Text>
     )
   }
 
@@ -151,37 +249,64 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
           </Text>
         </Box>
 
-        {section('Tools', info.tools, 8, 'more toolsets…')}
-        {section('Skills', info.skills)}
+        {/* ── Tools (expanded by default) ── */}
+        <Box flexDirection="column" marginTop={1}>
+          <CollapseToggle
+            onToggle={() => setToolsOpen(v => !v)}
+            open={toolsOpen}
+            t={t}
+            title="Available Tools"
+          />
+          {toolsOpen && toolsBody()}
+        </Box>
 
+        {/* ── Skills (collapsed by default) ── */}
+        <Box flexDirection="column" marginTop={1}>
+          <CollapseToggle
+            count={skillsTotal}
+            onToggle={() => setSkillsOpen(v => !v)}
+            open={skillsOpen}
+            suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+            t={t}
+            title="Available Skills"
+          />
+          {skillsOpen && skillsBody()}
+        </Box>
+
+        {/* ── System Prompt (collapsed by default) ── */}
+        {sysPromptLen > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <CollapseToggle
+              onToggle={() => setSystemOpen(v => !v)}
+              open={systemOpen}
+              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
+              t={t}
+              title="System Prompt"
+            />
+            {systemOpen && systemBody()}
+          </Box>
+        )}
+
+        {/* ── MCP Servers (collapsed by default) ── */}
         {info.mcp_servers && info.mcp_servers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold color={t.color.accent}>
-              MCP Servers
-            </Text>
-
-            {info.mcp_servers.map(s => (
-              <Text key={s.name} wrap="truncate">
-                <Text color={t.color.muted}>{`  ${s.name} `}</Text>
-                <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
-                <Text color={t.color.muted}>: </Text>
-                {s.connected ? (
-                  <Text color={t.color.text}>
-                    {s.tools} tool{s.tools === 1 ? '' : 's'}
-                  </Text>
-                ) : (
-                  <Text color={t.color.error}>failed</Text>
-                )}
-              </Text>
-            ))}
+            <CollapseToggle
+              count={info.mcp_servers.length}
+              onToggle={() => setMcpOpen(v => !v)}
+              open={mcpOpen}
+              suffix="connected"
+              t={t}
+              title="MCP Servers"
+            />
+            {mcpOpen && mcpBody()}
           </Box>
         )}
 
         <Text />
 
         <Text color={t.color.text}>
-          {flat(info.tools).length} tools{' · '}
-          {flat(info.skills).length} skills
+          {toolsTotal} tools{' · '}
+          {skillsTotal} skills
           {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>

@@ -55,6 +55,7 @@ class FailoverReason(enum.Enum):
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
+    llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -466,6 +467,31 @@ def classify_api_error(
     ):
         return _result(
             FailoverReason.oauth_long_context_beta_forbidden,
+            retryable=True,
+            should_compress=False,
+        )
+
+    # llama.cpp's ``json-schema-to-grammar`` converter (used by its OAI
+    # server to build GBNF tool-call parsers) rejects regex escape classes
+    # like ``\d``/``\w``/``\s`` and most ``format`` values. MCP servers
+    # routinely emit ``"pattern": "\\d{4}-\\d{2}-\\d{2}"`` for date/phone/
+    # email params. llama.cpp surfaces this as HTTP 400 with one of a few
+    # recognizable phrases; on match we strip ``pattern``/``format`` from
+    # ``self.tools`` in the retry loop and retry once. Cloud providers are
+    # unaffected — they accept these keywords and we never hit this branch.
+    if (
+        status_code == 400
+        and (
+            "error parsing grammar" in error_msg
+            or "json-schema-to-grammar" in error_msg
+            or (
+                "unable to generate parser" in error_msg
+                and "template" in error_msg
+            )
+        )
+    ):
+        return _result(
+            FailoverReason.llama_cpp_grammar_pattern,
             retryable=True,
             should_compress=False,
         )

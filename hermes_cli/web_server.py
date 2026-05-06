@@ -2897,8 +2897,15 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
 def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+    """True when the dashboard is reachable by non-loopback clients.
+
+    ``--insecure`` can bind either to all interfaces or to a specific private
+    interface such as a Tailscale IP.  In both cases, token-protected chat
+    WebSockets must accept non-loopback peers; otherwise the dashboard loads
+    remotely while the Chat tab closes with 4403.
+    """
+    host = getattr(app.state, "bound_host", "")
+    return host not in _LOOPBACK_HOSTS
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:

@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -190,6 +191,24 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
+
+    def test_chat_websocket_allows_remote_client_on_tailscale_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.app.state, "bound_host", "100.64.119.29", raising=False)
+        ws = SimpleNamespace(client=SimpleNamespace(host="100.101.102.103"))
+
+        assert web_server._is_public_bind() is True
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_chat_websocket_rejects_remote_client_on_loopback_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+        ws = SimpleNamespace(client=SimpleNamespace(host="100.101.102.103"))
+
+        assert web_server._is_public_bind() is False
+        assert web_server._ws_client_is_allowed(ws) is False
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

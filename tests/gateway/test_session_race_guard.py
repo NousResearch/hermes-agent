@@ -478,7 +478,30 @@ async def test_stop_clears_pending_messages():
 
 
 # ------------------------------------------------------------------
-# Test 7: Shutdown skips sentinel entries
+# Test 7: Clean restarts do not send interruption warnings
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_restart_skips_shutdown_notice_when_drain_completes_cleanly():
+    """A restart that drains active work cleanly should not send noisy
+    Telegram interruption notices."""
+    runner = _make_runner()
+    runner._running = True
+    runner._shutdown_event = asyncio.Event()
+    runner._exit_reason = None
+    runner._shutdown_all_gateway_honcho = lambda: None
+    runner._restart_drain_timeout = 5.0
+    runner._notify_active_sessions_of_shutdown = AsyncMock()
+    runner._drain_active_agents = AsyncMock(return_value=({}, False))
+
+    with patch("gateway.status.remove_pid_file"), \
+         patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True)
+
+    runner._notify_active_sessions_of_shutdown.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Test 8: Shutdown skips sentinel entries
 # ------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_shutdown_skips_sentinel():

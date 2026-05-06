@@ -2408,8 +2408,7 @@ class GatewayRunner:
 
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "Current task did not finish before restart. State is preserved; your next message will resume it."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -2916,6 +2915,15 @@ class GatewayRunner:
             enabled_platform_count += 1
             
             adapter = self._create_adapter(platform, platform_config)
+            if adapter and platform == Platform.TELEGRAM:
+                # Telegram's BotCommand menu is registered by the adapter at
+                # connect time.  quick_commands live on GatewayConfig rather
+                # than PlatformConfig, so pass a read-only snapshot through
+                # before connect() without coupling the adapter to config IO.
+                try:
+                    setattr(adapter, "_gateway_quick_commands", dict(self.config.quick_commands or {}))
+                except Exception:
+                    logger.debug("Could not attach quick_commands to Telegram adapter", exc_info=True)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 _pval = platform.value
@@ -3955,13 +3963,21 @@ class GatewayRunner:
             self._running = False
             self._draining = True
 
-            # Notify all chats with active agents BEFORE draining.
-            # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # For restarts, do not warn up front. Most restarts finish after
+            # the current agent turn drains cleanly, so an early Telegram
+            # warning creates noise and makes users think they need to prod the
+            # bot. Only send the interruption notice if the drain actually
+            # times out and we are about to interrupt active work. For true
+            # shutdowns, keep the old up-front warning because the service is
+            # going away rather than cycling.
+            if not self._restart_requested:
+                await self._notify_active_sessions_of_shutdown()
 
             timeout = self._restart_drain_timeout
             active_agents, timed_out = await self._drain_active_agents(timeout)
             if timed_out:
+                if self._restart_requested:
+                    await self._notify_active_sessions_of_shutdown()
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
                     timeout,

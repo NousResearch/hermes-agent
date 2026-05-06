@@ -205,3 +205,28 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+
+class TestTelegramQuickCommandMenu:
+    """Test quick command exposure in Telegram's slash-command menu."""
+
+    def test_quick_commands_are_formatted_for_bot_menu(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.telegram import TelegramAdapter
+
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        adapter._gateway_quick_commands = {
+            "scan": {
+                "type": "exec",
+                "description": "Run quick status scan",
+                "command": "/tmp/scan.sh",
+            },
+            "today": {"type": "alias", "description": "Show today's queue", "target": "/status"},
+            "bad-name": {"type": "exec", "description": "Invalid for Telegram", "command": "true"},
+            "prompt": {"type": "prompt", "description": "Unsupported", "command": "ignored"},
+        }
+
+        assert adapter._quick_command_menu_commands() == [
+            ("scan", "Run quick status scan"),
+            ("today", "Show today's queue"),
+        ]

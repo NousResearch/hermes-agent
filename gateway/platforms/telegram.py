@@ -290,6 +290,32 @@ class TelegramAdapter(BasePlatformAdapter):
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
 
+    def _quick_command_menu_commands(self) -> list[tuple[str, str]]:
+        """Return config quick_commands that Telegram can show in / menu."""
+        quick_commands = getattr(self, "_gateway_quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict):
+            return []
+
+        entries: list[tuple[str, str]] = []
+        for raw_name, qcmd in sorted(quick_commands.items()):
+            name = str(raw_name or "").strip().lstrip("/").lower()
+            # Telegram BotCommand names only support lowercase letters, digits,
+            # and underscores, with a 32 character limit.
+            if not re.fullmatch(r"[a-z0-9_]{1,32}", name):
+                logger.debug("Skipping quick command /%s in Telegram menu: invalid BotCommand name", raw_name)
+                continue
+            if not isinstance(qcmd, dict):
+                continue
+            if qcmd.get("type") not in {"exec", "alias"}:
+                continue
+            desc = str(qcmd.get("description") or "Run quick command").strip()
+            if not desc:
+                desc = "Run quick command"
+            if len(desc) > 80:
+                desc = desc[:77].rstrip() + "..."
+            entries.append((name, desc))
+        return entries
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -1083,22 +1109,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             
             # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
+            # Built-ins and skills come from the central command registry. User
+            # quick_commands live in config.yaml, so they are appended here from
+            # the snapshot GatewayRunner attaches before connect().
             try:
                 from telegram import BotCommand
                 from hermes_cli.commands import telegram_menu_commands
+
+                quick_menu_commands = self._quick_command_menu_commands()
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit.  Skill descriptions are truncated to 40
                 # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+                base_limit = max(0, 100 - len(quick_menu_commands))
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=base_limit)
+                existing_names = {name for name, _ in menu_commands}
+                merged_commands = list(menu_commands)
+                for name, desc in quick_menu_commands:
+                    if name not in existing_names and len(merged_commands) < 100:
+                        merged_commands.append((name, desc))
+                        existing_names.add(name)
+                    else:
+                        hidden_count += 1
+
                 await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
+                    BotCommand(name, desc) for name, desc in merged_commands
                 ])
                 if hidden_count:
                     logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
+                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit or duplicates). Use /commands for full list.",
+                        self.name, len(merged_commands), hidden_count,
                     )
             except Exception as e:
                 logger.warning(

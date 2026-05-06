@@ -765,6 +765,9 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        # UI language for the interactive setup wizard.  Empty = English.
+        # Set via the language picker on first "hermes setup".
+        "language": "",
     },
 
     # Web dashboard settings

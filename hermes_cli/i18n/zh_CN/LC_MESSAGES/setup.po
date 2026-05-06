@@ -1,0 +1,1613 @@
+# Chinese translations for PACKAGE package.
+# Copyright (C) 2026 THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# Automatically generated, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-05-06 17:49+0800\n"
+"PO-Revision-Date: 2026-05-06 17:49+0800\n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: none\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:185
+msgid "⚕ Hermes Setup — Non-interactive mode"
+msgstr "⚕ Hermes Setup — 非交互模式"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:189
+msgid "The interactive wizard cannot be used here."
+msgstr "交互式向导无法在此使用。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:191
+msgid "Configure Hermes using environment variables or config commands:"
+msgstr "使用环境变量或配置命令配置 Hermes："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:192
+msgid "  hermes config set model.provider custom"
+msgstr "  hermes config set model.provider custom"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:193
+msgid "  hermes config set model.base_url http://localhost:8080/v1"
+msgstr "  hermes config set model.base_url http://localhost:8080/v1"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:194
+msgid "  hermes config set model.default your-model-name"
+msgstr "  hermes config set model.default your-model-name"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:196
+msgid "Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment."
+msgstr "或在环境中设置 OPENROUTER_API_KEY / OPENAI_API_KEY。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:197
+msgid "Run 'hermes setup' in an interactive terminal to use the full wizard."
+msgstr "在交互式终端中运行 'hermes setup' 使用完整向导。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:238
+msgid "  Skipped (keeping current)"
+msgstr "  跳过（保留当前值）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:252
+msgid "  Enter for default ({})  Ctrl+C to exit"
+msgstr "  按 Enter 使用默认值 ({})，Ctrl+C 退出"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:264
+msgid "Please enter a number between 1 and {}"
+msgstr "请输入 1 到 {} 之间的数字"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:266
+msgid "Please enter a number"
+msgstr "请输入数字"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:293
+msgid "Please enter 'y' or 'n'"
+msgstr "请输入 y 或 n"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:336
+msgid "  Enables: {}"
+msgstr "  启用：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:338
+msgid "  Get your key at: {}"
+msgstr "  获取密钥：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:348
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3410
+msgid "  ✓ Saved"
+msgstr "  ✓ 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:350
+msgid "  Skipped (configure later with 'hermes setup')"
+msgstr "  跳过（稍后用 'hermes setup' 配置）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:357
+msgid "Tool Availability Summary"
+msgstr "工具可用性摘要"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:539
+msgid "{}/{} tool categories available:"
+msgstr "可用工具类别：{}/{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:558
+msgid "or edit {}/.env directly to add the missing API keys."
+msgstr "或直接编辑 {}/.env 添加缺失的 API 密钥"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:593
+msgid "📝 To edit your configuration:"
+msgstr "📝 编辑配置："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:606
+msgid "                          Set a specific value"
+msgstr "                          设置特定值"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:608
+msgid "   Or edit the files directly:"
+msgstr "   或直接编辑文件："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:615
+msgid "🚀 Ready to go!"
+msgstr "🚀 准备就绪！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:628
+msgid "Container Resource Settings:"
+msgstr "容器资源设置："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:633
+msgid "  Persistent filesystem keeps files between sessions."
+msgstr "  持久化文件系统可在会话间保留文件。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:634
+msgid "  Set to 'no' for ephemeral sandboxes that reset each time."
+msgstr "  设为 'no' 使用每次重置的临时沙箱。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:670
+msgid "Vercel Sandbox settings:"
+msgstr "Vercel Sandbox 设置："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:671
+msgid "  Filesystem persistence uses Vercel snapshots."
+msgstr "  文件系统持久化使用 Vercel 快照。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:672
+msgid ""
+"  Snapshots restore files only; live processes do not continue after sandbox "
+"recreation."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:680
+msgid "Unsupported Vercel runtime '{}', keeping {}."
+msgstr "不支持的 Vercel runtime '{}'，保留 {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:706
+msgid ""
+"Vercel Sandbox does not support custom disk sizing; resetting container_disk "
+"to 51200."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:710
+msgid "Vercel authentication:"
+msgstr "Vercel 认证："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:711
+msgid "  Use a long-lived Vercel access token plus project/team IDs."
+msgstr "  使用长期 Vercel access token 加项目/团队 ID。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:714
+msgid "  Found defaults in nearest .vercel/project.json."
+msgstr "  在最近的 .vercel/project.json 中发现默认值。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:784
+msgid "Inference Provider"
+msgstr "推理提供商"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:785
+msgid "Choose how to connect to your main chat model."
+msgstr "选择如何连接到主聊天模型。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:786
+msgid "   Guide: {}/integrations/providers"
+msgstr "   指南：{}/integrations/providers"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:796
+msgid "Provider setup skipped."
+msgstr "提供商设置已跳过。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:799
+msgid "Provider setup encountered an error: {}"
+msgstr "提供商设置遇到错误：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:800
+msgid "You can try again later with: hermes model"
+msgstr "稍后可重新运行：hermes model"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:832
+msgid "Same-Provider Fallback & Rotation"
+msgstr "同提供商回退和轮换"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:849
+msgid "Current pooled credentials for {}: {}"
+msgstr "{} 的当前池化凭据：{} 条"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:871
+msgid "Provider pool now has {} credential(s)."
+msgstr "提供商池现在有 {} 条凭据"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:892
+msgid "Saved {} rotation strategy: {}"
+msgstr "已保存 {} 轮换策略：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:929
+msgid "Vision & Image Analysis (optional)"
+msgstr "视觉与图像分析（可选）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:930
+msgid "Vision uses a separate multimodal backend. {}"
+msgstr "视觉功能使用独立的多模态后端。{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:931
+msgid "doesn't currently provide one Hermes can auto-use for vision,"
+msgstr "目前未提供 Hermes 可自动用于视觉的模型，"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:932
+msgid "so choose a backend now or skip and configure later."
+msgstr "请选择后端，或跳过稍后配置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:946
+msgid "OpenRouter key saved — vision will use Gemini"
+msgstr "OpenRouter 密钥已保存 — 视觉将使用 Gemini"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:948
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:978
+msgid "Skipped — vision won't be available"
+msgstr "已跳过 — 视觉不可用"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:980
+msgid ""
+"Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* "
+"settings"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1008
+msgid "NeuTTS requires espeak-ng for phonemization."
+msgstr "NeuTTS 需要 espeak-ng 进行音素化。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1010
+msgid "Install with: brew install espeak-ng"
+msgstr "macOS 安装：brew install espeak-ng"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1012
+msgid "Install with: choco install espeak-ng"
+msgstr "Windows 安装：choco install espeak-ng"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1014
+msgid "Install with: sudo apt install espeak-ng"
+msgstr "Linux 安装：sudo apt install espeak-ng"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1024
+msgid "espeak-ng installed"
+msgstr "espeak-ng 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1026
+msgid "Could not install espeak-ng automatically: {}"
+msgstr "无法自动安装 espeak-ng：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1027
+msgid "Please install it manually and re-run setup."
+msgstr "请手动安装后重新运行 setup。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1030
+msgid ""
+"espeak-ng is required for NeuTTS. Install it manually before using NeuTTS."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1034
+msgid "Installing neutts Python package..."
+msgstr "正在安装 neutts Python 包..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1035
+msgid "This will also download the TTS model (~300MB) on first use."
+msgstr "首次使用时会下载 TTS 模型（约 300MB）。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1042
+msgid "neutts installed successfully"
+msgstr "neutts 安装成功"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1045
+msgid "Failed to install neutts: {}"
+msgstr "neutts 安装失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1046
+msgid "Try manually: python -m pip install -U neutts[all]"
+msgstr "手动安装：python -m pip install -U neutts[all]"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1060
+msgid ""
+"Installing kittentts Python package (~25-80MB model downloaded on first "
+"use)..."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1067
+msgid "kittentts installed successfully"
+msgstr "kittentts 安装成功"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1070
+msgid "Failed to install kittentts: {}"
+msgstr "kittentts 安装失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1071
+msgid "Try manually: python -m pip install -U '{}' soundfile"
+msgstr "手动安装：python -m pip install -U '{}' soundfile"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1095
+msgid "Text-to-Speech Provider (optional)"
+msgstr "文字转语音提供商（可选）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1096
+msgid "Current: {}"
+msgstr "当前：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1129
+msgid ""
+"OpenAI TTS will use the managed Nous gateway and bill to your subscription."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1143
+msgid "NeuTTS is already installed"
+msgstr "NeuTTS 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1146
+msgid "NeuTTS requires:"
+msgstr "NeuTTS 需要："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1147
+msgid "  • Python package: neutts (~50MB install + ~300MB model on first use)"
+msgstr "  • Python 包：neutts（安装约 50MB + 首次使用约 300MB 模型）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1148
+msgid "  • System package: espeak-ng (phonemizer)"
+msgstr "  • 系统包：espeak-ng（音素器）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1152
+msgid "NeuTTS installation incomplete. Falling back to Edge TTS."
+msgstr "NeuTTS 安装不完整。回退到 Edge TTS。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1155
+msgid ""
+"Skipping install. Set tts.provider to 'neutts' after installing manually."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1165
+msgid "ElevenLabs API key saved"
+msgstr "ElevenLabs API 密钥已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1167
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1179
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1208
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1220
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1233
+msgid "No API key provided. Falling back to Edge TTS."
+msgstr "未提供 API 密钥。回退到 Edge TTS。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1177
+msgid "OpenAI TTS API key saved"
+msgstr "OpenAI TTS API 密钥已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1189
+msgid "xAI TTS API key saved"
+msgstr "xAI TTS API 密钥已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1206
+msgid "MiniMax TTS API key saved"
+msgstr "MiniMax TTS API 密钥已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1218
+msgid "Mistral TTS API key saved"
+msgstr "Mistral TTS API 密钥已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1227
+msgid "Get a free API key at https://aistudio.google.com/app/apikey"
+msgstr "在 https://aistudio.google.com/app/apikey 获取免费 API 密钥"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1231
+msgid "Gemini TTS API key saved"
+msgstr "Gemini TTS API 密钥已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1245
+msgid "KittenTTS is already installed"
+msgstr "KittenTTS 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1248
+msgid "KittenTTS is lightweight (~25-80MB, CPU-only, no API key required)."
+msgstr "KittenTTS 轻量级（约 25-80MB，纯 CPU，无需 API 密钥）。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1249
+msgid "Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo"
+msgstr "声音：Jasper、Bella、Luna、Bruno、Rosie、Hugo、Kiki、Leo"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1253
+msgid "KittenTTS installation incomplete. Falling back to Edge TTS."
+msgstr "KittenTTS 安装不完整。回退到 Edge TTS。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1256
+msgid ""
+"Skipping install. Set tts.provider to 'kittentts' after installing manually."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1264
+msgid "TTS provider set to: {}"
+msgstr "TTS 提供商已设为：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1280
+msgid "Terminal Backend"
+msgstr "终端后端"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1281
+msgid "Choose where Hermes runs shell commands and code."
+msgstr "选择 Hermes 运行 shell 命令和代码的位置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1282
+msgid "This affects tool execution, file access, and isolation."
+msgstr "这会影响工具执行、文件访问和隔离性。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1283
+msgid "   Guide: {}/developer-guide/environments"
+msgstr "   指南：{}/developer-guide/environments"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1320
+msgid "Keeping current backend: {}"
+msgstr "保留当前后端：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1326
+msgid "Terminal backend: Local"
+msgstr "终端后端：本地"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1327
+msgid "Commands run directly on this machine."
+msgstr "命令直接在本机运行。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1331
+msgid "Working directory for messaging sessions:"
+msgstr "消息会话的工作目录："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1332
+msgid "  When using Hermes via Telegram/Discord, this is where"
+msgstr "  通过 Telegram/Discord 使用 Hermes 时，这是"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1345
+msgid "Sudo password: configured"
+msgstr "Sudo 密码：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1353
+msgid "Sudo password saved"
+msgstr "Sudo 密码已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1356
+msgid "Terminal backend: Docker"
+msgstr "终端后端：Docker"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1361
+msgid "Docker not found in PATH!"
+msgstr "PATH 中未找到 Docker！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1362
+msgid "Install Docker: https://docs.docker.com/get-docker/"
+msgstr "安装 Docker：https://docs.docker.com/get-docker/"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1364
+msgid "Docker found: {}"
+msgstr "已找到 Docker：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1375
+msgid "Terminal backend: Singularity/Apptainer"
+msgstr "终端后端：Singularity/Apptainer"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1380
+msgid "Singularity/Apptainer not found in PATH!"
+msgstr "PATH 中未找到 Singularity/Apptainer！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1385
+msgid "Found: {}"
+msgstr "已找到：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1395
+msgid "Terminal backend: Modal"
+msgstr "终端后端：Modal"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1396
+msgid "Serverless cloud sandboxes. Each session gets its own container."
+msgstr "无服务云端沙箱。每个会话拥有独立容器。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1428
+msgid ""
+"Modal execution will use the managed Nous gateway and bill to your "
+"subscription."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1435
+msgid "Requires a Modal account: https://modal.com"
+msgstr "需要 Modal 账户：https://modal.com"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1441
+msgid "Installing modal SDK..."
+msgstr "正在安装 modal SDK..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1465
+msgid "modal SDK installed"
+msgstr "modal SDK 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1467
+msgid "Install failed — run manually: pip install modal"
+msgstr "安装失败 — 手动运行：pip install modal"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1471
+msgid "Modal authentication:"
+msgstr "Modal 认证："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1472
+msgid "  Get your token at: https://modal.com/settings"
+msgstr "  在 https://modal.com/settings 获取 token"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1475
+msgid "  Modal token: already configured"
+msgstr "  Modal token：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1494
+msgid "Terminal backend: Daytona"
+msgstr "终端后端：Daytona"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1495
+msgid "Persistent cloud development environments."
+msgstr "持久化云端开发环境。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1496
+msgid "Each session gets a dedicated sandbox with filesystem persistence."
+msgstr "每个会话拥有文件系统持久化的专用沙箱。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1497
+msgid "Sign up at: https://daytona.io"
+msgstr "注册：https://daytona.io"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1503
+msgid "Installing daytona SDK..."
+msgstr "正在安装 daytona SDK..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1520
+msgid "daytona SDK installed"
+msgstr "daytona SDK 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1522
+msgid "Install failed — run manually: pip install daytona"
+msgstr "安装失败 — 手动运行：pip install daytona"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1524
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1579
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2149
+msgid "  Error: {}"
+msgstr "  错误：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1530
+msgid "  Daytona API key: already configured"
+msgstr "  Daytona API 密钥：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1535
+msgid "    Updated"
+msgstr "    已更新"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1540
+msgid "    Configured"
+msgstr "    已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1551
+msgid "Terminal backend: Vercel Sandbox"
+msgstr "终端后端：Vercel Sandbox"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1552
+msgid "Cloud microVM sandboxes with snapshot-backed filesystem persistence."
+msgstr "云端 microVM 沙箱，基于快照的文件系统持久化。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1553
+msgid "Requires the optional SDK: pip install 'hermes-agent[vercel]'"
+msgstr "需要可选 SDK：pip install 'hermes-agent[vercel]'"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1558
+msgid "Installing vercel SDK..."
+msgstr "正在安装 vercel SDK..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1575
+msgid "vercel SDK installed"
+msgstr "vercel SDK 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1577
+msgid "Install failed — run manually: pip install 'hermes-agent[vercel]'"
+msgstr "安装失败 — 手动运行：pip install 'hermes-agent[vercel]'"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1584
+msgid "Terminal backend: SSH"
+msgstr "终端后端：SSH"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1585
+msgid "Run commands on a remote machine via SSH."
+msgstr "通过 SSH 在远程机器上运行命令。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1614
+msgid "  Testing connection..."
+msgstr "  正在测试连接..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1626
+msgid "  SSH connection successful!"
+msgstr "  SSH 连接成功！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1628
+msgid "  SSH connection failed: {}"
+msgstr "  SSH 连接失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1629
+msgid "  Check your SSH key and host settings."
+msgstr "  请检查 SSH 密钥和主机设置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1640
+msgid "Terminal backend set to: {}"
+msgstr "终端后端已设为：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1665
+msgid "Applied recommended defaults:"
+msgstr "已应用推荐默认值："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1666
+msgid "  Max iterations: 90"
+msgstr "  最大迭代数：90"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1667
+msgid "  Tool progress: all"
+msgstr "  工具进度：all"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1668
+msgid "  Compression threshold: 0.50"
+msgstr "  压缩阈值：0.50"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1669
+msgid "  Session reset: inactivity (1440 min) + daily (4:00)"
+msgstr "  会话重置：不活跃（1440 分钟）+ 每日（4:00）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1670
+msgid "  Run `hermes setup agent` later to customize."
+msgstr "  稍后可运行 `hermes setup agent` 自定义。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1676
+msgid "Agent Settings"
+msgstr "智能体设置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1677
+msgid "   Guide: {}/user-guide/configuration"
+msgstr "   指南：{}/user-guide/configuration"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1684
+msgid "Maximum tool-calling iterations per conversation."
+msgstr "每次对话的最大工具调用迭代数。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1685
+msgid "Higher = more complex tasks, but costs more tokens."
+msgstr "越高 = 能处理更复杂的任务，但消耗更多 token。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1697
+msgid "Max iterations set to {}"
+msgstr "最大迭代数已设为 {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1699
+msgid "Invalid number, keeping current value"
+msgstr "无效数字，保留当前值"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1703
+msgid "Tool Progress Display"
+msgstr "工具进度显示"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1704
+msgid "Controls how much tool activity is shown (CLI and messaging)."
+msgstr "控制工具活动显示的详细程度（CLI 和消息）。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1705
+msgid "  off     — Silent, just the final response"
+msgstr "  off     — 静默模式，仅输出最终回复"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1706
+msgid "  new     — Show tool name only when it changes (less noise)"
+msgstr "  new     — 仅在工具变更时显示名称（减少干扰）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1707
+msgid "  all     — Show every tool call with a short preview"
+msgstr "  all     — 显示每次工具调用及简短预览"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1708
+msgid "  verbose — Full args, results, and debug logs"
+msgstr "  verbose — 完整参数、结果和调试日志"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1717
+msgid "Tool progress set to: {}"
+msgstr "工具进度显示已设为：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1719
+msgid "Unknown mode '{}', keeping '{}'"
+msgstr "未知模式 '{}'，保留 '{}'"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1722
+msgid "Context Compression"
+msgstr "上下文压缩"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1723
+msgid "Automatically summarizes old messages when context gets too long."
+msgstr "上下文过长时自动摘要旧消息。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1744
+msgid "Session Reset Policy"
+msgstr "会话重置策略"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1762
+msgid "You can also manually reset anytime by typing /reset in chat."
+msgstr "你也可以在聊天中输入 /reset 随时手动重置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1847
+msgid "Telegram"
+msgstr "Telegram"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1850
+msgid "Telegram: already configured"
+msgstr "Telegram：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1854
+msgid "⚠️  Telegram has no user allowlist - anyone can use your bot!"
+msgstr "⚠️  Telegram 未设置允许列表 — 任何人都可以使用你的 Bot！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1856
+msgid "   To find your Telegram user ID: message @userinfobot"
+msgstr "   获取 Telegram 用户 ID：给 @userinfobot 发消息"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1860
+msgid "Telegram allowlist configured"
+msgstr "Telegram 允许列表已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1863
+msgid "Create a bot via @BotFather on Telegram"
+msgstr "在 Telegram 上通过 @BotFather 创建 Bot"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1878
+msgid "Telegram token saved"
+msgstr "Telegram token 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1881
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1942
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2028
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2152
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2194
+msgid "🔒 Security: Restrict who can use your bot"
+msgstr "🔒 安全设置：限制哪些人可以使用你的 Bot"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1882
+msgid "   To find your Telegram user ID:"
+msgstr "   获取你的 Telegram 用户 ID："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1883
+msgid "   1. Message @userinfobot on Telegram"
+msgstr "   1. 在 Telegram 上给 @userinfobot 发消息"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1884
+msgid "   2. It will reply with your numeric ID (e.g., 123456789)"
+msgstr "   2. 它会回复你的数字 ID（如 123456789）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1891
+msgid "Telegram allowlist configured - only listed users can use the bot"
+msgstr "Telegram 允许列表已配置 — 仅白名单用户可使用 Bot"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1893
+msgid "⚠️  No allowlist set - anyone who finds your bot can use it!"
+msgstr "⚠️  未设置允许列表 — 任何找到你 Bot 的人都能使用！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1896
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1960
+msgid "📬 Home Channel: where Hermes delivers cron job results,"
+msgstr "📬 默认通道：Hermes 发送定时任务结果、"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1897
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1961
+msgid "   cross-platform messages, and notifications."
+msgstr "   跨平台消息和通知的地方。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1898
+msgid "   For Telegram DMs, this is your user ID (same as above)."
+msgstr "   对于 Telegram 私信，这是你的用户 ID（同上）。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1904
+msgid "Telegram home channel set to {}"
+msgstr "Telegram 默认通道已设为 {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1910
+msgid ""
+"   You can also set this later by typing /set-home in your Telegram chat."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1918
+msgid "Discord"
+msgstr "Discord"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1921
+msgid "Discord: already configured"
+msgstr "Discord：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1924
+msgid "⚠️  Discord has no user allowlist - anyone can use your bot!"
+msgstr "⚠️  Discord 未设置允许列表 — 任何人都可以使用你的 Bot！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1926
+msgid ""
+"   To find Discord ID: Enable Developer Mode, right-click name → Copy ID"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1931
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1955
+msgid "Discord allowlist configured"
+msgstr "Discord 允许列表已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1934
+msgid "Create a bot at https://discord.com/developers/applications"
+msgstr "在 https://discord.com/developers/applications 创建 Bot"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1939
+msgid "Discord token saved"
+msgstr "Discord token 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1943
+msgid "   To find your Discord user ID:"
+msgstr "   获取你的 Discord 用户 ID："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1944
+msgid "   1. Enable Developer Mode in Discord settings"
+msgstr "   1. 在 Discord 设置中启用开发者模式"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1945
+msgid "   2. Right-click your name → Copy ID"
+msgstr "   2. 右键点击你的名字 → 复制 ID"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1947
+msgid "   You can also use Discord usernames (resolved on gateway start)."
+msgstr "   你也可以使用 Discord 用户名（Gateway 启动时解析）。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1957
+msgid "⚠️  No allowlist set - anyone in servers with your bot can use it!"
+msgstr "⚠️  未设置允许列表 — 你 Bot 所在服务器的任何人都能使用！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1962
+msgid "   To get a channel ID: right-click a channel → Copy Channel ID"
+msgstr "   获取频道 ID：右键频道 → 复制频道 ID"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1963
+msgid "   (requires Developer Mode in Discord settings)"
+msgstr "   （需在 Discord 设置中启用开发者模式）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1964
+msgid ""
+"   You can also set this later by typing /set-home in a Discord channel."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1986
+msgid "Slack"
+msgstr "Slack"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:1989
+msgid "Slack: already configured"
+msgstr "Slack：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2001
+msgid "Steps to create a Slack app:"
+msgstr "创建 Slack 应用的步骤："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2002
+msgid "   1. Go to https://api.slack.com/apps → Create New App"
+msgstr "   1. 前往 https://api.slack.com/apps → 创建新应用"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2003
+msgid "      Pick 'From an app manifest' — we'll generate one for you below."
+msgstr "      选择 '从应用清单创建' — 我们会在下面为你生成一个。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2004
+msgid "   2. Enable Socket Mode: Settings → Socket Mode → Enable"
+msgstr "   2. 启用 Socket Mode：Settings → Socket Mode → Enable"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2005
+msgid "      • Create an App-Level Token with 'connections:write' scope"
+msgstr "      • 创建 App-Level Token，scope 选择 'connections:write'"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2006
+msgid "   3. Install to Workspace: Settings → Install App"
+msgstr "   3. 安装到工作区：Settings → Install App"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2007
+msgid "   4. After installing, invite the bot to channels: /invite @YourBot"
+msgstr "   4. 安装后邀请 Bot 到频道：/invite @YourBot"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2009
+msgid ""
+"   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/"
+"messaging/slack/"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2025
+msgid "Slack tokens saved"
+msgstr "Slack tokens 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2029
+msgid ""
+"   To find a Member ID: click a user's name → View full profile → ⋮ → Copy "
+"member ID"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2036
+msgid "Slack allowlist configured"
+msgstr "Slack 允许列表已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2038
+msgid "⚠️  No Slack allowlist set - unpaired users will be denied by default."
+msgstr "⚠️  未设置 Slack 允许列表 — 未配对的用户默认将被拒绝。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2039
+msgid ""
+"   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if "
+"you intentionally want open workspace access."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2067
+msgid "Slack app manifest written to: {}"
+msgstr "Slack 应用清单已写入：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2078
+msgid "Couldn't write Slack manifest: {}"
+msgstr "Slack manifest 写入失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2087
+msgid "Matrix"
+msgstr "Matrix"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2090
+msgid "Matrix: already configured"
+msgstr "Matrix：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2094
+msgid ""
+"Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org)."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2095
+msgid "   1. Create a bot user on your homeserver, or use your own account"
+msgstr "   1. 在 homeserver 上创建 Bot 用户，或使用自己的账户"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2096
+msgid "   2. Get an access token from Element, or provide user ID + password"
+msgstr "   2. 从 Element 获取 access token，或提供用户 ID + 密码"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2103
+msgid "Auth: provide an access token (recommended), or user ID + password."
+msgstr "认证：提供 access token（推荐），或用户 ID + 密码。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2110
+msgid "Matrix access token saved"
+msgstr "Matrix access token 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2118
+msgid "Matrix credentials saved"
+msgstr "Matrix 凭据已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2125
+msgid "E2EE enabled"
+msgstr "E2EE 已启用"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2131
+msgid "Installing {}..."
+msgstr "正在安装 {}..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2145
+msgid "{} installed"
+msgstr "{} 已安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2147
+msgid "Install failed — run manually: pip install '{}'"
+msgstr "安装失败 — 手动运行：pip install '{}'"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2153
+msgid "   Matrix user IDs look like @username:server"
+msgstr "   Matrix 用户 ID 格式如 @username:server"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2158
+msgid "Matrix allowlist configured"
+msgstr "Matrix 允许列表已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2160
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2203
+msgid "⚠️  No allowlist set - anyone who can message the bot can use it!"
+msgstr "⚠️  未设置允许列表 — 任何能向 Bot 发消息的人都能使用！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2163
+msgid "📬 Home Room: where Hermes delivers cron job results and notifications."
+msgstr "📬 默认房间：Hermes 发送定时任务结果和通知的地方。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2164
+msgid "   Room IDs look like !abc123:server (shown in Element room settings)"
+msgstr "   房间 ID 格式如 !abc123:server（可在 Element 房间信息中查看）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2165
+msgid "   You can also set this later by typing /set-home in a Matrix room."
+msgstr "   也可在 Matrix 房间中输入 /set-home 稍后设置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2173
+msgid "Mattermost"
+msgstr "Mattermost"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2176
+msgid "Mattermost: already configured"
+msgstr "Mattermost：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2180
+msgid "Works with any self-hosted Mattermost instance."
+msgstr "可与任意自托管 Mattermost 实例配合使用。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2181
+msgid "   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account"
+msgstr "   1. 在 Mattermost：Integrations → Bot Accounts → Add Bot Account"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2182
+msgid "   2. Copy the bot token"
+msgstr "   2. 复制 Bot token"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2191
+msgid "Mattermost token saved"
+msgstr "Mattermost token 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2195
+msgid "   To find your user ID: click your avatar → Profile"
+msgstr "   查找用户 ID：点击头像 → Profile"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2196
+msgid "   or use the API: GET /api/v4/users/me"
+msgstr "   或使用 API：GET /api/v4/users/me"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2201
+msgid "Mattermost allowlist configured"
+msgstr "Mattermost 允许列表已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2206
+msgid ""
+"📬 Home Channel: where Hermes delivers cron job results and notifications."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2207
+msgid "   To get a channel ID: click channel name → View Info → copy the ID"
+msgstr "   获取频道 ID：点击频道名 → View Info → 复制 ID"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2208
+msgid ""
+"   You can also set this later by typing /set-home in a Mattermost channel."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2212
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2329
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2330
+msgid "   Open config in your editor:  hermes config edit"
+msgstr "   在编辑器中打开配置：hermes config edit"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2217
+msgid "BlueBubbles (iMessage)"
+msgstr "BlueBubbles (iMessage)"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2220
+msgid "BlueBubbles: already configured"
+msgstr "BlueBubbles：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2224
+msgid "Connects Hermes to iMessage via BlueBubbles — a free, open-source"
+msgstr "通过 BlueBubbles（免费开源项目）将 Hermes 连接到 iMessage —"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2225
+msgid "macOS server that bridges iMessage to any device."
+msgstr "一个将 iMessage 桥接到任意设备的 macOS 服务器。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2226
+msgid "   Requires a Mac running BlueBubbles Server v1.0.0+"
+msgstr "   需要运行 BlueBubbles Server v1.0.0+ 的 Mac"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2227
+msgid "   Download: https://bluebubbles.app/"
+msgstr "   下载：https://bluebubbles.app/"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2229
+msgid ""
+"In BlueBubbles Server → Settings → API, note your Server URL and Password."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2234
+msgid "Server URL is required — skipping BlueBubbles setup"
+msgstr "需要 Server URL — 跳过 BlueBubbles 设置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2240
+msgid "Password is required — skipping BlueBubbles setup"
+msgstr "需要密码 — 跳过 BlueBubbles 设置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2243
+msgid "BlueBubbles credentials saved"
+msgstr "BlueBubbles 凭据已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2246
+msgid "🔒 Security: Restrict who can message your bot"
+msgstr "🔒 安全设置：限制哪些人可以向你的 Bot 发消息"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2247
+msgid ""
+"   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2252
+msgid "BlueBubbles allowlist configured"
+msgstr "BlueBubbles 允许列表已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2254
+msgid "⚠️  No allowlist set — anyone who can iMessage you can use the bot!"
+msgstr "⚠️  未设置允许列表 — 任何能给你发 iMessage 的人都能使用 Bot！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2257
+msgid ""
+"📬 Home Channel: phone or email for cron job delivery and notifications."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2258
+msgid "   You can also set this later with /set-home in your iMessage chat."
+msgstr "   也可在 iMessage 聊天中输入 /set-home 稍后设置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2264
+msgid "Advanced settings (defaults are fine for most setups):"
+msgstr "高级设置（默认值适用于大多数场景）："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2270
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2307
+msgid "Webhook port set to {}"
+msgstr "Webhook 端口已设为 {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2272
+msgid "Invalid port number, using default 8645"
+msgstr "无效的端口号，使用默认值 8645"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2275
+msgid "Requires the BlueBubbles Private API helper for typing indicators,"
+msgstr "需要 BlueBubbles Private API helper 来实现输入状态指示、"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2276
+msgid "read receipts, and tapback reactions. Basic messaging works without it."
+msgstr "已读回执和 tapback 反应。基本消息功能不需要此插件。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2277
+msgid "   Install: https://docs.bluebubbles.app/helper-bundle/installation"
+msgstr "   安装：https://docs.bluebubbles.app/helper-bundle/installation"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2288
+msgid "Webhooks"
+msgstr "Webhooks"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2291
+msgid "Webhooks: already configured"
+msgstr "Webhooks：已配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2296
+msgid "⚠  Webhook and SMS platforms require exposing gateway ports to the"
+msgstr "⚠  Webhook 和 SMS 平台需要将 Gateway 端口暴露到"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2297
+msgid "   internet. For security, run the gateway in a sandboxed environment"
+msgstr "   互联网。为安全起见，请在沙箱化环境中运行 Gateway"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2298
+msgid "   (Docker, VM, etc.) to limit blast radius from prompt injection."
+msgstr "   （Docker、VM 等）以限制 Prompt 注入的波及范围。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2300
+msgid ""
+"   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/"
+"messaging/webhooks/"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2309
+msgid "Invalid port number, using default 8644"
+msgstr "无效的端口号，使用默认值 8644"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2314
+msgid "Webhook secret saved"
+msgstr "Webhook secret 已保存"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2316
+msgid "No secret set — you must configure per-route secrets in config.yaml"
+msgstr "未设置 secret — 必须在 config.yaml 中为各路由配置独立 secret"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2320
+msgid "Webhooks enabled! Next steps:"
+msgstr "Webhooks 已启用！后续步骤："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2322
+msgid "   1. Define webhook routes in {}/config.yaml"
+msgstr "   1. 在 {}/config.yaml 中定义 webhook 路由"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2323
+msgid "   2. Point your service (GitHub, GitLab, etc.) at:"
+msgstr "   2. 将你的服务（GitHub、GitLab 等）指向："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2324
+msgid "      http://your-server:8644/webhooks/<route-name>"
+msgstr "      http://your-server:8644/webhooks/<路由名称>"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2326
+msgid "   Route configuration guide:"
+msgstr "   路由配置指南："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2327
+msgid ""
+"   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/"
+"#configuring-routes"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2337
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3358
+msgid "Messaging Platforms"
+msgstr "消息平台"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2338
+msgid "Connect to messaging platforms to chat with Hermes from anywhere."
+msgstr "连接消息平台，从任何地方与 Hermes 聊天。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2339
+msgid "Toggle with Space, confirm with Enter."
+msgstr "按空格键切换，按 Enter 确认。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2356
+msgid "No platforms selected. Run 'hermes setup gateway' later to configure."
+msgstr "未选择平台。稍后运行 'hermes setup gateway' 配置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2380
+msgid "Messaging platforms configured!"
+msgstr "消息平台已配置！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2403
+msgid "No home channel set for: {}"
+msgstr "未设置默认通道：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2404
+msgid "   Without a home channel, cron jobs and cross-platform"
+msgstr "   未设置默认通道时，定时任务和跨平台消息"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2405
+msgid "   messages can't be delivered to those platforms."
+msgstr "   无法投递到这些平台。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2406
+msgid "   Set one later with /set-home in your chat, or:"
+msgstr "   稍后在聊天中使用 /set-home 设置，或："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2457
+msgid "  Restart failed — user systemd not reachable:"
+msgstr "  重启失败 — 无法访问用户 systemd："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2461
+msgid "  Restart failed: {}"
+msgstr "  重启失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2470
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2497
+msgid "  Start failed — user systemd not reachable:"
+msgstr "  启动失败 — 无法访问用户 systemd："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2474
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2501
+msgid "  Start failed: {}"
+msgstr "  启动失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2503
+msgid "  Install failed: {}"
+msgstr "  安装失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2504
+msgid "  You can try manually: hermes gateway install"
+msgstr "  你可以手动尝试：hermes gateway install"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2506
+msgid "  You can install later: hermes gateway install"
+msgstr "  稍后安装：hermes gateway install"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2508
+msgid "  Or as a boot-time service: sudo hermes gateway install --system"
+msgstr "  或作为开机自启服务：sudo hermes gateway install --system"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2509
+msgid "  Or run in foreground:  hermes gateway"
+msgstr "  或在前台运行：hermes gateway"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2513
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2520
+msgid "Start the gateway to bring your bots online:"
+msgstr "启动 Gateway 让你的 Bot 上线："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2514
+msgid "   hermes gateway run          # Run as container main process"
+msgstr "   hermes gateway run          # 作为容器主进程运行"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2516
+msgid "For automatic restarts, use a Docker restart policy:"
+msgstr "如需自动重启，使用 Docker 重启策略："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2517
+msgid "   docker run --restart unless-stopped ..."
+msgstr "   docker run --restart unless-stopped ..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2518
+msgid "   docker restart <container>  # Manual restart"
+msgstr "   docker restart <容器名>  # 手动重启"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2521
+msgid "   hermes gateway              # Run in foreground"
+msgstr "   hermes gateway              # 在前台运行"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2685
+msgid "  {}: {}"
+msgstr "  {}：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2755
+msgid "Nothing to migrate."
+msgstr "无需迁移。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2765
+msgid "  Would import:"
+msgstr "  将导入："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2784
+msgid "  Would overwrite (conflicts with existing Hermes config):"
+msgstr "  将覆盖（与现有 Hermes 配置冲突）："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2792
+msgid "  Would skip:"
+msgstr "  将跳过："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2801
+msgid "  ── Warnings ──"
+msgstr "  ── 警告 ──"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2805
+msgid "  Note: OpenClaw config values may have different semantics in Hermes."
+msgstr "  注意：OpenClaw 配置值在 Hermes 中可能有不同的语义。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2806
+msgid ""
+"  For example, OpenClaw's tool_call_execution: \"auto\" ≠ Hermes's yolo mode."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2807
+msgid ""
+"  Instruction files (.md) from OpenClaw may contain incompatible procedures."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2827
+msgid "OpenClaw Installation Detected"
+msgstr "检测到 OpenClaw 安装"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2828
+msgid "Found OpenClaw data at {}"
+msgstr "在 {} 发现了 OpenClaw 数据"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2829
+msgid "Hermes can preview what would be imported before making any changes."
+msgstr "Hermes 可以在实际导入前预览将要导入的内容。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2832
+msgid "Would you like to see what can be imported?"
+msgstr "是否查看可以导入的内容？"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2834
+msgid ""
+"Skipping migration. You can run it later with: hermes claw migrate --dry-run"
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2847
+msgid "Could not load migration script."
+msgstr "无法加载迁移脚本。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2850
+msgid "Could not load migration script: {}"
+msgstr "无法加载迁移脚本：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2870
+msgid "Migration preview failed: {}"
+msgstr "迁移预览失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2880
+msgid "Nothing to import from OpenClaw."
+msgstr "没有需要从 OpenClaw 导入的内容。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2884
+msgid "Migration Preview — {} item(s) would be imported"
+msgstr "迁移预览 — {} 个项目将被导入"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2885
+msgid "No changes have been made yet. Review the list below:"
+msgstr "尚未进行任何更改。请审阅以下列表："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2915
+msgid "Migration failed: {}"
+msgstr "迁移失败：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2928
+msgid "Imported {} item(s) from OpenClaw."
+msgstr "已从 OpenClaw 导入 {} 个项目。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2930
+msgid ""
+"Skipped {} item(s) that already exist in Hermes (use hermes claw migrate --"
+"overwrite to force)."
+msgstr ""
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2932
+msgid "Skipped {} item(s) (not found or unchanged)."
+msgstr "跳过了 {} 个项目（未找到或未变更）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2934
+msgid "{} item(s) had errors — check the migration report."
+msgstr "{} 个项目发生错误 — 请检查迁移报告"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2938
+msgid "Full report saved to: {}"
+msgstr "完整报告已保存至：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2940
+msgid "Migration complete! Continuing with setup..."
+msgstr "迁移完成！继续设置..."
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2974
+msgid ""
+"Select language / 选择语言 / 言語を選択 / Seleccionar idioma / Choisir la "
+"langue / Sprache wählen"
+msgstr ""
+"Select language / 选择语言 / 言語を選択 / Seleccionar idioma / Choisir la "
+"langue / Sprache wählen"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:2987
+#, python-brace-format
+msgid "Language set to {lang}."
+msgstr "语言已设为 {lang}。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3026
+msgid "Configuration reset to defaults."
+msgstr "配置已重置为默认值。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3071
+msgid "{} configuration complete!"
+msgstr "{} 配置完成！"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3074
+msgid "Unknown setup section: {}"
+msgstr "未知的设置区域：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3075
+msgid "Available sections: {}"
+msgstr "可用区域：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3097
+msgid "│             ⚕ Hermes Agent Setup Wizard                │"
+msgstr "│             ⚕ Hermes Agent 设置向导                    │"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3102
+msgid "├─────────────────────────────────────────────────────────┤"
+msgstr "├─────────────────────────────────────────────────────────┤"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3108
+msgid "│  Let's configure your Hermes Agent installation.       │"
+msgstr "│  让我们开始配置你的 Hermes Agent。                      │"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3113
+msgid "│  Press Ctrl+C at any time to exit.                     │"
+msgstr "│  随时可按 Ctrl+C 退出。                                │"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3136
+msgid "Reconfigure"
+msgstr "重新配置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3137
+msgid "You already have Hermes configured."
+msgstr "你已经配置过 Hermes。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3138
+msgid "Running the full wizard — each prompt shows your current value."
+msgstr "运行完整向导 — 每个提示会显示当前值。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3139
+msgid "Press Enter to keep it, or type a new value to change it."
+msgstr "按 Enter 保留，或输入新值修改。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3141
+msgid "Tip: jump straight to a section with 'hermes setup model|terminal|"
+msgstr "提示：用 'hermes setup model|terminal|"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3142
+msgid "     gateway|tools|agent', or fill only missing items with --quick."
+msgstr "     gateway|tools|agent' 直接跳转，或使用 --quick 仅填充缺失项。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3153
+msgid "No existing configuration found — running first-time setup."
+msgstr "未发现已有配置 — 运行首次设置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3162
+msgid "Quick setup — provider, model & messaging (recommended)"
+msgstr "快速设置 — 提供商、模型和消息（推荐）"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3163
+msgid "Full setup — configure everything"
+msgstr "完整设置 — 配置所有选项"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3171
+msgid "Configuration Location"
+msgstr "配置位置"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3172
+msgid "Config file:  {}"
+msgstr "配置文件：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3173
+msgid "Secrets file: {}"
+msgstr "密钥文件：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3174
+msgid "Data folder:  {}"
+msgstr "数据目录：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3175
+msgid "Install dir:  {}"
+msgstr "安装目录：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3177
+msgid "You can edit these files directly or use 'hermes config edit'"
+msgstr "你可以直接编辑这些文件或使用 'hermes config edit'"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3181
+msgid "Settings were imported from OpenClaw."
+msgstr "设置已从 OpenClaw 导入。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3182
+msgid "Each section below will show what was imported — press Enter to keep,"
+msgstr "以下各节会显示已导入的内容 — 按 Enter 保留，"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3183
+msgid "or choose to reconfigure if needed."
+msgstr "或在需要时选择重新配置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3254
+msgid "Setup complete! You're ready to go."
+msgstr "设置完成！准备就绪。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3256
+msgid "  Configure all settings:    hermes setup"
+msgstr "  配置所有设置：    hermes setup"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3258
+msgid "  Connect Telegram/Discord:  hermes setup gateway"
+msgstr "  连接 Telegram/Discord：hermes setup gateway"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3275
+msgid "Quick Setup — Missing Items Only"
+msgstr "快速设置 — 仅缺失项"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3295
+msgid "Everything is configured! Nothing to do."
+msgstr "所有项都已配置！无需操作。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3297
+msgid "Run 'hermes setup' and choose 'Full Setup' to reconfigure,"
+msgstr "运行 'hermes setup' 并选择 '完整设置' 重新配置，"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3298
+msgid "or pick a specific section from the menu."
+msgstr "或从菜单中选择特定区域。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3304
+msgid "{} required setting(s) missing:"
+msgstr "缺少 {} 个必要设置："
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3312
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3401
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3403
+msgid "  {}"
+msgstr "  {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3314
+msgid "  Get key at: {}"
+msgstr "  获取密钥：{}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3323
+msgid "  Saved {}"
+msgstr "  已保存 {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3325
+msgid "  Skipped {}"
+msgstr "  跳过 {}"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3338
+msgid "Tool API Keys"
+msgstr "工具 API 密钥"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3359
+msgid "Connect Hermes to messaging apps to chat from anywhere."
+msgstr "连接 Hermes 到消息应用，从任何地方聊天。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3360
+msgid "You can configure these later with 'hermes setup gateway'."
+msgstr "稍后可通过 'hermes setup gateway' 配置。"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3412
+msgid "  Skipped"
+msgstr "  已跳过"
+
+#: /tmp/hermes-agent/hermes_cli/i18n/../setup.py:3422
+msgid "  Added {} = {}"
+msgstr "  已添加 {} = {}"

@@ -194,11 +194,27 @@ def recover_empty_response(
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
+    # Silent after an end_turn tool is intentional — skip nudge/prefill. Use "any"
+    # so a mixed batch like [kb_search, trigger_handover] still suppresses recovery.
+    if _prior_was_tool:
+        from tools.registry import registry as _reg
+
+        _recent_tool_names = [
+            m.get("name")
+            for m in messages[-5:]
+            if m.get("role") == "tool" and m.get("name")
+        ]
+        _prior_any_end_turn = bool(_recent_tool_names) and any(
+            _reg.is_end_turn(n) for n in _recent_tool_names
+        )
+    else:
+        _prior_any_end_turn = False
     # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
     # it; detect here to route to prefill.
     _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))
     if (
         _prior_was_tool
+        and not _prior_any_end_turn
         and not getattr(agent, "_post_tool_empty_retried", False)
         and not _has_inline_thinking  # thinking model still working — let prefill handle
     ):
@@ -226,7 +242,11 @@ def recover_empty_response(
         or getattr(assistant_message, "reasoning_details", None)
         or _has_inline_thinking
     )
-    if _has_structured and agent._thinking_prefill_retries < 2:
+    if (
+        _has_structured
+        and not _prior_any_end_turn
+        and agent._thinking_prefill_retries < 2
+    ):
         agent._thinking_prefill_retries += 1
         logger.info(
             "Thinking-only response (no visible content) — prefilling to continue (%d/2)",

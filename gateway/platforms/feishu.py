@@ -2760,7 +2760,6 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "reply_target_message_id", None)
             or getattr(message, "parent_id", None)

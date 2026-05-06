@@ -11,6 +11,7 @@ import type {
   VoiceRecordResponse
 } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
@@ -21,8 +22,6 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
-const PRECISION_WHEEL_MIN_GAP_MS = 80
-const PRECISION_WHEEL_STICKY_MS = 80
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
@@ -38,9 +37,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // rows = wheelStep × accelMult. State mutates in place across renders.
   const wheelAccelRef = useRef(initWheelAccelForHost())
 
-  const precisionWheelRef = useRef<{ active: boolean; dir: 0 | -1 | 1; lastEventAtMs: number; lastScrollAtMs: number }>(
-    { active: false, dir: 0, lastEventAtMs: 0, lastScrollAtMs: 0 }
-  )
+  const precisionWheelRef = useRef(initPrecisionWheel())
 
   useEffect(() => () => clearTimeout(scrollIdleTimer.current ?? undefined), [])
 
@@ -291,39 +288,25 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (key.wheelUp || key.wheelDown) {
       const dir: -1 | 1 = key.wheelUp ? -1 : 1
       const now = Date.now()
-      // Modifier-held wheel = precision mode: at most one wheelStep per short
-      // interval. Smooth mice / trackpads emit many raw wheel events for one
-      // intended line step, so raw 1:1 still moves too far.
+      // Modifier-held wheel = precision mode: one row per frame, no accel.
+      // Smooth mice / trackpads emit tiny same-frame bursts; coalesce those
+      // without the old 80ms throttle that made opt-scroll feel stepped.
       // SGR/X10 mouse encoding only carries shift/meta/ctrl bits; Cmd on
       // macOS is intercepted by the terminal, so we honor Option (meta) on
       // Mac / Alt (meta) on Win+Linux / Ctrl as a portable fallback. Shift
       // is reserved for selection extension.
       const hasModifier = key.meta || key.ctrl
-      const precision = precisionWheelRef.current
-      // Keep precision active through the current wheel burst after the
-      // modifier is released. Otherwise a stream of queued/momentum wheel
-      // events can hand off mid-burst into the accelerated path and jump.
-      const precisionSticky = now - precision.lastEventAtMs < PRECISION_WHEEL_STICKY_MS
+      const precision = computePrecisionWheelStep(precisionWheelRef.current, dir, hasModifier, now)
 
-      if (hasModifier || precisionSticky) {
-        if (!precision.active) {
-          precision.active = true
+      if (precision.active) {
+        // Entering precision mode must discard any accelerated wheel state;
+        // otherwise the next normal wheel event inherits stale momentum.
+        if (precision.entered) {
           wheelAccelRef.current = initWheelAccelForHost()
         }
 
-        precision.lastEventAtMs = now
-
-        if (dir === precision.dir && now - precision.lastScrollAtMs < PRECISION_WHEEL_MIN_GAP_MS) {
-          return
-        }
-
-        precision.lastScrollAtMs = now
-        precision.dir = dir
-
-        return scrollTranscript(dir * wheelStep)
+        return precision.rows ? scrollTranscript(dir * wheelStep) : undefined
       }
-
-      precision.active = false
 
       // 0 = direction-flip bounce deferred; skip the no-op scroll.
       const rows = computeWheelStep(wheelAccelRef.current, dir, now)

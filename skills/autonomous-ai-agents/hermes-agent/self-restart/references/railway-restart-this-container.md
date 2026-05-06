@@ -13,12 +13,17 @@ Cross-check via the Railway dashboard URL: `railway.app/project/<PROJECT_ID>/ser
 `curl` is available in this container (added in the Dockerfile alongside `git`/`ripgrep`/etc). The full recipe lives in the parent `SKILL.md`. Quick form:
 
 ```bash
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+touch "$HERMES_HOME/.planned_redeploy"
+
 curl -s -X POST https://backboard.railway.app/graphql/v2 \
   -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
   -H "Content-Type: application/json" \
   -H "User-Agent: railway-cli/4.44.0" \
   -d '{"query":"mutation { serviceInstanceRedeploy(serviceId: \"c32be0a9-9d43-49a8-bf43-764915360dfb\", environmentId: \"38eea0f3-0bd3-48f4-abaf-ec3de09174de\") }"}'
 ```
+
+The `touch` writes a marker file that the gateway's SIGTERM handler reads to recognize the upcoming shutdown as planned (exit 0, no "Deploy Crashed!" notification).
 
 The `User-Agent` header is mandatory — Cloudflare's WAF blocks default UAs (curl/X.Y.Z is fine; Python urllib's default is not) before the token is checked.
 

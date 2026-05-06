@@ -11925,9 +11925,28 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         except Exception as e:
             logger.debug("Takeover marker check failed: %s", e)
 
+        # Planned external redeploy check: the self-restart skill writes
+        # this marker before calling Railway's redeploy API. The SIGTERM
+        # that arrives ~seconds later is the container being torn down
+        # for the redeploy — not a crash. Without this, every self-
+        # restart fires a "Deploy Crashed!" notification because the
+        # gateway exits 1 to trigger systemd-style revival.
+        planned_redeploy = False
+        try:
+            redeploy_marker = _hermes_home / ".planned_redeploy"
+            if redeploy_marker.exists():
+                redeploy_marker.unlink(missing_ok=True)
+                planned_redeploy = True
+        except Exception as e:
+            logger.debug("Redeploy marker check failed: %s", e)
+
         if planned_takeover:
             logger.info(
                 "Received SIGTERM as a planned --replace takeover — exiting cleanly"
+            )
+        elif planned_redeploy:
+            logger.info(
+                "Received SIGTERM as a planned redeploy (self-restart skill) — exiting cleanly"
             )
         else:
             _signal_initiated_shutdown = True

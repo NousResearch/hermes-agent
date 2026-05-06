@@ -39,7 +39,12 @@ No user confirmation required for the API call itself — restart is cheap (~30s
 
 Use `curl` (matches GordonClaw's `gordonclaw-self-restart` skill — same recipe, same failure modes, shared notes). The `User-Agent` header is mandatory: Cloudflare's WAF blocks default UAs (Python urllib, etc.) with 403 before the request reaches Railway.
 
+**Write the planned-redeploy marker first.** The gateway's SIGTERM handler reads this marker and exits 0 instead of 1, so Railway doesn't fire a spurious "Deploy Crashed!" notification when it tears down the container for the redeploy.
+
 ```bash
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+touch "$HERMES_HOME/.planned_redeploy"
+
 curl -s -X POST https://backboard.railway.app/graphql/v2 \
   -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
   -H "Content-Type: application/json" \

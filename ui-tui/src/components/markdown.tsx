@@ -1,4 +1,4 @@
-import { Box, Link, Text } from '@hermes/ink'
+import { Box, Link, Text, stringWidth } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
@@ -170,16 +170,15 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
 const renderTable = (k: number, rows: string[][], t: Theme) => {
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
+  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stringWidth(stripInlineMarkup(r[ci] ?? '')))))
 
   // Thin divider under the header.  Without it tables look like prose
   // with extra spacing because the header is just accent-coloured text
-  // (#15534).  We avoid full borders on purpose — column widths come
-  // from `stripInlineMarkup(...).length` (UTF-16 code units, not
-  // display width), so a real outline often misaligns on emoji and
-  // East-Asian wide characters; one dim solid rule (`─`) under row 0
-  // plus tab-style column gaps reads cleanly on every terminal we
-  // tested.
+  // (#15534).  We avoid full borders on purpose — one dim solid rule
+  // (`─`) under row 0 plus tab-style column gaps reads cleanly on every
+  // terminal we tested.  Column widths use `stringWidth` (grapheme-aware
+  // display width from `get-east-asian-width`) so CJK and emoji align
+  // correctly.
   const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
 
   return (
@@ -190,7 +189,7 @@ const renderTable = (k: number, rows: string[][], t: Theme) => {
             {widths.map((w, ci) => (
               <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
                 <MdInline t={t} text={row[ci] ?? ''} />
-                {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
+                {' '.repeat(Math.max(0, w - stringWidth(stripInlineMarkup(row[ci] ?? ''))))}
                 {ci < widths.length - 1 ? '  ' : ''}
               </Text>
             ))}

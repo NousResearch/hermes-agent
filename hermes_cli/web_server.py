@@ -14,6 +14,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import secrets
 import subprocess
@@ -51,7 +52,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -80,6 +81,7 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
 _DASHBOARD_VOICE_READ_CHUNK_SIZE = 1024 * 1024
+_DASHBOARD_VOICE_TTS_MAX_CHARS = 4000
 _DASHBOARD_VOICE_CONTENT_TYPE_SUFFIXES = {
     "audio/aac": ".aac",
     "audio/flac": ".flac",
@@ -493,6 +495,10 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+
+
+class DashboardVoiceSynthesizeRequest(BaseModel):
+    text: str
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -3057,6 +3063,24 @@ async def _write_dashboard_voice_body(
     return tmp_path
 
 
+def _cleanup_dashboard_voice_paths(paths: Tuple[str, ...]) -> None:
+    """Best-effort cleanup for dashboard-generated voice artifacts."""
+    for path in paths:
+        if not path:
+            continue
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            _log.debug("dashboard voice cleanup failed for %s: %s", path, exc)
+
+
+def _dashboard_audio_media_type(path: str) -> str:
+    media_type, _encoding = mimetypes.guess_type(path)
+    return media_type or "application/octet-stream"
+
+
 @app.post("/api/voice/transcribe")
 async def dashboard_voice_transcribe(request: Request) -> dict:
     """Transcribe microphone audio captured by the dashboard browser.
@@ -3102,6 +3126,75 @@ async def dashboard_voice_transcribe(request: Request) -> dict:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+@app.post("/api/voice/synthesize")
+async def dashboard_voice_synthesize(body: DashboardVoiceSynthesizeRequest) -> FileResponse:
+    """Synthesize dashboard speech with Hermes' configured TTS provider.
+
+    The classic ``speak_text`` path plays audio on the host that runs Hermes.
+    Dashboard users may be on another device over Tailscale, so this endpoint
+    reuses ``text_to_speech_tool`` to generate audio server-side and returns
+    the bytes for playback in the browser.
+    """
+    from tools.tts_tool import text_to_speech_tool
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > _DASHBOARD_VOICE_TTS_MAX_CHARS:
+        raise HTTPException(status_code=413, detail="text too large")
+
+    fd, requested_path = tempfile.mkstemp(
+        suffix=".mp3",
+        prefix="dashboard_tts_",
+    )
+    os.close(fd)
+    cleanup_paths = {requested_path}
+
+    try:
+        raw_result = await asyncio.to_thread(
+            text_to_speech_tool,
+            text,
+            requested_path,
+        )
+        try:
+            result = json.loads(raw_result)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="TTS returned an invalid response",
+            ) from exc
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=502,
+                detail=str(result.get("error") or "TTS synthesis failed"),
+            )
+
+        file_path = str(result.get("file_path") or requested_path)
+        cleanup_paths.add(file_path)
+        if not Path(file_path).exists() or Path(file_path).stat().st_size <= 0:
+            raise HTTPException(
+                status_code=502,
+                detail="TTS synthesis produced no audio",
+            )
+
+        cleanup_task = BackgroundTasks()
+        cleanup_task.add_task(_cleanup_dashboard_voice_paths, tuple(cleanup_paths))
+        return FileResponse(
+            file_path,
+            media_type=_dashboard_audio_media_type(file_path),
+            filename=Path(file_path).name,
+            background=cleanup_task,
+        )
+    except HTTPException:
+        _cleanup_dashboard_voice_paths(tuple(cleanup_paths))
+        raise
+    except Exception as exc:
+        _cleanup_dashboard_voice_paths(tuple(cleanup_paths))
+        _log.exception("dashboard voice synthesis failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:

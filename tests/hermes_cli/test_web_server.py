@@ -331,6 +331,115 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"success": True, "transcript": "", "filtered": True}
 
+    def test_dashboard_voice_synthesize_requires_token(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.post(
+            "/api/voice/synthesize",
+            json={"text": "hello"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_dashboard_voice_synthesize_rejects_empty_text(self):
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "   "},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "text is required"
+
+    def test_dashboard_voice_synthesize_rejects_large_text(self):
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "x" * 4001},
+        )
+
+        assert resp.status_code == 413
+        assert resp.json()["detail"] == "text too large"
+
+    def test_dashboard_voice_synthesize_uses_existing_tts_and_cleans_temp(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        seen_paths: list[str] = []
+
+        def fake_tts(text: str, output_path: str):
+            seen_paths.append(output_path)
+            assert text == "dashboard speech"
+            assert Path(output_path).suffix == ".mp3"
+            Path(output_path).write_bytes(b"fake mp3 audio")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "edge",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "dashboard speech"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("audio/mpeg")
+        assert resp.content == b"fake mp3 audio"
+        assert len(seen_paths) == 1
+        assert not Path(seen_paths[0]).exists()
+
+    def test_dashboard_voice_synthesize_cleans_converted_output(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        seen_paths: list[str] = []
+
+        def fake_tts(_text: str, output_path: str):
+            seen_paths.append(output_path)
+            ogg_path = str(Path(output_path).with_suffix(".ogg"))
+            Path(output_path).write_bytes(b"source mp3")
+            Path(ogg_path).write_bytes(b"fake ogg audio")
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "provider": "edge",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "dashboard speech"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("audio/ogg")
+        assert resp.content == b"fake ogg audio"
+        assert len(seen_paths) == 1
+        assert not Path(seen_paths[0]).exists()
+        assert not Path(seen_paths[0]).with_suffix(".ogg").exists()
+
+    def test_dashboard_voice_synthesize_surfaces_tts_failure(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda _text, _output_path: json.dumps({
+                "success": False,
+                "error": "tts unavailable",
+            }),
+        )
+
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "dashboard speech"},
+        )
+
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "tts unavailable"
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

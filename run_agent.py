@@ -8996,7 +8996,8 @@ class AIAgent:
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
-                "tool_call_id": tool_call.id
+                "tool_call_id": tool_call.id,
+                "tool_name": function_name,
             }
             messages.append(tool_msg)
 
@@ -9022,7 +9023,8 @@ class AIAgent:
                     skip_msg = {
                         "role": "tool",
                         "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
-                        "tool_call_id": skipped_tc.id
+                        "tool_call_id": skipped_tc.id,
+                        "tool_name": skipped_name,
                     }
                     messages.append(skip_msg)
                 break
@@ -11831,6 +11833,7 @@ class AIAgent:
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "content": content,
+                                "tool_name": tc.function.name,
                             })
                         continue
                     # Reset retry counter on successful tool call validation
@@ -11922,6 +11925,7 @@ class AIAgent:
                                     "role": "tool",
                                     "tool_call_id": tc.id,
                                     "content": tool_result,
+                                    "tool_name": tc.function.name,
                                 })
                             continue
                     
@@ -12407,6 +12411,7 @@ class AIAgent:
                                     "role": "tool",
                                     "tool_call_id": tc["id"],
                                     "content": f"Error executing tool: {error_msg}",
+                                    "tool_name": tc.get("function", {}).get("name", "unknown") if isinstance(tc, dict) else "unknown",
                                 }
                                 messages.append(err_msg)
                     break

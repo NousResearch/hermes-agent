@@ -554,7 +554,6 @@ class TrajectoryCompressor:
         return "\n\n".join(parts)
 
     @staticmethod
-    @staticmethod
     def _extract_content(response) -> str:
         """Extract text from an LLM response, handling reasoning models."""
         try:

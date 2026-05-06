@@ -271,6 +271,88 @@ class TestMattermostSend:
         assert resolved == "ghost"
 
     @pytest.mark.asyncio
+    async def test_send_threads_via_metadata_when_no_reply_to(self):
+        """Progress / tool-call sends arrive without reply_to but with thread
+        metadata.  In thread mode we must still honour the thread so they
+        don't leak into the main channel."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock()  # must not be called
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_progress"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "💻 terminal: \"ls -la\"",
+            metadata={"thread_id": "thread_root"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "thread_root"
+        # event.source.thread_id is already a root, so no API resolution needed.
+        self.adapter._api_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_metadata_thread_id_ignored_when_reply_mode_off(self):
+        """Reply mode "off" disables threading entirely, even when the
+        dispatcher passes thread metadata."""
+        self.adapter._reply_mode = "off"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_x"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1", "Hello!", metadata={"thread_id": "thread_root"}
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_explicit_reply_to_wins_over_metadata(self):
+        """reply_to is the more specific signal (the post being replied to);
+        when both are present, reply_to drives root_id and metadata is
+        ignored for threading."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "user_reply", "root_id": "actual_root"}
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_y"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="user_reply",
+            metadata={"thread_id": "different_thread"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "actual_root"
+
+    @pytest.mark.asyncio
     async def test_send_without_thread_no_root_id(self):
         """When reply_mode is 'off', reply_to should NOT set root_id."""
         self.adapter._reply_mode = "off"
@@ -346,6 +428,68 @@ class TestMattermostSendTyping:
 
         payload = self.adapter._api_post.await_args.args[1]
         assert "parent_id" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Metadata plumbing: public media methods → internal helpers → root_id
+# ---------------------------------------------------------------------------
+
+class TestMattermostMediaMetadataPlumbing:
+    """Public send_X media methods must forward `metadata` to the internal
+    helpers so progress/in-thread media sends honour the user's thread."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_send_image_forwards_metadata(self):
+        self.adapter._send_url_as_file = AsyncMock(return_value=None)
+        meta = {"thread_id": "thread_root"}
+
+        await self.adapter.send_image("ch", "https://x/y.png", metadata=meta)
+
+        kwargs = self.adapter._send_url_as_file.await_args.kwargs
+        assert kwargs["metadata"] is meta
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_forwards_metadata(self):
+        self.adapter._send_local_file = AsyncMock(return_value=None)
+        meta = {"thread_id": "thread_root"}
+
+        await self.adapter.send_image_file("ch", "/tmp/a.png", metadata=meta)
+
+        kwargs = self.adapter._send_local_file.await_args.kwargs
+        assert kwargs["metadata"] is meta
+
+    @pytest.mark.asyncio
+    async def test_send_document_forwards_metadata(self):
+        self.adapter._send_local_file = AsyncMock(return_value=None)
+        meta = {"thread_id": "thread_root"}
+
+        await self.adapter.send_document("ch", "/tmp/a.pdf", metadata=meta)
+
+        kwargs = self.adapter._send_local_file.await_args.kwargs
+        assert kwargs["metadata"] is meta
+
+    @pytest.mark.asyncio
+    async def test_send_voice_forwards_metadata(self):
+        self.adapter._send_local_file = AsyncMock(return_value=None)
+        meta = {"thread_id": "thread_root"}
+
+        await self.adapter.send_voice("ch", "/tmp/a.ogg", metadata=meta)
+
+        kwargs = self.adapter._send_local_file.await_args.kwargs
+        assert kwargs["metadata"] is meta
+
+    @pytest.mark.asyncio
+    async def test_send_video_forwards_metadata(self):
+        self.adapter._send_local_file = AsyncMock(return_value=None)
+        meta = {"thread_id": "thread_root"}
+
+        await self.adapter.send_video("ch", "/tmp/a.mp4", metadata=meta)
+
+        kwargs = self.adapter._send_local_file.await_args.kwargs
+        assert kwargs["metadata"] is meta
 
 
 # ---------------------------------------------------------------------------

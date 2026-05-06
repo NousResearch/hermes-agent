@@ -425,6 +425,26 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     return result
 
 
+def _check_not_protected_skill(name: str) -> Optional[Dict[str, Any]]:
+    """Return an error dict if the background review is targeting a bundled/hub skill (#20273)."""
+    try:
+        from tools.skill_provenance import is_background_review
+        if is_background_review():
+            from tools.skill_usage import is_agent_created
+            if not is_agent_created(name):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Skill '{name}' is a bundled or hub-installed skill. "
+                        f"The background review agent may not modify it — "
+                        f"only user-created skills are eligible for auto-editing."
+                    ),
+                }
+    except Exception:
+        pass
+    return None
+
+
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     err = _validate_frontmatter(content)
@@ -438,6 +458,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
+
+    _guard = _check_not_protected_skill(name)
+    if _guard:
+        return _guard
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
@@ -478,6 +502,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    _guard = _check_not_protected_skill(name)
+    if _guard:
+        return _guard
 
     skill_dir = existing["path"]
 

@@ -2141,7 +2141,16 @@ export default class Ink {
       return
     }
 
-    this.onRender()
+    // Mark unmounted FIRST so any in-flight throttled render no-ops via
+    // onRender's isUnmounted guard. Skipping the legacy "final onRender()"
+    // here is load-bearing: that call would queue a fresh full alt-screen
+    // frame onto the buffered stdout stream — including the per-frame
+    // `cursorPosition(rows, 1)` park patch — which can flush AFTER the
+    // synchronous writeSync(EXIT_ALT_SCREEN) below, parking the cursor at
+    // the bottom of the *main* screen and pushing the parent shell's
+    // resume hint off-viewport.
+    this.isUnmounted = true
+    this.scheduleRender.cancel?.()
     this.unsubscribeExit()
 
     if (typeof this.restoreConsole === 'function') {
@@ -2151,19 +2160,12 @@ export default class Ink {
     this.restoreStderr?.()
     this.unsubscribeTTYHandlers?.()
 
-    // Non-TTY environments don't handle erasing ansi escapes well, so it's better to
-    // only render last frame of non-static output
-    const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame)
-    writeDiffToTerminal(this.terminal, optimize(diff))
-
     // Clean up terminal modes synchronously before process exit.
-    // React's componentWillUnmount won't run in time when process.exit() is called,
-    // so we must reset terminal modes here to prevent escape sequence leakage.
-    // Use writeSync to stdout (fd 1) to ensure writes complete before exit.
-    // We unconditionally send all disable sequences because terminal detection
-    // may not work correctly (e.g., in tmux, screen) and these are no-ops on
-    // terminals that don't support them.
-
+    // React's componentWillUnmount won't run in time when process.exit() is
+    // called, so we must reset terminal modes here to prevent escape
+    // sequence leakage. writeSync to fd 1 is required — terminal.stdout is
+    // buffered and racing it with the alt-screen exit re-introduces the bug
+    // above.
     if (this.options.stdout.isTTY) {
       if (this.altScreenActive) {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
@@ -2195,12 +2197,13 @@ export default class Ink {
       if (supportsTabStatus()) {
         writeSync(1, wrapForMultiplexer(CLEAR_TAB_STATUS))
       }
+    } else {
+      // Non-TTY only — render the final static frame so piped output
+      // captures the last state. Skipped for TTY because the writeSync
+      // block above owns terminal restoration.
+      const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame)
+      writeDiffToTerminal(this.terminal, optimize(diff))
     }
-
-    this.isUnmounted = true
-
-    // Cancel any pending throttled renders to prevent accessing freed Yoga nodes
-    this.scheduleRender.cancel?.()
 
     if (this.drainTimer !== null) {
       clearTimeout(this.drainTimer)

@@ -21,6 +21,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    SKILL_MANAGE_SCHEMA,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
     MAX_NAME_LENGTH,
@@ -585,6 +586,14 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is False
         assert "does not exist" in result["error"]
+
+
+class TestSkillManageSchemaGuidance:
+    def test_schema_explains_skill_writes_are_host_side(self):
+        description = SKILL_MANAGE_SCHEMA["description"]
+        assert "Hermes host process" in description
+        assert "do not use terminal, write_file, or patch for skill files" in description
+        assert "SSH, container, or project filesystem" in description
 
 
 class TestSecurityScanGate:

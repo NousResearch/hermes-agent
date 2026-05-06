@@ -204,6 +204,7 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert resp["result"]["status"] == "recording"
         assert captured["silence_threshold"] == 200
         assert captured["silence_duration"] == 3.0
+        assert captured["auto_restart"] is False
 
     # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
     # of ``int``, so the naive ``isinstance(threshold, (int, float))``
@@ -232,6 +233,34 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert (
             captured["silence_duration"] == 3.0
         ), f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        assert captured["auto_restart"] is False
+
+
+def test_voice_record_stop_forces_transcription(monkeypatch):
+    captured: dict = {}
+
+    def fake_stop_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: None,
+            stop_continuous=fake_stop_continuous,
+        ),
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop",
+            "method": "voice.record",
+            "params": {"action": "stop"},
+        }
+    )
+
+    assert resp["result"]["status"] == "stopped"
+    assert captured["force_transcribe"] is True
 
 
 def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):

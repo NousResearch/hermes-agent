@@ -281,6 +281,7 @@ _recorder_lock = threading.Lock()
 # ── Continuous (VAD) state ───────────────────────────────────────────
 _continuous_lock = threading.Lock()
 _continuous_active = False
+_continuous_stopping = False
 _continuous_recorder: Any = None
 
 # ── TTS-vs-STT feedback guard ────────────────────────────────────────
@@ -376,10 +377,11 @@ def start_continuous(
 
     The loop calls ``on_transcript(text)`` each time speech is detected and
     transcribed successfully. If ``auto_restart`` is True, it auto-restarts
-    for the next turn. After ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive
-    silent cycles (no speech picked up at all) the loop stops itself and calls
-    ``on_silent_limit`` so the UI can reflect "voice off". Idempotent — calling
-    while already active is a no-op.
+    for the next turn. If ``auto_restart`` is False, the first silence-triggered
+    transcription ends the loop and reports ``"idle"``. After
+    ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive silent cycles (no speech picked
+    up at all) the loop stops itself and calls ``on_silent_limit`` so the UI can
+    reflect "voice off". Idempotent — calling while already active is a no-op.
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
@@ -389,7 +391,7 @@ def start_continuous(
     global _continuous_no_speech_count
 
     with _continuous_lock:
-        if _continuous_active:
+        if _continuous_active or _continuous_stopping:
             _debug("start_continuous: already active — no-op")
             return
         _continuous_active = True
@@ -438,7 +440,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
     is True, the current buffer is transcribed before stopping. Otherwise
     the buffer is discarded.
     """
-    global _continuous_active, _continuous_on_transcript
+    global _continuous_active, _continuous_on_transcript, _continuous_stopping
     global _continuous_on_status, _continuous_on_silent_limit
     global _continuous_recorder, _continuous_no_speech_count
 
@@ -449,6 +451,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
         rec = _continuous_recorder
         on_status = _continuous_on_status
         on_transcript = _continuous_on_transcript
+        _continuous_stopping = rec is not None
         _continuous_on_transcript = None
         _continuous_on_status = None
         _continuous_on_silent_limit = None
@@ -456,14 +459,19 @@ def stop_continuous(force_transcribe: bool = False) -> None:
 
     if rec is not None:
         if force_transcribe and on_transcript:
-            def _transcribe_and_cleanup():
-                if on_status:
-                    try:
-                        on_status("transcribing")
-                    except Exception:
-                        pass
+            if on_status:
                 try:
-                    wav_path = rec.stop()
+                    on_status("transcribing")
+                except Exception:
+                    pass
+            try:
+                wav_path = rec.stop()
+            except Exception as e:
+                logger.warning("failed to stop recorder: %s", e)
+                wav_path = None
+
+            def _transcribe_and_cleanup():
+                try:
                     if wav_path:
                         try:
                             result = transcribe_recording(wav_path)
@@ -478,6 +486,9 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                     logger.warning("failed to stop/transcribe recorder: %s", e)
                 finally:
                     _play_beep(frequency=660, count=2)
+                    global _continuous_stopping
+                    with _continuous_lock:
+                        _continuous_stopping = False
                     if on_status:
                         try:
                             on_status("idle")
@@ -493,6 +504,9 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 rec.cancel()
             except Exception as e:
                 logger.warning("failed to cancel recorder: %s", e)
+
+    with _continuous_lock:
+        _continuous_stopping = False
 
     # Audible "recording stopped" cue (CLI parity: same 660 Hz × 2 the
     # silence-auto-stop path plays).
@@ -649,6 +663,11 @@ def _continuous_on_silence() -> None:
             _debug(f"_continuous_on_silence: restart raised {type(e).__name__}: {e}")
             with _continuous_lock:
                 _continuous_active = False
+            if on_status:
+                try:
+                    on_status("idle")
+                except Exception:
+                    pass
             return
 
         if on_status:

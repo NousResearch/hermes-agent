@@ -309,6 +309,7 @@ class TestContinuousAPI:
 
         # Isolate from any state left behind by other tests in the session.
         monkeypatch.setattr(voice, "_continuous_active", False)
+        monkeypatch.setattr(voice, "_continuous_stopping", False, raising=False)
         monkeypatch.setattr(voice, "_continuous_recorder", None)
 
         assert voice.is_continuous_active() is False
@@ -368,6 +369,8 @@ class TestContinuousLoopSimulation:
         monkeypatch.setattr(voice, "_continuous_on_transcript", None)
         monkeypatch.setattr(voice, "_continuous_on_status", None)
         monkeypatch.setattr(voice, "_continuous_on_silent_limit", None)
+        monkeypatch.setattr(voice, "_continuous_auto_restart", True, raising=False)
+        monkeypatch.setattr(voice, "_play_beep", lambda *_, **__: None)
 
         class FakeRecorder:
             _silence_threshold = 200
@@ -381,8 +384,12 @@ class TestContinuousLoopSimulation:
                 self.cancelled = 0
                 # Preset WAV path returned by stop()
                 self.next_stop_wav = "/tmp/fake.wav"
+                self.fail_next_start = False
 
             def start(self, on_silence_stop=None):
+                if self.fail_next_start:
+                    self.fail_next_start = False
+                    raise RuntimeError("boom")
                 self.start_calls += 1
                 self.last_callback = on_silence_stop
                 self.is_recording = True
@@ -432,6 +439,82 @@ class TestContinuousLoopSimulation:
         assert voice.is_continuous_active() is True
 
         voice.stop_continuous()
+
+    def test_auto_restart_false_stops_after_first_transcript(self, fake_recorder, monkeypatch):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "single shot"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        transcripts = []
+        statuses = []
+
+        voice.start_continuous(
+            on_transcript=lambda t: transcripts.append(t),
+            on_status=lambda s: statuses.append(s),
+            auto_restart=False,
+        )
+        fake_recorder.last_callback()
+
+        assert transcripts == ["single shot"]
+        assert fake_recorder.start_calls == 1
+        assert statuses == ["listening", "transcribing", "idle"]
+        assert voice.is_continuous_active() is False
+
+    def test_force_transcribe_stop_delivers_current_buffer(self, fake_recorder, monkeypatch):
+        import hermes_cli.voice as voice
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "manual stop"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        transcripts = []
+        statuses = []
+
+        voice.start_continuous(
+            on_transcript=lambda t: transcripts.append(t),
+            on_status=lambda s: statuses.append(s),
+        )
+        voice.stop_continuous(force_transcribe=True)
+
+        assert fake_recorder.stopped == 1
+        assert transcripts == ["manual stop"]
+        assert statuses == ["listening", "transcribing", "idle"]
+        assert voice.is_continuous_active() is False
+
+    def test_restart_failure_reports_idle(self, fake_recorder, monkeypatch):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "hello world"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        statuses = []
+        voice.start_continuous(on_transcript=lambda _t: None, on_status=statuses.append)
+
+        fake_recorder.fail_next_start = True
+        fake_recorder.last_callback()
+
+        assert statuses == ["listening", "transcribing", "idle"]
+        assert voice.is_continuous_active() is False
 
     def test_silent_limit_halts_loop_after_three_strikes(self, fake_recorder, monkeypatch):
         import hermes_cli.voice as voice

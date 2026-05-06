@@ -163,8 +163,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // CLI parity: Ctrl+B toggles the VAD-driven continuous recording loop
   // (NOT the voice-mode umbrella bit). The mode is enabled via /voice on;
   // Ctrl+B while the mode is off sys-nudges the user. While the mode is
-  // on, the first press starts a continuous loop (gateway → start_continuous,
-  // VAD auto-stop → transcribe → auto-restart), a subsequent press stops it.
+  // on, the first press starts a single VAD-bounded capture
+  // (gateway -> start_continuous(auto_restart=false), VAD auto-stop ->
+  // transcribe -> idle), a subsequent press stops and transcribes it.
   // The gateway publishes voice.status + voice.transcript events that
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {

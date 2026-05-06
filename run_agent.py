@@ -10552,6 +10552,81 @@ class AIAgent:
             return json.dumps({"error": "run_code: no code provided in arguments."})
         return self._codeact_kernel.execute(code)
 
+    def _maybe_execute_codeact_plain_response(
+        self,
+        assistant_message: Any,
+        messages: list[dict[str, Any]],
+        finish_reason: str,
+    ) -> bool:
+        """Recover when a local model returns a CodeAct envelope as text.
+
+        Some local OpenAI-compatible servers ignore ``tool_choice=required`` or
+        models mimic the required JSON envelope in assistant content instead of
+        emitting an actual ``run_code`` tool call. Treat envelope-shaped content
+        as a synthetic run_code call so CodeAct keeps moving instead of showing
+        raw JSON to the user and stopping.
+        """
+        if self._codeact_kernel is None:
+            return False
+        if not (
+            isinstance(self.tools, list)
+            and len(self.tools) == 1
+            and (self.tools[0].get("function") or {}).get("name") == "run_code"
+        ):
+            return False
+
+        content = str(getattr(assistant_message, "content", "") or "").strip()
+        if not content:
+            return False
+        lowered = content.lower()
+        if "code" not in lowered and "```" not in content:
+            return False
+
+        try:
+            from agent.codeact_dispatcher import extract_code
+
+            thoughts, code = extract_code(content, envelope_mode=True)
+        except Exception:
+            return False
+        if not code:
+            return False
+
+        function_args = {"thoughts": thoughts, "code": code}
+        arguments = json.dumps(function_args, ensure_ascii=False)
+        call_id = self._deterministic_call_id("run_code", arguments, 0)
+        response_item_id = self._derive_responses_function_call_id(call_id)
+
+        assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+        assistant_msg["content"] = ""
+        assistant_msg["tool_calls"] = [
+            {
+                "id": call_id,
+                "call_id": call_id,
+                "response_item_id": response_item_id,
+                "type": "function",
+                "function": {
+                    "name": "run_code",
+                    "arguments": arguments,
+                },
+            }
+        ]
+        messages.append(assistant_msg)
+
+        self._emit_status("↻ CodeAct envelope returned as text — executing run_code")
+        function_result = self._invoke_run_code(function_args)
+        messages.append(
+            {
+                "role": "tool",
+                "name": "run_code",
+                "tool_call_id": call_id,
+                "content": function_result,
+            }
+        )
+        self._stream_needs_break = True
+        self._session_messages = messages
+        self._save_session_log(messages)
+        return True
+
     def _init_codeact_kernel(self, enabled_tool_names: set | None):
         """Initialise and return a HermesKernel for this session.
 
@@ -15709,6 +15784,13 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
+
+                    if self._maybe_execute_codeact_plain_response(
+                        assistant_message,
+                        messages,
+                        finish_reason,
+                    ):
+                        continue
 
                     # Fix: unmute output when entering the no-tool-call branch
                     # so the user can see empty-response warnings and recovery

@@ -117,6 +117,7 @@ def dispatch(
 
 def _try_envelope(response: str) -> tuple[str, str | None]:
     """Attempt to parse the JSON envelope.  Returns (thoughts, code|None)."""
+    response = _normalize_jsonish_envelope(response)
     # The model may prepend text before the JSON — find the first '{'.
     brace_idx = response.find("{")
     if brace_idx == -1:
@@ -166,6 +167,29 @@ def _try_envelope(response: str) -> tuple[str, str | None]:
         thoughts = ""
 
     return thoughts, code.strip()
+
+
+def _normalize_jsonish_envelope(response: str) -> str:
+    """Normalize common local-model JSON envelope drift.
+
+    Some llama.cpp-hosted models emit the required CodeAct envelope with smart
+    quotes or invalid escaped apostrophes. Normalize only enough for JSON
+    parsing; the extracted Python code is still executed exactly after JSON
+    unescaping.
+    """
+    if not response:
+        return response
+    normalized = (
+        response.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u201e", '"')
+        .replace("\u201f", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u2032", "'")
+    )
+    normalized = normalized.replace("\\'", "'")
+    return normalized
 
 
 def _try_fence(response: str) -> str | None:

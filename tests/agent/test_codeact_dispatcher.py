@@ -49,6 +49,16 @@ class TestExtractCodeEnvelope:
         _, extracted = extract_code(response, envelope_mode=True)
         assert extracted == code
 
+    def test_smart_quote_envelope_from_local_model(self):
+        response = (
+            "{“thoughts”: “I need current evidence.”, "
+            "“code”: “result = web_search(query=\\’GLP-1 GIP drugs 2026\\’, limit=5)\\nprint(result)”}"
+        )
+        thoughts, code = extract_code(response, envelope_mode=True)
+        assert thoughts == "I need current evidence."
+        assert "web_search" in code
+        assert "GLP-1 GIP drugs 2026" in code
+
 
 # ---------------------------------------------------------------------------
 # extract_code — fence fallback

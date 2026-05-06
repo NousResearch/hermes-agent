@@ -1,8 +1,8 @@
 # Web Acquisition Routing and Scrapling Pilot
 
-Status: Phase 2 isolated runtime pilot opened and statically validated
+Status: Phase 3 internal adapter implemented without global registration
 Owner: Hermes Agent web tooling / research skills
-Scope: documentation, optional-skill positioning, isolated runtime pilot scripts, and static pilot verification only
+Scope: documentation, optional-skill positioning, isolated runtime pilot scripts, static pilot verification, and an internal adapter only
 
 ## Decision
 
@@ -140,16 +140,23 @@ Phase 2 pilot evidence captured on 2026-05-06:
 
 ### Phase 3: internal adapter, no global registration
 
-Potential files:
+Implemented files:
 
 ```text
 tools/web_acquire.py
 tests/tools/test_web_acquire.py
 ```
 
-The adapter may call the isolated runtime and normalize receipts, but must not call `registry.register(...)` until product and routing decisions are made.
+The adapter calls the isolated runtime and normalizes receipts, but it does not call `registry.register(...)` and is not part of any public toolset.
 
-The adapter must reuse existing safety layers where applicable:
+Phase 3 adapter evidence captured on 2026-05-06:
+
+- `pytest tests/tools/test_web_acquire.py tests/test_scrapling_optional_runtime.py -q` passes with `14 passed`.
+- `tools/web_acquire.py` contains no `registry.register(...)` call.
+- `difficult_web_extract("https://example.com", selector="h1", mode="static")` calls the isolated Scrapling runtime and returns a structured receipt containing `<h1>Example Domain</h1>` with `errors=[]`.
+- Hermes main runtime remains clean: `pip show scrapling` in the main Hermes venv reports package not found.
+
+The adapter should reuse existing safety layers where applicable in future hardening work:
 
 ```text
 tools/url_safety.py

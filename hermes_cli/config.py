@@ -544,7 +544,13 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
-    
+
+    "web": {
+        "backend": "",           # shared fallback — applies to both search and extract
+        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
+        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)

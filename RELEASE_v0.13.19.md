@@ -15,8 +15,8 @@ primitive for Hermes Agent.
 - Kept privileged execution explicit: Shizuku/Sui shell automation requires the
   saved task to opt in with `use_shizuku` and still requires user-granted
   Shizuku/Sui permission.
-- Updated the Android capability map to use Tasker as the automation parity
-  target and documented the remaining Tasker parity gaps.
+- Updated the Android capability map from Tinker to Tasker and documented the
+  remaining Tasker parity gaps.
 
 ## Validation
 

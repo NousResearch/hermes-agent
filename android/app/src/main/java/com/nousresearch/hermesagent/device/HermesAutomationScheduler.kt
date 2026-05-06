@@ -5,22 +5,13 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
-import java.util.Calendar
 
 object HermesAutomationScheduler {
     fun schedule(context: Context, record: HermesAutomationRecord) {
-        if (!record.enabled) {
+        if (!record.enabled || record.triggerType != TRIGGER_INTERVAL) {
             cancel(context, record.id)
             return
         }
-        when (record.triggerType) {
-            TRIGGER_INTERVAL -> scheduleInterval(context, record)
-            TRIGGER_TIME -> scheduleTime(context, record)
-            else -> cancel(context, record.id)
-        }
-    }
-
-    private fun scheduleInterval(context: Context, record: HermesAutomationRecord) {
         val intervalMinutes = record.intervalMinutes ?: return
         if (intervalMinutes < MIN_INTERVAL_MINUTES) {
             cancel(context, record.id)
@@ -34,20 +25,6 @@ object HermesAutomationScheduler {
             SystemClock.elapsedRealtime() + intervalMillis,
             intervalMillis,
             pendingIntent,
-        )
-    }
-
-    private fun scheduleTime(context: Context, record: HermesAutomationRecord) {
-        val triggerAtMillis = nextTimeTriggerAtMillis(
-            nowEpochMs = System.currentTimeMillis(),
-            timeMinutes = record.triggerTimeMinutes ?: return,
-            daysOfWeekCsv = record.triggerDaysOfWeek,
-        ) ?: return cancel(context, record.id)
-        val alarmManager = context.applicationContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.set(
-            AlarmManager.RTC_WAKEUP,
-            triggerAtMillis,
-            pendingIntent(context, record.id),
         )
     }
 
@@ -75,58 +52,7 @@ object HermesAutomationScheduler {
         )
     }
 
-    internal fun nextTimeTriggerAtMillis(
-        nowEpochMs: Long,
-        timeMinutes: Int,
-        daysOfWeekCsv: String = "",
-    ): Long? {
-        if (timeMinutes !in 0..1439) {
-            return null
-        }
-        val allowedDays = parseDaysOfWeek(daysOfWeekCsv)
-        val now = Calendar.getInstance().apply {
-            timeInMillis = nowEpochMs
-        }
-        for (dayOffset in 0..7) {
-            val candidate = Calendar.getInstance().apply {
-                timeInMillis = nowEpochMs
-                add(Calendar.DAY_OF_YEAR, dayOffset)
-                set(Calendar.HOUR_OF_DAY, timeMinutes / 60)
-                set(Calendar.MINUTE, timeMinutes % 60)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-            if (candidate.timeInMillis <= now.timeInMillis) {
-                continue
-            }
-            if (allowedDays.isEmpty() || candidate.get(Calendar.DAY_OF_WEEK) in allowedDays) {
-                return candidate.timeInMillis
-            }
-        }
-        return null
-    }
-
-    private fun parseDaysOfWeek(daysOfWeekCsv: String): Set<Int> {
-        if (daysOfWeekCsv.isBlank()) {
-            return emptySet()
-        }
-        return daysOfWeekCsv
-            .split(',')
-            .mapNotNull { token -> DAY_TO_CALENDAR[token.trim().uppercase()] }
-            .toSet()
-    }
-
     const val MIN_INTERVAL_MINUTES = 15
     const val ACTION_RUN_AUTOMATION = "com.nousresearch.hermesagent.RUN_AUTOMATION"
     const val EXTRA_AUTOMATION_ID = "automation_id"
-
-    private val DAY_TO_CALENDAR = mapOf(
-        "SUN" to Calendar.SUNDAY,
-        "MON" to Calendar.MONDAY,
-        "TUE" to Calendar.TUESDAY,
-        "WED" to Calendar.WEDNESDAY,
-        "THU" to Calendar.THURSDAY,
-        "FRI" to Calendar.FRIDAY,
-        "SAT" to Calendar.SATURDAY,
-    )
 }

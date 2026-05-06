@@ -7,6 +7,7 @@ import com.nousresearch.hermesagent.api.HermesApiClient
 import com.nousresearch.hermesagent.api.toJsonObject
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
 import com.nousresearch.hermesagent.device.HermesAccessibilityUiBridge
+import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesGlobalAction
 import com.nousresearch.hermesagent.device.HermesPrivilegedAccessBridge
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
@@ -162,6 +163,7 @@ class NativeToolCallingChatClient(
             "file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)
             "android_system_tool", "android_system_action", "system_tool", "settings_tool", "phone_tool" ->
                 executeAndroidSystemTool(toolCall)
+            "android_automation_tool", "automation_tool", "tasker_tool" -> executeAndroidAutomationTool(toolCall)
             "android_ui_tool", "ui_tool", "screen_tool", "accessibility_tool" -> executeAndroidUiTool(toolCall)
             else -> JSONObject()
                 .put("exit_code", 127)
@@ -270,6 +272,15 @@ class NativeToolCallingChatClient(
         }
     }
 
+    private fun executeAndroidAutomationTool(toolCall: ToolCall): String {
+        val action = listOf("action", "operation", "name")
+            .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
+            ?.trim()
+            ?.lowercase()
+            .orEmpty()
+        return HermesAutomationBridge.performActionJson(appContext, action, toolCall.arguments)
+    }
+
     private fun executeAndroidUiTool(toolCall: ToolCall): String {
         val action = listOf("action", "operation", "name")
             .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
@@ -343,7 +354,7 @@ class NativeToolCallingChatClient(
             .put(
                 "content",
                 "You are Hermes running inside the native Android app. " +
-                    "You have functions named terminal_tool, file_write_tool, android_system_tool, and android_ui_tool. " +
+                    "You have functions named terminal_tool, file_write_tool, android_system_tool, android_automation_tool, and android_ui_tool. " +
                     "When the user asks to write or replace a text file, prefer file_write_tool so multiline content is written exactly. " +
                     "When the user asks to run a command, inspect the filesystem, read a file, or use a device command, call terminal_tool instead of simulating the result. " +
                     "terminal_tool runs through /system/bin/sh in the Hermes app workspace. " +
@@ -351,6 +362,7 @@ class NativeToolCallingChatClient(
                     "When the user asks about Android settings, phone connectivity, permissions, background runtime, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
+                    "When the user asks to create a recurring phone automation or reusable Android task, call android_automation_tool. It can save shell tasks, run them manually, enable/disable/delete them, and schedule interval tasks with Android alarms. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -385,6 +397,71 @@ class NativeToolCallingChatClient(
                                             ),
                                     )
                                     .put("required", JSONArray().put("command")),
+                            ),
+                    ),
+            )
+            .put(
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject()
+                            .put("name", "android_automation_tool")
+                            .put(
+                                "description",
+                                "Create, list, run, enable, disable, or delete saved Android shell automations. Supports manual tasks and interval tasks scheduled by Android alarms. Shizuku execution must be explicitly requested per task.",
+                            )
+                            .put(
+                                "parameters",
+                                JSONObject()
+                                    .put("type", "object")
+                                    .put(
+                                        "properties",
+                                        JSONObject()
+                                            .put(
+                                                "action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "list, create_shell_task, run, delete, enable, or disable."),
+                                            )
+                                            .put(
+                                                "id",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Automation id for run, delete, enable, or disable."),
+                                            )
+                                            .put(
+                                                "label",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Human-readable label for create_shell_task."),
+                                            )
+                                            .put(
+                                                "command",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Shell command for create_shell_task."),
+                                            )
+                                            .put(
+                                                "interval_minutes",
+                                                JSONObject()
+                                                    .put("type", "integer")
+                                                    .put("description", "Optional interval schedule in minutes. Minimum is 15. Omit for a manual task."),
+                                            )
+                                            .put(
+                                                "enabled",
+                                                JSONObject()
+                                                    .put("type", "boolean")
+                                                    .put("description", "Whether a created automation starts enabled."),
+                                            )
+                                            .put(
+                                                "use_shizuku",
+                                                JSONObject()
+                                                    .put("type", "boolean")
+                                                    .put("description", "Run this automation through Shizuku/Sui privileged shell. Requires Shizuku setup and user-granted permission."),
+                                            ),
+                                    )
+                                    .put("required", JSONArray().put("action")),
                             ),
                     ),
             )

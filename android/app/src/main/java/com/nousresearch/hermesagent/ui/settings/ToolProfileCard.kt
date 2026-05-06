@@ -18,6 +18,7 @@ private val ENABLED_TOOLS = listOf(
     "android_shared_folder_list",
     "android_shared_folder_read",
     "android_shared_folder_write",
+    "android_automation_task",
     "android_ui_snapshot",
     "android_ui_action",
     "read_file",
@@ -39,7 +40,7 @@ private val BLOCKED_TOOL_CLASSES = listOf(
     "browser automation",
     "execute_code",
     "delegate_task",
-    "cronjob",
+    "exact cronjob",
     "image generation (deferred)",
     "voice / transcription",
 )

@@ -61,10 +61,21 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
-def _extract_media_from_result(result: dict) -> list[str]:
-    """Scan agent result messages for screenshot_url/screenshot_path from tools."""
+def _extract_media_from_result(result: dict, last_known: int = 0) -> tuple[list[str], int]:
+    """从 agent 执行结果中提取本轮产生的截图下载 URL。
+
+    ReAct 模式下一次对话会有多轮工具调用，result["messages"] 里包含了
+    所有历史轮次的工具结果。如果每次都扫描全部 messages，历史截图会被
+    重复推送。这里通过 last_known 记录上轮扫描到的消息位置，本轮只查
+    messages[last_known:] 新增的消息，避免旧截图重复推送。
+
+    Returns (urls, new_last_known)
+    """
     urls: list[str] = []
-    for msg in result.get("messages", []):
+    msgs = result.get("messages", [])
+    # 记录本轮扫描后的消息总数，供下轮作为 last_known 使用
+    new_last = max(last_known, len(msgs))
+    for msg in msgs[last_known:]:
         if msg.get("role") != "tool":
             continue
         try:
@@ -86,7 +97,7 @@ def _extract_media_from_result(result: dict) -> list[str]:
                     pass
             else:
                 urls.append(f"/v1/workspace/download?path={_path}")
-    return urls
+    return urls, new_last
 
 
 def _normalize_chat_content(
@@ -631,6 +642,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Value: {"event": threading.Event(), "result": {"response": None}}
         self._pending_inputs: Dict[str, dict] = {}
         self._pending_approvals: Dict[str, dict] = {}
+        # 每个 session 当前已扫描过的消息总数，用于 _extract_media_from_result
+        # 只取本轮新增的工具结果，避免重复推送历史截图
+        self._session_msg_counts: Dict[str, int] = {}
 
         # Mark this as a gateway session so tools/approval.py enables
         # the approval flow (otherwise dangerous commands auto-approve).
@@ -1238,8 +1252,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final_response:
             final_response = result.get("error", "(No response generated)")
 
-        # Extract media URLs from tool results
-        _media_urls = _extract_media_from_result(result)
+        # 从本轮新增的工具结果中提取截图 URL，存到响应 media 字段
+        _last = self._session_msg_counts.get(session_id, 0)
+        _media_urls, _new_last = _extract_media_from_result(result, _last)
+        self._session_msg_counts[session_id] = _new_last
 
         # Auto-generate session title after first exchange (non-blocking)
         if final_response and self._session_db:
@@ -1432,9 +1448,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
 
-            # Emit media events from tool results
+            # 从本轮工具结果提取截图并推送 SSE 事件，避免重复推送历史截图
             if result:
-                for _media_url in _extract_media_from_result(result):
+                _last = self._session_msg_counts.get(session_id, 0)
+                _stream_urls, _new_last = _extract_media_from_result(result, _last)
+                self._session_msg_counts[session_id] = _new_last
+                for _media_url in _stream_urls:
                     _payload = {"url": _media_url, "type": "screenshot"}
                     await response.write(
                         f"event: hermes.media\ndata: {json.dumps(_payload)}\n\n".encode()

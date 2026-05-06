@@ -628,11 +628,16 @@ class Task:
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
+                # Pre-migration fallback: ``_migrate_add_optional_columns`` always
+                # adds ``consecutive_failures`` now, so this branch is only reachable
+                # on a DB that was never opened since pre-#20410 code ran. Keep for
+                # belt-and-suspenders safety; in practice it is dead code post-migration.
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
+                # Same belt-and-suspenders fallback as consecutive_failures above.
                 else (row["last_spawn_error"] if "last_spawn_error" in keys else None)
             ),
             max_runtime_seconds=(
@@ -954,11 +959,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "ON tasks(idempotency_key)"
         )
     # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
-    # and ``last_spawn_error`` → ``last_failure_error``. Avoid
-    # ``ALTER TABLE ... RENAME COLUMN`` here: existing board DBs may have
-    # related schema objects from older Kanban builds, and SQLite reparses
-    # the whole schema during a rename. Adding/copying is more tolerant and
-    # still preserves the historical counter/error values.
+    # and ``last_spawn_error`` → ``last_failure_error``.
+    #
+    # Avoid ``ALTER TABLE ... RENAME COLUMN`` for two reasons:
+    #   1. Primary: very old DBs may never have had ``spawn_failures`` at
+    #      all, so RENAME raises OperationalError: no such column (the crash
+    #      reported in issue #20842 after the #20410 update).
+    #   2. Secondary: SQLite reparses the whole schema on any RENAME, which
+    #      fails if related objects (views, triggers) reference the old name.
+    #
+    # ADD-first-then-copy is tolerant of both shapes and preserves
+    # historical counter values when the legacy columns do exist.
+    #
+    # NOTE: ``cols`` reflects the schema at entry to this function and is
+    # not refreshed between ALTER TABLE calls.  Every guard below checks
+    # the *original* snapshot; this is intentional and safe as long as
+    # no step depends on a column added by a previous step in the same call.
     if "consecutive_failures" not in cols:
         conn.execute(
             "ALTER TABLE tasks ADD COLUMN consecutive_failures "

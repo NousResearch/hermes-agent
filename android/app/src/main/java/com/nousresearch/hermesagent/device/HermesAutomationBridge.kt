@@ -37,6 +37,10 @@ object HermesAutomationBridge {
                 title = stringArgument(arguments, "notification_title", "title", allowEmpty = true).orEmpty(),
                 text = stringArgument(arguments, "notification_text", "text", "content", allowEmpty = true).orEmpty(),
             )
+            "run_shizuku_state_trigger", "trigger_shizuku_state", "check_shizuku_trigger", "shizuku_state" -> runShizukuStateTriggerJson(
+                context = context,
+                requestedState = stringArgument(arguments, "shizuku_state", "state", "expected_state", "trigger_state").orEmpty(),
+            )
             "run_time_trigger", "trigger_time", "time" -> runTriggerJson(context, TRIGGER_TIME)
             "delete", "remove" -> deleteJson(context, arguments.optString("id"))
             "enable" -> setEnabledJson(context, arguments.optString("id"), true)
@@ -434,6 +438,10 @@ object HermesAutomationBridge {
     }
 
     fun runTriggerJson(context: Context, trigger: String): String {
+        val rawTrigger = trigger.trim().lowercase().replace("-", "_").replace(" ", "_")
+        if (rawTrigger == "shizuku_state" || rawTrigger == "check_shizuku" || rawTrigger == "current_shizuku") {
+            return runShizukuStateTriggerJson(context)
+        }
         val normalizedTrigger = normalizeTrigger(trigger) ?: return errorJson(
             "run_trigger requires one of: ${AUTOMATION_TRIGGERS.joinToString()}",
         )
@@ -442,6 +450,9 @@ object HermesAutomationBridge {
         }
         if (normalizedTrigger == TRIGGER_NOTIFICATION_POSTED) {
             return errorJson("notification_posted trigger requires run_notification_posted_trigger with trigger_package_name or package_name")
+        }
+        if (normalizedTrigger == TRIGGER_SHIZUKU_AVAILABLE || normalizedTrigger == TRIGGER_SHIZUKU_UNAVAILABLE) {
+            return runShizukuStateTriggerJson(context, normalizedTrigger)
         }
         val store = HermesAutomationStore(context)
         val records = store.list()
@@ -521,6 +532,30 @@ object HermesAutomationBridge {
             .put("package_name", notificationPackageName)
             .put("notification_title", title.take(MAX_EVENT_VALUE_CHARS))
             .put("notification_text", text.take(MAX_EVENT_VALUE_CHARS))
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runShizukuStateTriggerJson(context: Context, requestedState: String = ""): String {
+        val store = HermesAutomationStore(context)
+        val status = HermesPrivilegedAccessBridge.readStatus(context)
+        val available = status.shizukuBinderAlive && status.shizukuPermissionGranted
+        setShizukuEventVariables(store, status, available)
+        val trigger = normalizeShizukuTrigger(requestedState, available) ?: return errorJson(
+            "shizuku_state trigger requires available, unavailable, shizuku_available, or shizuku_unavailable",
+        )
+        val records = store.list()
+            .filter { record -> record.enabled && record.triggerType == trigger }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, trigger))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", trigger)
+            .put("shizuku_available", available)
+            .put("shizuku_status", HermesPrivilegedAccessBridge.statusToJson(status))
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -949,6 +984,32 @@ object HermesAutomationBridge {
         store.setVariable("TIME_DAY", day)
     }
 
+    private fun setShizukuEventVariables(
+        store: HermesAutomationStore,
+        status: HermesPrivilegedAccessStatus,
+        available: Boolean,
+    ) {
+        store.setVariable("SHIZUKU_AVAILABLE", available.toString())
+        store.setVariable("SHIZUKU_INSTALLED", status.shizukuInstalled.toString())
+        store.setVariable("SUI_INSTALLED", status.suiInstalled.toString())
+        store.setVariable("SHIZUKU_RUNNING", status.shizukuBinderAlive.toString())
+        store.setVariable("SHIZUKU_PERMISSION_GRANTED", status.shizukuPermissionGranted.toString())
+        store.setVariable("SHIZUKU_PRIVILEGE_LABEL", status.shizukuPrivilegeLabel)
+        store.setVariable("SHIZUKU_UID", status.shizukuUid?.toString().orEmpty())
+    }
+
+    private fun normalizeShizukuTrigger(requestedState: String, available: Boolean): String? {
+        val normalized = requestedState.trim().lowercase().replace("-", "_").replace(" ", "_")
+        return when (normalized) {
+            "", "current", "auto", "detected" -> if (available) TRIGGER_SHIZUKU_AVAILABLE else TRIGGER_SHIZUKU_UNAVAILABLE
+            "available", "ready", "usable", "can_use", "permission_granted", TRIGGER_SHIZUKU_AVAILABLE -> TRIGGER_SHIZUKU_AVAILABLE
+            "unavailable", "missing", "not_available", "not_ready", "not_running", "permission_missing", TRIGGER_SHIZUKU_UNAVAILABLE -> TRIGGER_SHIZUKU_UNAVAILABLE
+            else -> normalizeTrigger(normalized)?.takeIf {
+                it == TRIGGER_SHIZUKU_AVAILABLE || it == TRIGGER_SHIZUKU_UNAVAILABLE
+            }
+        }
+    }
+
     private fun formatTime(minutes: Int?): String {
         if (minutes == null) {
             return "time trigger"
@@ -999,6 +1060,7 @@ object HermesAutomationBridge {
         "run_trigger",
         "run_app_foreground_trigger",
         "run_notification_posted_trigger",
+        "run_shizuku_state_trigger",
         "run_time_trigger",
         "delete",
         "enable",
@@ -1019,6 +1081,8 @@ object HermesAutomationBridge {
         TRIGGER_APP_FOREGROUND,
         TRIGGER_NOTIFICATION_POSTED,
         TRIGGER_TIME,
+        TRIGGER_SHIZUKU_AVAILABLE,
+        TRIGGER_SHIZUKU_UNAVAILABLE,
     )
     private val TRIGGER_SYNONYMS = mapOf(
         "boot_completed" to TRIGGER_BOOT,
@@ -1051,6 +1115,16 @@ object HermesAutomationBridge {
         "time_context" to TRIGGER_TIME,
         "time_of_day" to TRIGGER_TIME,
         "at_time" to TRIGGER_TIME,
+        "shizuku" to TRIGGER_SHIZUKU_AVAILABLE,
+        "shizuku_state" to TRIGGER_SHIZUKU_AVAILABLE,
+        "shizuku_running" to TRIGGER_SHIZUKU_AVAILABLE,
+        "shizuku_ready" to TRIGGER_SHIZUKU_AVAILABLE,
+        "shizuku_usable" to TRIGGER_SHIZUKU_AVAILABLE,
+        "shizuku_permission_granted" to TRIGGER_SHIZUKU_AVAILABLE,
+        "shizuku_not_available" to TRIGGER_SHIZUKU_UNAVAILABLE,
+        "shizuku_missing" to TRIGGER_SHIZUKU_UNAVAILABLE,
+        "shizuku_not_running" to TRIGGER_SHIZUKU_UNAVAILABLE,
+        "shizuku_permission_missing" to TRIGGER_SHIZUKU_UNAVAILABLE,
     )
     private data class TimeParseResult(val minutes: Int?, val error: String? = null)
     private data class DaysParseResult(val daysCsv: String, val error: String? = null)

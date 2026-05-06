@@ -15,6 +15,8 @@ def test_read_device_capabilities_defaults_to_workspace(tmp_path, monkeypatch):
     assert payload["workspace_file_count"] == 0
     assert payload["workspace_files"] == []
     assert payload["accessibility_enabled"] is False
+    assert payload["notification_listener_enabled"] is False
+    assert payload["foreground_package_name"] == ""
     assert payload["shared_tree_uri"] == ""
 
 
@@ -30,6 +32,10 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
                 "shared_tree_label": "Docs",
                 "accessibility_enabled": True,
                 "accessibility_connected": True,
+                "foreground_package_name": "com.example.front",
+                "last_notification_package_name": "com.example.sender",
+                "last_notification_title": "Title",
+                "last_notification_text": "Body",
                 "available_global_actions": ["home", "back"],
                 "wifi_enabled": True,
                 "bluetooth_enabled": True,
@@ -38,6 +44,8 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
                 "nfc_supported": True,
                 "overlay_permission_granted": True,
                 "notification_permission_granted": True,
+                "notification_listener_enabled": True,
+                "notification_listener_connected": True,
                 "background_persistence_enabled": True,
                 "runtime_service_running": True,
                 "available_system_actions": ["open_wifi_panel", "start_background_runtime"],
@@ -53,6 +61,10 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
     assert payload["shared_tree_label"] == "Docs"
     assert payload["accessibility_enabled"] is True
     assert payload["accessibility_connected"] is True
+    assert payload["foreground_package_name"] == "com.example.front"
+    assert payload["last_notification_package_name"] == "com.example.sender"
+    assert payload["last_notification_title"] == "Title"
+    assert payload["last_notification_text"] == "Body"
     assert payload["available_global_actions"] == ["home", "back"]
     assert payload["wifi_enabled"] is True
     assert payload["bluetooth_enabled"] is True
@@ -61,6 +73,8 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
     assert payload["nfc_supported"] is True
     assert payload["overlay_permission_granted"] is True
     assert payload["notification_permission_granted"] is True
+    assert payload["notification_listener_enabled"] is True
+    assert payload["notification_listener_connected"] is True
     assert payload["background_persistence_enabled"] is True
     assert payload["runtime_service_running"] is True
     assert payload["available_system_actions"] == ["open_wifi_panel", "start_background_runtime"]

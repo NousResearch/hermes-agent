@@ -307,4 +307,52 @@ class HermesAutomationInstrumentedTest {
         assertTrue("Expected ${target.absolutePath}", target.isFile)
         assertEquals("foreground-ok", target.readText())
     }
+
+    @Test
+    fun notificationPostedTriggerRunsMatchingAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-notification-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Notification smoke")
+                    .put("path", "hermes-notification-trigger.txt")
+                    .put("content", "%NOTIFICATION_PACKAGE:%NOTIFICATION_TITLE:%NOTIFICATION_TEXT")
+                    .put("trigger", "notification_posted")
+                    .put("trigger_package_name", app.packageName),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("notification_posted", created.getJSONObject("automation").getString("trigger_type"))
+        assertEquals(app.packageName, created.getJSONObject("automation").getString("trigger_package_name"))
+
+        val missed = JSONObject(
+            HermesAutomationBridge.runNotificationPostedTriggerJson(
+                app,
+                "com.example.other",
+                "Ignored",
+                "No match",
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+        assertFalse("Expected ${target.absolutePath} to stay absent", target.exists())
+
+        val matched = JSONObject(
+            HermesAutomationBridge.runNotificationPostedTriggerJson(
+                app,
+                app.packageName,
+                "Hermes title",
+                "Hermes text",
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("${app.packageName}:Hermes title:Hermes text", target.readText())
+    }
 }

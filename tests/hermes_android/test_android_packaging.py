@@ -133,6 +133,8 @@ def test_android_fal_client_stub_marks_image_generation_deferred():
     assert 'android.permission.SYSTEM_ALERT_WINDOW' in manifest
     assert 'android.permission.FOREGROUND_SERVICE' in manifest
     assert 'HermesRuntimeService' in manifest
+    assert 'HermesNotificationListenerService' in manifest
+    assert 'android.permission.BIND_NOTIFICATION_LISTENER_SERVICE' in manifest
 
 
 def test_android_declares_shizuku_privileged_access_support():
@@ -173,6 +175,14 @@ def test_android_debug_version_code_tracks_project_semver():
     assert "semverVersionCode(releaseTag)?.let { return it }" in gradle
     assert f"versionName={project_version}" in version_file
     assert f"versionCode={expected_version_code}" in version_file
+
+
+def test_android_wheel_build_clears_stale_python_build_output():
+    gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+
+    assert 'val generatedPythonBuildLibDir = repoRoot.resolve("build/lib")' in gradle
+    assert "generatedPythonBuildLibDir.deleteRecursively()" in gradle
+    assert "Refusing to remove Python build output outside repository" in gradle
 
 
 def test_android_visual_harness_supports_wide_screenshots_and_clicks():

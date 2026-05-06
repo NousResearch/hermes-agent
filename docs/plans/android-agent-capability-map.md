@@ -51,7 +51,7 @@ Agent Android implementation work.
 | Wireless debugging and developer options setup | Added as safe system actions: `open_wireless_debugging_settings` and `open_developer_options`. |
 | Emulator/BlueStacks visual validation | Added host harness: `scripts/android_visual_harness.py` for ADB screenshots, taps/clicks, swipes, text input, UI dumps, launch, and one-command wide resolution capture. |
 | Tasker-style manual tasks/actions | Present for saved shell, file-write, file-delete, safe Android system-action, accessibility UI-action, and app-launch records through `android_automation_tool`; chat-triggered terminal, file, UI, and Android system tool calls remain available. |
-| Tasker-style profiles/triggers | Present for manual, interval, boot, power-connected, power-disconnected, battery-low, battery-okay, and app-foreground saved automation tasks. App-foreground triggers require the user-enabled Hermes accessibility service and an explicit `trigger_package_name`. Location, deeper app-state, sensor, calendar, notification, and plugin-profile triggers are not yet present. |
+| Tasker-style profiles/triggers | Present for manual, interval, boot, power-connected, power-disconnected, battery-low, battery-okay, app-foreground, and notification-posted saved automation tasks. App-foreground triggers require the user-enabled Hermes accessibility service and an explicit `trigger_package_name`; notification-posted triggers require user-enabled Hermes notification access and an explicit `trigger_package_name`. Location, deeper app-state, sensor, calendar, and plugin-profile triggers are not yet present. |
 | Tasker-style variables | Present as a durable Android automation variable table exposed through `android_automation_tool`; shell commands, file paths, file content, system-action names, UI selectors, UI text values, and app package names can expand `%NAME` or `{{NAME}}` values at run time. |
 | Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
 | Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
@@ -75,10 +75,11 @@ control available to consenting users.
 ## Next Tasker-Parity Work
 
 The next credible Tasker-parity feature after shell/file/system/UI/app-launch
-actions, variables, basic phone-state triggers, and app-foreground triggers
+actions, variables, basic phone-state triggers, app-foreground triggers, and
+notification-posted triggers
 should extend profile coverage with explicit user-visible records:
 
-- location, calendar, notification, sensor, and deeper app-state triggers,
+- location, calendar, sensor, and deeper app-state triggers,
 - Shizuku-only actions clearly marked as requiring user-granted Shizuku/Sui, and
 - tests proving scheduled/manual actions cannot mutate outside the Hermes app
   workspace unless Shizuku is explicitly selected and available.

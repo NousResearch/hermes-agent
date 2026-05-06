@@ -31,6 +31,7 @@ private val DEFAULT_SYSTEM_ACTIONS = listOf(
     "open_connected_devices_settings",
     "open_nfc_settings",
     "open_notification_settings",
+    "open_notification_listener_settings",
     "open_overlay_settings",
     "open_accessibility_settings",
     "open_developer_options",
@@ -59,6 +60,8 @@ data class HermesSystemStatus(
     val nfcEnabled: Boolean = false,
     val overlayPermissionGranted: Boolean = false,
     val notificationPermissionGranted: Boolean = true,
+    val notificationListenerEnabled: Boolean = false,
+    val notificationListenerConnected: Boolean = false,
     val backgroundPersistenceEnabled: Boolean = false,
     val runtimeServiceRunning: Boolean = false,
     val resizableWindowSupport: Boolean = true,
@@ -138,6 +141,8 @@ object HermesSystemControlBridge {
             nfcEnabled = nfcAdapter?.isEnabled == true,
             overlayPermissionGranted = Settings.canDrawOverlays(appContext),
             notificationPermissionGranted = notificationPermissionGranted,
+            notificationListenerEnabled = HermesNotificationController.isListenerEnabled(appContext),
+            notificationListenerConnected = HermesNotificationController.isListenerConnected(),
             backgroundPersistenceEnabled = stored.backgroundPersistenceEnabled,
             runtimeServiceRunning = HermesRuntimeService.isRunning(),
             resizableWindowSupport = true,
@@ -158,6 +163,12 @@ object HermesSystemControlBridge {
             "open_connected_devices_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_WIRELESS_SETTINGS), "Opened connected-device settings")
             "open_nfc_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NFC_SETTINGS), "Opened NFC settings")
             "open_notification_settings" -> launchIntent(appContext, action, notificationSettingsIntent(appContext), "Opened Hermes notification settings")
+            "open_notification_listener_settings" -> launchIntent(
+                appContext,
+                action,
+                Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
+                "Opened notification access settings",
+            )
             "open_overlay_settings" -> launchIntent(
                 appContext,
                 action,
@@ -270,6 +281,8 @@ object HermesSystemControlBridge {
             put("nfc_enabled", status.nfcEnabled)
             put("overlay_permission_granted", status.overlayPermissionGranted)
             put("notification_permission_granted", status.notificationPermissionGranted)
+            put("notification_listener_enabled", status.notificationListenerEnabled)
+            put("notification_listener_connected", status.notificationListenerConnected)
             put("background_persistence_enabled", status.backgroundPersistenceEnabled)
             put("runtime_service_running", status.runtimeServiceRunning)
             put("resizable_window_support", status.resizableWindowSupport)

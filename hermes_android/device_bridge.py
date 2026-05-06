@@ -14,6 +14,7 @@ _DEFAULT_SYSTEM_ACTIONS = [
     "open_connected_devices_settings",
     "open_nfc_settings",
     "open_notification_settings",
+    "open_notification_listener_settings",
     "open_overlay_settings",
     "open_accessibility_settings",
     "start_background_runtime",
@@ -165,6 +166,10 @@ def read_device_capabilities() -> dict[str, Any]:
         "shared_tree_label": "",
         "accessibility_enabled": False,
         "accessibility_connected": False,
+        "foreground_package_name": "",
+        "last_notification_package_name": "",
+        "last_notification_title": "",
+        "last_notification_text": "",
         "available_global_actions": list(_DEFAULT_GLOBAL_ACTIONS),
         "available_system_actions": list(_DEFAULT_SYSTEM_ACTIONS),
         "shared_folder_tools": list(_SHARED_FOLDER_TOOLS),
@@ -191,6 +196,8 @@ def read_device_capabilities() -> dict[str, Any]:
         "nfc_enabled": False,
         "overlay_permission_granted": False,
         "notification_permission_granted": False,
+        "notification_listener_enabled": False,
+        "notification_listener_connected": False,
         "background_persistence_enabled": False,
         "runtime_service_running": False,
         "resizable_window_support": True,
@@ -210,6 +217,10 @@ def read_device_capabilities() -> dict[str, Any]:
                 "shared_tree_label",
                 "accessibility_enabled",
                 "accessibility_connected",
+                "foreground_package_name",
+                "last_notification_package_name",
+                "last_notification_title",
+                "last_notification_text",
                 "available_global_actions",
                 "available_system_actions",
                 "linux_enabled",
@@ -233,6 +244,8 @@ def read_device_capabilities() -> dict[str, Any]:
                 "nfc_enabled",
                 "overlay_permission_granted",
                 "notification_permission_granted",
+                "notification_listener_enabled",
+                "notification_listener_connected",
                 "background_persistence_enabled",
                 "runtime_service_running",
                 "resizable_window_support",
@@ -261,7 +274,7 @@ def read_device_capabilities() -> dict[str, Any]:
     payload["system_guide"] = (
         "Use android_system_action for high-level Android settings and background-runtime actions such as "
         "Wi-Fi/internet controls, Bluetooth settings, NFC, overlay permission, notification settings, "
-        "and Hermes background persistence."
+        "notification access, and Hermes background persistence."
     )
     return payload
 

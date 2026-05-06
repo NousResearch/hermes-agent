@@ -76,6 +76,16 @@
                 android:resource="@xml/hermes_accessibility_service" />
         </service>
 
+        <service
+            android:name=".device.HermesNotificationListenerService"
+            android:exported="false"
+            android:label="@string/hermes_notification_listener_service_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".device.HermesAutomationReceiver"
             android:enabled="true"

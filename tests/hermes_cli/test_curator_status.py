@@ -175,3 +175,28 @@ def test_status_no_skills_produces_clean_empty_output(curator_status_env):
     # None of the ranking sections render
     assert "most active" not in out
     assert "least active" not in out
+
+
+def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
+    import agent.curator as curator_state
+    import hermes_cli.curator as curator_cli
+    import tools.skill_usage as skill_usage
+
+    missing_report = tmp_path / "stale-report"
+    monkeypatch.setattr(curator_state, "load_state", lambda: {
+        "paused": False,
+        "last_run_at": None,
+        "last_run_summary": "auto: no changes",
+        "run_count": 1,
+        "last_report_path": str(missing_report),
+    })
+    monkeypatch.setattr(curator_state, "is_enabled", lambda: True)
+    monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
+    monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
+    monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
+    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+
+    assert curator_cli._cmd_status(SimpleNamespace()) == 0
+
+    out = capsys.readouterr().out
+    assert f"last report:    {missing_report} (missing)" in out

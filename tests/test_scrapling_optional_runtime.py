@@ -50,6 +50,50 @@ def test_setup_runtime_build_plan_keeps_browser_install_opt_in(tmp_path):
     assert plan.browser_install_requested is False
 
 
+def test_setup_runtime_build_plan_includes_browser_install_only_when_requested(tmp_path):
+    module = load_module(SETUP_SCRIPT, "scrapling_setup_runtime_browser_test")
+
+    plan = module.build_setup_plan(
+        python_executable="/custom/python3.11",
+        runtime_dir=tmp_path / "runtime",
+        requirements_file=SCRAPLING_DIR / "requirements.txt",
+        install_browsers=True,
+    )
+
+    rendered = [" ".join(map(str, command)) for command in plan.commands]
+    assert rendered[-1].endswith("bin/scrapling install")
+    assert plan.browser_install_requested is True
+
+
+def test_setup_runtime_dry_run_prints_json_plan(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SETUP_SCRIPT),
+            "--dry-run",
+            "--python",
+            "/custom/python3.11",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["backend"] == "scrapling"
+    assert payload["action"] == "setup_runtime"
+    assert payload["dry_run"] is True
+    assert payload["browser_install_requested"] is False
+    assert payload["results"] == []
+    assert payload["errors"] == []
+    assert any("-m venv" in command for command in payload["commands"])
+    assert not any("scrapling install" in command for command in payload["commands"])
+
+
 def test_extract_help_is_available():
     result = subprocess.run(
         [sys.executable, str(EXTRACT_SCRIPT), "--help"],

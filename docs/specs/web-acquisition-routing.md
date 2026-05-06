@@ -1,8 +1,8 @@
 # Web Acquisition Routing and Scrapling Pilot
 
-Status: Phase 1 isolated pilot harness implemented
+Status: Phase 2 isolated runtime pilot opened and statically validated
 Owner: Hermes Agent web tooling / research skills
-Scope: documentation, optional-skill positioning, and isolated runtime pilot scripts only
+Scope: documentation, optional-skill positioning, isolated runtime pilot scripts, and static pilot verification only
 
 ## Decision
 
@@ -128,6 +128,15 @@ Acceptance criteria:
 - missing Scrapling dependency returns a structured JSON error from `scrapling_extract.py`;
 - no Scrapling dependency appears in Hermes main venv;
 - browser assets/downloads install only when `--install-browsers` is explicitly requested.
+
+Phase 2 pilot evidence captured on 2026-05-06:
+
+- `pytest tests/test_scrapling_optional_runtime.py -q` passes with `7 passed`.
+- `setup_runtime.py --dry-run` emits a parseable JSON setup plan and does not include `scrapling install` unless `--install-browsers` is requested.
+- `setup_runtime.py` created/reused `/Users/zhaopufan/.hermes/runtimes/scrapling` through `/Users/zhaopufan/.local/bin/python3.11` with `browser_install_requested=false`.
+- Hermes main runtime remains clean: `importlib.util.find_spec("scrapling") is None` in the main Hermes Python 3.14 venv.
+- The isolated runtime can perform a static public-page selector extraction against `https://example.com` with selector `h1`, returning a structured Scrapling JSON receipt with no errors.
+- Browser-backed dynamic/stealth assets remain out of scope for this validation pass; do not run `scrapling install` until a specific dynamic/stealth pilot case justifies it.
 
 ### Phase 3: internal adapter, no global registration
 

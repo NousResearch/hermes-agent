@@ -1660,6 +1660,13 @@ def _agent_executable_available(executable: str) -> bool:
     return shutil.which(executable) is not None
 
 
+def _agent_argv_preview(argv: list[str]) -> list[str]:
+    if not argv:
+        return []
+    executable = Path(argv[0]).name or argv[0]
+    return [executable, f"<{max(len(argv) - 1, 0)} wrapper args redacted>", "<stdin-prompt>"]
+
+
 def _agent_spawn_args(args: dict[str, Any], policy: MacLocalPolicy) -> tuple[str, str, str, str, list[str]] | str:
     kind = str(args.get("kind") or "")
     if kind not in AGENT_KINDS:
@@ -1770,6 +1777,7 @@ def _mac_agent_spawn(args: dict[str, Any], policy: MacLocalPolicy) -> str:
         _cleanup_failed_agent_process(process, managed)
         return prompt_error
     agent_id = f"macagent-{uuid.uuid4().hex[:12]}"
+    argv_preview = _agent_argv_preview(argv)
     _MANAGED_AGENTS[agent_id] = {
         "managed": managed,
         "kind": kind,
@@ -1777,7 +1785,7 @@ def _mac_agent_spawn(args: dict[str, Any], policy: MacLocalPolicy) -> str:
         "workdir": workdir,
         "started_at": time.time(),
         "prompt_length": len(prompt),
-        "argv_preview": argv + ["<stdin-prompt>"],
+        "argv_preview": argv_preview,
     }
     return json.dumps(
         {
@@ -1790,7 +1798,7 @@ def _mac_agent_spawn(args: dict[str, Any], policy: MacLocalPolicy) -> str:
             "pid": process.pid,
             "started_at": _MANAGED_AGENTS[agent_id]["started_at"],
             "prompt_length": len(prompt),
-            "argv_preview": argv + ["<stdin-prompt>"],
+            "argv_preview": argv_preview,
         }
     )
 
@@ -1803,6 +1811,9 @@ def _mac_agent_status(args: dict[str, Any]) -> str:
         return _mac_agent_not_found(action, agent_id)
     managed: ManagedProcess = entry["managed"]
     exit_code = managed.process.poll()
+    if exit_code is not None:
+        _collect_managed_output(managed)
+        _MANAGED_AGENTS.pop(agent_id, None)
     return json.dumps(
         {
             "ok": True,
@@ -1814,6 +1825,7 @@ def _mac_agent_status(args: dict[str, Any]) -> str:
             "running": exit_code is None,
             "exit_code": exit_code,
             "started_at": entry["started_at"],
+            "evicted": exit_code is not None,
         }
     )
 
@@ -1829,6 +1841,8 @@ def _mac_agent_logs(args: dict[str, Any]) -> str:
     if exit_code is not None:
         _collect_managed_output(managed)
     stdout, stderr, stdout_truncated, stderr_truncated = _consume_managed_poll_output(managed)
+    if exit_code is not None:
+        _MANAGED_AGENTS.pop(agent_id, None)
     return json.dumps(
         {
             "ok": exit_code == 0 or exit_code is None,
@@ -1841,6 +1855,7 @@ def _mac_agent_logs(args: dict[str, Any]) -> str:
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
             "output_limit_exceeded": managed.output_limit_exceeded,
+            "evicted": exit_code is not None,
         }
     )
 

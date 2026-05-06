@@ -1512,15 +1512,17 @@ def test_mac_agent_local_spawn_uses_stdin_shell_free_command_and_filtered_env(mo
     import subprocess
     import sys
 
+    from tools import mac_local_node
     from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
 
     trusted = tmp_path / "trusted"
     trusted.mkdir()
     outside_marker = tmp_path / "outside-marker"
     policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    wrapper_value = "supersecret-token-12345"
     monkeypatch.setenv(
         "HERMES_MAC_AGENT_CODEX_COMMAND",
-        f"{sys.executable} -c \"import sys; print(sys.stdin.read())\"",
+        f"{sys.executable} -c \"import sys; print(sys.stdin.read())\" --api-key {wrapper_value}",
     )
     monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_SANDBOXED", "1")
     captured = {}
@@ -1583,6 +1585,8 @@ def test_mac_agent_local_spawn_uses_stdin_shell_free_command_and_filtered_env(mo
     assert captured["env"]["HERMES_MAC_AGENT_MODE"] == "review"
     assert "HOME" not in captured["env"]
     assert captured["start_new_session"] is True
+    assert wrapper_value not in json.dumps(payload)
+    assert wrapper_value not in json.dumps(mac_local_node._MANAGED_AGENTS[payload["agent_id"]]["argv_preview"])
     assert not outside_marker.exists()
 
 
@@ -1628,6 +1632,42 @@ def test_mac_agent_local_manages_worker_logs_status_and_kill(monkeypatch, tmp_pa
         assert missing["error_code"] == "PROCESS_NOT_FOUND"
     finally:
         handle_mac_agent_local({"action": "kill", "agent_id": agent_id}, policy=policy)
+
+
+def test_mac_agent_local_evicts_completed_worker_on_status(monkeypatch, tmp_path):
+    import sys
+    import time
+
+    from tools import mac_local_node
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_agent_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+    monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_COMMAND", f"{sys.executable} -u -c \"print('done', flush=True)\"")
+    monkeypatch.setenv("HERMES_MAC_AGENT_CODEX_SANDBOXED", "1")
+
+    spawned = json.loads(
+        handle_mac_agent_local(
+            {"action": "spawn", "kind": "codex", "mode": "read_only", "workdir": str(trusted), "prompt": "inspect"},
+            policy=policy,
+        )
+    )
+    agent_id = spawned["agent_id"]
+    assert spawned["ok"] is True
+
+    for _ in range(40):
+        status = json.loads(handle_mac_agent_local({"action": "status", "agent_id": agent_id}, policy=policy))
+        if status["ok"] and status["running"] is False:
+            break
+        time.sleep(0.05)
+
+    assert status["ok"] is True
+    assert status["running"] is False
+    assert agent_id not in mac_local_node._MANAGED_AGENTS
+    missing = json.loads(handle_mac_agent_local({"action": "status", "agent_id": agent_id}, policy=policy))
+    assert missing["ok"] is False
+    assert missing["error_code"] == "PROCESS_NOT_FOUND"
 
 
 def test_mac_agent_local_prompt_delivery_timeout_cleans_untracked_process(monkeypatch, tmp_path):

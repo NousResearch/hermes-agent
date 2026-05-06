@@ -183,8 +183,30 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
+/**
+ * Same look as ``defaultTheme`` but with a larger root font size, looser
+ * line-height, and ``spacious`` density so every rem-based size in the
+ * dashboard scales up. For users who find the default 15px UI too dense.
+ */
+export const defaultLargeTheme: DashboardTheme = {
+  name: "default-large",
+  label: "Hermes Teal (Large)",
+  description: "Hermes Teal with bigger fonts and roomier spacing",
+  palette: defaultTheme.palette,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    baseSize: "18px",
+    lineHeight: "1.65",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    density: "spacious",
+  },
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
+  "default-large": defaultLargeTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

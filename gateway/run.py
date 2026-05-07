@@ -2860,6 +2860,29 @@ class GatewayRunner:
             )
         except Exception:
             pass
+        # Redaction status: ON by default (#17691). Surface a prominent
+        # warning if an operator has explicitly opted out so they don't
+        # forget the downgrade is active — the redactor snapshots its
+        # state at import time, so this log line is the source of truth
+        # for this process's lifetime.
+        try:
+            _redact_raw = os.getenv("HERMES_REDACT_SECRETS", "true")
+            _redact_on = _redact_raw.lower() in ("1", "true", "yes", "on")
+            if _redact_on:
+                logger.info(
+                    "Secret redaction: ENABLED (tool output, logs, and chat "
+                    "responses are scrubbed before delivery)"
+                )
+            else:
+                logger.warning(
+                    "Secret redaction: DISABLED (HERMES_REDACT_SECRETS=%s). "
+                    "API keys and tokens may appear verbatim in chat output, "
+                    "session JSONs, and logs. Set security.redact_secrets: true "
+                    "in config.yaml to re-enable.",
+                    _redact_raw,
+                )
+        except Exception:
+            pass
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()

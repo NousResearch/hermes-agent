@@ -354,17 +354,28 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
                     for tc in tool_calls:
-                        if not isinstance(tc, dict):
-                            continue
-                        fn = tc.get("function", {})
-                        fn_name = fn.get("name")
+                        if isinstance(tc, dict):
+                            fn = tc.get("function", {})
+                            raw_tool_id = tc.get("id")
+                            call_id = tc.get("call_id")
+                        else:
+                            fn = getattr(tc, "function", {})
+                            raw_tool_id = getattr(tc, "id", None)
+                            call_id = getattr(tc, "call_id", None)
+
+                        if isinstance(fn, dict):
+                            fn_name = fn.get("name")
+                            arguments = fn.get("arguments", "{}")
+                        else:
+                            fn_name = getattr(fn, "name", None)
+                            arguments = getattr(fn, "arguments", "{}")
+
                         if not isinstance(fn_name, str) or not fn_name.strip():
                             continue
 
                         embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
-                            tc.get("id")
+                            raw_tool_id
                         )
-                        call_id = tc.get("call_id")
                         if not isinstance(call_id, str) or not call_id.strip():
                             call_id = embedded_call_id
                         if not isinstance(call_id, str) or not call_id.strip():
@@ -375,11 +386,10 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                             ):
                                 call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
                             else:
-                                _raw_args = str(fn.get("arguments", "{}"))
+                                _raw_args = str(arguments)
                                 call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
                         call_id = call_id.strip()
 
-                        arguments = fn.get("arguments", "{}")
                         if isinstance(arguments, dict):
                             arguments = json.dumps(arguments, ensure_ascii=False)
                         elif not isinstance(arguments, str):

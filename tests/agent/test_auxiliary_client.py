@@ -347,6 +347,34 @@ class TestBuildCodexClient:
         assert function_output["call_id"] == "call_abc123"
         assert function_output["output"] == "file contents"
 
+    def test_codex_adapter_converts_object_tool_calls_to_responses_items(self):
+        from types import SimpleNamespace
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [SimpleNamespace(
+                    id="call_obj123",
+                    type="function",
+                    function=SimpleNamespace(name="read_file", arguments="{}"),
+                )],
+            },
+            {"role": "tool", "tool_call_id": "call_obj123", "content": "file contents"},
+        ]
+
+        items = _chat_messages_to_responses_input(messages)
+
+        function_call = next(item for item in items if item.get("type") == "function_call")
+        assert function_call["call_id"] == "call_obj123"
+        assert function_call["name"] == "read_file"
+        function_output = next(
+            item for item in items if item.get("type") == "function_call_output"
+        )
+        assert function_output["call_id"] == "call_obj123"
+        assert function_output["output"] == "file contents"
+
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),

@@ -2782,6 +2782,59 @@ def test_legacy_migration_no_legacy_columns_at_all(tmp_path):
     conn.close()
 
 
+def test_legacy_migration_ignores_racing_duplicate_column(tmp_path):
+    """A concurrent migrator can add a column after PRAGMA but before ALTER."""
+    import sqlite3
+
+    db_path = tmp_path / "racing.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.commit()
+
+    class RacingConnection:
+        def __init__(self, inner):
+            self.inner = inner
+            self.raced = False
+
+        def execute(self, sql, *args, **kwargs):
+            if (
+                not self.raced
+                and sql.startswith(
+                    "ALTER TABLE tasks ADD COLUMN consecutive_failures"
+                )
+            ):
+                self.raced = True
+                self.inner.execute(sql, *args, **kwargs)
+                raise sqlite3.OperationalError(
+                    "duplicate column name: consecutive_failures"
+                )
+            return self.inner.execute(sql, *args, **kwargs)
+
+    kb._migrate_add_optional_columns(RacingConnection(conn))
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "consecutive_failures" in cols
+    assert "last_failure_error" in cols
+    conn.close()
+
+
 def test_legacy_migration_both_columns_already_present(tmp_path):
     """Scenario D: DB already has both spawn_failures AND consecutive_failures.
 

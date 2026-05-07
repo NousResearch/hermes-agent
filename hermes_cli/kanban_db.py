@@ -947,13 +947,27 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     Called by ``init_db`` so opening an old DB is always safe.
     """
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    if "tenant" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN tenant TEXT")
-    if "result" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN result TEXT")
-    if "idempotency_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT")
+    def _cols(table: str) -> set[str]:
+        return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    def _add_column(table: str, column: str, ddl: str) -> bool:
+        if column in _cols(table):
+            return False
+        try:
+            conn.execute(ddl)
+            return True
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" in str(exc).lower():
+                return False
+            raise
+
+    _add_column("tasks", "tenant", "ALTER TABLE tasks ADD COLUMN tenant TEXT")
+    _add_column("tasks", "result", "ALTER TABLE tasks ADD COLUMN result TEXT")
+    if _add_column(
+        "tasks",
+        "idempotency_key",
+        "ALTER TABLE tasks ADD COLUMN idempotency_key TEXT",
+    ):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key)"
@@ -971,48 +985,71 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # ADD-first-then-copy is tolerant of both shapes and preserves
     # historical counter values when the legacy columns do exist.
     #
-    # NOTE: ``cols`` reflects the schema at entry to this function and is
-    # not refreshed between ALTER TABLE calls.  Every guard below checks
-    # the *original* snapshot; this is intentional and safe as long as
-    # no step depends on a column added by a previous step in the same call.
-    if "consecutive_failures" not in cols:
-        conn.execute(
+    cols = _cols("tasks")
+    if _add_column(
+        "tasks",
+        "consecutive_failures",
+        (
             "ALTER TABLE tasks ADD COLUMN consecutive_failures "
             "INTEGER NOT NULL DEFAULT 0"
-        )
+        ),
+    ):
         if "spawn_failures" in cols:
             conn.execute(
                 "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
             )
-    if "worker_pid" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
-    if "last_failure_error" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
+    _add_column(
+        "tasks",
+        "worker_pid",
+        "ALTER TABLE tasks ADD COLUMN worker_pid INTEGER",
+    )
+    cols = _cols("tasks")
+    if _add_column(
+        "tasks",
+        "last_failure_error",
+        "ALTER TABLE tasks ADD COLUMN last_failure_error TEXT",
+    ):
         if "last_spawn_error" in cols:
             conn.execute(
                 "UPDATE tasks SET last_failure_error = last_spawn_error"
             )
-    if "max_runtime_seconds" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
-    if "last_heartbeat_at" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_heartbeat_at INTEGER")
-    if "current_run_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_run_id INTEGER")
-    if "workflow_template_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN workflow_template_id TEXT")
-    if "current_step_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_step_key TEXT")
-    if "skills" not in cols:
-        # JSON array of skill names the dispatcher force-loads into the
-        # worker (additive to the built-in `kanban-worker`). NULL is fine
-        # for existing rows.
-        conn.execute("ALTER TABLE tasks ADD COLUMN skills TEXT")
+    _add_column(
+        "tasks",
+        "max_runtime_seconds",
+        "ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER",
+    )
+    _add_column(
+        "tasks",
+        "last_heartbeat_at",
+        "ALTER TABLE tasks ADD COLUMN last_heartbeat_at INTEGER",
+    )
+    _add_column(
+        "tasks",
+        "current_run_id",
+        "ALTER TABLE tasks ADD COLUMN current_run_id INTEGER",
+    )
+    _add_column(
+        "tasks",
+        "workflow_template_id",
+        "ALTER TABLE tasks ADD COLUMN workflow_template_id TEXT",
+    )
+    _add_column(
+        "tasks",
+        "current_step_key",
+        "ALTER TABLE tasks ADD COLUMN current_step_key TEXT",
+    )
+    # JSON array of skill names the dispatcher force-loads into the
+    # worker (additive to the built-in `kanban-worker`). NULL is fine
+    # for existing rows.
+    _add_column("tasks", "skills", "ALTER TABLE tasks ADD COLUMN skills TEXT")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
-    ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
-    if "run_id" not in ev_cols:
-        conn.execute("ALTER TABLE task_events ADD COLUMN run_id INTEGER")
+    if _add_column(
+        "task_events",
+        "run_id",
+        "ALTER TABLE task_events ADD COLUMN run_id INTEGER",
+    ):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_run "
             "ON task_events(run_id, id)"

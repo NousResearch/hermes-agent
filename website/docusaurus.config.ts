@@ -24,7 +24,16 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en'],
+    locales: ['en', 'zh-Hans'],
+    localeConfigs: {
+      en: {
+        label: 'English',
+      },
+      'zh-Hans': {
+        label: '简体中文',
+        htmlLang: 'zh-Hans',
+      },
+    },
   },
 
   themes: [
@@ -34,10 +43,25 @@ const config: Config = {
       /** @type {import("@easyops-cn/docusaurus-search-local").PluginOptions} */
       ({
         hashed: true,
-        language: ['en'],
+        language: ['en', 'zh'],
         indexBlog: false,
         docsRouteBasePath: '/',
-        highlightSearchTermsOnTargetPage: true,
+        // Disabled: appends ?_highlight=... to URLs (before the #anchor),
+        // which makes copy/pasted doc links ugly. Ctrl+F on the page is fine.
+        highlightSearchTermsOnTargetPage: false,
+        // Exclude the auto-generated per-skill catalog pages from search.
+        // There are hundreds of them and they dominate results for generic
+        // terms, drowning out the real user-guide / reference docs.
+        // The two human-written catalog indexes (reference/skills-catalog,
+        // reference/optional-skills-catalog) remain indexed.
+        //
+        // Note: ignoreFiles matches `route` (baseUrl stripped, no leading
+        // slash). With baseUrl '/docs/', `/docs/user-guide/skills/bundled/x`
+        // becomes 'user-guide/skills/bundled/x'.
+        ignoreFiles: [
+          /^user-guide\/skills\/bundled\//,
+          /^user-guide\/skills\/optional\//,
+        ],
       }),
     ],
   ],
@@ -88,6 +112,10 @@ const config: Config = {
           to: '/skills',
           label: 'Skills',
           position: 'left',
+        },
+        {
+          type: 'localeDropdown',
+          position: 'right',
         },
         {
           href: 'https://hermes-agent.nousresearch.com',

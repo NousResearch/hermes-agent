@@ -8,6 +8,10 @@ description: "How to build a memory provider plugin for Hermes Agent"
 
 Memory provider plugins give Hermes Agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. This guide covers how to build one.
 
+:::tip
+Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/docs/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
+:::
+
 ## Directory Structure
 
 Each memory provider lives in `plugins/memory/<name>/`:
@@ -110,6 +114,10 @@ def get_config_schema(self):
 
 Fields with `secret: True` and `env_var` go to `.env`. Non-secret fields are passed to `save_config()`.
 
+:::tip Minimal vs Full Schema
+Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the Supermemory provider for an example — it only prompts for the API key; all other options live in `supermemory.json`.
+:::
+
 ## Save Config
 
 ```python
@@ -190,6 +198,59 @@ result = mgr.handle_tool_call("my_tool", {"action": "add", "content": "test"})
 mgr.sync_all("user msg", "assistant msg")
 mgr.on_session_end([])
 mgr.shutdown_all()
+```
+
+## Adding CLI Commands
+
+Memory provider plugins can register their own CLI subcommand tree (e.g. `hermes my-provider status`, `hermes my-provider config`). This uses a convention-based discovery system — no changes to core files needed.
+
+### How it works
+
+1. Add a `cli.py` file to your plugin directory
+2. Define a `register_cli(subparser)` function that builds the argparse tree
+3. The memory plugin system discovers it at startup via `discover_plugin_cli_commands()`
+4. Your commands appear under `hermes <provider-name> <subcommand>`
+
+**Active-provider gating:** Your CLI commands only appear when your provider is the active `memory.provider` in config. If a user hasn't configured your provider, your commands won't show in `hermes --help`.
+
+### Example
+
+```python
+# plugins/memory/my-provider/cli.py
+
+def my_command(args):
+    """Handler dispatched by argparse."""
+    sub = getattr(args, "my_command", None)
+    if sub == "status":
+        print("Provider is active and connected.")
+    elif sub == "config":
+        print("Showing config...")
+    else:
+        print("Usage: hermes my-provider <status|config>")
+
+def register_cli(subparser) -> None:
+    """Build the hermes my-provider argparse tree.
+
+    Called by discover_plugin_cli_commands() at argparse setup time.
+    """
+    subs = subparser.add_subparsers(dest="my_command")
+    subs.add_parser("status", help="Show provider status")
+    subs.add_parser("config", help="Show provider config")
+    subparser.set_defaults(func=my_command)
+```
+
+### Reference implementation
+
+See `plugins/memory/honcho/cli.py` for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
+
+### Directory structure with CLI
+
+```
+plugins/memory/my-provider/
+├── __init__.py      # MemoryProvider implementation + register()
+├── plugin.yaml      # Metadata
+├── cli.py           # register_cli(subparser) — CLI commands
+└── README.md        # Setup instructions
 ```
 
 ## Single Provider Rule

@@ -6,7 +6,6 @@ This directory contains comprehensive reference materials for SAELens.
 
 - [api.md](api.md) - Complete API reference for SAE, TrainingSAE, and configuration classes
 - [tutorials.md](tutorials.md) - Step-by-step tutorials for training and analyzing SAEs
-- [papers.md](papers.md) - Key research papers on sparse autoencoders
 
 ## Quick Links
 

@@ -18,11 +18,11 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -96,10 +96,8 @@ class MattermostAdapter(BasePlatformAdapter):
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
-        # Dedup cache: post_id → timestamp (prevent reprocessing)
-        self._seen_posts: Dict[str, float] = {}
-        self._SEEN_MAX = 2000
-        self._SEEN_TTL = 300  # 5 minutes
+        # Dedup cache (prevent reprocessing)
+        self._dedup = MessageDeduplicator()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -306,7 +304,7 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
         """Edit an existing post."""
         formatted = self.format_message(content)
@@ -407,10 +405,13 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
-        import asyncio
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+
         import aiohttp
 
-        last_exc = None
         file_data = None
         ct = "application/octet-stream"
         fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
@@ -430,7 +431,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     ct = resp.content_type or "application/octet-stream"
                     break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                last_exc = exc
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
@@ -496,6 +496,100 @@ class MattermostAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Failed to post with file")
         return SendResult(success=True, message_id=data["id"])
 
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images as a single Mattermost post with multiple attachments.
+
+        Mattermost supports up to 5 ``file_ids`` per post. Each image is
+        uploaded individually (Mattermost's file API is one-at-a-time),
+        then a single post is created referencing all uploaded file_ids
+        at once. Batches larger than 5 are chunked. Falls back to the
+        base per-image loop on total failure.
+        """
+        if not images:
+            return
+
+        import mimetypes
+        import aiohttp
+        from urllib.parse import unquote as _unquote
+
+        CHUNK = 5  # Mattermost post file_ids cap
+        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+
+            file_ids: List[str] = []
+            caption_parts: List[str] = []
+            try:
+                for image_url, alt_text in chunk:
+                    if alt_text:
+                        caption_parts.append(alt_text)
+
+                    if image_url.startswith("file://"):
+                        local_path = _unquote(image_url[7:])
+                        p = Path(local_path)
+                        if not p.exists():
+                            logger.warning("Mattermost: skipping missing image %s", local_path)
+                            continue
+                        fname = p.name
+                        ct = mimetypes.guess_type(fname)[0] or "image/png"
+                        file_data = p.read_bytes()
+                    else:
+                        from tools.url_safety import is_safe_url
+                        if not is_safe_url(image_url):
+                            logger.warning("Mattermost: blocked unsafe image URL in batch")
+                            continue
+                        try:
+                            async with self._session.get(
+                                image_url, timeout=aiohttp.ClientTimeout(total=30)
+                            ) as resp:
+                                if resp.status >= 400:
+                                    logger.warning(
+                                        "Mattermost: failed to download image (HTTP %d): %s",
+                                        resp.status, image_url[:80],
+                                    )
+                                    continue
+                                file_data = await resp.read()
+                                ct = resp.content_type or "image/png"
+                        except Exception as dl_err:
+                            logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
+                            continue
+                        fname = image_url.rsplit("/", 1)[-1].split("?")[0] or f"image_{len(file_ids)}.png"
+
+                    fid = await self._upload_file(chat_id, file_data, fname, ct)
+                    if fid:
+                        file_ids.append(fid)
+
+                if not file_ids:
+                    continue
+
+                payload: Dict[str, Any] = {
+                    "channel_id": chat_id,
+                    "message": "\n".join(caption_parts),
+                    "file_ids": file_ids,
+                }
+                logger.info(
+                    "Mattermost: sending %d image(s) as single post (chunk %d/%d)",
+                    len(file_ids), chunk_idx + 1, len(chunks),
+                )
+                data = await self._api_post("posts", payload)
+                if not data or "id" not in data:
+                    logger.warning("Mattermost: multi-image post failed, falling back")
+                    await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+            except Exception as e:
+                logger.warning(
+                    "Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
+                    chunk_idx + 1, len(chunks), e, exc_info=True,
+                )
+                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+
     # ------------------------------------------------------------------
     # WebSocket
     # ------------------------------------------------------------------
@@ -512,6 +606,16 @@ class MattermostAdapter(BasePlatformAdapter):
                 return
             except Exception as exc:
                 if self._closing:
+                    return
+                # Detect permanent auth/permission failures that will never
+                # succeed on retry — stop reconnecting instead of looping forever.
+                import aiohttp
+                err_str = str(exc).lower()
+                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in (401, 403):
+                    logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
+                    return
+                if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
+                    logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc)
                     return
                 logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
 
@@ -590,10 +694,8 @@ class MattermostAdapter(BasePlatformAdapter):
         post_id = post.get("id", "")
 
         # Dedup.
-        self._prune_seen()
-        if post_id in self._seen_posts:
+        if self._dedup.is_duplicate(post_id):
             return
-        self._seen_posts[post_id] = time.time()
 
         # Build message event.
         channel_id = post.get("channel_id", "")
@@ -691,12 +793,27 @@ class MattermostAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
 
+        # Set message type based on downloaded media types.
+        if media_types and msg_type == MessageType.TEXT:
+            if any(m.startswith("image/") for m in media_types):
+                msg_type = MessageType.PHOTO
+            elif any(m.startswith("audio/") for m in media_types):
+                msg_type = MessageType.VOICE
+            elif media_types:
+                msg_type = MessageType.DOCUMENT
+
         source = self.build_source(
             chat_id=channel_id,
             chat_type=chat_type,
             user_id=sender_id,
             user_name=sender_name,
             thread_id=thread_id,
+        )
+
+        # Per-channel ephemeral prompt
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
         )
 
         msg_event = MessageEvent(
@@ -707,17 +824,9 @@ class MattermostAdapter(BasePlatformAdapter):
             message_id=post_id,
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
+            channel_prompt=_channel_prompt,
         )
 
         await self.handle_message(msg_event)
 
-    def _prune_seen(self) -> None:
-        """Remove expired entries from the dedup cache."""
-        if len(self._seen_posts) < self._SEEN_MAX:
-            return
-        now = time.time()
-        self._seen_posts = {
-            pid: ts
-            for pid, ts in self._seen_posts.items()
-            if now - ts < self._SEEN_TTL
-        }
+

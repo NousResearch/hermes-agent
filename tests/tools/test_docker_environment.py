@@ -45,6 +45,7 @@ def _make_dummy_env(**kwargs):
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
+        run_as_host_user=kwargs.get("run_as_host_user", False),
     )
 
 
@@ -245,43 +246,44 @@ def _make_execute_only_env(forward_env=None):
     env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
     env._container_id = "test-container"
     env._docker_exe = "/usr/bin/docker"
+    # Base class attributes needed by unified execute()
+    env._session_id = "test123"
+    env._snapshot_path = "/tmp/hermes-snap-test123.sh"
+    env._cwd_file = "/tmp/hermes-cwd-test123.txt"
+    env._cwd_marker = "__HERMES_CWD_test123__"
+    env._snapshot_ready = True
+    env._last_sync_time = None
+    env._init_env_args = []
     return env
 
 
-def test_execute_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
-    env = _make_execute_only_env(["GITHUB_TOKEN"])
-    popen_calls = []
+def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
+    """_build_init_env_args picks up forwarded env vars from .env file at init time."""
+    # Use a var that is NOT in _HERMES_PROVIDER_ENV_BLOCKLIST (GITHUB_TOKEN
+    # is in the copilot provider's api_key_env_vars and gets stripped).
+    env = _make_execute_only_env(["DATABASE_URL"])
 
-    def _fake_popen(cmd, **kwargs):
-        popen_calls.append(cmd)
-        return _FakePopen(cmd, **kwargs)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
-    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    result = env.execute("echo hi")
-
-    assert result["returncode"] == 0
-    assert "GITHUB_TOKEN=value_from_dotenv" in popen_calls[0]
+    assert "DATABASE_URL=value_from_dotenv" in args_str
 
 
-def test_execute_prefers_shell_env_over_hermes_dotenv(monkeypatch):
-    env = _make_execute_only_env(["GITHUB_TOKEN"])
-    popen_calls = []
+def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
+    """Shell env vars take priority over .env file values in init env args."""
+    env = _make_execute_only_env(["DATABASE_URL"])
 
-    def _fake_popen(cmd, **kwargs):
-        popen_calls.append(cmd)
-        return _FakePopen(cmd, **kwargs)
+    monkeypatch.setenv("DATABASE_URL", "value_from_shell")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
-    monkeypatch.setenv("GITHUB_TOKEN", "value_from_shell")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
-    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    env.execute("echo hi")
-
-    assert "GITHUB_TOKEN=value_from_shell" in popen_calls[0]
-    assert "GITHUB_TOKEN=value_from_dotenv" not in popen_calls[0]
+    assert "DATABASE_URL=value_from_shell" in args_str
+    assert "value_from_dotenv" not in args_str
 
 
 # ── docker_env tests ──────────────────────────────────────────────
@@ -302,64 +304,46 @@ def test_docker_env_appears_in_run_command(monkeypatch):
     assert "GNUPGHOME=/root/.gnupg" in run_args_str
 
 
-def test_docker_env_appears_in_exec_command(monkeypatch):
-    """Explicit docker_env values should also be passed via -e at docker exec time."""
+def test_docker_env_appears_in_init_env_args(monkeypatch):
+    """Explicit docker_env values should appear in _build_init_env_args."""
     env = _make_execute_only_env()
     env._env = {"MY_VAR": "my_value"}
-    popen_calls = []
 
-    def _fake_popen(cmd, **kwargs):
-        popen_calls.append(cmd)
-        return _FakePopen(cmd, **kwargs)
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
-
-    env.execute("echo hi")
-
-    assert popen_calls, "Popen should have been called"
-    assert "MY_VAR=my_value" in popen_calls[0]
+    assert "MY_VAR=my_value" in args_str
 
 
-def test_forward_env_overrides_docker_env(monkeypatch):
+def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     """docker_forward_env should override docker_env for the same key."""
     env = _make_execute_only_env(forward_env=["MY_KEY"])
     env._env = {"MY_KEY": "static_value"}
-    popen_calls = []
-
-    def _fake_popen(cmd, **kwargs):
-        popen_calls.append(cmd)
-        return _FakePopen(cmd, **kwargs)
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
-    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
 
-    env.execute("echo hi")
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    cmd_str = " ".join(popen_calls[0])
-    assert "MY_KEY=dynamic_value" in cmd_str
-    assert "MY_KEY=static_value" not in cmd_str
+    assert "MY_KEY=dynamic_value" in args_str
+    assert "MY_KEY=static_value" not in args_str
 
 
-def test_docker_env_and_forward_env_merge(monkeypatch):
+def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     """docker_env and docker_forward_env with different keys should both appear."""
     env = _make_execute_only_env(forward_env=["TOKEN"])
     env._env = {"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}
-    popen_calls = []
-
-    def _fake_popen(cmd, **kwargs):
-        popen_calls.append(cmd)
-        return _FakePopen(cmd, **kwargs)
 
     monkeypatch.setenv("TOKEN", "secret123")
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
-    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
 
-    env.execute("echo hi")
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    cmd_str = " ".join(popen_calls[0])
-    assert "SSH_AUTH_SOCK=/run/user/1000/agent.sock" in cmd_str
-    assert "TOKEN=secret123" in cmd_str
+    assert "SSH_AUTH_SOCK=/run/user/1000/agent.sock" in args_str
+    assert "TOKEN=secret123" in args_str
+
 
 
 def test_normalize_env_dict_filters_invalid_keys():
@@ -399,3 +383,132 @@ def test_normalize_env_dict_rejects_complex_values():
         "BAD_DICT": {"nested": True},
     })
     assert result == {"GOOD": "string"}
+
+
+def test_security_args_include_setuid_setgid_for_gosu_drop(monkeypatch):
+    """The default (run_as_host_user=False) invocation must include SETUID and
+    SETGID caps so the image entrypoint can drop from root to the non-root
+    `hermes` user via gosu.
+
+    Without these caps gosu exits with
+    ``error: failed switching to 'hermes': operation not permitted``
+    and the container exits immediately (exit 1) before running any work.
+
+    `no-new-privileges` is kept, so gosu still cannot escalate back to root
+    after the drop — the drop is a one-way transition performed before the
+    `no_new_privs` bit is enforced on the exec boundary.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    added = {
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--cap-add"
+    }
+    assert "SETUID" in added, "SETUID cap missing — gosu drop in entrypoint will fail"
+    assert "SETGID" in added, "SETGID cap missing — gosu drop in entrypoint will fail"
+
+
+# ── run_as_host_user tests ────────────────────────────────────────
+
+
+def test_run_as_host_user_passes_uid_gid(monkeypatch):
+    """With run_as_host_user=True, --user <uid>:<gid> is added to docker run."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1234, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 5678, raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    # --user must be present and must be paired with "1234:5678"
+    assert "--user" in run_args, f"--user flag missing from docker run args: {run_args}"
+    idx = run_args.index("--user")
+    assert run_args[idx + 1] == "1234:5678", (
+        f"expected --user 1234:5678, got --user {run_args[idx + 1]}"
+    )
+
+
+def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):
+    """When --user is passed, the container never needs gosu, so SETUID/SETGID
+    caps are omitted for a tighter security posture."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 1000, raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args = run_calls[0][0]
+
+    added = {
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--cap-add"
+    }
+    assert "SETUID" not in added, (
+        "SETUID cap should be dropped when running as host user — no gosu drop is needed"
+    )
+    assert "SETGID" not in added, (
+        "SETGID cap should be dropped when running as host user — no gosu drop is needed"
+    )
+    # Core non-privilege-drop caps must still be there (pip/npm/apt need them).
+    assert "DAC_OVERRIDE" in added
+    assert "CHOWN" in added
+    assert "FOWNER" in added
+
+
+def test_run_as_host_user_default_off(monkeypatch):
+    """Without the opt-in, no --user flag is emitted — preserving existing behavior."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()  # run_as_host_user defaults to False
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args = run_calls[0][0]
+    assert "--user" not in run_args, (
+        f"--user should not be in docker run args when opt-in is off: {run_args}"
+    )
+
+
+def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog):
+    """On platforms without POSIX getuid/getgid, log a warning and leave the
+    container at its image default user (no --user flag, full cap set)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    # Simulate a platform where os.getuid is absent (e.g. Windows host).
+    monkeypatch.delattr(docker_env.os, "getuid", raising=False)
+    monkeypatch.delattr(docker_env.os, "getgid", raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args = run_calls[0][0]
+
+    assert "--user" not in run_args
+    # Fall back to the full cap set since the container still starts as root.
+    added = {
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--cap-add"
+    }
+    assert "SETUID" in added
+    assert "SETGID" in added
+    assert any(
+        "does not expose POSIX uid/gid" in rec.getMessage()
+        for rec in caplog.records
+    ), "expected a warning when POSIX ids are unavailable"

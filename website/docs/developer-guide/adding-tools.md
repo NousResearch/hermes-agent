@@ -8,19 +8,32 @@ description: "How to add a new tool to Hermes Agent — schemas, handlers, regis
 
 Before writing a tool, ask yourself: **should this be a [skill](creating-skills.md) instead?**
 
+:::warning Built-in Core Tools Only
+This page is for adding a **built-in Hermes tool** to the repository itself.
+If you want a personal, project-local, or otherwise custom tool without
+modifying Hermes core, use the plugin route instead:
+
+- [Plugins](/docs/user-guide/features/plugins)
+- [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin)
+
+Default to plugins for most custom tool creation. Only follow this page when
+you explicitly want to ship a new built-in tool in `tools/` and `toolsets.py`.
+:::
+
 Make it a **Skill** when the capability can be expressed as instructions + shell commands + existing tools (arXiv search, git workflows, Docker management, PDF processing).
 
 Make it a **Tool** when it requires end-to-end integration with API keys, custom processing logic, binary data handling, or streaming (browser automation, TTS, vision analysis).
 
 ## Overview
 
-Adding a tool touches **3 files**:
+Adding a tool touches **2 files**:
 
 1. **`tools/your_tool.py`** — handler, schema, check function, `registry.register()` call
 2. **`toolsets.py`** — add tool name to `_HERMES_CORE_TOOLS` (or a specific toolset)
-3. **`model_tools.py`** — add `"tools.your_tool"` to the `_discover_tools()` list
 
-## Step 1: Create the Tool File
+Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered at startup — no manual import list required.
+
+## Step 1: Create the Built-in Tool File
 
 Every tool file follows the same structure:
 
@@ -105,7 +118,7 @@ registry.register(
 - The `handler` receives `(args: dict, **kwargs)` where `args` is the LLM's tool call arguments
 :::
 
-## Step 2: Add to a Toolset
+## Step 2: Add the Built-in Tool to a Toolset
 
 In `toolsets.py`, add the tool name:
 
@@ -124,19 +137,9 @@ _HERMES_CORE_TOOLS = [
 },
 ```
 
-## Step 3: Add Discovery Import
+## ~~Step 3: Add Discovery Import~~ (No longer needed)
 
-In `model_tools.py`, add the module to the `_discover_tools()` list:
-
-```python
-def _discover_tools():
-    _modules = [
-        ...
-        "tools.weather_tool",  # <-- add here
-    ]
-```
-
-This import triggers the `registry.register()` call at the bottom of your tool file.
+Tool modules with a top-level `registry.register()` call are auto-discovered by `discover_builtin_tools()` in `tools/registry.py`. No manual import list to maintain — just create your file in `tools/` and it's picked up at startup.
 
 ## Async Handlers
 
@@ -201,7 +204,7 @@ OPTIONAL_ENV_VARS = {
 
 - [ ] Tool file created with handler, schema, check function, and registration
 - [ ] Added to appropriate toolset in `toolsets.py`
-- [ ] Discovery import added to `model_tools.py`
+- [ ] Confirmed this really should be a built-in/core tool and not a plugin
 - [ ] Handler returns JSON strings, errors returned as `{"error": "..."}`
 - [ ] Optional: API key added to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
 - [ ] Optional: Added to `toolset_distributions.py` for batch processing

@@ -1,10 +1,10 @@
 ---
 name: webhook-subscriptions
-description: Create and manage webhook subscriptions for event-driven agent activation. Use when the user wants external services to trigger agent runs automatically.
-version: 1.0.0
+description: "Webhook subscriptions: event-driven agent runs."
+version: 1.1.0
 metadata:
   hermes:
-    tags: [webhook, events, automation, integrations]
+    tags: [webhook, events, automation, integrations, notifications, push]
 ---
 
 # Webhook Subscriptions
@@ -153,6 +153,29 @@ hermes webhook subscribe alerts \
   --prompt "Alert: {alert.name}\nSeverity: {alert.severity}\nMessage: {alert.message}\n\nPlease investigate and suggest remediation." \
   --deliver origin
 ```
+
+### Direct delivery (no agent, zero LLM cost)
+
+For use cases where you just want to push a notification through to a user's chat — no reasoning, no agent loop — add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
+
+Use this for:
+- External service push notifications (Supabase/Firebase webhooks → Telegram)
+- Monitoring alerts that should forward verbatim
+- Inter-agent pings where one agent is telling another agent's user something
+- Any webhook where an LLM round trip would be wasted effort
+
+```bash
+hermes webhook subscribe antenna-matches \
+  --deliver telegram \
+  --deliver-chat-id "123456789" \
+  --deliver-only \
+  --prompt "🎉 New match: {match.user_name} matched with you!" \
+  --description "Antenna match notifications"
+```
+
+The POST returns `200 OK` on successful delivery, `502` on target failure — so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
+
+Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
 
 ## Security
 

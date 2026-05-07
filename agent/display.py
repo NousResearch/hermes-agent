@@ -4,7 +4,6 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
-import json
 import logging
 import os
 import sys
@@ -14,6 +13,8 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 
+from utils import safe_json_loads
+
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
 _RESET = "\033[0m"
@@ -21,11 +22,67 @@ _RESET = "\033[0m"
 logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
-_ANSI_DIM = "\033[38;2;150;150;150m"
-_ANSI_FILE = "\033[38;2;180;160;255m"
-_ANSI_HUNK = "\033[38;2;120;120;140m"
-_ANSI_MINUS = "\033[38;2;255;255;255;48;2;120;20;20m"
-_ANSI_PLUS = "\033[38;2;255;255;255;48;2;20;90;20m"
+
+# Diff colors — resolved lazily from the skin engine so they adapt
+# to light/dark themes.  Falls back to sensible defaults on import
+# failure.  We cache after first resolution for performance.
+_diff_colors_cached: dict[str, str] | None = None
+
+
+def _diff_ansi() -> dict[str, str]:
+    """Return ANSI escapes for diff display, resolved from the active skin."""
+    global _diff_colors_cached
+    if _diff_colors_cached is not None:
+        return _diff_colors_cached
+
+    # Defaults that work on dark terminals
+    dim = "\033[38;2;150;150;150m"
+    file_c = "\033[38;2;180;160;255m"
+    hunk = "\033[38;2;120;120;140m"
+    minus = "\033[38;2;255;255;255;48;2;120;20;20m"
+    plus = "\033[38;2;255;255;255;48;2;20;90;20m"
+
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        skin = get_active_skin()
+
+        def _hex_fg(key: str, fallback_rgb: tuple[int, int, int]) -> str:
+            h = skin.get_color(key, "")
+            if h and len(h) == 7 and h[0] == "#":
+                r, g, b = int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
+                return f"\033[38;2;{r};{g};{b}m"
+            r, g, b = fallback_rgb
+            return f"\033[38;2;{r};{g};{b}m"
+
+        dim = _hex_fg("banner_dim", (150, 150, 150))
+        file_c = _hex_fg("session_label", (180, 160, 255))
+        hunk = _hex_fg("session_border", (120, 120, 140))
+        # minus/plus use background colors — derive from ui_error/ui_ok
+        err_h = skin.get_color("ui_error", "#ef5350")
+        ok_h = skin.get_color("ui_ok", "#4caf50")
+        if err_h and len(err_h) == 7:
+            er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
+            # Use a dark tinted version as background
+            minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
+        if ok_h and len(ok_h) == 7:
+            or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
+            plus = f"\033[38;2;255;255;255;48;2;{max(or_//4,10)};{max(og//2,20)};{max(ob//4,10)}m"
+    except Exception:
+        pass
+
+    _diff_colors_cached = {
+        "dim": dim, "file": file_c, "hunk": hunk,
+        "minus": minus, "plus": plus,
+    }
+    return _diff_colors_cached
+
+
+# Module-level helpers — each call resolves from the active skin lazily.
+def _diff_dim():   return _diff_ansi()["dim"]
+def _diff_file():  return _diff_ansi()["file"]
+def _diff_hunk():  return _diff_ansi()["hunk"]
+def _diff_minus(): return _diff_ansi()["minus"]
+def _diff_plus():  return _diff_ansi()["plus"]
 _MAX_INLINE_DIFF_FILES = 6
 _MAX_INLINE_DIFF_LINES = 80
 
@@ -65,26 +122,6 @@ def _get_skin():
         return get_active_skin()
     except Exception:
         return None
-
-
-def get_skin_faces(key: str, default: list) -> list:
-    """Get spinner face list from active skin, falling back to default."""
-    skin = _get_skin()
-    if skin:
-        faces = skin.get_spinner_list(key)
-        if faces:
-            return faces
-    return default
-
-
-def get_skin_verbs() -> list:
-    """Get thinking verbs from active skin."""
-    skin = _get_skin()
-    if skin:
-        verbs = skin.get_spinner_list("thinking_verbs")
-        if verbs:
-            return verbs
-    return KawaiiSpinner.THINKING_VERBS
 
 
 def get_skin_tool_prefix() -> str:
@@ -188,9 +225,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"~{target}: \"{old[:20]}\""
         elif action == "remove":
-            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"-{target}: \"{old[:20]}\""
         return action
 
     if tool_name == "send_message":
@@ -330,9 +369,8 @@ def _result_succeeded(result: str | None) -> bool:
     """Conservatively detect whether a tool result represents success."""
     if not result:
         return False
-    try:
-        data = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
+    data = safe_json_loads(result)
+    if data is None:
         return False
     if not isinstance(data, dict):
         return False
@@ -381,10 +419,7 @@ def extract_edit_diff(
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
     if tool_name == "patch" and result:
-        try:
-            data = json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            data = None
+        data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")
             if isinstance(diff, str) and diff.strip():
@@ -423,19 +458,19 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
             if from_file or to_file:
-                rendered.append(f"{_ANSI_FILE}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+                rendered.append(f"{_diff_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
             continue
         if raw_line.startswith("@@"):
-            rendered.append(f"{_ANSI_HUNK}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_hunk()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("-"):
-            rendered.append(f"{_ANSI_MINUS}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_minus()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("+"):
-            rendered.append(f"{_ANSI_PLUS}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_plus()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith(" "):
-            rendered.append(f"{_ANSI_DIM}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_dim()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line:
             rendered.append(raw_line)
@@ -501,7 +536,7 @@ def _summarize_rendered_diff_sections(
         summary = f"… omitted {omitted_lines} diff line(s)"
         if omitted_files:
             summary += f" across {omitted_files} additional file(s)/section(s)"
-        rendered.append(f"{_ANSI_HUNK}{summary}{_ANSI_RESET}")
+        rendered.append(f"{_diff_hunk()}{summary}{_ANSI_RESET}")
 
     return rendered
 
@@ -566,6 +601,45 @@ class KawaiiSpinner:
         "deliberating", "mulling", "reflecting", "processing", "reasoning",
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
+
+    @classmethod
+    def get_waiting_faces(cls) -> list:
+        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("waiting_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_WAITING
+
+    @classmethod
+    def get_thinking_faces(cls) -> list:
+        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("thinking_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_THINKING
+
+    @classmethod
+    def get_thinking_verbs(cls) -> list:
+        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        try:
+            skin = _get_skin()
+            if skin:
+                verbs = skin.spinner.get("thinking_verbs", [])
+                if verbs:
+                    return verbs
+        except Exception:
+            pass
+        return cls.THINKING_VERBS
 
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
@@ -724,46 +798,6 @@ class KawaiiSpinner:
 
 
 # =========================================================================
-# Kawaii face arrays (used by AIAgent._execute_tool_calls for spinner text)
-# =========================================================================
-
-KAWAII_SEARCH = [
-    "♪(´ε` )", "(｡◕‿◕｡)", "ヾ(＾∇＾)", "(◕ᴗ◕✿)", "( ˘▽˘)っ",
-    "٩(◕‿◕｡)۶", "(✿◠‿◠)", "♪～(´ε｀ )", "(ノ´ヮ`)ノ*:・゚✧", "＼(◎o◎)／",
-]
-KAWAII_READ = [
-    "φ(゜▽゜*)♪", "( ˘▽˘)っ", "(⌐■_■)", "٩(｡•́‿•̀｡)۶", "(◕‿◕✿)",
-    "ヾ(＠⌒ー⌒＠)ノ", "(✧ω✧)", "♪(๑ᴖ◡ᴖ๑)♪", "(≧◡≦)", "( ´ ▽ ` )ノ",
-]
-KAWAII_TERMINAL = [
-    "ヽ(>∀<☆)ノ", "(ノ°∀°)ノ", "٩(^ᴗ^)۶", "ヾ(⌐■_■)ノ♪", "(•̀ᴗ•́)و",
-    "┗(＾0＾)┓", "(｀・ω・´)", "＼(￣▽￣)／", "(ง •̀_•́)ง", "ヽ(´▽`)/",
-]
-KAWAII_BROWSER = [
-    "(ノ°∀°)ノ", "(☞゚ヮ゚)☞", "( ͡° ͜ʖ ͡°)", "┌( ಠ_ಠ)┘", "(⊙_⊙)？",
-    "ヾ(•ω•`)o", "(￣ω￣)", "( ˇωˇ )", "(ᵔᴥᵔ)", "＼(◎o◎)／",
-]
-KAWAII_CREATE = [
-    "✧*。٩(ˊᗜˋ*)و✧", "(ﾉ◕ヮ◕)ﾉ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "٩(♡ε♡)۶", "(◕‿◕)♡",
-    "✿◕ ‿ ◕✿", "(*≧▽≦)", "ヾ(＾-＾)ノ", "(☆▽☆)", "°˖✧◝(⁰▿⁰)◜✧˖°",
-]
-KAWAII_SKILL = [
-    "ヾ(＠⌒ー⌒＠)ノ", "(๑˃ᴗ˂)ﻭ", "٩(◕‿◕｡)۶", "(✿╹◡╹)", "ヽ(・∀・)ノ",
-    "(ノ´ヮ`)ノ*:・ﾟ✧", "♪(๑ᴖ◡ᴖ๑)♪", "(◠‿◠)", "٩(ˊᗜˋ*)و", "(＾▽＾)",
-    "ヾ(＾∇＾)", "(★ω★)/", "٩(｡•́‿•̀｡)۶", "(◕ᴗ◕✿)", "＼(◎o◎)／",
-    "(✧ω✧)", "ヽ(>∀<☆)ノ", "( ˘▽˘)っ", "(≧◡≦) ♡", "ヾ(￣▽￣)",
-]
-KAWAII_THINK = [
-    "(っ°Д°;)っ", "(；′⌒`)", "(・_・ヾ", "( ´_ゝ`)", "(￣ヘ￣)",
-    "(。-`ω´-)", "( ˘︹˘ )", "(¬_¬)", "ヽ(ー_ー )ノ", "(；一_一)",
-]
-KAWAII_GENERIC = [
-    "♪(´ε` )", "(◕‿◕✿)", "ヾ(＾∇＾)", "٩(◕‿◕｡)۶", "(✿◠‿◠)",
-    "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
-]
-
-
-# =========================================================================
 # Cute tool message (completion line that replaces the spinner)
 # =========================================================================
 
@@ -778,23 +812,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         return False, ""
 
     if tool_name == "terminal":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
     if tool_name == "memory":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse memory result as JSON for capacity check")
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()
@@ -890,8 +920,6 @@ def get_cute_tool_message(
         return _wrap(f"┊ ◀️  back      {dur}")
     if tool_name == "browser_press":
         return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
-    if tool_name == "browser_close":
-        return _wrap(f"┊ 🚪 close     browser  {dur}")
     if tool_name == "browser_get_images":
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
     if tool_name == "browser_vision":
@@ -913,9 +941,13 @@ def get_cute_tool_message(
         if action == "add":
             return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
         elif action == "remove":
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
         return _wrap(f"┊ 🧠 memory    {action}  {dur}")
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
@@ -967,118 +999,4 @@ def get_cute_tool_message(
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
 
-_DIM = "\033[2m"
-_SKY_BLUE = "\033[38;5;117m"
-_ANSI_RESET = "\033[0m"
 
-
-def honcho_session_url(workspace: str, session_name: str) -> str:
-    """Build a Honcho app URL for a session."""
-    from urllib.parse import quote
-    return (
-        f"https://app.honcho.dev/explore"
-        f"?workspace={quote(workspace, safe='')}"
-        f"&view=sessions"
-        f"&session={quote(session_name, safe='')}"
-    )
-
-
-def _osc8_link(url: str, text: str) -> str:
-    """OSC 8 terminal hyperlink (clickable in iTerm2, Ghostty, WezTerm, etc.)."""
-    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
-
-
-def honcho_session_line(workspace: str, session_name: str) -> str:
-    """One-line session indicator: `Honcho session: <clickable name>`."""
-    url = honcho_session_url(workspace, session_name)
-    linked_name = _osc8_link(url, f"{_SKY_BLUE}{session_name}{_ANSI_RESET}")
-    return f"{_DIM}Honcho session:{_ANSI_RESET} {linked_name}"
-
-
-def write_tty(text: str) -> None:
-    """Write directly to /dev/tty, bypassing stdout capture."""
-    try:
-        fd = os.open("/dev/tty", os.O_WRONLY)
-        os.write(fd, text.encode("utf-8"))
-        os.close(fd)
-    except OSError:
-        sys.stdout.write(text)
-        sys.stdout.flush()
-
-
-# =========================================================================
-# Context pressure display (CLI user-facing warnings)
-# =========================================================================
-
-# ANSI color codes for context pressure tiers
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
-_BOLD = "\033[1m"
-_DIM_ANSI = "\033[2m"
-
-# Bar characters
-_BAR_FILLED = "▰"
-_BAR_EMPTY = "▱"
-_BAR_WIDTH = 20
-
-
-def format_context_pressure(
-    compaction_progress: float,
-    threshold_tokens: int,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a formatted context pressure line for CLI display.
-
-    The bar and percentage show progress toward the compaction threshold,
-    NOT the raw context window.  100% = compaction fires.
-
-    Args:
-        compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
-        threshold_tokens: Compaction threshold in tokens.
-        threshold_percent: Compaction threshold as a fraction of context window.
-        compression_enabled: Whether auto-compression is active.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
-    threshold_pct_int = int(threshold_percent * 100)
-
-    color = f"{_BOLD}{_YELLOW}"
-    icon = "⚠"
-    if compression_enabled:
-        hint = "compaction approaching"
-    else:
-        hint = "no auto-compaction"
-
-    return (
-        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
-        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
-    )
-
-
-def format_context_pressure_gateway(
-    compaction_progress: float,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a plain-text context pressure notification for messaging platforms.
-
-    No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
-    The percentage shows progress toward the compaction threshold.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_pct_int = int(threshold_percent * 100)
-
-    icon = "⚠️"
-    if compression_enabled:
-        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
-    else:
-        hint = "Auto-compaction is disabled — context may be truncated."
-
-    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

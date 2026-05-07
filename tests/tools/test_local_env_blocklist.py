@@ -86,6 +86,7 @@ class TestProviderEnvBlocklist:
             "MINIMAX_API_KEY": "mm-key",
             "MINIMAX_CN_API_KEY": "mmcn-key",
             "DEEPSEEK_API_KEY": "deepseek-key",
+            "NVIDIA_API_KEY": "nvidia-key",
         }
         result_env = _run_with_env(extra_os_env=registry_vars)
 
@@ -131,6 +132,10 @@ class TestProviderEnvBlocklist:
             "MODAL_TOKEN_ID": "modal-id",
             "MODAL_TOKEN_SECRET": "modal-secret",
             "DAYTONA_API_KEY": "daytona-key",
+            "VERCEL_OIDC_TOKEN": "vercel-oidc-token",
+            "VERCEL_TOKEN": "vercel-token",
+            "VERCEL_PROJECT_ID": "vercel-project",
+            "VERCEL_TEAM_ID": "vercel-team",
         }
         result_env = _run_with_env(extra_os_env=leaked_vars)
 
@@ -286,6 +291,10 @@ class TestBlocklistCoverage:
             "MODAL_TOKEN_ID",
             "MODAL_TOKEN_SECRET",
             "DAYTONA_API_KEY",
+            "VERCEL_OIDC_TOKEN",
+            "VERCEL_TOKEN",
+            "VERCEL_PROJECT_ID",
+            "VERCEL_TEAM_ID",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 

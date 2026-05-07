@@ -1,0 +1,13 @@
+name: spotify
+version: 1.0.0
+description: "Native Spotify integration — 7 tools (playback, devices, queue, search, playlists, albums, library) using Spotify Web API + PKCE OAuth. Auth via `hermes auth spotify`. Tools gate on `providers.spotify` in ~/.hermes/auth.json."
+author: NousResearch
+kind: backend
+provides_tools:
+  - spotify_playback
+  - spotify_devices
+  - spotify_queue
+  - spotify_search
+  - spotify_playlists
+  - spotify_albums
+  - spotify_library

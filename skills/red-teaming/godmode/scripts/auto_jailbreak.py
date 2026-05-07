@@ -7,7 +7,7 @@ finds what works, and locks it in by writing config.yaml + prefill.json.
 
 Usage in execute_code:
     exec(open(os.path.expanduser(
-        "~/.hermes/skills/red-teaming/godmode/scripts/auto_jailbreak.py"
+        os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/auto_jailbreak.py")
     )).read())
     
     result = auto_jailbreak()  # Uses current model from config
@@ -16,13 +16,10 @@ Usage in execute_code:
 """
 
 import os
-import sys
 import json
 import time
-import re
 import yaml
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from openai import OpenAI

@@ -7,6 +7,7 @@ from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
     fetch_models_dev,
+    get_model_capabilities,
     lookup_models_dev_context,
 )
 
@@ -81,12 +82,16 @@ class TestProviderMapping:
     def test_known_providers_mapped(self):
         assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
+        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
-        assert "openai-codex" not in PROVIDER_TO_MODELS_DEV
+
+    def test_openai_codex_mapped_to_openai(self):
+        assert PROVIDER_TO_MODELS_DEV["openai"] == "openai"
+        assert PROVIDER_TO_MODELS_DEV["openai-codex"] == "openai"
 
 
 class TestExtractContext:
@@ -195,3 +200,88 @@ class TestFetchModelsDev:
         result = fetch_models_dev()
         mock_get.assert_not_called()
         assert result == SAMPLE_REGISTRY
+
+
+# ---------------------------------------------------------------------------
+# get_model_capabilities — vision via modalities.input
+# ---------------------------------------------------------------------------
+
+
+CAPS_REGISTRY = {
+    "google": {
+        "id": "google",
+        "models": {
+            "gemma-4-31b-it": {
+                "id": "gemma-4-31b-it",
+                "attachment": False,
+                "tool_call": True,
+                "modalities": {"input": ["text", "image"]},
+                "limit": {"context": 128000, "output": 8192},
+            },
+            "gemma-3-1b": {
+                "id": "gemma-3-1b",
+                "tool_call": True,
+                "limit": {"context": 32000, "output": 8192},
+            },
+        },
+    },
+    "anthropic": {
+        "id": "anthropic",
+        "models": {
+            "claude-sonnet-4": {
+                "id": "claude-sonnet-4",
+                "attachment": True,
+                "tool_call": True,
+                "limit": {"context": 200000, "output": 64000},
+            },
+        },
+    },
+}
+
+
+class TestGetModelCapabilities:
+    """Tests for get_model_capabilities vision detection."""
+
+    def test_vision_from_attachment_flag(self):
+        """Models with attachment=True should report supports_vision=True."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("anthropic", "claude-sonnet-4")
+        assert caps is not None
+        assert caps.supports_vision is True
+
+    def test_vision_from_modalities_input_image(self):
+        """Models with 'image' in modalities.input but attachment=False should
+        still report supports_vision=True (the core fix in this PR)."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("google", "gemma-4-31b-it")
+        assert caps is not None
+        assert caps.supports_vision is True
+
+    def test_no_vision_without_attachment_or_modalities(self):
+        """Models with neither attachment nor image modality should be non-vision."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("google", "gemma-3-1b")
+        assert caps is not None
+        assert caps.supports_vision is False
+
+    def test_modalities_non_dict_handled(self):
+        """Non-dict modalities field should not crash."""
+        registry = {
+            "google": {"id": "google", "models": {
+                "weird-model": {
+                    "id": "weird-model",
+                    "modalities": "text",  # not a dict
+                    "limit": {"context": 200000, "output": 8192},
+                },
+            }},
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("gemini", "weird-model")
+        assert caps is not None
+        assert caps.supports_vision is False
+
+    def test_model_not_found_returns_none(self):
+        """Unknown model should return None."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("anthropic", "nonexistent-model")
+        assert caps is None

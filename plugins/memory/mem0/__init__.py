@@ -20,10 +20,10 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +203,28 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
-        self._user_id = self._config.get("user_id", "hermes-user")
+        # Prefer gateway-provided user_id for per-user memory scoping;
+        # fall back to config/env default for CLI (single-user) sessions.
+        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
+
+    def _read_filters(self) -> Dict[str, Any]:
+        """Filters for search/get_all — scoped to user only for cross-session recall."""
+        return {"user_id": self._user_id}
+
+    def _write_filters(self) -> Dict[str, Any]:
+        """Filters for add — scoped to user + agent for attribution."""
+        return {"user_id": self._user_id, "agent_id": self._agent_id}
+
+    @staticmethod
+    def _unwrap_results(response: Any) -> list:
+        """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
+        if isinstance(response, dict):
+            return response.get("results", [])
+        if isinstance(response, list):
+            return response
+        return []
 
     def system_prompt_block(self) -> str:
         return (
@@ -232,12 +251,12 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run():
             try:
                 client = self._get_client()
-                results = client.search(
+                results = self._unwrap_results(client.search(
                     query=query,
-                    user_id=self._user_id,
+                    filters=self._read_filters(),
                     rerank=self._rerank,
                     top_k=5,
-                )
+                ))
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -262,7 +281,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, user_id=self._user_id, agent_id=self._agent_id)
+                client.add(messages, **self._write_filters())
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -287,11 +306,11 @@ class Mem0MemoryProvider(MemoryProvider):
         try:
             client = self._get_client()
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return tool_error(str(e))
 
         if tool_name == "mem0_profile":
             try:
-                memories = client.get_all(user_id=self._user_id)
+                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -299,19 +318,21 @@ class Mem0MemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n".join(lines), "count": len(lines)})
             except Exception as e:
                 self._record_failure()
-                return json.dumps({"error": f"Failed to fetch profile: {e}"})
+                return tool_error(f"Failed to fetch profile: {e}")
 
         elif tool_name == "mem0_search":
             query = args.get("query", "")
             if not query:
-                return json.dumps({"error": "Missing required parameter: query"})
+                return tool_error("Missing required parameter: query")
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
-                results = client.search(
-                    query=query, user_id=self._user_id,
-                    rerank=rerank, top_k=top_k,
-                )
+                results = self._unwrap_results(client.search(
+                    query=query,
+                    filters=self._read_filters(),
+                    rerank=rerank,
+                    top_k=top_k,
+                ))
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
@@ -319,26 +340,25 @@ class Mem0MemoryProvider(MemoryProvider):
                 return json.dumps({"results": items, "count": len(items)})
             except Exception as e:
                 self._record_failure()
-                return json.dumps({"error": f"Search failed: {e}"})
+                return tool_error(f"Search failed: {e}")
 
         elif tool_name == "mem0_conclude":
             conclusion = args.get("conclusion", "")
             if not conclusion:
-                return json.dumps({"error": "Missing required parameter: conclusion"})
+                return tool_error("Missing required parameter: conclusion")
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
-                    user_id=self._user_id,
-                    agent_id=self._agent_id,
+                    **self._write_filters(),
                     infer=False,
                 )
                 self._record_success()
                 return json.dumps({"result": "Fact stored."})
             except Exception as e:
                 self._record_failure()
-                return json.dumps({"error": f"Failed to store: {e}"})
+                return tool_error(f"Failed to store: {e}")
 
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+        return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

@@ -1,7 +1,8 @@
-"""Tests for tools/mcp_oauth.py — thin OAuth adapter over MCP SDK."""
+"""Tests for tools/mcp_oauth.py — OAuth 2.1 PKCE support for MCP servers."""
 
 import json
 import os
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -16,6 +17,7 @@ from tools.mcp_oauth import (
     _can_open_browser,
     _is_interactive,
     _wait_for_callback,
+    _make_callback_handler,
 )
 
 
@@ -79,34 +81,93 @@ class TestHermesTokenStorage:
         assert not (d / "test-server.json").exists()
         assert not (d / "test-server.client.json").exists()
 
+    def test_has_cached_tokens(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("my-server")
+
+        assert not storage.has_cached_tokens()
+
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "my-server.json").write_text('{"access_token": "x", "token_type": "Bearer"}')
+
+        assert storage.has_cached_tokens()
+
+    def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("bad-server")
+
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "bad-server.json").write_text("NOT VALID JSON{{{")
+
+        import asyncio
+        assert asyncio.run(storage.get_tokens()) is None
+
+    def test_corrupt_client_info_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("bad-server")
+
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "bad-server.client.json").write_text("GARBAGE")
+
+        import asyncio
+        assert asyncio.run(storage.get_client_info()) is None
+
 
 # ---------------------------------------------------------------------------
 # build_oauth_auth
 # ---------------------------------------------------------------------------
 
 class TestBuildOAuthAuth:
-    def test_returns_oauth_provider(self):
+    def test_returns_oauth_provider(self, tmp_path, monkeypatch):
         try:
             from mcp.client.auth import OAuthClientProvider
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         auth = build_oauth_auth("test", "https://example.com/mcp")
         assert isinstance(auth, OAuthClientProvider)
 
     def test_returns_none_without_sdk(self, monkeypatch):
         import tools.mcp_oauth as mod
-        orig_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
+        monkeypatch.setattr(mod, "_OAUTH_AVAILABLE", False)
+        result = build_oauth_auth("test", "https://example.com")
+        assert result is None
 
-        def _block_import(name, *args, **kwargs):
-            if "mcp.client.auth" in name:
-                raise ImportError("blocked")
-            return orig_import(name, *args, **kwargs)
+    def test_pre_registered_client_id_stored(self, tmp_path, monkeypatch):
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
 
-        with patch("builtins.__import__", side_effect=_block_import):
-            result = build_oauth_auth("test", "https://example.com")
-        # May or may not be None depending on import caching, but shouldn't crash
-        assert result is None or result is not None
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        build_oauth_auth("slack", "https://slack.example.com/mcp", {
+            "client_id": "my-app-id",
+            "client_secret": "my-secret",
+            "scope": "channels:read",
+        })
+
+        client_path = tmp_path / "mcp-tokens" / "slack.client.json"
+        assert client_path.exists()
+        data = json.loads(client_path.read_text())
+        assert data["client_id"] == "my-app-id"
+        assert data["client_secret"] == "my-secret"
+
+    def test_scope_passed_through(self, tmp_path, monkeypatch):
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = build_oauth_auth("scoped", "https://example.com/mcp", {
+            "scope": "read write admin",
+        })
+        assert provider is not None
+        assert provider.context.client_metadata.scope == "read write admin"
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +180,12 @@ class TestUtilities:
         assert isinstance(port, int)
         assert 1024 <= port <= 65535
 
+    def test_find_free_port_unique(self):
+        """Two consecutive calls should return different ports (usually)."""
+        ports = {_find_free_port() for _ in range(5)}
+        # At least 2 different ports out of 5 attempts
+        assert len(ports) >= 2
+
     def test_can_open_browser_false_in_ssh(self, monkeypatch):
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         assert _can_open_browser() is False
@@ -127,14 +194,22 @@ class TestUtilities:
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         # Mock os.name and uname for non-macOS, non-Windows
         monkeypatch.setattr(os, "name", "posix")
         monkeypatch.setattr(os, "uname", lambda: type("", (), {"sysname": "Linux"})())
         assert _can_open_browser() is False
 
+    def test_can_open_browser_true_with_display(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(os, "name", "posix")
+        assert _can_open_browser() is True
+
 
 # ---------------------------------------------------------------------------
-# remove_oauth_tokens
+# Path traversal protection
 # ---------------------------------------------------------------------------
 
 class TestPathTraversal:
@@ -169,11 +244,14 @@ class TestPathTraversal:
         assert "/" not in path.stem
 
 
+# ---------------------------------------------------------------------------
+# Callback handler isolation
+# ---------------------------------------------------------------------------
+
 class TestCallbackHandlerIsolation:
     """Verify concurrent OAuth flows don't share state."""
 
     def test_independent_result_dicts(self):
-        from tools.mcp_oauth import _make_callback_handler
         _, result_a = _make_callback_handler()
         _, result_b = _make_callback_handler()
 
@@ -184,10 +262,6 @@ class TestCallbackHandlerIsolation:
         assert result_b["auth_code"] == "code_B"
 
     def test_handler_writes_to_own_result(self):
-        from tools.mcp_oauth import _make_callback_handler
-        from io import BytesIO
-        from unittest.mock import MagicMock
-
         HandlerClass, result = _make_callback_handler()
         assert result["auth_code"] is None
 
@@ -203,13 +277,30 @@ class TestCallbackHandlerIsolation:
         assert result["auth_code"] == "test123"
         assert result["state"] == "mystate"
 
+    def test_handler_captures_error(self):
+        HandlerClass, result = _make_callback_handler()
+
+        handler = HandlerClass.__new__(HandlerClass)
+        handler.path = "/callback?error=access_denied"
+        handler.wfile = BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.do_GET()
+
+        assert result["auth_code"] is None
+        assert result["error"] == "access_denied"
+
+
+# ---------------------------------------------------------------------------
+# Port sharing
+# ---------------------------------------------------------------------------
 
 class TestOAuthPortSharing:
     """Verify build_oauth_auth and _wait_for_callback use the same port."""
 
-    def test_port_stored_globally(self):
+    def test_port_stored_globally(self, tmp_path, monkeypatch):
         import tools.mcp_oauth as mod
-        # Reset
         mod._oauth_port = None
 
         try:
@@ -217,11 +308,16 @@ class TestOAuthPortSharing:
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         build_oauth_auth("test-port", "https://example.com/mcp")
         assert mod._oauth_port is not None
         assert isinstance(mod._oauth_port, int)
         assert 1024 <= mod._oauth_port <= 65535
 
+
+# ---------------------------------------------------------------------------
+# remove_oauth_tokens
+# ---------------------------------------------------------------------------
 
 class TestRemoveOAuthTokens:
     def test_removes_files(self, tmp_path, monkeypatch):
@@ -242,7 +338,7 @@ class TestRemoveOAuthTokens:
 
 
 # ---------------------------------------------------------------------------
-# Non-interactive / startup-safety tests (issue #4462)
+# Non-interactive / startup-safety tests
 # ---------------------------------------------------------------------------
 
 class TestIsInteractive:
@@ -335,3 +431,99 @@ class TestBuildOAuthAuthNonInteractive:
 
         assert auth is not None
         assert "no cached tokens found" not in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Extracted helper tests (Task 3 of MCP OAuth consolidation)
+# ---------------------------------------------------------------------------
+
+
+def test_build_client_metadata_basic():
+    """_build_client_metadata returns metadata with expected defaults."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"client_name": "Test Client"}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert md.client_name == "Test Client"
+    assert "authorization_code" in md.grant_types
+    assert "refresh_token" in md.grant_types
+
+
+def test_build_client_metadata_without_secret_is_public():
+    """Without client_secret, token endpoint auth is 'none' (public client)."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert md.token_endpoint_auth_method == "none"
+
+
+def test_build_client_metadata_with_secret_is_confidential():
+    """With client_secret, token endpoint auth is 'client_secret_post'."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"client_secret": "shh"}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert md.token_endpoint_auth_method == "client_secret_post"
+
+
+def test_configure_callback_port_picks_free_port():
+    """_configure_callback_port(0) picks a free port in the ephemeral range."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    cfg = {"redirect_port": 0}
+    port = _configure_callback_port(cfg)
+    assert 1024 < port < 65536
+    assert cfg["_resolved_port"] == port
+
+
+def test_configure_callback_port_uses_explicit_port():
+    """An explicit redirect_port is preserved."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    cfg = {"redirect_port": 54321}
+    port = _configure_callback_port(cfg)
+    assert port == 54321
+    assert cfg["_resolved_port"] == 54321
+
+
+def test_build_oauth_auth_preserves_server_url_path():
+    """server_url with path is forwarded to OAuthClientProvider unmodified.
+
+    Regression for #16015: previously ``_parse_base_url`` stripped the path,
+    collapsing ``https://mcp.notion.com/mcp`` to ``https://mcp.notion.com`` and
+    breaking RFC 9728 protected-resource validation against servers whose PRM
+    advertises a path-scoped resource (Notion). The MCP SDK strips the path
+    itself for authorization-server discovery via
+    ``OAuthContext.get_authorization_base_url``; Hermes must not pre-strip.
+    """
+    from tools import mcp_oauth
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"), \
+         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
+        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+        build_oauth_auth(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            oauth_config={},
+        )
+
+    assert captured["server_url"] == "https://mcp.notion.com/mcp"
+
+

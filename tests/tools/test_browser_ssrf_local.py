@@ -235,3 +235,21 @@ class TestPostRedirectSsrf:
 
         assert result["success"] is True
         assert result["url"] == final
+
+
+class TestAllowPrivateUrlsConfig:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        browser_tool._allow_private_urls_resolved = False
+        browser_tool._cached_allow_private_urls = None
+        yield
+        browser_tool._allow_private_urls_resolved = False
+        browser_tool._cached_allow_private_urls = None
+
+    def test_browser_config_string_false_stays_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"allow_private_urls": "false"}},
+        )
+
+        assert browser_tool._allow_private_urls() is False

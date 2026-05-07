@@ -61,6 +61,11 @@ metadata:
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
     fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    config:                              # Optional — config.yaml settings the skill needs
+      - key: my.setting
+        description: "What this setting controls"
+        default: "sensible-default"
+        prompt: "Display prompt for setup"
 required_environment_variables:          # Optional — env vars the skill needs
   - name: MY_API_KEY
     prompt: "Enter your API key"
@@ -173,6 +178,59 @@ When your skill is loaded, any declared `required_environment_variables` that ar
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
 
+### Config Settings (config.yaml)
+
+Skills can declare non-secret settings that are stored in `config.yaml` under the `skills.config` namespace. Unlike environment variables (which are secrets stored in `.env`), config settings are for paths, preferences, and other non-sensitive values.
+
+```yaml
+metadata:
+  hermes:
+    config:
+      - key: myplugin.path
+        description: Path to the plugin data directory
+        default: "~/myplugin-data"
+        prompt: Plugin data directory path
+      - key: myplugin.domain
+        description: Domain the plugin operates on
+        default: ""
+        prompt: Plugin domain (e.g., AI/ML research)
+```
+
+Each entry supports:
+- `key` (required) — dotpath for the setting (e.g., `myplugin.path`)
+- `description` (required) — explains what the setting controls
+- `default` (optional) — default value if the user doesn't configure it
+- `prompt` (optional) — prompt text shown during `hermes config migrate`; falls back to `description`
+
+**How it works:**
+
+1. **Storage:** Values are written to `config.yaml` under `skills.config.<key>`:
+   ```yaml
+   skills:
+     config:
+       myplugin:
+         path: ~/my-data
+   ```
+
+2. **Discovery:** `hermes config migrate` scans all enabled skills, finds unconfigured settings, and prompts the user. Settings also appear in `hermes config show` under "Skill Settings."
+
+3. **Runtime injection:** When a skill loads, its config values are resolved and appended to the skill message:
+   ```
+   [Skill config (from ~/.hermes/config.yaml):
+     myplugin.path = /home/user/my-data
+   ]
+   ```
+   The agent sees the configured values without needing to read `config.yaml` itself.
+
+4. **Manual setup:** Users can also set values directly:
+   ```bash
+   hermes config set skills.config.myplugin.path ~/my-data
+   ```
+
+:::tip When to use which
+Use `required_environment_variables` for API keys, tokens, and other **secrets** (stored in `~/.hermes/.env`, never shown to the model). Use `config` for **paths, preferences, and non-sensitive settings** (stored in `config.yaml`, visible in config show).
+:::
+
 ### Credential File Requirements (OAuth tokens, etc.)
 
 Skills that use OAuth or file-based credentials can declare files that need to be mounted into remote sandboxes. This is for credentials stored as **files** (not env vars) — typically OAuth token files produced by a setup script.
@@ -213,6 +271,45 @@ Put the most common workflow first. Edge cases and advanced usage go at the bott
 ### Include Helper Scripts
 
 For XML/JSON parsing or complex logic, include helper scripts in `scripts/` — don't expect the LLM to write parsers inline every time.
+
+#### Referencing bundled scripts from SKILL.md
+
+When a skill is loaded, the activation message exposes the absolute skill directory as `[Skill directory: /abs/path]` and also substitutes two template tokens anywhere in the SKILL.md body:
+
+| Token | Replaced with |
+|---|---|
+| `${HERMES_SKILL_DIR}` | Absolute path to the skill's directory |
+| `${HERMES_SESSION_ID}` | The active session id (left in place if there is no session) |
+
+So a SKILL.md can tell the agent to run a bundled script directly with:
+
+```markdown
+To analyse the input, run:
+
+    node ${HERMES_SKILL_DIR}/scripts/analyse.js <input>
+```
+
+The agent sees the substituted absolute path and invokes the `terminal` tool with a ready-to-run command — no path math, no extra `skill_view` round-trip. Disable substitution globally with `skills.template_vars: false` in `config.yaml`.
+
+#### Inline shell snippets (opt-in)
+
+Skills can also embed inline shell snippets written as `` !`cmd` `` in the SKILL.md body. When enabled, each snippet's stdout is inlined into the message before the agent reads it, so skills can inject dynamic context:
+
+```markdown
+Current date: !`date -u +%Y-%m-%d`
+Git branch: !`git -C ${HERMES_SKILL_DIR} rev-parse --abbrev-ref HEAD`
+```
+
+This is **off by default** — any snippet in a SKILL.md runs on the host without approval, so only enable it for skill sources you trust:
+
+```yaml
+# config.yaml
+skills:
+  inline_shell: true
+  inline_shell_timeout: 10   # seconds per snippet
+```
+
+Snippets run with the skill directory as their working directory, and output is capped at 4000 characters. Failures (timeouts, non-zero exits) show up as a short `[inline-shell error: ...]` marker instead of breaking the whole skill.
 
 ### Test It
 

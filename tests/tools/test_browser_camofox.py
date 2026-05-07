@@ -19,7 +19,6 @@ from tools.browser_camofox import (
     camofox_type,
     camofox_vision,
     check_camofox_available,
-    cleanup_all_camofox_sessions,
     is_camofox_mode,
 )
 
@@ -36,6 +35,18 @@ class TestCamofoxMode:
 
     def test_enabled_when_url_set(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        assert is_camofox_mode() is True
+
+    def test_cdp_override_takes_priority(self, monkeypatch):
+        """When BROWSER_CDP_URL is set (via /browser connect), CDP takes priority over Camofox."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+        assert is_camofox_mode() is False
+
+    def test_cdp_override_blank_does_not_disable_camofox(self, monkeypatch):
+        """Empty/whitespace BROWSER_CDP_URL should not suppress Camofox."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("BROWSER_CDP_URL", "  ")
         assert is_camofox_mode() is True
 
     def test_health_check_unreachable(self, monkeypatch):
@@ -249,6 +260,72 @@ class TestCamofoxGetImages:
         assert result["images"][0]["src"] == "https://x.com/img.png"
 
 
+class TestCamofoxVisionConfig:
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox._get")
+    @patch("tools.browser_camofox._get_raw")
+    def test_camofox_vision_uses_configured_temperature_and_timeout(self, mock_get_raw, mock_get, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab11", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t11")
+
+        snapshot_text = '- button "Submit"\n'
+        raw_resp = MagicMock()
+        raw_resp.content = b"fakepng"
+        mock_get_raw.return_value = raw_resp
+        mock_get.return_value = {"snapshot": snapshot_text}
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Camofox screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("tools.browser_camofox.open", create=True) as mock_open,
+            patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm,
+            patch("tools.browser_camofox.load_config", return_value={"auxiliary": {"vision": {"temperature": 1, "timeout": 45}}}),
+        ):
+            mock_open.return_value.__enter__.return_value.read.return_value = b"fakepng"
+            result = json.loads(camofox_vision("what is on the page?", annotate=True, task_id="t11"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Camofox screenshot analysis"
+        assert mock_llm.call_args.kwargs["temperature"] == 1.0
+        assert mock_llm.call_args.kwargs["timeout"] == 45.0
+
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox._get")
+    @patch("tools.browser_camofox._get_raw")
+    def test_camofox_vision_defaults_temperature_when_config_omits_it(self, mock_get_raw, mock_get, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab12", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t12")
+
+        snapshot_text = '- button "Submit"\n'
+        raw_resp = MagicMock()
+        raw_resp.content = b"fakepng"
+        mock_get_raw.return_value = raw_resp
+        mock_get.return_value = {"snapshot": snapshot_text}
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Default camofox screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("tools.browser_camofox.open", create=True) as mock_open,
+            patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm,
+            patch("tools.browser_camofox.load_config", return_value={"auxiliary": {"vision": {}}}),
+        ):
+            mock_open.return_value.__enter__.return_value.read.return_value = b"fakepng"
+            result = json.loads(camofox_vision("what is on the page?", annotate=True, task_id="t12"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Default camofox screenshot analysis"
+        assert mock_llm.call_args.kwargs["temperature"] == 0.1
+        assert mock_llm.call_args.kwargs["timeout"] == 120.0
+
+
 # ---------------------------------------------------------------------------
 # Routing integration — verify browser_tool routes to camofox
 # ---------------------------------------------------------------------------
@@ -274,22 +351,3 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 
-# ---------------------------------------------------------------------------
-# Cleanup helper
-# ---------------------------------------------------------------------------
-
-
-class TestCamofoxCleanup:
-    @patch("tools.browser_camofox.requests.post")
-    @patch("tools.browser_camofox.requests.delete")
-    def test_cleanup_all(self, mock_delete, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab_c", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t_cleanup")
-
-        mock_delete.return_value = _mock_response(json_data={"ok": True})
-        cleanup_all_camofox_sessions()
-
-        # Session should be gone
-        result = json.loads(camofox_snapshot(task_id="t_cleanup"))
-        assert result["success"] is False

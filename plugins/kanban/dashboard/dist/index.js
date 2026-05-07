@@ -1760,6 +1760,7 @@
         value: title,
         onChange: function (e) { setTitle(e.target.value); },
         onKeyDown: function (e) {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
           if (e.key === "Escape") props.onCancel();
         },
         placeholder: props.columnName === "triage"

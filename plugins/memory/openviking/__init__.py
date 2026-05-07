@@ -94,12 +94,13 @@ class _VikingClient:
     def _headers(self) -> dict:
         h = {
             "Content-Type": "application/json",
-            "X-OpenViking-Account": self._account,
-            "X-OpenViking-User": self._user,
-            "X-OpenViking-Agent": self._agent,
         }
         if self._api_key:
             h["X-API-Key"] = self._api_key
+        else:
+            h["X-OpenViking-Account"] = self._account
+            h["X-OpenViking-User"] = self._user
+            h["X-OpenViking-Agent"] = self._agent
         return h
 
     def _url(self, path: str) -> str:
@@ -335,7 +336,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         _last_active_provider = self
 
     def system_prompt_block(self) -> str:
-        if not self._client:
+        if not self._ensure_client():
             return ""
         # Provide brief info about the knowledge base
         try:
@@ -497,8 +498,34 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
 
+    def _ensure_client(self) -> bool:
+        """Re-read env vars and re-create client if needed (tolerates late .env loading)."""
+        api_key = os.environ.get("OPENVIKING_API_KEY", "")
+        endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
+        if self._client is not None and self._api_key == api_key and self._endpoint == endpoint:
+            return True
+        self._endpoint = endpoint
+        self._api_key = api_key
+        self._account = os.environ.get("OPENVIKING_ACCOUNT", self._account if hasattr(self, '_account') else "default")
+        self._user = os.environ.get("OPENVIKING_USER", self._user if hasattr(self, '_user') else "default")
+        self._agent = os.environ.get("OPENVIKING_AGENT", self._agent if hasattr(self, '_agent') else "hermes")
+        try:
+            self._client = _VikingClient(
+                self._endpoint, self._api_key,
+                account=self._account, user=self._user, agent=self._agent,
+            )
+            if not self._client.health():
+                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
+                self._client = None
+                return False
+            return True
+        except ImportError:
+            logger.warning("httpx not installed — OpenViking plugin disabled")
+            self._client = None
+            return False
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if not self._client:
+        if not self._ensure_client():
             return tool_error("OpenViking server not connected")
 
         try:

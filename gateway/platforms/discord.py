@@ -136,6 +136,10 @@ class VoiceReceiver:
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
+        # Optional low-latency PCM tap used by the OpenAI Realtime bridge.
+        # Called from discord.py's socket reader thread with decoded 48 kHz
+        # stereo PCM16 and the best-known user_id (0 if not mapped yet).
+        self.realtime_pcm_callback: Optional[Callable[[int, bytes], None]] = None
 
         # Decryption
         self._secret_key: Optional[bytes] = None
@@ -368,8 +372,14 @@ class VoiceReceiver:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
             with self._lock:
+                user_id = self._ssrc_to_user.get(ssrc, 0)
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
+            if self.realtime_pcm_callback:
+                try:
+                    self.realtime_pcm_callback(user_id, pcm)
+                except Exception as cb_err:
+                    logger.debug("Realtime PCM callback failed for SSRC %s: %s", ssrc, cb_err)
         except Exception as e:
             logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
             return
@@ -406,6 +416,10 @@ class VoiceReceiver:
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
+        # True realtime mode streams PCM directly to OpenAI Realtime; do not
+        # also emit turn-based Whisper transcripts into the normal agent loop.
+        if self.realtime_pcm_callback:
+            return []
         now = time.monotonic()
         completed = []
 
@@ -512,6 +526,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._realtime_bridges: Dict[int, Any] = {}  # guild_id -> OpenAIRealtimeDiscordBridge
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Track threads where the bot has participated so follow-up messages
@@ -1644,6 +1659,8 @@ class DiscordAdapter(BasePlatformAdapter):
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Stop realtime bridge first, then the utterance receiver.
+            await self.stop_realtime_voice_bridge(guild_id)
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
             if receiver:
@@ -1669,6 +1686,12 @@ class DiscordAdapter(BasePlatformAdapter):
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
+
+        # Realtime mode owns the voice client's continuous PCM playback source.
+        # Do not interrupt it with file-based TTS.
+        if guild_id in self._realtime_bridges:
+            logger.debug("Skipping file TTS playback because realtime bridge is active (guild=%d)", guild_id)
+            return True
 
         # Pause voice receiver while playing (echo prevention)
         receiver = self._voice_receivers.get(guild_id)
@@ -1706,6 +1729,63 @@ class DiscordAdapter(BasePlatformAdapter):
         finally:
             if receiver:
                 receiver.resume()
+
+    async def start_realtime_voice_bridge(
+        self,
+        guild_id: int,
+        *,
+        api_key: str,
+        model: str = "gpt-realtime",
+        voice: str = "alloy",
+        instructions: str = "",
+    ) -> bool:
+        """Start true duplex OpenAI Realtime audio for an existing VC."""
+        vc = self._voice_clients.get(guild_id)
+        receiver = self._voice_receivers.get(guild_id)
+        if not vc or not vc.is_connected() or receiver is None:
+            return False
+        await self.stop_realtime_voice_bridge(guild_id)
+        from gateway.platforms.discord_realtime import OpenAIRealtimeDiscordBridge
+
+        bridge = OpenAIRealtimeDiscordBridge(
+            api_key=api_key,
+            voice_client=vc,
+            model=model,
+            voice=voice,
+            instructions=instructions or (
+                "You are Hermes speaking in a Discord voice channel. "
+                "Keep replies short, conversational, and interruptible."
+            ),
+        )
+        bridge.start()
+        receiver.realtime_pcm_callback = lambda _user_id, pcm: bridge.accept_discord_pcm(pcm)
+        self._realtime_bridges[guild_id] = bridge
+        logger.info("OpenAI Realtime voice bridge started (guild=%d model=%s voice=%s)", guild_id, model, voice)
+        return True
+
+    async def stop_realtime_voice_bridge(self, guild_id: int) -> None:
+        """Stop the OpenAI Realtime bridge without leaving the Discord VC."""
+        bridge = self._realtime_bridges.pop(guild_id, None)
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver:
+            receiver.realtime_pcm_callback = None
+        if bridge:
+            bridge.stop()
+            logger.info("OpenAI Realtime voice bridge stopped (guild=%d)", guild_id)
+
+    def get_realtime_voice_status(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        bridge = self._realtime_bridges.get(guild_id)
+        if not bridge:
+            return None
+        status = bridge.status()
+        return {
+            "connected": status.connected,
+            "input_bytes": status.input_bytes,
+            "output_bytes": status.output_bytes,
+            "last_input_at": status.last_input_at,
+            "last_output_at": status.last_output_at,
+            "last_error": status.last_error,
+        }
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""

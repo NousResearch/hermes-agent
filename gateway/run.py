@@ -8347,7 +8347,7 @@ class GatewayRunner:
         return None
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|realtime|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -8382,6 +8382,8 @@ class GatewayRunner:
             )
         elif args in ("channel", "join"):
             return await self._handle_voice_channel_join(event)
+        elif args in ("realtime", "rt", "live"):
+            return await self._handle_voice_channel_realtime(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
@@ -8402,6 +8404,16 @@ class GatewayRunner:
                         f"Voice channel: #{info['channel_name']}",
                         f"Participants: {info['member_count']}",
                     ]
+                    if hasattr(adapter, "get_realtime_voice_status"):
+                        rt = adapter.get_realtime_voice_status(guild_id)
+                        if rt:
+                            lines.append(
+                                "Realtime: "
+                                + ("connected" if rt.get("connected") else "disconnected")
+                                + f" (in={rt.get('input_bytes', 0)}B out={rt.get('output_bytes', 0)}B)"
+                            )
+                            if rt.get("last_error"):
+                                lines.append(f"Realtime error: {rt['last_error']}")
                     for m in info["members"]:
                         status = " (speaking)" if m.get("is_speaking") else ""
                         lines.append(f"  - {m['display_name']}{status}")
@@ -8473,6 +8485,76 @@ class GatewayRunner:
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _handle_voice_channel_realtime(self, event: MessageEvent) -> str:
+        """Join the user's Discord VC and bridge it to OpenAI Realtime."""
+        adapter = self.adapters.get(event.source.platform)
+        if not hasattr(adapter, "start_realtime_voice_bridge"):
+            return "Realtime voice channels are not supported on this platform."
+
+        guild_id = self._get_guild_id(event)
+        if not guild_id:
+            return "This command only works in a Discord server."
+
+        # Ensure the bot is already in the user's channel; this also binds the
+        # text channel and starts the Discord packet receiver.
+        if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+            join_msg = await self._handle_voice_channel_join(event)
+            if "Joined voice channel" not in join_msg:
+                return join_msg
+
+        api_key = (
+            os.getenv("OPENAI_REALTIME_API_KEY")
+            or os.getenv("VOICE_TOOLS_OPENAI_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        )
+        if not api_key:
+            return (
+                "OpenAI Realtime needs an API key. Set OPENAI_REALTIME_API_KEY "
+                "or VOICE_TOOLS_OPENAI_KEY (OPENAI_API_KEY also works), then /restart."
+            )
+
+        model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
+        voice = os.getenv("OPENAI_REALTIME_VOICE", "alloy")
+        instructions = os.getenv(
+            "OPENAI_REALTIME_INSTRUCTIONS",
+            "You are Hermes speaking in a Discord voice channel. Keep replies short, conversational, and interruptible.",
+        )
+        try:
+            ok = await adapter.start_realtime_voice_bridge(
+                guild_id,
+                api_key=api_key,
+                model=model,
+                voice=voice,
+                instructions=instructions,
+            )
+        except Exception as e:
+            logger.warning("Failed to start OpenAI Realtime voice bridge: %s", e, exc_info=True)
+            # If we had to join the VC for realtime, do not silently leave the
+            # old turn-based /voice channel listener running; that feels like a
+            # slow realtime model when it is actually STT -> agent -> TTS.
+            try:
+                if hasattr(adapter, "leave_voice_channel"):
+                    await adapter.leave_voice_channel(guild_id)
+            except Exception:
+                logger.debug("Failed to clean up voice channel after realtime start failure", exc_info=True)
+            return f"Failed to start OpenAI Realtime voice: {e}"
+
+        if not ok:
+            try:
+                if hasattr(adapter, "leave_voice_channel"):
+                    await adapter.leave_voice_channel(guild_id)
+            except Exception:
+                logger.debug("Failed to clean up voice channel after realtime start failure", exc_info=True)
+            return "Failed to start OpenAI Realtime voice; not falling back to the slower /voice channel path."
+
+        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+        return (
+            f"OpenAI Realtime voice is live ({model}, voice={voice}).\n"
+            "Speak in the voice channel; use /voice leave to disconnect."
+        )
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""

@@ -1,429 +1,110 @@
-"""Feishu Drive Tools -- document comment operations via Feishu/Lark API.
+"""Feishu Drive tools for standalone Open Platform file and comment operations."""
 
-Provides tools for listing, replying to, and adding document comments.
-Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
-The lark client is injected per-thread by the comment event handler.
-"""
+from __future__ import annotations
 
-import json
-import logging
-import threading
+from typing import Any
 
+from tools.feishu_openapi import FeishuOpenAPIError, check_feishu_openapi_requirements, request_json
 from tools.registry import registry, tool_error, tool_result
 
-logger = logging.getLogger(__name__)
-
-# Thread-local storage for the lark client injected by feishu_comment handler.
-_local = threading.local()
-
-
-def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
+_META_URI = "/open-apis/drive/v1/metas/batch_query"
+_SEARCH_URI = "/open-apis/drive/v1/files/search"
+_CREATE_FOLDER_URI = "/open-apis/drive/v1/files/create_folder"
+_COMMENTS_URI = "/open-apis/drive/v1/files/:file_token/comments"
+_REPLIES_URI = "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"
 
 
-def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+def _s(args: dict[str, Any], name: str) -> str:
+    return str(args.get(name) or "").strip()
 
 
-def _check_feishu():
+def _call(method: str, uri: str, *, paths=None, queries=None, body=None, **kwargs: Any) -> str:
     try:
-        import lark_oapi  # noqa: F401
-        return True
-    except ImportError:
-        return False
+        data = request_json(method, uri, paths=paths, queries=queries, body=body, client=kwargs.get("client"))
+        return tool_result({"success": True, "data": data})
+    except FeishuOpenAPIError as exc:
+        return tool_error(str(exc), code=exc.code, data=exc.data)
 
 
-def _do_request(client, method, uri, paths=None, queries=None, body=None):
-    """Build and execute a BaseRequest, return (code, msg, data_dict)."""
-    from lark_oapi import AccessTokenType
-    from lark_oapi.core.enum import HttpMethod
-    from lark_oapi.core.model.base_request import BaseRequest
-
-    http_method = HttpMethod.GET if method == "GET" else HttpMethod.POST
-
-    builder = (
-        BaseRequest.builder()
-        .http_method(http_method)
-        .uri(uri)
-        .token_types({AccessTokenType.TENANT})
-    )
-    if paths:
-        builder = builder.paths(paths)
-    if queries:
-        builder = builder.queries(queries)
-    if body is not None:
-        builder = builder.body(body)
-
-    request = builder.build()
-
-    # Tool handlers run synchronously in a worker thread (no running event
-    # loop), so call the blocking lark client directly.
-    response = client.request(request)
-
-    code = getattr(response, "code", None)
-    msg = getattr(response, "msg", "")
-
-    # Parse response data
-    data = {}
-    raw = getattr(response, "raw", None)
-    if raw and hasattr(raw, "content"):
-        try:
-            body_json = json.loads(raw.content)
-            data = body_json.get("data", {})
-        except (json.JSONDecodeError, AttributeError):
-            pass
-    if not data:
-        resp_data = getattr(response, "data", None)
-        if isinstance(resp_data, dict):
-            data = resp_data
-        elif resp_data and hasattr(resp_data, "__dict__"):
-            data = vars(resp_data)
-
-    return code, msg, data
-
-
-# ---------------------------------------------------------------------------
-# feishu_drive_list_comments
-# ---------------------------------------------------------------------------
-
-_LIST_COMMENTS_URI = "/open-apis/drive/v1/files/:file_token/comments"
-
-FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
-    "name": "feishu_drive_list_comments",
-    "description": (
-        "List comments on a Feishu document. "
-        "Use is_whole=true to list whole-document comments only."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_token": {
-                "type": "string",
-                "description": "The document file token.",
-            },
-            "file_type": {
-                "type": "string",
-                "description": "File type (default: docx).",
-                "default": "docx",
-            },
-            "is_whole": {
-                "type": "boolean",
-                "description": "If true, only return whole-document comments.",
-                "default": False,
-            },
-            "page_size": {
-                "type": "integer",
-                "description": "Number of comments per page (max 100).",
-                "default": 100,
-            },
-            "page_token": {
-                "type": "string",
-                "description": "Pagination token for next page.",
-            },
-        },
-        "required": ["file_token"],
-    },
-}
-
-
-def _handle_list_comments(args: dict, **kwargs) -> str:
-    client = get_client()
-    if client is None:
-        return tool_error("Feishu client not available")
-
-    file_token = args.get("file_token", "").strip()
+def _get_meta(args: dict[str, Any], **kwargs: Any) -> str:
+    file_token = _s(args, "file_token")
+    file_type = _s(args, "file_type") or "docx"
     if not file_token:
-        return tool_error("file_token is required")
-
-    file_type = args.get("file_type", "docx") or "docx"
-    is_whole = args.get("is_whole", False)
-    page_size = args.get("page_size", 100)
-    page_token = args.get("page_token", "")
-
-    queries = [
-        ("file_type", file_type),
-        ("user_id_type", "open_id"),
-        ("page_size", str(page_size)),
-    ]
-    if is_whole:
-        queries.append(("is_whole", "true"))
-    if page_token:
-        queries.append(("page_token", page_token))
-
-    code, msg, data = _do_request(
-        client, "GET", _LIST_COMMENTS_URI,
-        paths={"file_token": file_token},
-        queries=queries,
-    )
-    if code != 0:
-        return tool_error(f"List comments failed: code={code} msg={msg}")
-
-    return tool_result(data)
+        return tool_error("file_token is required; Drive tokens are not IM file_key values")
+    body = {"request_docs": [{"doc_token": file_token, "doc_type": file_type}]}
+    return _call("POST", _META_URI, body=body, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# feishu_drive_list_comment_replies
-# ---------------------------------------------------------------------------
-
-_LIST_REPLIES_URI = "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"
-
-FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
-    "name": "feishu_drive_list_comment_replies",
-    "description": "List all replies in a comment thread on a Feishu document.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_token": {
-                "type": "string",
-                "description": "The document file token.",
-            },
-            "comment_id": {
-                "type": "string",
-                "description": "The comment ID to list replies for.",
-            },
-            "file_type": {
-                "type": "string",
-                "description": "File type (default: docx).",
-                "default": "docx",
-            },
-            "page_size": {
-                "type": "integer",
-                "description": "Number of replies per page (max 100).",
-                "default": 100,
-            },
-            "page_token": {
-                "type": "string",
-                "description": "Pagination token for next page.",
-            },
-        },
-        "required": ["file_token", "comment_id"],
-    },
-}
+def _search_files(args: dict[str, Any], **kwargs: Any) -> str:
+    query = _s(args, "query")
+    if not query:
+        return tool_error("query is required")
+    body = {"search_key": query}
+    for key in ("folder_token", "file_extension", "owner_id", "chat_id"):
+        if args.get(key):
+            body[key] = args[key]
+    queries = {"page_size": args.get("page_size"), "page_token": args.get("page_token")}
+    return _call("POST", _SEARCH_URI, queries=queries, body=body, **kwargs)
 
 
-def _handle_list_replies(args: dict, **kwargs) -> str:
-    client = get_client()
-    if client is None:
-        return tool_error("Feishu client not available")
-
-    file_token = args.get("file_token", "").strip()
-    comment_id = args.get("comment_id", "").strip()
-    if not file_token or not comment_id:
-        return tool_error("file_token and comment_id are required")
-
-    file_type = args.get("file_type", "docx") or "docx"
-    page_size = args.get("page_size", 100)
-    page_token = args.get("page_token", "")
-
-    queries = [
-        ("file_type", file_type),
-        ("user_id_type", "open_id"),
-        ("page_size", str(page_size)),
-    ]
-    if page_token:
-        queries.append(("page_token", page_token))
-
-    code, msg, data = _do_request(
-        client, "GET", _LIST_REPLIES_URI,
-        paths={"file_token": file_token, "comment_id": comment_id},
-        queries=queries,
-    )
-    if code != 0:
-        return tool_error(f"List replies failed: code={code} msg={msg}")
-
-    return tool_result(data)
+def _create_folder(args: dict[str, Any], **kwargs: Any) -> str:
+    name = _s(args, "name")
+    folder_token = _s(args, "folder_token")
+    if not name:
+        return tool_error("name is required")
+    body = {"name": name}
+    if folder_token:
+        body["folder_token"] = folder_token
+    return _call("POST", _CREATE_FOLDER_URI, body=body, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# feishu_drive_reply_comment
-# ---------------------------------------------------------------------------
-
-_REPLY_COMMENT_URI = "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"
-
-FEISHU_DRIVE_REPLY_SCHEMA = {
-    "name": "feishu_drive_reply_comment",
-    "description": (
-        "Reply to a local comment thread on a Feishu document. "
-        "Use this for local (quoted-text) comments. "
-        "For whole-document comments, use feishu_drive_add_comment instead."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_token": {
-                "type": "string",
-                "description": "The document file token.",
-            },
-            "comment_id": {
-                "type": "string",
-                "description": "The comment ID to reply to.",
-            },
-            "content": {
-                "type": "string",
-                "description": "The reply text content (plain text only, no markdown).",
-            },
-            "file_type": {
-                "type": "string",
-                "description": "File type (default: docx).",
-                "default": "docx",
-            },
-        },
-        "required": ["file_token", "comment_id", "content"],
-    },
-}
-
-
-def _handle_reply_comment(args: dict, **kwargs) -> str:
-    client = get_client()
-    if client is None:
-        return tool_error("Feishu client not available")
-
-    file_token = args.get("file_token", "").strip()
-    comment_id = args.get("comment_id", "").strip()
-    content = args.get("content", "").strip()
-    if not file_token or not comment_id or not content:
-        return tool_error("file_token, comment_id, and content are required")
-
-    file_type = args.get("file_type", "docx") or "docx"
-
-    body = {
-        "content": {
-            "elements": [
-                {
-                    "type": "text_run",
-                    "text_run": {"text": content},
-                }
-            ]
-        }
+def _list_comments(args: dict[str, Any], **kwargs: Any) -> str:
+    file_token = _s(args, "file_token")
+    if not file_token:
+        return tool_error("file_token is required; Drive tokens are not IM file_key values")
+    queries = {
+        "file_type": _s(args, "file_type") or "docx",
+        "user_id_type": args.get("user_id_type") or "open_id",
+        "is_whole": args.get("is_whole"),
+        "page_size": args.get("page_size"),
+        "page_token": args.get("page_token"),
     }
-
-    code, msg, data = _do_request(
-        client, "POST", _REPLY_COMMENT_URI,
-        paths={"file_token": file_token, "comment_id": comment_id},
-        queries=[("file_type", file_type)],
-        body=body,
-    )
-    if code != 0:
-        return tool_error(f"Reply comment failed: code={code} msg={msg}")
-
-    return tool_result(success=True, data=data)
+    return _call("GET", _COMMENTS_URI, paths={"file_token": file_token}, queries=queries, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# feishu_drive_add_comment
-# ---------------------------------------------------------------------------
-
-_ADD_COMMENT_URI = "/open-apis/drive/v1/files/:file_token/new_comments"
-
-FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
-    "name": "feishu_drive_add_comment",
-    "description": (
-        "Add a new whole-document comment on a Feishu document. "
-        "Use this for whole-document comments or as a fallback when "
-        "reply_comment fails with code 1069302."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_token": {
-                "type": "string",
-                "description": "The document file token.",
-            },
-            "content": {
-                "type": "string",
-                "description": "The comment text content (plain text only, no markdown).",
-            },
-            "file_type": {
-                "type": "string",
-                "description": "File type (default: docx).",
-                "default": "docx",
-            },
-        },
-        "required": ["file_token", "content"],
-    },
-}
+def _reply_comment(args: dict[str, Any], **kwargs: Any) -> str:
+    file_token = _s(args, "file_token")
+    comment_id = _s(args, "comment_id")
+    content = str(args.get("content") or "")
+    if not file_token:
+        return tool_error("file_token is required; Drive tokens are not IM file_key values")
+    if not comment_id:
+        return tool_error("comment_id is required")
+    if not content.strip():
+        return tool_error("content is required")
+    queries = {"file_type": _s(args, "file_type") or "docx", "user_id_type": args.get("user_id_type") or "open_id"}
+    body = {"reply": {"content": {"elements": [{"text_run": {"text": content}}]}}}
+    return _call("POST", _REPLIES_URI, paths={"file_token": file_token, "comment_id": comment_id}, queries=queries, body=body, **kwargs)
 
 
-def _handle_add_comment(args: dict, **kwargs) -> str:
-    client = get_client()
-    if client is None:
-        return tool_error("Feishu client not available")
-
-    file_token = args.get("file_token", "").strip()
-    content = args.get("content", "").strip()
-    if not file_token or not content:
-        return tool_error("file_token and content are required")
-
-    file_type = args.get("file_type", "docx") or "docx"
-
-    body = {
-        "file_type": file_type,
-        "reply_elements": [
-            {"type": "text", "text": content},
-        ],
+def _schema(name: str, description: str, props: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    common = {
+        "file_token": {"type": "string", "description": "Drive file token; not an IM message file_key."},
+        "file_type": {"type": "string", "description": "Drive file type, default docx."},
+        "page_size": {"type": "integer"},
+        "page_token": {"type": "string"},
     }
-
-    code, msg, data = _do_request(
-        client, "POST", _ADD_COMMENT_URI,
-        paths={"file_token": file_token},
-        body=body,
-    )
-    if code != 0:
-        return tool_error(f"Add comment failed: code={code} msg={msg}")
-
-    return tool_result(success=True, data=data)
+    common.update(props)
+    return {"name": name, "description": description, "parameters": {"type": "object", "properties": common, "required": required}}
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
+_COMMON = dict(toolset="feishu", check_fn=check_feishu_openapi_requirements, requires_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"], emoji="🗂️")
 
-registry.register(
-    name="feishu_drive_list_comments",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_LIST_COMMENTS_SCHEMA,
-    handler=_handle_list_comments,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="List document comments",
-    emoji="\U0001f4ac",
-)
-
-registry.register(
-    name="feishu_drive_list_comment_replies",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_LIST_REPLIES_SCHEMA,
-    handler=_handle_list_replies,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="List comment replies",
-    emoji="\U0001f4ac",
-)
-
-registry.register(
-    name="feishu_drive_reply_comment",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_REPLY_SCHEMA,
-    handler=_handle_reply_comment,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="Reply to a document comment",
-    emoji="\u2709\ufe0f",
-)
-
-registry.register(
-    name="feishu_drive_add_comment",
-    toolset="feishu_drive",
-    schema=FEISHU_DRIVE_ADD_COMMENT_SCHEMA,
-    handler=_handle_add_comment,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="Add a whole-document comment",
-    emoji="\u2709\ufe0f",
-)
+for _name, _handler, _description, _props, _required in [
+    ("feishu_drive_get_meta", _get_meta, "Get Drive metadata for a Feishu file token. Drive tokens are distinct from IM file_key values.", {}, ["file_token"]),
+    ("feishu_drive_search_files", _search_files, "Search Feishu Drive files by keyword.", {"query": {"type": "string"}, "folder_token": {"type": "string"}, "file_extension": {"type": "string"}, "owner_id": {"type": "string"}, "chat_id": {"type": "string"}}, ["query"]),
+    ("feishu_drive_create_folder", _create_folder, "Create a Feishu Drive folder.", {"name": {"type": "string"}, "folder_token": {"type": "string", "description": "Optional parent folder token."}}, ["name"]),
+    ("feishu_drive_list_comments", _list_comments, "List comments on a Feishu Drive document.", {"is_whole": {"type": "boolean"}, "user_id_type": {"type": "string"}}, ["file_token"]),
+    ("feishu_drive_reply_comment", _reply_comment, "Reply to a comment on a Feishu Drive document.", {"comment_id": {"type": "string"}, "content": {"type": "string"}, "user_id_type": {"type": "string"}}, ["file_token", "comment_id", "content"]),
+]:
+    registry.register(name=_name, handler=_handler, schema=_schema(_name, _description, _props, _required), description=_description, **_COMMON)

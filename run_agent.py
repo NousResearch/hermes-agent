@@ -2449,7 +2449,7 @@ class AIAgent:
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
-        self._cached_system_prompt = None
+        self._invalidate_system_prompt()
 
         # ── Update _primary_runtime so the change persists across turns ──
         _cc = self.context_compressor if hasattr(self, "context_compressor") and self.context_compressor else None
@@ -5466,8 +5466,9 @@ class AIAgent:
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
-        if self._memory_store:
-            self._memory_store.load_from_disk()
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store:
+            memory_store.load_from_disk()
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:

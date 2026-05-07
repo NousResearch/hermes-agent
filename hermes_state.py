@@ -612,6 +612,11 @@ class SessionDB:
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
         """
+        # Ensure the session row exists so the UPDATE doesn't silently affect
+        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
+        # initial create_session() may have failed due to SQLite locking.
+        # INSERT OR IGNORE is cheap and idempotent.
+        self._insert_session_row(session_id, "unknown", model=model)
         if absolute:
             sql = """UPDATE sessions SET
                    input_tokens = ?,

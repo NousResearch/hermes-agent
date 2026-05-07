@@ -12131,6 +12131,14 @@ class AIAgent:
                         # deltas instead of double-counting them.
                         if self._session_db and self.session_id:
                             try:
+                                # Ensure the session row exists before attempting UPDATE.
+                                # Under concurrent load (cron/kanban), the initial
+                                # _ensure_db_session() may have failed due to SQLite
+                                # locking.  Retry here so per-call token deltas are
+                                # not silently lost (UPDATE on a non-existent row
+                                # affects 0 rows without error).
+                                if not self._session_db_created:
+                                    self._ensure_db_session()
                                 self._session_db.update_token_counts(
                                     self.session_id,
                                     input_tokens=canonical_usage.input_tokens,
@@ -12149,8 +12157,14 @@ class AIAgent:
                                     model=self.model,
                                     api_call_count=1,
                                 )
-                            except Exception:
-                                pass  # never block the agent loop
+                            except Exception as e:
+                                # Log token persistence failures so they're
+                                # visible in agent.log — silent loss here is
+                                # the root cause of undercounted analytics.
+                                logger.debug(
+                                    "Token persistence failed (session=%s, tokens=%d): %s",
+                                    self.session_id, total_tokens, e,
+                                )
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

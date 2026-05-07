@@ -3283,17 +3283,28 @@ def test_complete_prose_scan_ignores_existing_ids(kanban_home):
 # Recovery helpers (reclaim + reassign)
 # ---------------------------------------------------------------------------
 
-def test_reclaim_task_resets_running_to_ready(kanban_home):
+def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     """Manual reclaim releases the claim, resets status, and emits a
     ``reclaimed`` event even when claim_expires has not passed."""
+    import signal
     import time
     import secrets
+    import hermes_cli.kanban_db as _kb
     conn = kb.connect()
     try:
         t = kb.create_task(conn, title="stuck", assignee="broken")
         # Simulate a live claim (not expired).
-        lock = secrets.token_hex(8)
+        lock = f"{_kb._claimer_id().split(':', 1)[0]}:{secrets.token_hex(8)}"
         future = int(time.time()) + 3600
+        killed: list[int] = []
+        state = {"alive": True}
+
+        def _signal(pid, sig):
+            killed.append(sig)
+            if sig == signal.SIGTERM:
+                state["alive"] = False
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
             "worker_pid=? WHERE id=?",
@@ -3312,7 +3323,7 @@ def test_reclaim_task_resets_running_to_ready(kanban_home):
         assert kb.release_stale_claims(conn) == 0
 
         # reclaim_task should work immediately.
-        assert kb.reclaim_task(conn, t, reason="test reason") is True
+        assert kb.reclaim_task(conn, t, reason="test reason", signal_fn=_signal) is True
 
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?",
@@ -3333,6 +3344,9 @@ def test_reclaim_task_resets_running_to_ready(kanban_home):
         assert len(reclaim_evs) == 1
         assert reclaim_evs[0].get("manual") is True
         assert reclaim_evs[0].get("reason") == "test reason"
+        assert reclaim_evs[0].get("termination_attempted") is True
+        assert reclaim_evs[0].get("terminated") is True
+        assert killed == [signal.SIGTERM]
     finally:
         conn.close()
 

@@ -5198,6 +5198,28 @@ class AIAgent:
             )
         return messages
 
+    def _apply_transform_api_message_hooks(
+        self,
+        msg: Dict[str, Any],
+        api_msg: Dict[str, Any],
+        idx: int,
+    ) -> None:
+        """Let plugins mutate the per-request API message copy only."""
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            _invoke_hook(
+                "transform_api_message",
+                msg=msg,
+                api_msg=api_msg,
+                idx=idx,
+                session_id=self.session_id or "",
+                model=self.model or "",
+                platform=self.platform or "",
+            )
+        except Exception as exc:
+            logger.warning("transform_api_message hook failed: %s", exc)
+
     @staticmethod
     def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
@@ -10392,13 +10414,14 @@ class AIAgent:
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
             _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
-            for msg in messages:
+            for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
                 self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
+                self._apply_transform_api_message_hooks(msg, api_msg, idx)
                 api_messages.append(api_msg)
 
             effective_system = self._cached_system_prompt or ""
@@ -11126,6 +11149,7 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
+                self._apply_transform_api_message_hooks(msg, api_msg, idx)
                 api_messages.append(api_msg)
 
             # Build the final system message: cached prompt + ephemeral system prompt.

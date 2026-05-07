@@ -2445,6 +2445,11 @@ class AIAgent:
         # ── LM Studio: preload before probing context length ──
         self._ensure_lmstudio_runtime_loaded()
 
+        # ── Clear stale config context_length override so the new model's
+        #     actual context window is resolved instead of inheriting the
+        #     override from the previous model.
+        self._config_context_length = None
+
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length
@@ -2463,7 +2468,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=None,
                 custom_providers=_sm_custom_providers,
             )
             self.context_compressor.update_model(

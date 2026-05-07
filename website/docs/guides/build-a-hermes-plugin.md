@@ -747,6 +747,13 @@ def check_requirements():
     import os
     return bool(os.environ.get("MYPLATFORM_TOKEN"))
 
+def _env_enablement():
+    import os
+    tok = os.getenv("MYPLATFORM_TOKEN", "").strip()
+    if not tok:
+        return None
+    return {"token": tok}
+
 def register(ctx):
     ctx.register_platform(
         name="myplatform",
@@ -754,6 +761,11 @@ def register(ctx):
         adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
         check_fn=check_requirements,
         required_env=["MYPLATFORM_TOKEN"],
+        # Auto-populate PlatformConfig.extra from env so env-only setups
+        # show up in `hermes gateway status` without SDK instantiation.
+        env_enablement_fn=_env_enablement,
+        # Opt in to cron delivery: `deliver=myplatform` routes to this var.
+        cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
         emoji="💬",
         platform_hint="You are chatting via MyPlatform. Keep responses concise.",
     )
@@ -762,10 +774,18 @@ def register(ctx):
 ```yaml
 # plugins/platforms/myplatform/plugin.yaml
 name: myplatform-platform
+label: MyPlatform
 kind: platform
 version: 1.0.0
 description: MyPlatform gateway adapter
-requires_env: [MYPLATFORM_TOKEN]
+requires_env:
+  - name: MYPLATFORM_TOKEN
+    description: "Bot token from the MyPlatform console"
+    password: true
+optional_env:
+  - name: MYPLATFORM_HOME_CHANNEL
+    description: "Default channel for cron delivery"
+    password: false
 ```
 
 **Full guide:** [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.

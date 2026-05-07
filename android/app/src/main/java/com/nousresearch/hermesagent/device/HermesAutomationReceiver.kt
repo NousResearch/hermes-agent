@@ -44,6 +44,9 @@ class HermesAutomationReceiver : BroadcastReceiver() {
                     }
                 }
             }
+            HermesNotificationActionBridge.ACTION_NOTIFICATION_BUTTON -> runAsync {
+                HermesNotificationActionBridge.handleNotificationButtonIntentJson(context.applicationContext, intent)
+            }
         }
     }
 

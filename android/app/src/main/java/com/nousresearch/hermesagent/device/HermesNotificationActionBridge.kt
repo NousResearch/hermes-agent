@@ -17,6 +17,13 @@ import org.json.JSONObject
 import kotlin.math.absoluteValue
 
 object HermesNotificationActionBridge {
+    const val ACTION_NOTIFICATION_BUTTON = "com.nousresearch.hermesagent.NOTIFICATION_BUTTON"
+    const val EXTRA_BUTTON_ACTION = "button_action"
+    const val EXTRA_AUTOMATION_ID = "automation_id"
+    const val EXTRA_DISMISS_ON_TAP = "dismiss_on_tap"
+    const val EXTRA_NOTIFICATION_ID = "notification_id"
+    const val EXTRA_NOTIFICATION_TAG = "notification_tag"
+
     fun performNotificationJson(context: Context, payload: JSONObject): String {
         val action = normalizeAction(payload.optString("notification_action").ifBlank { "post" })
         if (action == "cancel") {
@@ -64,6 +71,10 @@ object HermesNotificationActionBridge {
         ensureChannel(context, channelId, payload)
         val notificationId = notificationId(payload)
         val tag = payload.optString("notification_tag").ifBlank { null }?.take(MAX_NOTIFICATION_FIELD_CHARS)
+        val buttonResult = parseNotificationButtons(payload)
+        if (buttonResult.error != null) {
+            return errorJson(buttonResult.error)
+        }
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_nav_hermes)
             .setContentTitle(title.ifBlank { context.getString(R.string.app_name) })
@@ -79,6 +90,13 @@ object HermesNotificationActionBridge {
         if (groupKey.isNotBlank()) {
             builder.setGroup(groupKey)
             builder.setGroupSummary(payload.optBoolean("group_summary", false))
+        }
+        buttonResult.buttons.forEachIndexed { index, button ->
+            builder.addAction(
+                R.drawable.ic_nav_hermes,
+                button.title,
+                pendingIntentForButton(context, notificationId, tag, index, button),
+            )
         }
         val notifyResult = runCatching {
             NotificationManagerCompat.from(context).notify(tag, notificationId, builder.build())
@@ -98,7 +116,44 @@ object HermesNotificationActionBridge {
             .put("notification_tag", tag ?: "")
             .put("channel_id", channelId)
             .put("group_key", groupKey)
+            .put("notification_button_count", buttonResult.buttons.size)
             .put("message", "Posted Hermes notification")
+            .toString()
+    }
+
+    fun handleNotificationButtonIntentJson(context: Context, intent: Intent): String {
+        if (intent.action != ACTION_NOTIFICATION_BUTTON) {
+            return errorJson("Unsupported notification button intent: ${intent.action.orEmpty()}")
+        }
+        val buttonAction = normalizeButtonAction(intent.getStringExtra(EXTRA_BUTTON_ACTION).orEmpty())
+        val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, DEFAULT_NOTIFICATION_ID)
+        val tag = intent.getStringExtra(EXTRA_NOTIFICATION_TAG)?.ifBlank { null }
+        val dismissOnTap = intent.getBooleanExtra(EXTRA_DISMISS_ON_TAP, buttonAction == BUTTON_ACTION_CANCEL)
+        val appContext = context.applicationContext
+        val result = when (buttonAction) {
+            BUTTON_ACTION_OPEN_APP -> openHermesFromButton(appContext)
+            BUTTON_ACTION_CANCEL -> JSONObject()
+                .put("success", true)
+                .put("exit_code", 0)
+                .put("action", "notification_button_cancel")
+                .put("message", "Dismissed Hermes notification")
+            BUTTON_ACTION_RUN_AUTOMATION -> {
+                val automationId = intent.getStringExtra(EXTRA_AUTOMATION_ID).orEmpty()
+                if (automationId.isBlank()) {
+                    return errorJson("notification run_automation button requires automation_id")
+                }
+                JSONObject(HermesAutomationBridge.runAutomationJson(appContext, automationId, "notification_button"))
+                    .put("automation_id", automationId)
+            }
+            else -> return errorJson("Unsupported notification button action: $buttonAction")
+        }
+        if (dismissOnTap || buttonAction == BUTTON_ACTION_CANCEL) {
+            dismissNotification(appContext, notificationId, tag)
+        }
+        return result
+            .put("notification_button_action", buttonAction)
+            .put("notification_id", notificationId)
+            .put("notification_tag", tag ?: "")
             .toString()
     }
 
@@ -108,6 +163,20 @@ object HermesNotificationActionBridge {
             "cancel", "clear", "dismiss", "remove" -> "cancel"
             else -> action.trim().lowercase().replace("-", "_").replace(" ", "_")
         }
+    }
+
+    fun normalizeButtonAction(action: String): String {
+        val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
+        return when (normalized) {
+            "", "open", "open_app", "launch", "launch_app", "hermes", "open_hermes" -> BUTTON_ACTION_OPEN_APP
+            "cancel", "clear", "dismiss", "remove" -> BUTTON_ACTION_CANCEL
+            "run", "run_task", "run_automation", "automation", "perform_task", "run_saved_automation" -> BUTTON_ACTION_RUN_AUTOMATION
+            else -> normalized
+        }
+    }
+
+    fun isSupportedButtonAction(action: String): Boolean {
+        return normalizeButtonAction(action) in SUPPORTED_BUTTON_ACTIONS
     }
 
     private fun ensureChannel(context: Context, channelId: String, payload: JSONObject) {
@@ -146,16 +215,127 @@ object HermesNotificationActionBridge {
             ?: DEFAULT_NOTIFICATION_ID
     }
 
-    private fun openAppPendingIntent(context: Context): PendingIntent {
+    private fun parseNotificationButtons(payload: JSONObject): NotificationButtonParseResult {
+        val rawButtons = payload.optJSONArray("notification_buttons")
+            ?: payload.optJSONArray("buttons")
+            ?: return NotificationButtonParseResult(emptyList())
+        if (rawButtons.length() > MAX_NOTIFICATION_BUTTONS) {
+            return NotificationButtonParseResult(error = "notification_buttons supports at most $MAX_NOTIFICATION_BUTTONS buttons")
+        }
+        val buttons = mutableListOf<NotificationButtonSpec>()
+        for (index in 0 until rawButtons.length()) {
+            val raw = rawButtons.optJSONObject(index)
+                ?: return NotificationButtonParseResult(error = "notification_buttons[$index] must be a JSON object")
+            val title = raw.optString("title")
+                .ifBlank { raw.optString("label") }
+                .ifBlank { raw.optString("text") }
+                .take(MAX_NOTIFICATION_FIELD_CHARS)
+            if (title.isBlank()) {
+                return NotificationButtonParseResult(error = "notification_buttons[$index] requires title")
+            }
+            val buttonAction = normalizeButtonAction(
+                raw.optString("action")
+                    .ifBlank { raw.optString("button_action") }
+                    .ifBlank { raw.optString("type") }
+                    .ifBlank { BUTTON_ACTION_OPEN_APP },
+            )
+            if (buttonAction !in SUPPORTED_BUTTON_ACTIONS) {
+                return NotificationButtonParseResult(error = "Unsupported notification button action: $buttonAction")
+            }
+            val automationId = raw.optString("automation_id")
+                .ifBlank { raw.optString("automation") }
+                .ifBlank { raw.optString("id") }
+                .take(MAX_NOTIFICATION_AUTOMATION_ID_CHARS)
+            if (buttonAction == BUTTON_ACTION_RUN_AUTOMATION && automationId.isBlank()) {
+                return NotificationButtonParseResult(error = "notification run_automation button requires automation_id")
+            }
+            if (listOf(title, buttonAction, automationId).any { it.indexOf('\u0000') >= 0 }) {
+                return NotificationButtonParseResult(error = "notification button fields must not contain NUL bytes")
+            }
+            buttons += NotificationButtonSpec(
+                title = title,
+                action = buttonAction,
+                automationId = automationId,
+                dismissOnTap = raw.optBoolean("dismiss_on_tap", raw.optBoolean("cancel_notification", false)),
+            )
+        }
+        return NotificationButtonParseResult(buttons)
+    }
+
+    private fun pendingIntentForButton(
+        context: Context,
+        notificationId: Int,
+        tag: String?,
+        index: Int,
+        button: NotificationButtonSpec,
+    ): PendingIntent {
+        if (button.action == BUTTON_ACTION_OPEN_APP) {
+            return openAppPendingIntent(context, notificationButtonRequestCode(notificationId, tag, index, button))
+        }
+        val intent = Intent(context, HermesAutomationReceiver::class.java).apply {
+            action = ACTION_NOTIFICATION_BUTTON
+            putExtra(EXTRA_BUTTON_ACTION, button.action)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(EXTRA_NOTIFICATION_TAG, tag.orEmpty())
+            putExtra(EXTRA_AUTOMATION_ID, button.automationId)
+            putExtra(EXTRA_DISMISS_ON_TAP, button.dismissOnTap)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            notificationButtonRequestCode(notificationId, tag, index, button),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun notificationButtonRequestCode(
+        notificationId: Int,
+        tag: String?,
+        index: Int,
+        button: NotificationButtonSpec,
+    ): Int {
+        val seed = listOf(notificationId.toString(), tag.orEmpty(), index.toString(), button.title, button.action, button.automationId)
+            .joinToString("|")
+        return seed.hashCode().toLong().absoluteValue
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+            .takeIf { it > 0 }
+            ?: (DEFAULT_NOTIFICATION_ID + index + 1)
+    }
+
+    private fun openAppPendingIntent(context: Context, requestCode: Int = 0): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         return PendingIntent.getActivity(
             context,
-            0,
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+    }
+
+    private fun openHermesFromButton(context: Context): JSONObject {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val started = runCatching { context.startActivity(intent) }
+        if (started.isFailure) {
+            return JSONObject()
+                .put("success", false)
+                .put("exit_code", 1)
+                .put("action", "notification_button_open_app")
+                .put("error", started.exceptionOrNull()?.message ?: "Unable to open Hermes")
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("exit_code", 0)
+            .put("action", "notification_button_open_app")
+            .put("message", "Opened Hermes")
+    }
+
+    private fun dismissNotification(context: Context, id: Int, tag: String?) {
+        runCatching { NotificationManagerCompat.from(context).cancel(tag, id) }
     }
 
     private fun priority(raw: String): Int {
@@ -201,6 +381,28 @@ object HermesNotificationActionBridge {
 
     private const val DEFAULT_CHANNEL_ID = "hermes_automation"
     private const val DEFAULT_NOTIFICATION_ID = 1001
+    private const val BUTTON_ACTION_OPEN_APP = "open_app"
+    private const val BUTTON_ACTION_CANCEL = "cancel"
+    private const val BUTTON_ACTION_RUN_AUTOMATION = "run_automation"
+    private const val MAX_NOTIFICATION_BUTTONS = 3
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
+    private const val MAX_NOTIFICATION_AUTOMATION_ID_CHARS = 120
+    private val SUPPORTED_BUTTON_ACTIONS = setOf(
+        BUTTON_ACTION_OPEN_APP,
+        BUTTON_ACTION_CANCEL,
+        BUTTON_ACTION_RUN_AUTOMATION,
+    )
+
+    private data class NotificationButtonSpec(
+        val title: String,
+        val action: String,
+        val automationId: String,
+        val dismissOnTap: Boolean,
+    )
+
+    private data class NotificationButtonParseResult(
+        val buttons: List<NotificationButtonSpec> = emptyList(),
+        val error: String? = null,
+    )
 }

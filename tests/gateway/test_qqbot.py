@@ -975,3 +975,329 @@ class TestChunkedUploaderFlow:
         )
         assert result["file_info"] == "F"
         assert put_attempts["n"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Inline keyboards — approval + update-prompt flows
+# ---------------------------------------------------------------------------
+
+class TestApprovalButtonData:
+    def test_parse_allow_once(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
+        assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
+
+    def test_parse_allow_always(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        assert parse_approval_button_data("approve:sess:allow-always") == ("sess", "allow-always")
+
+    def test_parse_deny(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        assert parse_approval_button_data("approve:sess:deny") == ("sess", "deny")
+
+    def test_parse_invalid_prefix_returns_none(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        assert parse_approval_button_data("update_prompt:y") is None
+
+    def test_parse_unknown_decision_returns_none(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        assert parse_approval_button_data("approve:sess:maybe") is None
+
+    def test_parse_empty_returns_none(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        assert parse_approval_button_data("") is None
+        assert parse_approval_button_data(None) is None  # type: ignore[arg-type]
+
+
+class TestUpdatePromptButtonData:
+    def test_parse_yes(self):
+        from gateway.platforms.qqbot.keyboards import parse_update_prompt_button_data
+        assert parse_update_prompt_button_data("update_prompt:y") == "y"
+
+    def test_parse_no(self):
+        from gateway.platforms.qqbot.keyboards import parse_update_prompt_button_data
+        assert parse_update_prompt_button_data("update_prompt:n") == "n"
+
+    def test_parse_unknown_returns_none(self):
+        from gateway.platforms.qqbot.keyboards import parse_update_prompt_button_data
+        assert parse_update_prompt_button_data("update_prompt:maybe") is None
+
+    def test_parse_wrong_prefix(self):
+        from gateway.platforms.qqbot.keyboards import parse_update_prompt_button_data
+        assert parse_update_prompt_button_data("approve:sess:deny") is None
+
+
+class TestBuildApprovalKeyboard:
+    def test_three_buttons_in_single_row(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        kb = build_approval_keyboard("session-1")
+        assert len(kb.content.rows) == 1
+        assert len(kb.content.rows[0].buttons) == 3
+
+    def test_button_data_embeds_session_key(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
+        datas = [b.action.data for b in kb.content.rows[0].buttons]
+        assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
+        assert datas[1] == "approve:agent:main:qqbot:c2c:UID:allow-always"
+        assert datas[2] == "approve:agent:main:qqbot:c2c:UID:deny"
+
+    def test_buttons_share_group_id_for_mutual_exclusion(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        kb = build_approval_keyboard("s")
+        group_ids = {b.group_id for b in kb.content.rows[0].buttons}
+        assert group_ids == {"approval"}
+
+    def test_to_dict_has_expected_shape(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        kb = build_approval_keyboard("s")
+        d = kb.to_dict()
+        assert "content" in d
+        assert "rows" in d["content"]
+        assert len(d["content"]["rows"]) == 1
+        btn0 = d["content"]["rows"][0]["buttons"][0]
+        assert btn0["id"] == "allow"
+        assert btn0["action"]["type"] == 1
+        assert btn0["action"]["data"].startswith("approve:s:")
+        assert btn0["render_data"]["label"]
+        assert btn0["render_data"]["visited_label"]
+
+    def test_round_trip_parse_matches_build(self):
+        """Every button built by build_approval_keyboard is parseable."""
+        from gateway.platforms.qqbot.keyboards import (
+            build_approval_keyboard, parse_approval_button_data,
+        )
+        session_key = "agent:main:qqbot:c2c:UID123"
+        kb = build_approval_keyboard(session_key)
+        for btn in kb.content.rows[0].buttons:
+            parsed = parse_approval_button_data(btn.action.data)
+            assert parsed is not None
+            assert parsed[0] == session_key
+            assert parsed[1] in ("allow-once", "allow-always", "deny")
+
+
+class TestBuildUpdatePromptKeyboard:
+    def test_two_buttons(self):
+        from gateway.platforms.qqbot.keyboards import build_update_prompt_keyboard
+        kb = build_update_prompt_keyboard()
+        assert len(kb.content.rows[0].buttons) == 2
+
+    def test_button_data_shape(self):
+        from gateway.platforms.qqbot.keyboards import build_update_prompt_keyboard
+        kb = build_update_prompt_keyboard()
+        datas = [b.action.data for b in kb.content.rows[0].buttons]
+        assert datas == ["update_prompt:y", "update_prompt:n"]
+
+
+class TestBuildApprovalText:
+    def test_exec_approval_includes_command_preview(self):
+        from gateway.platforms.qqbot.keyboards import (
+            ApprovalRequest, build_approval_text,
+        )
+        req = ApprovalRequest(
+            session_key="s",
+            title="t",
+            command_preview="rm -rf /tmp/demo",
+            cwd="/home/user",
+            timeout_sec=60,
+        )
+        text = build_approval_text(req)
+        assert "命令执行审批" in text
+        assert "rm -rf /tmp/demo" in text
+        assert "/home/user" in text
+        assert "60" in text
+
+    def test_plugin_approval_uses_severity_icon(self):
+        from gateway.platforms.qqbot.keyboards import (
+            ApprovalRequest, build_approval_text,
+        )
+        crit = ApprovalRequest(
+            session_key="s", title="dangerous op",
+            severity="critical", tool_name="shell", timeout_sec=30,
+        )
+        assert "🔴" in build_approval_text(crit)
+
+        info = ApprovalRequest(
+            session_key="s", title="read-only", severity="info", tool_name="q",
+        )
+        assert "🔵" in build_approval_text(info)
+
+        default = ApprovalRequest(session_key="s", title="t", tool_name="x")
+        assert "🟡" in build_approval_text(default)
+
+    def test_truncates_long_commands(self):
+        from gateway.platforms.qqbot.keyboards import (
+            ApprovalRequest, build_approval_text,
+        )
+        long = "x" * 1000
+        req = ApprovalRequest(
+            session_key="s", title="t", command_preview=long, cwd="/x",
+        )
+        text = build_approval_text(req)
+        # Preview is truncated to 300 chars; 1000 "x"s would still push the
+        # body past 300, but the inline preview specifically must be capped.
+        preview_line = [
+            line for line in text.split("\n") if line.startswith("```")
+        ]
+        # 2 backtick fences; the content line in between is separate.
+        xs_in_preview = sum(line.count("x") for line in text.split("\n") if line and "```" not in line)
+        assert xs_in_preview <= 301  # 300 xs + one-off tolerance
+
+
+class TestInteractionEventParsing:
+    def test_parse_c2c_interaction(self):
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        raw = {
+            "id": "interaction-42",
+            "chat_type": 2,
+            "user_openid": "user-1",
+            "data": {
+                "type": 11,
+                "resolved": {
+                    "button_data": "approve:sess:allow-once",
+                    "button_id": "allow",
+                },
+            },
+        }
+        ev = parse_interaction_event(raw)
+        assert ev.id == "interaction-42"
+        assert ev.scene == "c2c"
+        assert ev.chat_type == 2
+        assert ev.user_openid == "user-1"
+        assert ev.button_data == "approve:sess:allow-once"
+        assert ev.button_id == "allow"
+        assert ev.operator_openid == "user-1"
+
+    def test_parse_group_interaction(self):
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        raw = {
+            "id": "i-1",
+            "chat_type": 1,
+            "group_openid": "grp-1",
+            "group_member_openid": "mem-1",
+            "data": {
+                "type": 11,
+                "resolved": {
+                    "button_data": "update_prompt:y",
+                    "button_id": "yes",
+                },
+            },
+        }
+        ev = parse_interaction_event(raw)
+        assert ev.scene == "group"
+        assert ev.group_openid == "grp-1"
+        assert ev.group_member_openid == "mem-1"
+        assert ev.operator_openid == "mem-1"  # member openid preferred in group
+
+    def test_parse_missing_data_gracefully(self):
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        ev = parse_interaction_event({"id": "i", "chat_type": 0})
+        assert ev.id == "i"
+        assert ev.scene == "guild"
+        assert ev.button_data == ""
+        assert ev.button_id == ""
+        assert ev.type == 0
+
+
+class TestAdapterInteractionDispatch:
+    """End-to-end verification of _on_interaction including ACK + callback."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_callback_invoked_with_parsed_event(self):
+        adapter = self._make_adapter()
+
+        # Stub ACK so we don't require a live http_client.
+        ack_calls = []
+
+        async def fake_ack(interaction_id, code=0):
+            ack_calls.append((interaction_id, code))
+
+        adapter._acknowledge_interaction = fake_ack  # type: ignore[assignment]
+
+        received = []
+
+        async def cb(event):
+            received.append(event)
+
+        adapter.set_interaction_callback(cb)
+        await adapter._on_interaction({
+            "id": "i-1",
+            "chat_type": 2,
+            "user_openid": "user-1",
+            "data": {
+                "type": 11,
+                "resolved": {"button_data": "approve:s:deny", "button_id": "deny"},
+            },
+        })
+
+        assert len(ack_calls) == 1
+        assert ack_calls[0][0] == "i-1"
+        assert len(received) == 1
+        assert received[0].button_data == "approve:s:deny"
+        assert received[0].scene == "c2c"
+
+    @pytest.mark.asyncio
+    async def test_missing_id_skips_ack(self):
+        adapter = self._make_adapter()
+
+        ack_calls = []
+
+        async def fake_ack(interaction_id, code=0):
+            ack_calls.append(interaction_id)
+
+        adapter._acknowledge_interaction = fake_ack  # type: ignore[assignment]
+
+        callback_calls = []
+
+        async def cb(event):
+            callback_calls.append(event)
+
+        adapter.set_interaction_callback(cb)
+        await adapter._on_interaction({
+            "chat_type": 2,  # no id
+            "data": {"resolved": {"button_data": "approve:s:deny"}},
+        })
+
+        assert ack_calls == []
+        assert callback_calls == []
+
+    @pytest.mark.asyncio
+    async def test_callback_exception_does_not_propagate(self):
+        adapter = self._make_adapter()
+
+        async def fake_ack(interaction_id, code=0):
+            pass
+
+        adapter._acknowledge_interaction = fake_ack  # type: ignore[assignment]
+
+        async def bad_cb(event):
+            raise RuntimeError("boom")
+
+        adapter.set_interaction_callback(bad_cb)
+        # Should NOT raise.
+        await adapter._on_interaction({
+            "id": "i-2",
+            "chat_type": 2,
+            "user_openid": "u",
+            "data": {"resolved": {"button_data": "approve:s:deny"}},
+        })
+
+    @pytest.mark.asyncio
+    async def test_no_callback_is_harmless(self):
+        adapter = self._make_adapter()
+
+        async def fake_ack(interaction_id, code=0):
+            pass
+
+        adapter._acknowledge_interaction = fake_ack  # type: ignore[assignment]
+        # No callback set — default None.
+        await adapter._on_interaction({
+            "id": "i-3",
+            "chat_type": 2,
+            "user_openid": "u",
+            "data": {"resolved": {"button_data": "approve:s:deny"}},
+        })

@@ -197,6 +197,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("LM_API_KEY",),
         base_url_env_var="LM_BASE_URL",
     ),
+    "llama-cpp": ProviderConfig(
+        id="llama-cpp",
+        name="llama.cpp",
+        auth_type="api_key",
+        inference_base_url="http://127.0.0.1:8088/v1",
+        api_key_env_vars=("LLAMA_CPP_API_KEY",),
+        base_url_env_var="LLAMA_CPP_BASE_URL",
+    ),
     "copilot": ProviderConfig(
         id="copilot",
         name="GitHub Copilot",
@@ -1405,10 +1413,11 @@ def resolve_provider(
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
-        # Local server aliases — route through the generic custom provider
+        # Local server aliases — route through the generic custom provider.
+        # llama.cpp aliases are intentionally NOT here so the dedicated
+        # `llama-cpp` provider plugin's aliases (auto-extended below) win.
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
-        "vllm": "custom", "llamacpp": "custom",
-        "llama.cpp": "custom", "llama-cpp": "custom",
+        "vllm": "custom",
     }
     # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
     # This keeps providers/ as the single source for new aliases while the

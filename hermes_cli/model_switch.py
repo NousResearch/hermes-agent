@@ -1200,6 +1200,66 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    # llama.cpp also has no static catalog — `llama-server` exposes /v1/models
+    # populated from whatever GGUF is loaded. Probe it whenever there's a hint
+    # the user wants llama.cpp surfaced (env vars set, current provider matches,
+    # or — for zero-config UX — the local server is reachable at the default
+    # 127.0.0.1:8088). This makes the picker "magically" show llama.cpp once
+    # `scripts/start-llama-server.sh` is running.
+    #
+    # Unlike LM Studio, llama-server typically runs without auth, so we surface
+    # the row directly here (bypassing the env-var credential gate in
+    # section 2b) whenever the live probe returns models.
+    if "llama-cpp" not in seen_slugs:
+        _llama_aliases = {"llama-cpp", "llamacpp", "llama.cpp", "llama_cpp", "llama-server"}
+        is_current_llama = current_provider.strip().lower() in _llama_aliases
+        llama_env_hint = bool(
+            os.environ.get("LLAMA_CPP_API_KEY") or os.environ.get("LLAMA_CPP_BASE_URL")
+        )
+        llama_base = (
+            os.environ.get("LLAMA_CPP_BASE_URL")
+            or (current_base_url if is_current_llama and current_base_url else None)
+            or "http://127.0.0.1:8088/v1"
+        )
+        if llama_env_hint or is_current_llama:
+            probe_timeout = 1.5
+        else:
+            # Cold-discovery probe: tight timeout so an offline server doesn't
+            # delay the picker by more than ~300 ms.
+            probe_timeout = 0.3
+        try:
+            from providers import get_provider_profile as _gpp
+            _llama_profile = _gpp("llama-cpp")
+            if _llama_profile is not None:
+                _saved_url = _llama_profile.base_url
+                _llama_profile.base_url = llama_base
+                try:
+                    live = _llama_profile.fetch_models(
+                        api_key=os.environ.get("LLAMA_CPP_API_KEY", "") or None,
+                        timeout=probe_timeout,
+                    ) or []
+                finally:
+                    _llama_profile.base_url = _saved_url
+            else:
+                live = []
+        except Exception:
+            live = []
+        if not live and is_current_llama and current_model:
+            live = [current_model]
+        if live:
+            curated["llama-cpp"] = live
+            results.append({
+                "slug": "llama-cpp",
+                "name": "llama.cpp",
+                "is_current": is_current_llama,
+                "is_user_defined": False,
+                "models": live[:max_models],
+                "total_models": len(live),
+                "source": "built-in",
+            })
+            seen_slugs.add("llama-cpp")
+            _builtin_endpoints.add(_norm_url(llama_base))
+
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         # Skip aliases that map to the same models.dev provider (e.g.

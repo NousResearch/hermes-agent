@@ -57,9 +57,6 @@ custom = CustomProfile(
         "ollama",
         "local",
         "vllm",
-        "llamacpp",
-        "llama.cpp",
-        "llama-cpp",
     ),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured

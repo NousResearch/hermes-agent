@@ -1,0 +1,5 @@
+name: llama-cpp-provider
+kind: model-provider
+version: 1.0.0
+description: llama.cpp llama-server (local OpenAI-compatible endpoint)
+author: Nous Research

@@ -1063,6 +1063,10 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "llamacpp": "llama-cpp",
+    "llama.cpp": "llama-cpp",
+    "llama_cpp": "llama-cpp",
+    "llama-server": "llama-cpp",
 }
 
 

@@ -159,7 +159,7 @@ class TeamsSummaryWriter:
             if merged.get("incoming_webhook_url"):
                 mode = "incoming_webhook"
             elif merged.get("chat_id") or (
-                merged.get("team_id") and (merged.get("channel_id") or merged.get("chat_id"))
+                merged.get("team_id") and merged.get("channel_id")
             ):
                 mode = "graph"
         if mode == "incoming_webhook":

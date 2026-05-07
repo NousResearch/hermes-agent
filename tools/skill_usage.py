@@ -205,6 +205,19 @@ def list_agent_created_skill_names() -> List[str]:
     return sorted(set(names))
 
 
+def list_archived_skill_names() -> List[str]:
+    """Enumerate skills in ``~/.hermes/skills/.archive/``.
+
+    Archive layout is flat (``.archive/<skill>/``) as set by ``archive_skill``,
+    so the directory name is the skill name. Used by ``hermes curator
+    list-archived`` to help users pass a name to ``hermes curator restore``.
+    """
+    archive_root = _archive_dir()
+    if not archive_root.exists():
+        return []
+    return sorted({p.name for p in archive_root.iterdir() if p.is_dir()})
+
+
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
     """Parse the `name:` field from a SKILL.md YAML frontmatter."""
     try:

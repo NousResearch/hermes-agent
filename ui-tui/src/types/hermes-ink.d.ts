@@ -101,6 +101,10 @@ declare module '@hermes/ink' {
     readonly url: string
   }>
   export const NoSelect: React.ComponentType<any>
+  export const RawAnsi: React.ComponentType<{
+    readonly lines: string[]
+    readonly width: number
+  }>
   export const ScrollBox: React.ComponentType<any>
   export const Text: React.ComponentType<any>
   export const TextInput: React.ComponentType<any>

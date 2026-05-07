@@ -1,4 +1,4 @@
-import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -16,6 +16,7 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+import { ShapeSafeStatusText, truncateStatusText } from './shapeSafeStatusText.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -247,6 +248,46 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+const statusModelAvailableWidth = ({
+  bgCount,
+  bar,
+  busy,
+  ctxLabel,
+  leftWidth,
+  pct,
+  sessionStartedAt,
+  showCost,
+  status,
+  usage,
+  voiceLabel
+}: {
+  bgCount: number
+  bar: string
+  busy: boolean
+  ctxLabel: string
+  leftWidth: number
+  pct: number | undefined
+  sessionStartedAt?: null | number
+  showCost: boolean
+  status: string
+  usage: Usage
+  voiceLabel?: string
+}) => {
+  const fixed = [
+    '─ ',
+    busy ? 'running…' : status,
+    ' │ ',
+    ctxLabel ? ` │ ${ctxLabel}` : '',
+    bar ? ` │ [${bar}] ${pct != null ? `${pct}%` : ''}` : '',
+    sessionStartedAt ? ` │ ${fmtDuration(Date.now() - sessionStartedAt)}` : '',
+    voiceLabel ? ` │ ${voiceLabel}` : '',
+    bgCount > 0 ? ` │ ${bgCount} bg` : '',
+    showCost && typeof usage.cost_usd === 'number' ? ` │ $${usage.cost_usd.toFixed(4)}` : ''
+  ].join('')
+
+  return Math.max(1, leftWidth - stringWidth(fixed))
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -300,47 +341,62 @@ export function StatusRule({
 
   const bar = usage.context_max ? ctxBar(pct) : ''
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelAvailableWidth = statusModelAvailableWidth({
+    bgCount,
+    bar,
+    busy,
+    ctxLabel,
+    leftWidth,
+    pct,
+    sessionStartedAt,
+    showCost,
+    status,
+    usage,
+    voiceLabel
+  })
+  const renderedModelText = truncateStatusText(modelText, modelAvailableWidth)
 
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
-        <Text color={t.color.border} wrap="truncate-end">
-          {'─ '}
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{status}</Text>
-          )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-            </Text>
-          ) : null}
-          {sessionStartedAt ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
-            <Text
-              color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
-              }
-            >
-              {' │ '}
-              {voiceLabel}
-            </Text>
-          ) : null}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
-          ) : null}
-        </Text>
+        <Text color={t.color.border}>─ </Text>
+        {busy ? (
+          <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+        ) : (
+          <Text color={statusColor}>{status}</Text>
+        )}
+        <Text color={t.color.muted}> │ </Text>
+        <ShapeSafeStatusText color={t.color.muted} text={renderedModelText} />
+        {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
+        {bar ? (
+          <>
+            <Text color={t.color.muted}> │ </Text>
+            <Text color={barColor}>[{bar}]</Text>
+            <Text color={barColor}>{pct != null ? ` ${pct}%` : ''}</Text>
+          </>
+        ) : null}
+        {sessionStartedAt ? (
+          <Text color={t.color.muted}>
+            {' │ '}
+            <SessionDuration startedAt={sessionStartedAt} />
+          </Text>
+        ) : null}
+        <SpawnHud t={t} />
+        {voiceLabel ? (
+          <Text
+            color={
+              voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+            }
+          >
+            {' │ '}
+            {voiceLabel}
+          </Text>
+        ) : null}
+        {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
+        {showCost && typeof usage.cost_usd === 'number' ? (
+          <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
+        ) : null}
       </Box>
 
       <Text color={t.color.border}> ─ </Text>

@@ -32,6 +32,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -477,6 +478,22 @@ async def vision_analyze_tool(
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
+        elif str(image_url or "").startswith("data:"):
+            # data: URL (base64 inline) — decode to temp file
+            logger.info("Decoding data: URL image")
+            header, _, raw_data = str(image_url).partition(",")
+            mime = "image/jpeg"
+            if header.startswith("data:"):
+                mime_part = header[len("data:"):].split(";", 1)[0].strip()
+                if mime_part.startswith("image/"):
+                    mime = mime_part
+            suffix = {".png": ".png", ".gif": ".gif", ".webp": ".webp",
+                      ".jpeg": ".jpg", ".jpg": ".jpg"}.get(Path(mime).suffix, ".jpg")
+            tmp = tempfile.NamedTemporaryFile(prefix="vision_data_", suffix=suffix, delete=False)
+            with tmp:
+                tmp.write(base64.b64decode(raw_data))
+            temp_image_path = Path(tmp.name)
+            should_cleanup = True
         elif _validate_image_url(image_url):
             # Remote URL -- download to a temporary location
             blocked = check_website_access(image_url)

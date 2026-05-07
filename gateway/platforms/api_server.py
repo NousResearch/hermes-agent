@@ -71,6 +71,35 @@ _DEFAULT_APPROVAL_OPTIONS = [
 ]
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
+# 文件分类扩展名映射，可在 config.yaml api_server.file_categories 中覆盖
+_DEFAULT_FILE_CATEGORIES: dict[str, set[str]] = {
+    "文档类": {".txt", ".md", ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv"},
+    "图片类": {".jpg", ".jpeg", ".png", ".bmp", ".gif"},
+    "音频类": {".mp3", ".wav", ".m4a", ".amr", ".pcm"},
+    "视频类": {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"},
+}
+
+
+def _get_file_categories() -> dict[str, set[str]]:
+    """Read file category extension mappings from config, fallback to default."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("api_server", {}).get("file_categories")
+        if isinstance(cfg, dict):
+            return {k: {e.strip().lower() for e in v if isinstance(e, str)} for k, v in cfg.items() if isinstance(v, list)}
+    except Exception:
+        pass
+    return _DEFAULT_FILE_CATEGORIES
+
+
+def _get_file_category(filename: str) -> str:
+    """Return category name for a filename (文档类/图片类/音频类/视频类/其它)."""
+    ext = Path(str(filename)).suffix.lower()
+    for cat, exts in _get_file_categories().items():
+        if ext in exts:
+            return cat
+    return "其它"
+
 
 def _extract_media_from_result(result: dict, last_known: int = 0) -> tuple[list[str], int]:
     """从 agent 执行结果中提取本轮产生的截图下载 URL。
@@ -3594,18 +3623,34 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
 
     async def _handle_workspace_list(self, request: "web.Request") -> "web.Response":
-        """GET /v1/workspace — list files and directories in workspace.
+        """POST /v1/workspace — list files and directories in workspace.
 
-        Query params:
+        JSON body:
           - path: subdirectory to list (default: root)
           - recursive: list recursively (default: false)
+          - category: filter by category (文档类/图片类/音频类/视频类/其它, default: all)
+          - page: page number (default: 1)
+          - page_size: items per page (default: 20, max: 100)
         """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
-        raw_path = request.query.get("path", "").strip()
-        recursive = request.query.get("recursive", "").lower() in ("true", "1")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}},
+                status=400,
+            )
+        raw_path = str(body.get("path") or "").strip()
+        recursive = str(body.get("recursive") or "").lower() in ("true", "1")
+        category_filter = str(body.get("category") or "").strip().lower().replace("其他", "其它")
+        try:
+            page = max(1, int(body.get("page", 1)))
+            page_size = max(1, min(100, int(body.get("page_size", 20))))
+        except (ValueError, TypeError):
+            page, page_size = 1, 20
 
         workspace = Path(self._get_workspace_root()).resolve()
         target = workspace
@@ -3619,7 +3664,7 @@ class APIServerAdapter(BasePlatformAdapter):
             target = resolved
 
         if not target.exists():
-            return web.json_response({"files": [], "path": str(target.relative_to(workspace))})
+            return web.json_response({"files": [], "path": str(target.relative_to(workspace)), "total": 0, "page": page, "page_size": page_size})
         if not target.is_dir():
             return web.json_response(
                 {"error": {"message": "Path is not a directory", "type": "invalid_request_error"}},
@@ -3629,32 +3674,43 @@ class APIServerAdapter(BasePlatformAdapter):
         def _scan(dir_path: Path, relative_to: Path) -> list:
             items = []
             try:
-                for entry in sorted(dir_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-                # Skip hidden files
+                for entry in sorted(dir_path.iterdir(), key=lambda e: (e.name.lower() if not e.is_dir() else "", e.name.lower())):
                     if entry.name.startswith("."):
                         continue
+                    # 递归模式不展示目录条目本身，但仍需要递归进入
+                    if recursive and entry.is_dir():
+                        items.extend(_scan(entry, relative_to))
+                        continue
                     rel = entry.relative_to(relative_to)
+                    category = _get_file_category(entry.name)
+                    if category_filter and category_filter != "all" and entry.is_file() and category.lower() != category_filter:
+                        continue
                     info = {
                         "name": entry.name,
                         "path": str(rel.as_posix()),
                         "type": "directory" if entry.is_dir() else "file",
                         "size": entry.stat().st_size if entry.is_file() else 0,
                         "modified_at": entry.stat().st_mtime,
+                        "category": category,
                     }
                     items.append(info)
-                    if recursive and entry.is_dir():
-                        items.extend(_scan(entry, relative_to))
             except PermissionError:
                 pass
             return items
 
         try:
-            files = _scan(target, workspace)
+            all_files = _scan(target, workspace)
+            total = len(all_files)
+            offset = (page - 1) * page_size
+            files = all_files[offset:offset + page_size]
             rel_path = str(target.relative_to(workspace)) if target != workspace else ""
             return web.json_response({
                 "files": files,
                 "path": rel_path,
                 "workspace_root": str(workspace),
+                "total": total,
+                "page": page,
+                "page_size": page_size,
             })
         except Exception as e:
             logger.error("[api_server] Failed to list workspace: %s", e, exc_info=True)
@@ -3737,6 +3793,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"',
                     "Content-Length": str(file_size),
+                    "X-File-Category": _get_file_category(resolved.name),
                 },
             )
         except Exception as e:
@@ -3793,7 +3850,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if b"\x00" in content[:8192]:
                 return web.json_response(
                     {"file": raw_path, "type": "binary", "size": file_size, "content": None,
-                     "message": "Binary file, use download endpoint"},
+                     "message": "Binary file, use download endpoint",
+                     "category": _get_file_category(resolved.name)},
                 )
 
             text = content.decode("utf-8", errors="replace")
@@ -3814,6 +3872,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "text",
                 "size": file_size,
                 "language": suffix.lstrip(".") if suffix else None,
+                "category": _get_file_category(resolved.name),
                 "content": "\n".join(lines),
                 "total_lines": len(lines) + (text.count("\n") - len(lines)) if truncated else len(lines),
                 "truncated": truncated,
@@ -3900,6 +3959,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "path": rel_path,
                     "url": f"/v1/workspace/download?path={rel_path}",
                     "size": len(data),
+                    "category": _get_file_category(target.name),
                 })
 
         except asyncio.TimeoutError:
@@ -3985,7 +4045,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_delete("/v1/sessions/all", self._handle_delete_all_sessions)
             self._app.router.add_get("/v1/sessions/{session_id}", self._handle_get_session)
             # Workspace file management
-            self._app.router.add_get("/v1/workspace", self._handle_workspace_list)
+            self._app.router.add_post("/v1/workspace", self._handle_workspace_list)
             self._app.router.add_get("/v1/workspace/download", self._handle_workspace_download)
             self._app.router.add_get("/v1/workspace/view", self._handle_workspace_view)
             self._app.router.add_post("/v1/workspace/upload", self._handle_workspace_upload)

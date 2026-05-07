@@ -10,6 +10,8 @@ def summarize_manual_compression(
     after_messages: Sequence[dict[str, Any]],
     before_tokens: int,
     after_tokens: int,
+    *,
+    token_label: str = "Approx request size",
 ) -> dict[str, Any]:
     """Return consistent user-facing feedback for manual compression."""
     before_count = len(before_messages)
@@ -20,17 +22,17 @@ def summarize_manual_compression(
         headline = f"No changes from compression: {before_count} messages"
         if after_tokens == before_tokens:
             token_line = (
-                f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
+                f"{token_label}: ~{before_tokens:,} tokens (unchanged)"
             )
         else:
             token_line = (
-                f"Approx request size: ~{before_tokens:,} → "
+                f"{token_label}: ~{before_tokens:,} → "
                 f"~{after_tokens:,} tokens"
             )
     else:
         headline = f"Compressed: {before_count} → {after_count} messages"
         token_line = (
-            f"Approx request size: ~{before_tokens:,} → "
+            f"{token_label}: ~{before_tokens:,} → "
             f"~{after_tokens:,} tokens"
         )
 

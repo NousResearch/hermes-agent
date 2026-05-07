@@ -9471,10 +9471,10 @@ class GatewayRunner:
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
 
-                # Estimate with system prompt + tool schemas included so the
-                # figure reflects real request pressure, not a transcript-only
-                # underestimate (#6217). Must be computed after tmp_agent is
-                # built so _cached_system_prompt/tools are populated.
+                # Estimate with the temporary compression agent's system
+                # prompt + tool schemas included.  This reflects the manual
+                # compression pass itself; the next live gateway turn may have
+                # a different prompt/tool surface.
                 _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
                 _tools = getattr(tmp_agent, "tools", None) or None
                 approx_tokens = estimate_request_tokens_rough(
@@ -9513,6 +9513,7 @@ class GatewayRunner:
                     compressed,
                     approx_tokens,
                     new_tokens,
+                    token_label="Compression pass estimate",
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress

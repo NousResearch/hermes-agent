@@ -1269,6 +1269,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         skip the LLM call when the transcript is still entirely inside
         the protected head/tail.
         """
+        # Keep this guard in sync with compress().  Without the same minimum
+        # message check, manual /compress can enter the compressor and then
+        # no-op, producing a misleading "No changes from compression" result
+        # for tiny transcripts.
+        min_for_compress = self.protect_first_n + 3 + 1
+        if len(messages) <= min_for_compress:
+            return False
+
         compress_start = self._align_boundary_forward(messages, self.protect_first_n)
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         return compress_start < compress_end

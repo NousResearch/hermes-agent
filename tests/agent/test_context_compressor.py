@@ -60,9 +60,13 @@ class TestCompress:
         return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(n)]
 
     def test_too_few_messages_returns_unchanged(self, compressor):
-        msgs = self._make_messages(4)  # protect_first=2 + protect_last=2 + 1 = 5 needed
+        msgs = self._make_messages(4)
         result = compressor.compress(msgs)
         assert result == msgs
+
+    def test_too_few_messages_are_not_reported_compressible(self, compressor):
+        msgs = self._make_messages(compressor.protect_first_n + 3 + 1)
+        assert compressor.has_content_to_compress(msgs) is False
 
     def test_truncation_fallback_no_client(self, compressor):
         # compressor has client=None, so should use truncation fallback

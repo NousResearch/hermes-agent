@@ -433,8 +433,19 @@ class TestDispatchPayload:
 
     def test_op11_heartbeat_ack(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        # Should not raise
+        adapter._heartbeat_awaiting_ack = True
+        adapter._consecutive_ack_misses = 2
         adapter._dispatch_payload({"op": 11, "t": "HEARTBEAT_ACK", "s": 42})
+        # ACK should reset tracking state
+        assert adapter._heartbeat_awaiting_ack is False
+        assert adapter._consecutive_ack_misses == 0
+        assert adapter._last_heartbeat_ack_time > 0
+
+    def test_dispatch_updates_last_inbound_time(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        assert adapter._last_inbound_time == 0.0
+        adapter._dispatch_payload({"op": 99, "d": {}})
+        assert adapter._last_inbound_time > 0
 
     def test_seq_tracking(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
@@ -626,3 +637,104 @@ class TestWaitForReconnection:
         assert not result.success
         assert result.retryable is True
         assert "Not connected" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat ACK timeout & liveness tracking
+# ---------------------------------------------------------------------------
+
+class TestHeartbeatAckTracking:
+    """Tests for heartbeat ACK timeout detection and zombie connection monitoring."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_init_liveness_defaults(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        assert adapter._last_heartbeat_ack_time == 0.0
+        assert adapter._last_inbound_time == 0.0
+        assert adapter._consecutive_ack_misses == 0
+        assert adapter._heartbeat_awaiting_ack is False
+        assert adapter._health_monitor_task is None
+
+    def test_op11_resets_miss_count(self):
+        """Receiving an ACK resets the consecutive miss counter."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._consecutive_ack_misses = 5
+        adapter._heartbeat_awaiting_ack = True
+        adapter._dispatch_payload({"op": 11, "d": None})
+        assert adapter._consecutive_ack_misses == 0
+        assert adapter._heartbeat_awaiting_ack is False
+
+    def test_dispatch_updates_inbound_time_on_any_op(self):
+        """Every dispatched payload should update _last_inbound_time."""
+        import time
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        before = time.monotonic()
+        adapter._dispatch_payload({"op": 0, "t": "READY", "s": 1, "d": {}})
+        assert adapter._last_inbound_time >= before
+
+    def test_force_ws_close_closes_websocket(self):
+        """_force_ws_close should close an open WebSocket."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        ws = mock.AsyncMock()
+        ws.closed = False
+        adapter._ws = ws
+
+        asyncio.run(adapter._force_ws_close())
+        ws.close.assert_awaited_once()
+        call_kwargs = ws.close.call_args
+        assert call_kwargs.kwargs.get("code") == 4000 or call_kwargs[1].get("code") == 4000
+
+    def test_force_ws_close_noop_when_no_ws(self):
+        """_force_ws_close should be safe when no WebSocket exists."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        # Should not raise
+        asyncio.run(adapter._force_ws_close())
+
+    def test_force_ws_close_noop_when_already_closed(self):
+        """_force_ws_close should skip if WebSocket is already closed."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        ws = mock.AsyncMock()
+        ws.closed = True
+        adapter._ws = ws
+
+        asyncio.run(adapter._force_ws_close())
+        ws.close.assert_not_awaited()
+
+    def test_reconnect_resets_liveness_state(self):
+        """_reconnect should reset all liveness tracking variables."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._last_heartbeat_ack_time = 999.0
+        adapter._last_inbound_time = 888.0
+        adapter._consecutive_ack_misses = 3
+        adapter._heartbeat_awaiting_ack = True
+        adapter._heartbeat_interval = 10.0
+
+        # Mock dependencies to prevent actual network calls
+        adapter._ensure_token = mock.AsyncMock()
+        adapter._get_gateway_url = mock.AsyncMock(return_value="wss://fake")
+        adapter._open_ws = mock.AsyncMock()
+        adapter._acquire_platform_lock = mock.MagicMock(return_value=True)
+        adapter._release_platform_lock = mock.MagicMock()
+
+        result = asyncio.run(adapter._reconnect(backoff_idx=0))
+
+        assert result is True
+        assert adapter._last_heartbeat_ack_time == 0.0
+        assert adapter._last_inbound_time == 0.0
+        assert adapter._consecutive_ack_misses == 0
+        assert adapter._heartbeat_awaiting_ack is False
+
+    def test_constants_imported(self):
+        """Verify the new constants are importable."""
+        from gateway.platforms.qqbot.constants import (
+            HEARTBEAT_ACK_TIMEOUT_COUNT,
+            ZOMBIE_IDLE_THRESHOLD,
+            HEALTH_MONITOR_INTERVAL,
+        )
+        assert HEARTBEAT_ACK_TIMEOUT_COUNT >= 1
+        assert ZOMBIE_IDLE_THRESHOLD > 0
+        assert HEALTH_MONITOR_INTERVAL > 0

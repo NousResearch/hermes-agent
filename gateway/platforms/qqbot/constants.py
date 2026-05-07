@@ -44,6 +44,11 @@ RATE_LIMIT_DELAY = 60  # seconds
 QUICK_DISCONNECT_THRESHOLD = 5.0  # seconds
 MAX_QUICK_DISCONNECT_COUNT = 3
 
+# Heartbeat ACK timeout & zombie detection
+HEARTBEAT_ACK_TIMEOUT_COUNT = 3  # consecutive missed ACKs before forced reconnect
+ZOMBIE_IDLE_THRESHOLD = 120.0  # seconds without inbound frames → zombie
+HEALTH_MONITOR_INTERVAL = 30.0  # seconds between liveness checks
+
 ONBOARD_POLL_INTERVAL = 2.0  # seconds between poll_bind_result calls
 ONBOARD_API_TIMEOUT = 10.0
 

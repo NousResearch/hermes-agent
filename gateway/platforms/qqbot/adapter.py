@@ -103,6 +103,9 @@ from gateway.platforms.qqbot.constants import (
     RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
+    HEARTBEAT_ACK_TIMEOUT_COUNT,
+    ZOMBIE_IDLE_THRESHOLD,
+    HEALTH_MONITOR_INTERVAL,
     MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS,
     DEDUP_MAX_SIZE,
@@ -208,6 +211,13 @@ class QQAdapter(BasePlatformAdapter):
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Heartbeat / liveness tracking
+        self._last_heartbeat_ack_time: float = 0.0
+        self._last_inbound_time: float = 0.0
+        self._consecutive_ack_misses: int = 0
+        self._heartbeat_awaiting_ack: bool = False
+        self._health_monitor_task: Optional[asyncio.Task] = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -266,7 +276,10 @@ class QQAdapter(BasePlatformAdapter):
             # 4. Start listeners
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._health_monitor_task = asyncio.create_task(self._health_monitor())
             self._mark_connected()
+            self._last_inbound_time = time.monotonic()
+            self._last_heartbeat_ack_time = time.monotonic()
             logger.info("[%s] Connected", self._log_tag)
             return True
         except Exception as exc:
@@ -297,6 +310,14 @@ class QQAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._health_monitor_task:
+            self._health_monitor_task.cancel()
+            try:
+                await self._health_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._health_monitor_task = None
 
         await self._cleanup()
         self._release_platform_lock()
@@ -583,6 +604,10 @@ class QQAdapter(BasePlatformAdapter):
         await asyncio.sleep(delay)
 
         self._heartbeat_interval = 30.0  # reset until Hello
+        self._last_heartbeat_ack_time = 0.0
+        self._last_inbound_time = 0.0
+        self._consecutive_ack_misses = 0
+        self._heartbeat_awaiting_ack = False
         try:
             await self._ensure_token()
             gateway_url = await self._get_gateway_url()
@@ -614,21 +639,92 @@ class QQAdapter(BasePlatformAdapter):
                 raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
+        """Send periodic heartbeats with ACK timeout detection.
 
-        The interval is set from the Hello (op 10) event's heartbeat_interval.
-        QQ's default is ~41s; we send at 80% of the interval to stay safe.
+        Sends op 1 heartbeat at 80% of the server's heartbeat_interval.
+        Tracks consecutive ACK misses.  After HEARTBEAT_ACK_TIMEOUT_COUNT
+        consecutive misses, closes the WebSocket so _listen_loop's existing
+        reconnect logic takes over.
         """
         try:
             while self._running:
                 await asyncio.sleep(self._heartbeat_interval)
                 if not self._ws or self._ws.closed:
                     continue
+
+                # Check if the previous heartbeat was acknowledged.
+                if self._heartbeat_awaiting_ack:
+                    self._consecutive_ack_misses += 1
+                    logger.warning(
+                        "[%s] Heartbeat ACK missed (%d/%d)",
+                        self._log_tag,
+                        self._consecutive_ack_misses,
+                        HEARTBEAT_ACK_TIMEOUT_COUNT,
+                    )
+                    if self._consecutive_ack_misses >= HEARTBEAT_ACK_TIMEOUT_COUNT:
+                        logger.error(
+                            "[%s] %d consecutive heartbeat ACKs missed -- "
+                            "connection is dead, forcing reconnect",
+                            self._log_tag,
+                            HEARTBEAT_ACK_TIMEOUT_COUNT,
+                        )
+                        self._heartbeat_awaiting_ack = False
+                        self._consecutive_ack_misses = 0
+                        await self._force_ws_close()
+                        continue
+
                 try:
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
+                    self._heartbeat_awaiting_ack = True
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+        except asyncio.CancelledError:
+            pass
+
+    async def _force_ws_close(self) -> None:
+        """Force-close the WebSocket to trigger _listen_loop's reconnect path.
+
+        Used by the heartbeat ACK timeout and zombie detection to kill a
+        dead/half-open connection.  The close propagates as an exception in
+        _read_events, which _listen_loop already handles with backoff/reconnect.
+        """
+        if self._ws and not self._ws.closed:
+            try:
+                await self._ws.close(code=4000, message=b"heartbeat timeout")
+            except Exception:
+                pass
+
+    async def _health_monitor(self) -> None:
+        """Periodically check connection liveness.
+
+        If no inbound frames have been received for ZOMBIE_IDLE_THRESHOLD seconds,
+        the WebSocket is likely half-open (network middleware silently dropped it).
+        Force-close to trigger _listen_loop's reconnect.
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(HEALTH_MONITOR_INTERVAL)
+                if not self._running:
+                    break
+
+                # _last_inbound_time == 0 means we haven't received anything yet
+                # (pre-Hello or just reconnected).  Skip the check.
+                if self._last_inbound_time <= 0:
+                    continue
+
+                idle_seconds = time.monotonic() - self._last_inbound_time
+                if idle_seconds > ZOMBIE_IDLE_THRESHOLD:
+                    logger.warning(
+                        "[%s] No inbound frames for %.0fs (threshold %.0fs) -- "
+                        "zombie connection detected, forcing reconnect",
+                        self._log_tag,
+                        idle_seconds,
+                        ZOMBIE_IDLE_THRESHOLD,
+                    )
+                    await self._force_ws_close()
+                    # Reset so the monitor doesn't re-trigger before new frames arrive.
+                    self._last_inbound_time = 0.0
         except asyncio.CancelledError:
             pass
 
@@ -718,6 +814,8 @@ class QQAdapter(BasePlatformAdapter):
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
+        self._last_inbound_time = time.monotonic()
+
         op = payload.get("op")
         t = payload.get("t")
         s = payload.get("s")
@@ -765,6 +863,9 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 11 = Heartbeat ACK
         if op == 11:
+            self._last_heartbeat_ack_time = time.monotonic()
+            self._heartbeat_awaiting_ack = False
+            self._consecutive_ack_misses = 0
             return
 
         logger.debug("[%s] Unknown op: %s", self._log_tag, op)

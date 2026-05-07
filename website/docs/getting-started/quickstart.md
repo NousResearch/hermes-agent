@@ -204,7 +204,7 @@ Type `/` to see an autocomplete dropdown of all commands:
 
 ### Multi-line input
 
-Press `Alt+Enter` or `Ctrl+J` to add a new line. Great for pasting code or writing detailed prompts.
+Press `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` to add a new line. `Shift+Enter` requires a terminal that sends it as a distinct sequence (Kitty / foot / WezTerm / Ghostty by default; iTerm2 / Alacritty / VS Code terminal once the Kitty keyboard protocol is enabled). `Alt+Enter` and `Ctrl+J` work in every terminal.
 
 ### Interrupt the agent
 

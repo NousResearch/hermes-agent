@@ -1,15 +1,19 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
 import asyncio
+import json
 import os
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig, HomeChannel
+from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -177,6 +181,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
+TeamsSummaryWriter = _teams_mod.TeamsSummaryWriter
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
@@ -447,6 +452,108 @@ class TestTeamsSend:
         mock_app.send.assert_awaited_once()
         call_args = mock_app.send.call_args
         assert call_args[0][0] == "conv-id"
+
+
+def _make_summary_payload():
+    return TeamsMeetingSummaryPayload(
+        meeting_ref=TeamsMeetingRef(meeting_id="meeting-123"),
+        title="Weekly Sync",
+        summary="Discussed launch readiness.",
+        key_decisions=["Proceed with staged rollout."],
+        action_items=["Send launch checklist."],
+        risks=["QA sign-off still pending."],
+    )
+
+
+class TestTeamsSummaryWriter:
+    @pytest.mark.anyio
+    async def test_incoming_webhook_posts_summary_text(self):
+        seen = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(200, json={"ok": True})
+
+        writer = TeamsSummaryWriter(transport=httpx.MockTransport(_handler))
+        payload = _make_summary_payload()
+
+        result = await writer.write_summary(
+            payload,
+            {
+                "delivery_mode": "incoming_webhook",
+                "incoming_webhook_url": "https://example.test/teams-webhook",
+            },
+        )
+
+        assert result["delivery_mode"] == "incoming_webhook"
+        assert seen["url"] == "https://example.test/teams-webhook"
+        assert "Weekly Sync" in seen["body"]["text"]
+        assert "Proceed with staged rollout." in seen["body"]["text"]
+
+    @pytest.mark.anyio
+    async def test_graph_delivery_posts_to_channel(self):
+        graph_client = SimpleNamespace(
+            post_json=AsyncMock(return_value={"id": "msg-123", "webUrl": "https://teams.example/messages/123"})
+        )
+        writer = TeamsSummaryWriter(graph_client=graph_client)
+        payload = _make_summary_payload()
+
+        result = await writer.write_summary(
+            payload,
+            {
+                "delivery_mode": "graph",
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+            },
+        )
+
+        assert result["target_type"] == "channel"
+        assert result["message_id"] == "msg-123"
+        graph_client.post_json.assert_awaited_once()
+        path = graph_client.post_json.await_args.args[0]
+        body = graph_client.post_json.await_args.kwargs["json_body"]
+        assert path == "/teams/team-1/channels/channel-1/messages"
+        assert body["body"]["contentType"] == "html"
+        assert "Weekly Sync" in body["body"]["content"]
+
+    @pytest.mark.anyio
+    async def test_graph_delivery_falls_back_to_platform_home_channel(self):
+        graph_client = SimpleNamespace(post_json=AsyncMock(return_value={"id": "msg-home"}))
+        platform_config = PlatformConfig(
+            enabled=True,
+            extra={"team_id": "team-home", "delivery_mode": "graph"},
+            home_channel=HomeChannel(
+                platform=Platform("teams"),
+                chat_id="channel-home",
+                name="Teams Home",
+            ),
+        )
+        writer = TeamsSummaryWriter(platform_config=platform_config, graph_client=graph_client)
+
+        await writer.write_summary(_make_summary_payload(), {})
+
+        graph_client.post_json.assert_awaited_once()
+        assert graph_client.post_json.await_args.args[0] == "/teams/team-home/channels/channel-home/messages"
+
+    @pytest.mark.anyio
+    async def test_existing_record_is_reused_without_force_resend(self):
+        graph_client = SimpleNamespace(post_json=AsyncMock())
+        writer = TeamsSummaryWriter(graph_client=graph_client)
+        existing = {"delivery_mode": "graph", "message_id": "msg-existing"}
+
+        result = await writer.write_summary(
+            _make_summary_payload(),
+            {
+                "delivery_mode": "graph",
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+            },
+            existing_record=existing,
+        )
+
+        assert result == existing
+        graph_client.post_json.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

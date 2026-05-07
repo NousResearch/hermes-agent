@@ -82,6 +82,34 @@ def test_runtime_config_uses_existing_teams_platform_settings():
     }
 
 
+def test_build_pipeline_runtime_reuses_existing_teams_adapter_surface(monkeypatch, tmp_path):
+    from plugins.teams_pipeline import runtime as runtime_module
+
+    class FakeWriter:
+        def __init__(self, platform_config=None, **kwargs) -> None:
+            self.platform_config = platform_config
+
+    monkeypatch.setattr(runtime_module, "build_graph_client", lambda: object())
+    monkeypatch.setattr(runtime_module, "resolve_teams_pipeline_store_path", lambda: tmp_path / "teams-store.json")
+    monkeypatch.setattr("plugins.platforms.teams.adapter.TeamsSummaryWriter", FakeWriter)
+
+    gateway = SimpleNamespace(
+        config=GatewayConfig(
+            platforms={
+                Platform("teams"): PlatformConfig(
+                    enabled=True,
+                    extra={"delivery_mode": "incoming_webhook"},
+                )
+            }
+        )
+    )
+
+    runtime = runtime_module.build_pipeline_runtime(gateway)
+
+    assert isinstance(runtime.teams_sender, FakeWriter)
+    assert runtime.teams_sender.platform_config is gateway.config.platforms[Platform("teams")]
+
+
 @pytest.mark.anyio
 async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     from plugins.teams_pipeline import runtime as runtime_module

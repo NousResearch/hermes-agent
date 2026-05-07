@@ -604,6 +604,13 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Maximum characters from a replied-to message to inject as context
+# in the [Replying to: "..."] prefix. Must resolve to an integer from 1 through
+# 10000; ${VAR} references may resolve to decimal integer strings. Invalid
+# values fall back to the default of 500.
+gateway:
+  reply_snippet_max_length: 500
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

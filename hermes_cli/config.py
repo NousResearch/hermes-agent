@@ -2843,6 +2843,12 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Maximum characters from a replied-to message to inject in the
+        # ``[Replying to: "..."]`` context pointer. Must resolve to an integer
+        # from 1 through 10000; env refs may resolve to decimal integer strings.
+        # Invalid values fall back to 500.
+        "reply_snippet_max_length": 500,
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

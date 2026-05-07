@@ -2374,6 +2374,45 @@ def _load_gateway_config() -> dict:
     return raw
 
 
+# Bound misconfiguration so one reply cannot inject an unbounded quoted payload.
+_REPLY_SNIPPET_MAX_LENGTH_DEFAULT = 500
+_REPLY_SNIPPET_MAX_LENGTH_MIN = 1
+_REPLY_SNIPPET_MAX_LENGTH_MAX = 10_000
+
+
+def _get_reply_snippet_max_length() -> int:
+    """Return the configured reply-context budget or the safe default."""
+    config = _load_gateway_runtime_config()
+    gateway_config = config.get("gateway") if isinstance(config, dict) else None
+    if not isinstance(gateway_config, dict):
+        return _REPLY_SNIPPET_MAX_LENGTH_DEFAULT
+
+    value = gateway_config.get(
+        "reply_snippet_max_length",
+        _REPLY_SNIPPET_MAX_LENGTH_DEFAULT,
+    )
+    if isinstance(value, bool):
+        return _REPLY_SNIPPET_MAX_LENGTH_DEFAULT
+
+    if isinstance(value, int):
+        parsed_value = value
+    elif isinstance(value, str):
+        try:
+            parsed_value = int(value.strip())
+        except ValueError:
+            return _REPLY_SNIPPET_MAX_LENGTH_DEFAULT
+    else:
+        return _REPLY_SNIPPET_MAX_LENGTH_DEFAULT
+
+    if not (
+        _REPLY_SNIPPET_MAX_LENGTH_MIN
+        <= parsed_value
+        <= _REPLY_SNIPPET_MAX_LENGTH_MAX
+    ):
+        return _REPLY_SNIPPET_MAX_LENGTH_DEFAULT
+    return parsed_value
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
@@ -10589,14 +10628,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        reply_to_text = event.reply_to_text
+        if reply_to_text and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # guess (or answer for both subjects). The default keeps overhead
+            # modest, and the configurable budget remains hard-bounded.
+            reply_snippet = reply_to_text[:_get_reply_snippet_max_length()]
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

@@ -70,11 +70,14 @@ Thread safety:
 """
 
 import asyncio
+import base64
+import binascii
 import concurrent.futures
 import inspect
 import json
 import logging
 import math
+import mimetypes
 import os
 import re
 import shutil
@@ -1927,6 +1930,66 @@ def _interrupted_call_result() -> str:
     }, ensure_ascii=False)
 
 
+def _safe_mcp_name(value: str) -> str:
+    """Return a filesystem-safe fragment for MCP cache paths."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip(".-")
+    return safe or "mcp"
+
+
+def _extension_for_mime_type(mime_type: str) -> str:
+    """Return a stable file extension for an MCP image MIME type."""
+    normalized = (mime_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    explicit = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/svg+xml": ".svg",
+        "image/bmp": ".bmp",
+    }
+    if normalized in explicit:
+        return explicit[normalized]
+    guessed = mimetypes.guess_extension(normalized) or ".bin"
+    return ".jpg" if guessed == ".jpe" else guessed
+
+
+def _materialize_mcp_image_block(block, server_name: str, tool_name: str) -> Dict[str, Any]:
+    """Persist an MCP ImageContent block and return JSON-safe metadata."""
+    mime_type = str(getattr(block, "mimeType", "application/octet-stream") or "application/octet-stream")
+    raw_data = getattr(block, "data", "")
+    try:
+        if isinstance(raw_data, bytes):
+            raw_data = raw_data.decode("ascii")
+        image_bytes = base64.b64decode(str(raw_data), validate=True)
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        logger.warning(
+            "MCP server '%s' tool '%s' returned invalid image data: %s",
+            server_name,
+            tool_name,
+            exc,
+        )
+        return {
+            "type": "image",
+            "mimeType": mime_type,
+            "error": "invalid base64 image data",
+        }
+
+    from hermes_constants import get_hermes_home
+
+    cache_dir = get_hermes_home() / "cache" / "mcp" / _safe_mcp_name(server_name)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ext = _extension_for_mime_type(mime_type)
+    filename = f"{int(time.time_ns())}-{_safe_mcp_name(tool_name)}{ext}"
+    path = cache_dir / filename
+    path.write_bytes(image_bytes)
+    return {
+        "type": "image",
+        "mimeType": mime_type,
+        "path": str(path),
+        "size_bytes": len(image_bytes),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -2054,11 +2117,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 }, ensure_ascii=False)
 
-            # Collect text from content blocks
+            # Collect model-oriented content blocks. Text remains the primary
+            # result for backward compatibility; binary image blocks are
+            # materialized to cache files and surfaced as JSON metadata.
             parts: List[str] = []
+            content_blocks: List[Dict[str, Any]] = []
             for block in (result.content or []):
                 if hasattr(block, "text"):
                     parts.append(block.text)
+                elif hasattr(block, "data") and hasattr(block, "mimeType"):
+                    content_blocks.append(
+                        _materialize_mcp_image_block(block, server_name, tool_name)
+                    )
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.
@@ -2068,12 +2138,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
-                    return json.dumps({
+                    payload = {
                         "result": text_result,
                         "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
+                    }
+                else:
+                    payload = {"result": structured}
+            else:
+                payload = {"result": text_result}
+            if content_blocks:
+                payload["content_blocks"] = content_blocks
+            return json.dumps(payload, ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)

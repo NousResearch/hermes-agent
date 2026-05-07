@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pathlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,11 +12,20 @@ from tools import mcp_tool
 
 
 class _FakeContentBlock:
-    """Minimal content block with .text and .type attributes."""
+    """Minimal text content block with .text and .type attributes."""
 
     def __init__(self, text: str, block_type: str = "text"):
         self.text = text
         self.type = block_type
+
+
+class _FakeImageContentBlock:
+    """Minimal image content block with MCP ImageContent attributes."""
+
+    def __init__(self, data: str, mime_type: str = "image/png"):
+        self.type = "image"
+        self.data = data
+        self.mimeType = mime_type
 
 
 class _FakeCallToolResult:
@@ -140,3 +150,36 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+    def test_image_content_blocks_are_preserved(self, _patch_mcp_server, tmp_path, monkeypatch):
+        """Image blocks from MCP tool results are materialized and surfaced."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        session = _patch_mcp_server
+        image_bytes = b"fake-png-bytes"
+        image_b64 = "ZmFrZS1wbmctYnl0ZXM="
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[
+                    _FakeContentBlock("metadata"),
+                    _FakeImageContentBlock(image_b64, "image/png"),
+                ],
+            )
+        )
+
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+
+        assert data["result"] == "metadata"
+        assert data["content_blocks"] == [
+            {
+                "type": "image",
+                "mimeType": "image/png",
+                "path": data["content_blocks"][0]["path"],
+                "size_bytes": len(image_bytes),
+            }
+        ]
+        image_path = data["content_blocks"][0]["path"]
+        assert image_path.endswith(".png")
+        assert (tmp_path / "cache" / "mcp").resolve() in pathlib.Path(image_path).resolve().parents
+        assert pathlib.Path(image_path).read_bytes() == image_bytes

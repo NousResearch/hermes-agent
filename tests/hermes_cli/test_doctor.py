@@ -126,6 +126,47 @@ class TestDoctorToolAvailabilityOverrides:
         assert available == []
         assert unavailable == [honcho_entry]
 
+    def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
+        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: False)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [{"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}],
+        )
+
+        assert available == ["kanban"]
+        assert unavailable == []
+
+    def test_leaves_kanban_unavailable_when_worker_env_is_set(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "probe")
+        kanban_entry = {"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [kanban_entry],
+        )
+
+        assert available == []
+        assert unavailable == [kanban_entry]
+
+    def test_leaves_non_worker_kanban_failure_unavailable(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        kanban_entry = {"name": "kanban", "env_vars": [], "tools": ["kanban_show", "not_a_kanban_tool"]}
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [kanban_entry],
+        )
+
+        assert available == []
+        assert unavailable == [kanban_entry]
+
+    def test_kanban_doctor_detail_explains_worker_gate(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
@@ -337,6 +378,11 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "1) pkg install nodejs" in out
     assert "2) npm install -g agent-browser" in out
     assert "3) agent-browser install" in out
+    assert "Termux compatibility fallbacks:" in out
+    assert "use .[termux-all] for broad compatibility" in out
+    assert "Matrix E2EE extra is excluded on Termux" in out
+    assert "Local faster-whisper extra is excluded on Termux" in out
+    assert "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY)." in out
     assert "docker not found (optional)" not in out
 
 
@@ -611,6 +657,60 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     assert any(url == "https://api.moonshot.cn/v1/models" for url, _, _ in calls)
 
 
+def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("DASHSCOPE_API_KEY=sk-test\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+    monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        status = 200 if "dashscope.aliyuncs.com" in url else 401
+        return types.SimpleNamespace(status_code=status)
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "Alibaba/DashScope" in out
+    assert "invalid API key" not in out
+    assert any(
+        url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models"
+        for url, _, _ in calls
+    )
+    assert any(
+        url == "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+        for url, _, _ in calls
+    )
+
+
 @pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])
 def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
     home = tmp_path / ".hermes"
@@ -663,3 +763,79 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     )
     assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+class TestGitHubTokenCheck:
+    """Tests for GitHub token / gh auth detection in doctor."""
+
+    def test_no_token_and_not_gh_authenticated_shows_warn(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+
+        from hermes_cli.doctor import run_doctor, _DHH
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "No GITHUB_TOKEN" in out
+        assert "60 req/hr" in out
+
+    def test_token_env_present_shows_ok(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "GitHub token configured" in out
+
+    def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # No GITHUB_TOKEN or GH_TOKEN
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        # Mock gh to return success
+        import shutil
+        real_which = shutil.which
+        def mock_which(cmd):
+            return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
+        monkeypatch.setattr(shutil, "which", mock_which)
+
+        call_log = []
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            if cmd[:2] == ["gh", "auth"]:
+                result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            else:
+                result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
+            return result
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
+        assert "GitHub authenticated via gh CLI" in out or "token configured" in out

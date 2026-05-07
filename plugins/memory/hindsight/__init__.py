@@ -52,6 +52,12 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+# Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
+# `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
+# Without it, reusing a stable session-scoped document_id silently
+# overwrites prior turns server-side, so we keep the per-process
+# unique document_id fallback for older APIs.
+_MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -91,6 +97,95 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
+# ---------------------------------------------------------------------------
+
+# Cache of API_URL -> bool (whether that API supports update_mode='append').
+# Probed once per URL per process — every provider talking to the same API
+# gets the same answer without re-hitting /version on each initialize().
+_append_capability_cache: Dict[str, bool] = {}
+_append_capability_lock = threading.Lock()
+
+
+def _meets_minimum_version(actual: str | None, required: str) -> bool:
+    """Return True if *actual* ≥ *required* (semver). False on missing/invalid."""
+    if not actual:
+        return False
+    try:
+        from packaging.version import Version
+        return Version(actual) >= Version(required)
+    except Exception:
+        return False
+
+
+def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
+                                 timeout: float = 5.0) -> str | None:
+    """GET ``<api_url>/version`` and return the version string (or None on failure).
+
+    Hindsight's `/version` endpoint returns ``{"version": "0.5.6", ...}``.
+    Any failure (timeout, 404, malformed JSON, missing key) → None, which
+    the caller treats as "legacy API, no update_mode support".
+    """
+    import urllib.error
+    import urllib.request
+    if not api_url:
+        return None
+    url = api_url.rstrip("/") + "/version"
+    req = urllib.request.Request(url)
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            payload = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(payload)
+    except Exception as exc:
+        logger.debug("Hindsight /version probe failed for %s: %s", url, exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version") or data.get("api_version")
+    return str(version) if version else None
+
+
+def _check_api_supports_update_mode_append(api_url: str,
+                                           api_key: str | None = None) -> bool:
+    """Cached capability check for ``update_mode='append'`` on *api_url*.
+
+    Probes once per URL per process. Returns False on any probe failure —
+    that's the safe default: a per-process unique ``document_id`` and no
+    ``update_mode`` keeps the resume-overwrite fix (#6654) intact.
+    """
+    if not api_url:
+        return False
+    with _append_capability_lock:
+        if api_url in _append_capability_cache:
+            return _append_capability_cache[api_url]
+    version = _fetch_hindsight_api_version(api_url, api_key)
+    supported = _meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+    with _append_capability_lock:
+        # Re-check after acquiring the lock in case a concurrent probe filled it.
+        cached = _append_capability_cache.get(api_url)
+        if cached is None:
+            _append_capability_cache[api_url] = supported
+        else:
+            supported = cached
+    if not supported:
+        logger.warning(
+            "Hindsight API at %s reports version %r, older than %s. "
+            "Falling back to per-process document_id — retains across "
+            "processes/sessions create separate documents instead of "
+            "appending to a session-scoped one. Upgrade Hindsight to "
+            "%s+ to enable update_mode='append' deduplication.",
+            api_url, version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+            _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+        )
+    else:
+        logger.debug("Hindsight API %s version %s supports update_mode='append'",
+                     api_url, version)
+    return supported
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +1013,40 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = client
             return self._run_sync(operation(client))
 
+    def _probe_url(self) -> str:
+        """Return the URL to probe /version on.
+
+        For local_embedded the daemon is on a per-profile dynamic port,
+        so we prefer the running client's URL when available; otherwise
+        fall back to the configured api_url.
+        """
+        if self._mode == "local_embedded" and self._client is not None:
+            url = getattr(self._client, "url", None)
+            if url:
+                return str(url)
+        return self._api_url or ""
+
+    def _resolve_retain_target(self, fallback_document_id: str) -> tuple[str, str | None]:
+        """Pick (document_id, update_mode) based on live API capability.
+
+        On Hindsight ≥ 0.5.0 the API supports ``update_mode='append'``,
+        which lets us reuse a stable session-scoped ``document_id`` across
+        process lifecycles without overwriting prior turns. On older APIs
+        we fall back to *fallback_document_id* (the per-process unique
+        ``f"{session_id}-{start_ts}"`` minted at initialize / switch time)
+        and don't pass ``update_mode`` at all — that's the only way the
+        resume-overwrite fix (#6654) keeps working on legacy servers.
+
+        Probe is cached at module level per API URL, so this is one HTTP
+        round-trip per (process, api_url) pair regardless of how many
+        retains fire.
+        """
+        if not self._session_id:
+            return fallback_document_id, None
+        if _check_api_supports_update_mode_append(self._probe_url(), self._api_key):
+            return self._session_id, "append"
+        return fallback_document_id, None
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
@@ -1319,7 +1448,7 @@ class HindsightMemoryProvider(MemoryProvider):
             turn_index=self._turn_index,
         )
         num_turns = len(self._session_turns)
-        document_id = self._document_id
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
@@ -1333,8 +1462,10 @@ class HindsightMemoryProvider(MemoryProvider):
             )
             item.pop("bank_id", None)
             item.pop("retain_async", None)
-            logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
-                         bank_id, document_id, retain_async_flag, len(content), num_turns)
+            if update_mode is not None:
+                item["update_mode"] = update_mode
+            logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
+                         bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
             self._run_hindsight_operation(
                 lambda client: client.aretain_batch(
                     bank_id=bank_id,
@@ -1471,7 +1602,6 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._session_turns:
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
-            old_document_id = self._document_id
             old_parent_session_id = self._parent_session_id
             old_turn_index = self._turn_index
             old_metadata = self._build_metadata(
@@ -1484,6 +1614,13 @@ class HindsightMemoryProvider(MemoryProvider):
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
             old_content = "[" + ",".join(old_turns) + "]"
+            # Resolve doc_id + update_mode against the OLD session BEFORE
+            # we rotate _session_id, so the flush lands in the old
+            # session's document either way (legacy: per-process unique;
+            # ≥0.5.0: stable session-scoped + append).
+            old_document_id, old_update_mode = self._resolve_retain_target(
+                self._document_id
+            )
 
             def _flush():
                 try:
@@ -1495,9 +1632,11 @@ class HindsightMemoryProvider(MemoryProvider):
                     )
                     item.pop("bank_id", None)
                     item.pop("retain_async", None)
+                    if old_update_mode is not None:
+                        item["update_mode"] = old_update_mode
                     logger.debug(
-                        "Hindsight flush-on-switch: bank=%s, doc=%s, num_turns=%d",
-                        self._bank_id, old_document_id, len(old_turns),
+                        "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
                     )
                     self._run_hindsight_operation(
                         lambda client: client.aretain_batch(

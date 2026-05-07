@@ -730,8 +730,8 @@ def handle_function_call(
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
                 )
-            except Exception:
-                pass
+            except Exception as _hook_err:
+                logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
@@ -782,8 +782,8 @@ def handle_function_call(
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
             )
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("post_tool_call hook error: %s", _hook_err)
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -807,8 +807,8 @@ def handle_function_call(
                 if isinstance(hook_result, str):
                     result = hook_result
                     break
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("transform_tool_result hook error: %s", _hook_err)
 
         return result
 

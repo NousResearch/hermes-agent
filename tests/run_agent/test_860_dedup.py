@@ -101,6 +101,50 @@ class TestFlushDeduplication:
             rows = db.get_messages(agent.session_id)
             assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
 
+    def test_flush_advances_cursor_after_each_successful_message(self):
+        """A mid-flush DB failure must not retry already committed messages."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            messages = [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+                {"role": "user", "content": "three"},
+                {"role": "assistant", "content": "four"},
+            ]
+
+            original_append = db.append_message
+            calls = 0
+
+            def flaky_append(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 3:
+                    raise sqlite3.OperationalError("database is locked")
+                return original_append(*args, **kwargs)
+
+            db.append_message = flaky_append
+            agent._flush_messages_to_session_db(messages, [])
+
+            assert agent._last_flushed_db_idx == 2
+            rows = db.get_messages(agent.session_id)
+            assert [row["content"] for row in rows] == ["one", "two"]
+
+            db.append_message = original_append
+            agent._flush_messages_to_session_db(messages, [])
+
+            rows = db.get_messages(agent.session_id)
+            assert [row["content"] for row in rows] == [
+                "one",
+                "two",
+                "three",
+                "four",
+            ]
+
     def test_persist_session_multiple_calls_no_duplication(self):
         """Multiple _persist_session calls don't duplicate DB entries."""
         from hermes_state import SessionDB

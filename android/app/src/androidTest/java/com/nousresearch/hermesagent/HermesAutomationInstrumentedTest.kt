@@ -889,6 +889,79 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun logcatEntryTriggerRunsMatchingAutomationAndExposesVariables() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-logcat-trigger.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Logcat entry smoke")
+                    .put("path", "hermes-logcat-trigger.txt")
+                    .put("content", "%LOGCAT_LEVEL:%LOGCAT_TAG:%LOGCAT_PID:%LOGCAT_PACKAGE:%LOGCAT_MESSAGE")
+                    .put("trigger", "logcat_entry")
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message_contains", "ANR")
+                    .put("logcat_level", "E")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "com.example.app"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = JSONObject(automation.getString("trigger_data"))
+        assertEquals("logcat_entry", automation.getString("trigger_type"))
+        assertEquals("ActivityManager", triggerData.getString("tag"))
+        assertTrue(triggerData.getBoolean("requires_shizuku_for_background_watch"))
+
+        val missed = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_logcat_entry_trigger",
+                JSONObject()
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message", "Process started")
+                    .put("logcat_level", "E")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "com.example.app"),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+        assertFalse("Expected ${target.absolutePath} to stay absent", target.exists())
+
+        val matched = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_logcat_entry_trigger",
+                JSONObject()
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message", "ANR in com.example.app")
+                    .put("logcat_level", "error")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "com.example.app"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals("logcat_entry", matched.getString("trigger"))
+        assertTrue(matched.getBoolean("requires_shizuku_for_background_watch"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("error:ActivityManager:4242:com.example.app:ANR in com.example.app", target.readText())
+
+        val variables = JSONObject(HermesAutomationBridge.performActionJson(app, "list_variables"))
+            .getJSONObject("variables")
+        assertEquals("ActivityManager", variables.getString("LOGCAT_TAG"))
+        assertEquals("ANR in com.example.app", variables.getString("LOGCAT_MESSAGE"))
+        assertEquals("error", variables.getString("LOGCAT_LEVEL"))
+        assertEquals("4242", variables.getString("LOGCAT_PID"))
+        assertEquals("com.example.app", variables.getString("LOGCAT_PACKAGE"))
+    }
+
+    @Test
     fun timeTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

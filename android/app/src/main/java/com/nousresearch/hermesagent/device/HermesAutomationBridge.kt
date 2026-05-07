@@ -64,6 +64,10 @@ object HermesAutomationBridge {
                 context = context,
                 arguments = arguments,
             )
+            "run_logcat_entry_trigger", "trigger_logcat_entry", "logcat_entry", "logcat" -> runLogcatEntryTriggerJson(
+                context = context,
+                arguments = arguments,
+            )
             "run_external_trigger", "trigger_external", "external_trigger", "extra_trigger", "run_trigger_app" -> runExternalTriggerJson(
                 context = context,
                 arguments = arguments,
@@ -604,6 +608,9 @@ object HermesAutomationBridge {
         if (normalizedTrigger == TRIGGER_SENSOR) {
             return errorJson("sensor trigger requires run_sensor_trigger with sensor_type or sensor_name")
         }
+        if (normalizedTrigger == TRIGGER_LOGCAT_ENTRY) {
+            return errorJson("logcat_entry trigger requires run_logcat_entry_trigger with logcat_tag or logcat_message")
+        }
         if (normalizedTrigger == TRIGGER_EXTERNAL) {
             return errorJson("external_trigger requires run_external_trigger with trigger_id and external_token")
         }
@@ -899,6 +906,90 @@ object HermesAutomationBridge {
             .put("sensor_value", value ?: JSONObject.NULL)
             .put("sensor_unit", unit.take(MAX_EVENT_VALUE_CHARS))
             .put("sensor_accuracy", accuracy.take(MAX_EVENT_VALUE_CHARS))
+            .put("matched_count", records.size)
+            .put("results", results)
+            .toString()
+    }
+
+    fun runLogcatEntryTriggerJson(context: Context, arguments: JSONObject): String {
+        val tag = stringArgument(
+            arguments,
+            "logcat_tag",
+            "log_tag",
+            "tag",
+            "component",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val message = stringArgument(
+            arguments,
+            "logcat_message",
+            "message",
+            "text",
+            "line",
+            "log_message",
+            allowEmpty = true,
+        ).orEmpty()
+        if (tag.isBlank() && message.isBlank()) {
+            return errorJson("logcat_entry trigger requires logcat_tag or logcat_message")
+        }
+        val level = stringArgument(
+            arguments,
+            "logcat_level",
+            "log_level",
+            "priority",
+            "level",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val pid = stringArgument(
+            arguments,
+            "logcat_pid",
+            "pid",
+            "process_id",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val packageName = stringArgument(
+            arguments,
+            "logcat_package_name",
+            "trigger_package_name",
+            "package_name",
+            "packageName",
+            "package",
+            "app_package",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val timestamp = stringArgument(
+            arguments,
+            "logcat_timestamp",
+            "timestamp",
+            "time",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        logcatEventNulError(tag, message, level, pid, packageName, timestamp)?.let { error ->
+            return errorJson(error)
+        }
+        val store = HermesAutomationStore(context)
+        setLogcatEventVariables(store, tag, message, level, pid, packageName, timestamp)
+        val variables = store.listVariables()
+        val records = store.list()
+            .filter { record ->
+                record.enabled &&
+                    record.triggerType == TRIGGER_LOGCAT_ENTRY &&
+                    logcatEntryMatches(record, variables, tag, message, level, pid, packageName)
+            }
+        val results = JSONArray()
+        records.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_LOGCAT_ENTRY))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_LOGCAT_ENTRY)
+            .put("logcat_tag", tag.take(MAX_EVENT_VALUE_CHARS))
+            .put("logcat_message", message.take(MAX_VARIABLE_VALUE_CHARS))
+            .put("logcat_level", level.take(MAX_EVENT_VALUE_CHARS))
+            .put("logcat_pid", pid.take(MAX_EVENT_VALUE_CHARS))
+            .put("logcat_package_name", packageName.take(MAX_EVENT_VALUE_CHARS))
+            .put("logcat_timestamp", timestamp.take(MAX_EVENT_VALUE_CHARS))
+            .put("requires_shizuku_for_background_watch", true)
             .put("matched_count", records.size)
             .put("results", results)
             .toString()
@@ -1301,6 +1392,7 @@ object HermesAutomationBridge {
             TRIGGER_CALENDAR_EVENT -> buildCalendarTriggerData(arguments)
             TRIGGER_LOCATION -> buildLocationTriggerData(arguments)
             TRIGGER_SENSOR -> buildSensorTriggerData(arguments)
+            TRIGGER_LOGCAT_ENTRY -> buildLogcatTriggerData(arguments)
             TRIGGER_EXTERNAL -> buildExternalTriggerData(arguments)
             else -> TriggerDataResult("")
         }
@@ -1508,6 +1600,82 @@ object HermesAutomationBridge {
         return TriggerDataResult(payload.toString())
     }
 
+    private fun buildLogcatTriggerData(arguments: JSONObject): TriggerDataResult {
+        val payload = JSONObject()
+        listOf(
+            copyCalendarTriggerFilter(
+                payload,
+                "tag",
+                arguments,
+                "logcat_tag",
+                "log_tag",
+                "tag",
+                "component",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "message_contains",
+                arguments,
+                "logcat_message_contains",
+                "message_contains",
+                "message_filter",
+                "log_message_contains",
+                "logcat_message",
+                "log_message",
+                "message",
+                "filter",
+                "grep_filter",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "level",
+                arguments,
+                "logcat_level",
+                "log_level",
+                "priority",
+                "level",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "package_name",
+                arguments,
+                "logcat_package_name",
+                "log_package_name",
+                "source_package_name",
+            ),
+            copyCalendarTriggerFilter(
+                payload,
+                "pid",
+                arguments,
+                "logcat_pid",
+                "pid",
+                "process_id",
+            ),
+        ).firstOrNull { it != null }?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        val hasTriggerPackage = stringArgument(
+            arguments,
+            "trigger_package_name",
+            "triggerPackageName",
+            "profile_package_name",
+            "context_package_name",
+        )?.trim()?.isNotBlank() == true
+        val hasBoundedFilter = payload.has("tag") ||
+            payload.has("message_contains") ||
+            payload.has("package_name") ||
+            payload.has("pid") ||
+            hasTriggerPackage
+        if (!hasBoundedFilter) {
+            return TriggerDataResult("", "logcat_entry trigger requires logcat_tag, logcat_message_contains, logcat_package_name, trigger_package_name, or logcat_pid")
+        }
+        validateLogcatTriggerData(payload)?.let { error ->
+            return TriggerDataResult("", error)
+        }
+        payload.put("requires_shizuku_for_background_watch", true)
+        return TriggerDataResult(payload.toString())
+    }
+
     private fun validateSensorTriggerNumericPayload(payload: JSONObject): String? {
         val minValue = literalDoubleFilter(payload, "min_value")
         val maxValue = literalDoubleFilter(payload, "max_value")
@@ -1515,6 +1683,35 @@ object HermesAutomationBridge {
             return "sensor trigger min_value must be less than or equal to max_value"
         }
         return null
+    }
+
+    private fun validateLogcatTriggerData(payload: JSONObject): String? {
+        val level = payload.optString("level").trim()
+        if (level.isNotBlank() && !looksLikeVariableReference(level) && normalizeLogcatLevel(level).isBlank()) {
+            return "logcat_level must be verbose, debug, info, warn, error, assert, or one of V/D/I/W/E/A/F"
+        }
+        val pid = payload.optString("pid").trim()
+        if (pid.isNotBlank() && !looksLikeVariableReference(pid) && pid.toIntOrNull()?.takeIf { it > 0 } == null) {
+            return "logcat_pid must be a positive integer"
+        }
+        return null
+    }
+
+    private fun validateLogcatTriggerData(triggerData: String, triggerPackageName: String): String? {
+        val payload = runCatching { JSONObject(triggerData.ifBlank { "{}" }) }.getOrElse {
+            return "logcat_entry trigger_data must be a JSON object"
+        }
+        validateLogcatTriggerData(payload)?.let { error -> return error }
+        val hasBoundedFilter = payload.has("tag") ||
+            payload.has("message_contains") ||
+            payload.has("package_name") ||
+            payload.has("pid") ||
+            triggerPackageName.isNotBlank()
+        return if (hasBoundedFilter) {
+            null
+        } else {
+            "logcat_entry trigger_data requires tag, message_contains, package_name, pid, or trigger_package_name"
+        }
     }
 
     private fun buildExternalTriggerData(arguments: JSONObject): TriggerDataResult {
@@ -2134,6 +2331,9 @@ object HermesAutomationBridge {
         if (triggerType == TRIGGER_EXTERNAL) {
             validateExternalTriggerData(triggerData)?.let { error -> throw IllegalArgumentException(error) }
         }
+        if (triggerType == TRIGGER_LOGCAT_ENTRY) {
+            validateLogcatTriggerData(triggerData, triggerPackageName)?.let { error -> throw IllegalArgumentException(error) }
+        }
         val createdAt = json.optLong("created_at_epoch_ms", now).takeIf { it > 0L } ?: now
         return HermesAutomationRecord(
             id = id,
@@ -2311,6 +2511,73 @@ object HermesAutomationBridge {
         return true
     }
 
+    private fun logcatEntryMatches(
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+        tag: String,
+        message: String,
+        level: String,
+        pid: String,
+        packageName: String,
+    ): Boolean {
+        val filters = runCatching { JSONObject(record.triggerData.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        if (record.triggerPackageName.isNotBlank() && !triggerPackageMatches(record.triggerPackageName, packageName, variables)) {
+            return false
+        }
+        if (!textFilterMatches(filters.optString("tag"), tag, variables)) {
+            return false
+        }
+        if (!textFilterMatches(filters.optString("message_contains"), message, variables)) {
+            return false
+        }
+        if (!textFilterMatches(filters.optString("package_name"), packageName, variables)) {
+            return false
+        }
+        if (!logcatLevelMatches(filters.optString("level"), level, variables)) {
+            return false
+        }
+        return exactFilterMatches(filters.optString("pid"), pid, variables)
+    }
+
+    private fun logcatLevelMatches(filter: String, level: String, variables: JSONObject): Boolean {
+        val expanded = expandVariables(filter, variables).trim()
+        if (expanded.isBlank() || expanded == "*") {
+            return true
+        }
+        if (expanded.indexOf('\u0000') >= 0) {
+            return false
+        }
+        val normalizedFilter = normalizeLogcatLevel(expanded)
+        val normalizedLevel = normalizeLogcatLevel(level)
+        return normalizedFilter.isNotBlank() &&
+            normalizedLevel.isNotBlank() &&
+            normalizedFilter == normalizedLevel
+    }
+
+    private fun exactFilterMatches(filter: String, value: String, variables: JSONObject): Boolean {
+        val expanded = expandVariables(filter, variables).trim()
+        if (expanded.isBlank() || expanded == "*") {
+            return true
+        }
+        if (expanded.indexOf('\u0000') >= 0) {
+            return false
+        }
+        return expanded.equals(value.trim(), ignoreCase = true)
+    }
+
+    private fun normalizeLogcatLevel(level: String): String {
+        return when (level.trim().lowercase(Locale.US)) {
+            "v", "verbose" -> "v"
+            "d", "debug" -> "d"
+            "i", "info", "information" -> "i"
+            "w", "warn", "warning" -> "w"
+            "e", "error" -> "e"
+            "a", "assert", "wtf" -> "a"
+            "f", "fatal" -> "f"
+            else -> ""
+        }
+    }
+
     private fun externalTriggerMatches(
         record: HermesAutomationRecord,
         variables: JSONObject,
@@ -2400,6 +2667,25 @@ object HermesAutomationBridge {
             valueName.indexOf('\u0000') >= 0 -> "sensor_value_name must not contain NUL bytes"
             unit.indexOf('\u0000') >= 0 -> "sensor_unit must not contain NUL bytes"
             accuracy.indexOf('\u0000') >= 0 -> "sensor_accuracy must not contain NUL bytes"
+            else -> null
+        }
+    }
+
+    private fun logcatEventNulError(
+        tag: String,
+        message: String,
+        level: String,
+        pid: String,
+        packageName: String,
+        timestamp: String,
+    ): String? {
+        return when {
+            tag.indexOf('\u0000') >= 0 -> "logcat_tag must not contain NUL bytes"
+            message.indexOf('\u0000') >= 0 -> "logcat_message must not contain NUL bytes"
+            level.indexOf('\u0000') >= 0 -> "logcat_level must not contain NUL bytes"
+            pid.indexOf('\u0000') >= 0 -> "logcat_pid must not contain NUL bytes"
+            packageName.indexOf('\u0000') >= 0 -> "logcat_package_name must not contain NUL bytes"
+            timestamp.indexOf('\u0000') >= 0 -> "logcat_timestamp must not contain NUL bytes"
             else -> null
         }
     }
@@ -2589,6 +2875,26 @@ object HermesAutomationBridge {
         store.setVariable("SENSOR_ACCURACY", accuracy.take(MAX_EVENT_VALUE_CHARS))
     }
 
+    private fun setLogcatEventVariables(
+        store: HermesAutomationStore,
+        tag: String,
+        message: String,
+        level: String,
+        pid: String,
+        packageName: String,
+        timestamp: String,
+    ) {
+        store.setVariable("LOGCAT_TAG", tag.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOGCAT_MESSAGE", message.take(MAX_VARIABLE_VALUE_CHARS))
+        store.setVariable("LOGCAT_LEVEL", level.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOGCAT_PID", pid.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOGCAT_PACKAGE", packageName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOGCAT_TIME", timestamp.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOG_TAG", tag.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOG_MESSAGE", message.take(MAX_VARIABLE_VALUE_CHARS))
+        store.setVariable("LOG_LEVEL", level.take(MAX_EVENT_VALUE_CHARS))
+    }
+
     private fun setExternalTriggerVariables(
         store: HermesAutomationStore,
         triggerId: String,
@@ -2765,6 +3071,7 @@ object HermesAutomationBridge {
         TRIGGER_CALENDAR_EVENT,
         TRIGGER_LOCATION,
         TRIGGER_SENSOR,
+        TRIGGER_LOGCAT_ENTRY,
         TRIGGER_EXTERNAL,
         TRIGGER_SHIZUKU_AVAILABLE,
         TRIGGER_SHIZUKU_UNAVAILABLE,
@@ -2813,6 +3120,12 @@ object HermesAutomationBridge {
         "shake" to TRIGGER_SENSOR,
         "orientation" to TRIGGER_SENSOR,
         "motion" to TRIGGER_SENSOR,
+        "logcat" to TRIGGER_LOGCAT_ENTRY,
+        "logcat_entry" to TRIGGER_LOGCAT_ENTRY,
+        "logcat_event" to TRIGGER_LOGCAT_ENTRY,
+        "logcat_profile" to TRIGGER_LOGCAT_ENTRY,
+        "log_entry" to TRIGGER_LOGCAT_ENTRY,
+        "android_log" to TRIGGER_LOGCAT_ENTRY,
         "external" to TRIGGER_EXTERNAL,
         "external_event" to TRIGGER_EXTERNAL,
         "external_trigger" to TRIGGER_EXTERNAL,

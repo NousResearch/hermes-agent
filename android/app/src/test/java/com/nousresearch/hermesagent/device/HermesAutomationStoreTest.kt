@@ -433,6 +433,109 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsLogcatEntryTriggerRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_file_write_task",
+                org.json.JSONObject()
+                    .put("id", "auto-logcat")
+                    .put("path", "logcat-trigger.txt")
+                    .put("content", "%LOGCAT_LEVEL/%LOGCAT_TAG/%LOGCAT_PID/%LOGCAT_PACKAGE/%LOGCAT_MESSAGE/%LOGCAT_TIME")
+                    .put("trigger", "logcat_entry")
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message_contains", "ANR")
+                    .put("logcat_level", "error")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "com.example.app"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        val triggerData = org.json.JSONObject(automation.getString("trigger_data"))
+        assertEquals(TRIGGER_LOGCAT_ENTRY, automation.getString("trigger_type"))
+        assertEquals("ActivityManager", triggerData.getString("tag"))
+        assertEquals("ANR", triggerData.getString("message_contains"))
+        assertEquals("error", triggerData.getString("level"))
+        assertEquals("4242", triggerData.getString("pid"))
+        assertEquals("com.example.app", triggerData.getString("package_name"))
+        assertTrue(triggerData.getBoolean("requires_shizuku_for_background_watch"))
+
+        val missed = org.json.JSONObject(
+            HermesAutomationBridge.runLogcatEntryTriggerJson(
+                context,
+                org.json.JSONObject()
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message", "Process started cleanly")
+                    .put("logcat_level", "E")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "com.example.app"),
+            ),
+        )
+        assertTrue(missed.toString(), missed.getBoolean("success"))
+        assertEquals(0, missed.getInt("matched_count"))
+
+        val matched = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_logcat_entry_trigger",
+                org.json.JSONObject()
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message", "ANR in com.example.app")
+                    .put("logcat_level", "E")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "com.example.app")
+                    .put("logcat_timestamp", "05-07 12:34:56.789"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(TRIGGER_LOGCAT_ENTRY, matched.getString("trigger"))
+        assertTrue(matched.getBoolean("requires_shizuku_for_background_watch"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue(matched.getJSONArray("results").getJSONObject(0).getBoolean("success"))
+        assertEquals("ActivityManager", store.getVariable("LOGCAT_TAG"))
+        assertEquals("ANR in com.example.app", store.getVariable("LOGCAT_MESSAGE"))
+        assertEquals("E", store.getVariable("LOGCAT_LEVEL"))
+        assertEquals("4242", store.getVariable("LOGCAT_PID"))
+        assertEquals("com.example.app", store.getVariable("LOGCAT_PACKAGE"))
+        assertEquals("05-07 12:34:56.789", store.getVariable("LOGCAT_TIME"))
+        val filePath = matched
+            .getJSONArray("results")
+            .getJSONObject(0)
+            .getJSONObject("result")
+            .getString("path")
+        assertEquals(
+            "E/ActivityManager/4242/com.example.app/ANR in com.example.app/05-07 12:34:56.789",
+            java.io.File(filePath).readText(),
+        )
+
+        val generic = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run_trigger",
+                org.json.JSONObject().put("trigger", "logcat"),
+            ),
+        )
+        assertFalse(generic.toString(), generic.getBoolean("success"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shell_task",
+                org.json.JSONObject()
+                    .put("command", "printf no")
+                    .put("trigger", "logcat_entry")
+                    .put("logcat_level", "debug"),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+    }
+
+    @Test
     fun bridgeCreatesAndRunsExternalTriggerRecordsWithTokenGate() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

@@ -253,7 +253,10 @@ def _create_cloud_session_or_fallback(cache_key: str, provider) -> dict[str, Any
         session_info = provider.create_session(cache_key)
         if not session_info or not isinstance(session_info, dict):
             raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
-    except Exception as e:  # health: allow BLE001 -- any provider failure falls back to a local browser
+    except Exception as e:  # health: allow BLE001 -- ordinary provider failures fall back to a local browser
+        from tools.tool_result_signals import ProviderBillingBlocker
+        if isinstance(e, ProviderBillingBlocker):
+            raise
         provider_name = type(provider).__name__
         logger.warning("Cloud provider %s failed (%s); falling back to local Chromium for %s",
                        provider_name, e, cache_key, exc_info=True)

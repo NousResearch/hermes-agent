@@ -1255,6 +1255,11 @@ class AIAgent(
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
+        if decision.code == "typed_tool_billing_blocker":
+            return (
+                f"I stopped after {decision.tool_name or 'a tool'} hit a provider billing blocker. "
+                "Fix the provider credits or billing state before retrying."
+            )
         return (
             f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
             f"{decision.count} times without making progress. The last result above shows what "

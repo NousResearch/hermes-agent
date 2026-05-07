@@ -26,6 +26,12 @@ from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
     _strict_selection_error, _validate_extract_urls,
 )
+from tools.tool_result_signals import (
+    billing_blocker_tool_error,
+    is_billing_blocker_signal,
+    parse_tool_result_signal,
+    provider_billing_blocker_from_exception,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +350,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         _finish_debug("web_search_tool", debug_call_data)
         return result_json
     except Exception as e:
+        provider_name = getattr(locals().get("provider"), "name", locals().get("backend", "web"))
+        if blocker := provider_billing_blocker_from_exception(e, provider=str(provider_name or "web")):
+            return billing_blocker_tool_error(
+                str(blocker), provider=blocker.provider, status_code=blocker.status_code
+            )
         return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {e!s}")
 
 
@@ -363,6 +374,8 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             if served is None:
                 raise
             return served, True
+        if is_billing_blocker_signal(parse_tool_result_signal(resp)):
+            return resp, False
         if not resp.get("success"):
             served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
             if served is not None:
@@ -449,6 +462,11 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
         _finish_debug("web_extract_tool", debug_call_data)
         return cleaned_result
     except Exception as e:
+        provider_name = getattr(locals().get("provider"), "name", locals().get("backend", "web"))
+        if blocker := provider_billing_blocker_from_exception(e, provider=str(provider_name or "web")):
+            return billing_blocker_tool_error(
+                str(blocker), provider=blocker.provider, status_code=blocker.status_code
+            )
         return _finish_debug("web_extract_tool", debug_call_data, f"Error extracting content: {e!s}")
 
 

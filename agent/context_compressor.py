@@ -663,9 +663,9 @@ class ContextCompressor(ContextEngine):
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
-    _CONTENT_MAX = 6000       # total chars per message body
-    _CONTENT_HEAD = 4000      # chars kept from the start
-    _CONTENT_TAIL = 1500      # chars kept from the end
+    _CONTENT_MAX = 10000      # total chars per message body (up from 6000)
+    _CONTENT_HEAD = 6000      # chars kept from the start (up from 4000)
+    _CONTENT_TAIL = 3000      # chars kept from the end (up from 1500)
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
 
@@ -802,6 +802,15 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
+## Entity State Tracker
+[For each important entity (paper, file, PR, commit, etc.) that has a state transition
+during the conversation, track the complete state chain.
+Format: Entity ID | Previous State → New State | Evidence (brief)
+Example:
+09Q9ex | download_success → ingestion_failed(HTML error) → re_download_success(63 chunks) | /data/disk/papers/index.db
+09Q9ex | re_download_success → ingestion_success | chunks:63
+If no entities had state transitions, write "None."]
+
 ## In Progress
 [Work currently underway — what was being done when compaction fired]
 
@@ -842,7 +851,14 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete.
+
+CRITICAL CONTRADICTION DETECTION: Compare the PREVIOUS SUMMARY with the NEW TURNS carefully. If the PREVIOUS SUMMARY says an entity (paper, file, PR, etc.) is in state X, but the NEW TURNS show it in state Y (e.g., "failed" in previous summary but "success" in new turns), you MUST:
+1. Mark the entity as "CONFLICT: PREVIOUS SUMMARY=state_X, NEW TURNS=state_Y" in the Entity State Tracker
+2. Keep BOTH versions in the summary
+3. Do NOT silently overwrite the previous version with the new one
+
+CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
 
 {_template_sections}"""
         else:

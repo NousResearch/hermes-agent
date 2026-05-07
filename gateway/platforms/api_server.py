@@ -14,6 +14,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/stop    — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /healthz                    — minimal monitoring probe (version, uptime, connected platforms)
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -44,6 +45,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.status import read_runtime_status
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -877,6 +879,50 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    async def _handle_healthz(self, request: "web.Request") -> "web.Response":
+        """GET /healthz — minimal monitoring probe.
+
+        Compact JSON envelope intended for external monitors (kube probes,
+        uptime checks).  Always 200, never authenticated, never raises:
+        partial / missing runtime state degrades gracefully to safe defaults
+        so the endpoint stays a true liveness signal.
+        """
+        try:
+            from hermes_cli import __version__ as _version
+            version = _version or "unknown"
+        except ImportError:
+            version = "unknown"
+
+        try:
+            runtime = read_runtime_status() or {}
+        except Exception:
+            runtime = {}
+
+        platforms = runtime.get("platforms") or {}
+        if not isinstance(platforms, dict):
+            platforms = {}
+        connected_platforms = sum(
+            1
+            for v in platforms.values()
+            if isinstance(v, dict) and v.get("state") in ("connected", "running")
+        )
+
+        # started_at may be missing, None, or skewed into the future.  Clamp
+        # to >= 0 so monitors never see a nonsensical negative uptime.
+        started_at = runtime.get("started_at")
+        try:
+            started_at_f = float(started_at) if started_at is not None else time.time()
+        except (TypeError, ValueError):
+            started_at_f = time.time()
+        uptime_seconds = max(0.0, time.time() - started_at_f)
+
+        return web.json_response({
+            "status": "ok",
+            "version": version,
+            "uptime_seconds": uptime_seconds,
+            "connected_platforms": connected_platforms,
+        })
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -934,6 +980,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "endpoints": {
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
+                "healthz": {"method": "GET", "path": "/healthz"},
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
@@ -3048,6 +3095,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
+            self._app.router.add_get("/healthz", self._handle_healthz)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)

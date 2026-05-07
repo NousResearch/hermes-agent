@@ -15,6 +15,8 @@ Configuration in config.yaml:
         enabled: true
         # Optional group-chat gating (mirrors Slack/Telegram/Discord):
         require_mention: true            # or DINGTALK_REQUIRE_MENTION env var
+        allow_private_chats: true        # or DINGTALK_ALLOW_PRIVATE_CHATS env var
+        # reply_mentions_sender_in_group: true  # mention the original sender in group replies
         # free_response_chats:           # conversations that skip require_mention
         #   - cidABC==
         # mention_patterns:              # regex wake-words (e.g. Chinese bot names)
@@ -29,11 +31,13 @@ Configuration in config.yaml:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -94,6 +98,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -365,6 +370,98 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+
+    def _dingtalk_allow_private_chats(self) -> bool:
+        """Return whether direct/private DingTalk conversations should be processed."""
+        configured = self.config.extra.get("allow_private_chats")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("DINGTALK_ALLOW_PRIVATE_CHATS", "true").lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
+
+    def _reply_mentions_sender_in_group(self) -> bool:
+        """Return whether group replies should @ the original sender."""
+        configured = self.config.extra.get("reply_mentions_sender_in_group")
+        if configured is None:
+            configured = os.getenv("DINGTALK_REPLY_MENTIONS_SENDER_IN_GROUP")
+        if configured is None:
+            return False
+        if isinstance(configured, str):
+            return configured.lower() in ("true", "1", "yes", "on")
+        return bool(configured)
+
+    def _build_group_reply_at_payload(
+        self, message: Optional["ChatbotMessage"]
+    ) -> Optional[Dict[str, List[str]]]:
+        """Build webhook @ payload for group replies when enabled."""
+        if not message or not self._reply_mentions_sender_in_group():
+            return None
+        if str(getattr(message, "conversation_type", "1")) != "2":
+            return None
+        mention_user_id = (
+            getattr(message, "sender_staff_id", "") or
+            getattr(message, "sender_id", "") or
+            ""
+        )
+        if not mention_user_id:
+            return None
+        return {"atUserIds": [mention_user_id]}
+
+    def _build_group_reply_card_mentions(
+        self, message: Optional["ChatbotMessage"]
+    ) -> Optional[Dict[str, str]]:
+        """Build AI Card @ payload for group replies when enabled."""
+        if not message or not self._reply_mentions_sender_in_group():
+            return None
+        if str(getattr(message, "conversation_type", "1")) != "2":
+            return None
+        mention_user_id = (
+            getattr(message, "sender_staff_id", "") or
+            getattr(message, "sender_id", "") or
+            ""
+        )
+        if not mention_user_id:
+            return None
+        sender_nick = getattr(message, "sender_nick", "") or mention_user_id
+        return {mention_user_id: sender_nick}
+
+    def _prefix_group_reply_mention(
+        self, text: str, message: Optional["ChatbotMessage"]
+    ) -> str:
+        """Prepend a visible @mention in group replies when enabled."""
+        if not message or not self._reply_mentions_sender_in_group():
+            return text
+        if str(getattr(message, "conversation_type", "1")) != "2":
+            return text
+        mention_user_id = (
+            getattr(message, "sender_staff_id", "") or
+            getattr(message, "sender_id", "") or
+            ""
+        ).strip()
+        if not mention_user_id:
+            return text
+
+        visible_mention = (
+            mention_user_id or
+            getattr(message, "sender_nick", "") or
+            getattr(message, "sender_staff_id", "") or
+            getattr(message, "sender_id", "") or
+            ""
+        ).strip()
+        if not visible_mention:
+            return text
+
+        visible_prefix = f"@{visible_mention}"
+        if text.lstrip().startswith(visible_prefix):
+            return text
+        return f"{visible_prefix}\n\n{text}"
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
@@ -442,14 +539,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Apply DingTalk group trigger rules.
 
         DMs remain unrestricted (subject to ``allowed_users`` which is enforced
-        earlier). Group messages are accepted when:
+        earlier) unless ``allow_private_chats`` is disabled. Group messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the bot is @mentioned (``is_in_at_list``)
         - the text matches a configured regex wake-word pattern
         """
         if not is_group:
-            return True
+            return self._dingtalk_allow_private_chats()
         if chat_id and chat_id in self._dingtalk_free_response_chats():
             return True
         if not self._dingtalk_require_mention():
@@ -554,15 +651,15 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
             return
 
-        # Group mention/pattern gate.  DMs pass through unconditionally.
+        # DingTalk gate. DMs can be disabled; group chats follow mention/pattern rules.
         # We need the message text for regex wake-word matching; extract it
         # early but don't consume the rest of the pipeline until after the
         # gate decides whether to process.
         _early_text = self._extract_text(message) or ""
         if not self._should_process_message(message, _early_text, is_group, chat_id):
             logger.debug(
-                "[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s",
-                self.name, msg_id, chat_id,
+                "[%s] Dropping message that failed DingTalk gate message_id=%s chat_id=%s chat_type=%s",
+                self.name, msg_id, chat_id, chat_type,
             )
             return
 
@@ -827,13 +924,38 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
 
         logger.debug("[%s] Sending via webhook", self.name)
-        # Normalize markdown for DingTalk
-        normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
-
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
-        }
+        content_with_mention = self._prefix_group_reply_mention(content, current_message)
+        at_payload = self._build_group_reply_at_payload(current_message)
+        if at_payload:
+            # DingTalk's group @ reminder is more reliable on text messages than
+            # markdown via session_webhook. Keep markdown for non-mention paths.
+            payload = {
+                "msgtype": "text",
+                "text": {"content": content_with_mention[: self.MAX_MESSAGE_LENGTH]},
+                "at": at_payload,
+            }
+        else:
+            normalized = self._normalize_markdown(
+                content_with_mention[: self.MAX_MESSAGE_LENGTH]
+            )
+            payload = {
+                "msgtype": "markdown",
+                "markdown": {"title": "Hermes", "text": normalized},
+            }
+        logger.debug(
+            "[%s] Outbound DingTalk payload chat_id=%s msgtype=%s at=%s preview=%s",
+            self.name,
+            chat_id,
+            payload.get("msgtype"),
+            payload.get("at"),
+            (
+                payload.get("text", {}).get("content")
+                if isinstance(payload.get("text"), dict)
+                else payload.get("markdown", {}).get("text")
+                if isinstance(payload.get("markdown"), dict)
+                else ""
+            )[:120],
+        )
 
         try:
             resp = await self._http_client.post(
@@ -948,13 +1070,19 @@ class DingTalkAdapter(BasePlatformAdapter):
             # Step 2: Deliver card to the conversation
             if is_group:
                 open_space_id = f"dtv1.card//IM_GROUP.{conversation_id}"
+                group_deliver_model_kwargs = {
+                    "robot_code": self._robot_code,
+                }
+                at_user_ids = self._build_group_reply_card_mentions(message)
+                if at_user_ids:
+                    group_deliver_model_kwargs["at_user_ids"] = at_user_ids
                 deliver_request = dingtalk_card_models.DeliverCardRequest(
                     out_track_id=out_track_id,
                     user_id_type=1,
                     open_space_id=open_space_id,
                     im_group_open_deliver_model=(
                         dingtalk_card_models.DeliverCardRequestImGroupOpenDeliverModel(
-                            robot_code=self._robot_code,
+                            **group_deliver_model_kwargs,
                         )
                     ),
                 )
@@ -988,8 +1116,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             # Step 3: Stream initial content.  finalize=True closes the
             # card immediately (one-shot); finalize=False keeps it open
             # for streaming edit_message updates by out_track_id.
+            content_with_mention = self._prefix_group_reply_mention(content, message)
             await self._stream_card_content(
-                out_track_id, token, content, finalize=finalize,
+                out_track_id, token, content_with_mention, finalize=finalize,
             )
 
             logger.info(
@@ -1029,8 +1158,12 @@ class DingTalkAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="No access token")
 
         try:
+            current_message = self._message_contexts.get(chat_id)
+            content_with_mention = self._prefix_group_reply_mention(
+                content, current_message
+            )
             await self._stream_card_content(
-                message_id, token, content, finalize=finalize,
+                message_id, token, content_with_mention, finalize=finalize,
             )
             if finalize:
                 # Remove from streaming-cards tracking and fire Done.  This
@@ -1048,7 +1181,9 @@ class DingTalkAdapter(BasePlatformAdapter):
                 # Non-final edit reopens the card into streaming state —
                 # track it so the next send() can auto-close it as a
                 # sibling.
-                self._streaming_cards.setdefault(chat_id, {})[message_id] = content
+                self._streaming_cards.setdefault(chat_id, {})[message_id] = (
+                    content_with_mention
+                )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             logger.warning("[%s] Card edit failed: %s", self.name, e)
@@ -1177,7 +1312,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         # 1. Single image content
         img_content = getattr(message, "image_content", None)
         if img_content and getattr(img_content, "download_code", None):
-            codes_to_resolve.append((img_content, "download_code"))
+            codes_to_resolve.append((img_content, "download_code", "image"))
 
         # 2. Rich text list
         rich_text = getattr(message, "rich_text_content", None)
@@ -1185,26 +1320,35 @@ class DingTalkAdapter(BasePlatformAdapter):
             rich_list = getattr(rich_text, "rich_text_list", []) or []
             for item in rich_list:
                 if isinstance(item, dict):
-                    for key in ("downloadCode", "pictureDownloadCode", "download_code"):
-                        if item.get(key):
-                            codes_to_resolve.append((item, key))
+                    # Prefer the generic downloadCode for actual media fetches.
+                    # Some DingTalk rich-text image payloads also include
+                    # pictureDownloadCode, but that code has been observed to
+                    # fail with server-side 500s while downloadCode works.
+                    preferred_key = None
+                    for candidate in ("downloadCode", "download_code", "pictureDownloadCode"):
+                        if item.get(candidate):
+                            preferred_key = candidate
+                            break
+                    if preferred_key:
+                        mapped = DINGTALK_TYPE_MAPPING.get(item.get("type", ""), "file")
+                        codes_to_resolve.append((item, preferred_key, mapped))
 
         if not codes_to_resolve:
             return
 
         # Resolve all codes in parallel
         tasks = []
-        for obj, key in codes_to_resolve:
+        for obj, key, media_kind in codes_to_resolve:
             code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
             if code:
                 tasks.append(
-                    self._fetch_download_url(code, robot_code, token, obj, key)
+                    self._fetch_download_url(code, robot_code, token, obj, key, media_kind)
                 )
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _fetch_download_url(
-        self, code: str, robot_code: str, token: str, obj, key: str
+        self, code: str, robot_code: str, token: str, obj, key: str, media_kind: str
     ) -> None:
         """Fetch download URL for a single code using the robot SDK."""
         if not self._robot_sdk:
@@ -1229,6 +1373,16 @@ class DingTalkAdapter(BasePlatformAdapter):
             if body:
                 url = getattr(body, "download_url", None)
                 if url:
+                    # For images, eagerly cache to a local file path so the
+                    # vision tool can analyze it without re-fetching through
+                    # the generic URL safety path. DingTalk gives us this URL
+                    # via an authenticated SDK call, so treating it as trusted
+                    # platform media is lower risk than globally relaxing
+                    # url_safety for arbitrary hosts.
+                    if media_kind == "image":
+                        cached_path = await self._cache_dingtalk_image(url)
+                        if cached_path:
+                            url = cached_path
                     if hasattr(obj, key):
                         setattr(obj, key, url)
                     elif isinstance(obj, dict):
@@ -1241,6 +1395,28 @@ class DingTalkAdapter(BasePlatformAdapter):
                 )
         except Exception as e:
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+
+    async def _cache_dingtalk_image(self, url: str) -> Optional[str]:
+        """Download a DingTalk-resolved image URL to the local image cache."""
+        if not self._http_client:
+            return None
+        try:
+            response = await self._http_client.get(url, follow_redirects=True)
+            response.raise_for_status()
+
+            parsed = urlparse(str(response.url))
+            ext = os.path.splitext(parsed.path or "")[1].lower()
+            if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico"}:
+                content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+                guessed = mimetypes.guess_extension(content_type) if content_type else None
+                ext = guessed if guessed in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico"} else ".jpg"
+
+            cached_path = cache_image_from_bytes(response.content, ext=ext)
+            logger.info("[%s] Cached DingTalk image at %s", self.name, cached_path)
+            return cached_path
+        except Exception:
+            logger.warning("[%s] Failed to cache DingTalk image from %s", self.name, url, exc_info=True)
+            return None
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:

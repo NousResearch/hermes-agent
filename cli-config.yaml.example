@@ -656,6 +656,11 @@ platform_toolsets:
 #     reply_to_mode: "first"  # off | first | all
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+#   dingtalk:
+#     extra:
+#       allow_private_chats: true  # Set false to ignore DingTalk direct/private chats
+#       reply_mentions_sender_in_group: false  # Set true to mention the original sender in group replies
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

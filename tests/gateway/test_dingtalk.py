@@ -438,6 +438,7 @@ def _make_gating_adapter(monkeypatch, *, extra=None, env=None):
         "DINGTALK_MENTION_PATTERNS",
         "DINGTALK_FREE_RESPONSE_CHATS",
         "DINGTALK_ALLOWED_USERS",
+        "DINGTALK_ALLOW_PRIVATE_CHATS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in (env or {}).items():
@@ -535,6 +536,23 @@ class TestShouldProcessMessage:
         )
         msg = MagicMock(is_in_at_list=False)
         assert adapter._should_process_message(msg, "hi", is_group=False, chat_id="dm1") is True
+
+    def test_dm_rejected_when_private_chats_disabled(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"require_mention": True, "allow_private_chats": False},
+        )
+        msg = MagicMock(is_in_at_list=False)
+        assert adapter._should_process_message(msg, "hi", is_group=False, chat_id="dm1") is False
+
+    def test_env_var_can_disable_private_chats(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"require_mention": True},
+            env={"DINGTALK_ALLOW_PRIVATE_CHATS": "false"},
+        )
+        msg = MagicMock(is_in_at_list=False)
+        assert adapter._should_process_message(msg, "hi", is_group=False, chat_id="dm1") is False
 
     def test_group_rejected_when_require_mention_and_no_trigger(self, monkeypatch):
         adapter = _make_gating_adapter(

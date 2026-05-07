@@ -607,9 +607,38 @@ def build_session_context_prompt(
         home_name = _format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
 
+        # If the current conversation is in a thread/topic within the home channel's
+        # platform, add a thread-aware delivery target so the agent can reach this
+        # specific thread.  Without this, send_message(tool) with just the platform
+        # name delivers to the home channel but NOT the thread — a common source of
+        # "lost message" bugs.
+        if (
+            context.source.platform == platform
+            and context.source.thread_id
+            and context.source.chat_id
+        ):
+            # Show both the thread-aware target and a warning about bare platform
+            _thread_target = f"{platform.value}:{home.chat_id}:{context.source.thread_id}"
+            lines.append(
+                f"  - `\"{_thread_target}\"` → This thread (use for send_message in this conversation)"
+            )
+
     # Note about explicit targeting
     lines.append("")
-    lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+    if context.source.thread_id:
+        lines.append(
+            "*For explicit targeting, use `\"platform:chat_id\"` for channels "
+            "or `\"platform:chat_id:thread_id\"` for Telegram topics and Discord threads.*"
+        )
+        # Add a prominent warning when in a thread — bare platform name goes to
+        # the home channel, NOT the current thread.
+        lines.append(
+            "*IMPORTANT: When sending to Telegram in a thread/topic, always use "
+            "the platform:chat_id:thread_id format. Using just the platform name "
+            "sends to the home channel only, NOT this thread.*"
+        )
+    else:
+        lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
 
     return "\n".join(lines)
 

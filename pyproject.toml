@@ -30,6 +30,12 @@ dependencies = [
   "firecrawl-py>=4.16.0,<5",
   "parallel-web>=0.4.2,<1",
   "fal-client>=0.13.1,<1",
+  # Document processing available to execute_code / agent Python workflows.
+  "python-docx>=1.2.0,<2",
+  "openpyxl>=3.1.5,<4",
+  "python-pptx>=1.0.2,<2",
+  "pypdf>=6.0.0,<7",
+  "pdfplumber>=0.11.0,<1",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter>=6.0.0,<7",
   # Text-to-speech (Edge TTS is free, no API key needed)

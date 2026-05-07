@@ -11,6 +11,8 @@ import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesAutomationStore
 import com.nousresearch.hermesagent.device.HermesExternalTriggerReceiver
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
+import com.nousresearch.hermesagent.device.HermesNotificationActionBridge
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -757,6 +759,109 @@ class HermesAutomationInstrumentedTest {
         )
         assertTrue(cancelRun.toString(), cancelRun.getBoolean("success"))
         assertEquals("notification_cancel", cancelRun.getJSONObject("result").getString("action"))
+    }
+
+    @Test
+    fun notificationButtonCanRunSavedAutomation() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching {
+                InstrumentationRegistry.getInstrumentation().uiAutomation.grantRuntimePermission(
+                    app.packageName,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                )
+            }
+        }
+
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-notification-button.txt").apply { delete() }
+        val targetId = "notification-button-target"
+
+        val fileTask = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("id", targetId)
+                    .put("label", "Notification button target")
+                    .put("path", "hermes-notification-button.txt")
+                    .put("content", "button:%BUTTON_VALUE")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(fileTask.toString(), fileTask.getBoolean("success"))
+
+        val variable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%BUTTON_VALUE")
+                    .put("value", "ran"),
+            ),
+        )
+        assertTrue(variable.toString(), variable.getBoolean("success"))
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_notification_task",
+                JSONObject()
+                    .put("label", "Notification button smoke")
+                    .put("notification_title", "Hermes button")
+                    .put("notification_text", "Run a saved automation")
+                    .put("notification_id", "9910")
+                    .put("notification_tag", "hermes-button")
+                    .put(
+                        "notification_buttons",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("title", "Run")
+                                .put("action", "run_automation")
+                                .put("automation_id", targetId)
+                                .put("dismiss_on_tap", true),
+                        ),
+                    )
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val notificationPayload = JSONObject(created.getJSONObject("automation").getString("command"))
+        assertEquals(1, notificationPayload.getJSONArray("notification_buttons").length())
+
+        val runNotification = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", created.getJSONObject("automation").getString("id")),
+            ),
+        )
+        val result = runNotification.getJSONObject("result")
+        if (!runNotification.getBoolean("success") &&
+            result.optString("requires_permission") == Manifest.permission.POST_NOTIFICATIONS
+        ) {
+            return
+        }
+        assertTrue(runNotification.toString(), runNotification.getBoolean("success"))
+        assertEquals(1, result.getInt("notification_button_count"))
+
+        val click = JSONObject(
+            HermesNotificationActionBridge.handleNotificationButtonIntentJson(
+                app,
+                Intent(app, com.nousresearch.hermesagent.device.HermesAutomationReceiver::class.java).apply {
+                    action = HermesNotificationActionBridge.ACTION_NOTIFICATION_BUTTON
+                    putExtra(HermesNotificationActionBridge.EXTRA_BUTTON_ACTION, "run_automation")
+                    putExtra(HermesNotificationActionBridge.EXTRA_AUTOMATION_ID, targetId)
+                    putExtra(HermesNotificationActionBridge.EXTRA_NOTIFICATION_ID, 9910)
+                    putExtra(HermesNotificationActionBridge.EXTRA_NOTIFICATION_TAG, "hermes-button")
+                    putExtra(HermesNotificationActionBridge.EXTRA_DISMISS_ON_TAP, true)
+                },
+            ),
+        )
+        assertTrue(click.toString(), click.getBoolean("success"))
+        assertEquals("run_automation", click.getString("notification_button_action"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("button:ran", target.readText())
     }
 
     @Test

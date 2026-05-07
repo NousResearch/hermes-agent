@@ -534,6 +534,13 @@ object HermesAutomationBridge {
                 payload.put(key, arguments.optBoolean(key))
             }
         }
+        val buttonPayload = notificationButtonsFromArguments(arguments)
+        if (buttonPayload.error != null) {
+            return errorJson(buttonPayload.error)
+        }
+        if (buttonPayload.buttons.length() > 0) {
+            payload.put("notification_buttons", buttonPayload.buttons)
+        }
         if (notificationAction == "post" &&
             payload.optString("title").isBlank() &&
             payload.optString("text").isBlank()
@@ -1444,6 +1451,105 @@ object HermesAutomationBridge {
         }
     }
 
+    private fun notificationButtonsFromArguments(arguments: JSONObject): NotificationButtonsResult {
+        val buttons = JSONArray()
+        val rawButtons = arguments.optJSONArray("notification_buttons")
+            ?: arguments.optJSONArray("buttons")
+            ?: arguments.optJSONArray("notification_actions")
+        if (rawButtons != null) {
+            if (rawButtons.length() > MAX_NOTIFICATION_BUTTONS) {
+                return NotificationButtonsResult(buttons, "notification_buttons supports at most $MAX_NOTIFICATION_BUTTONS buttons")
+            }
+            for (index in 0 until rawButtons.length()) {
+                val raw = rawButtons.optJSONObject(index)
+                    ?: return NotificationButtonsResult(buttons, "notification_buttons[$index] must be a JSON object")
+                val parsed = notificationButtonFromJson(raw, index)
+                if (parsed.error != null) {
+                    return NotificationButtonsResult(buttons, parsed.error)
+                }
+                buttons.put(parsed.button)
+            }
+        }
+        for (index in 1..MAX_NOTIFICATION_BUTTONS) {
+            val title = stringArgument(
+                arguments,
+                "notification_button_${index}_title",
+                "notification_action_${index}_title",
+                "button_${index}_title",
+                "button_${index}_label",
+                allowEmpty = true,
+            ) ?: continue
+            val raw = JSONObject()
+                .put("title", title)
+                .put(
+                    "action",
+                    stringArgument(
+                        arguments,
+                        "notification_button_${index}_action",
+                        "notification_action_${index}_action",
+                        "button_${index}_action",
+                    ).orEmpty().ifBlank { "open_app" },
+                )
+                .put(
+                    "automation_id",
+                    stringArgument(
+                        arguments,
+                        "notification_button_${index}_automation_id",
+                        "notification_action_${index}_automation_id",
+                        "button_${index}_automation_id",
+                    ).orEmpty(),
+                )
+            if (arguments.has("notification_button_${index}_dismiss_on_tap")) {
+                raw.put("dismiss_on_tap", arguments.optBoolean("notification_button_${index}_dismiss_on_tap"))
+            }
+            val parsed = notificationButtonFromJson(raw, buttons.length())
+            if (parsed.error != null) {
+                return NotificationButtonsResult(buttons, parsed.error)
+            }
+            buttons.put(parsed.button)
+            if (buttons.length() > MAX_NOTIFICATION_BUTTONS) {
+                return NotificationButtonsResult(buttons, "notification_buttons supports at most $MAX_NOTIFICATION_BUTTONS buttons")
+            }
+        }
+        return NotificationButtonsResult(buttons)
+    }
+
+    private fun notificationButtonFromJson(raw: JSONObject, index: Int): NotificationButtonResult {
+        val title = raw.optString("title")
+            .ifBlank { raw.optString("label") }
+            .ifBlank { raw.optString("text") }
+            .take(MAX_NOTIFICATION_BUTTON_FIELD_CHARS)
+        if (title.isBlank()) {
+            return NotificationButtonResult(error = "notification_buttons[$index] requires title")
+        }
+        val action = HermesNotificationActionBridge.normalizeButtonAction(
+            raw.optString("action")
+                .ifBlank { raw.optString("button_action") }
+                .ifBlank { raw.optString("type") }
+                .ifBlank { "open_app" },
+        )
+        if (!HermesNotificationActionBridge.isSupportedButtonAction(action)) {
+            return NotificationButtonResult(error = "Unsupported notification button action: $action")
+        }
+        val automationId = raw.optString("automation_id")
+            .ifBlank { raw.optString("automation") }
+            .ifBlank { raw.optString("id") }
+            .take(MAX_AUTOMATION_ID_CHARS)
+        if (action == "run_automation" && automationId.isBlank()) {
+            return NotificationButtonResult(error = "notification run_automation button requires automation_id")
+        }
+        if (listOf(title, action, automationId).any { it.indexOf('\u0000') >= 0 }) {
+            return NotificationButtonResult(error = "notification button fields must not contain NUL bytes")
+        }
+        return NotificationButtonResult(
+            button = JSONObject()
+                .put("title", title)
+                .put("action", action)
+                .put("automation_id", automationId)
+                .put("dismiss_on_tap", raw.optBoolean("dismiss_on_tap", raw.optBoolean("cancel_notification", false))),
+        )
+    }
+
     private fun inferIntentTaskAction(arguments: JSONObject): String {
         if (stringArgument(arguments, "data_uri", "uri", "url", "data") != null &&
             stringArgument(arguments, "class_name", "className", "activity_class", "component", "component_name", "componentName") == null
@@ -2338,6 +2444,23 @@ object HermesAutomationBridge {
             if (payload.has(key) && !payload.isNull(key)) {
                 expanded.put(key, payload.optBoolean(key))
             }
+        }
+        payload.optJSONArray("notification_buttons")?.let { buttons ->
+            val expandedButtons = JSONArray()
+            for (index in 0 until buttons.length()) {
+                val raw = buttons.optJSONObject(index) ?: continue
+                val button = JSONObject()
+                listOf("title", "action", "automation_id").forEach { key ->
+                    if (raw.has(key) && !raw.isNull(key)) {
+                        button.put(key, expandVariables(raw.optString(key), variables))
+                    }
+                }
+                if (raw.has("dismiss_on_tap") && !raw.isNull("dismiss_on_tap")) {
+                    button.put("dismiss_on_tap", raw.optBoolean("dismiss_on_tap"))
+                }
+                expandedButtons.put(button)
+            }
+            expanded.put("notification_buttons", expandedButtons)
         }
         return expanded
     }
@@ -3267,6 +3390,8 @@ object HermesAutomationBridge {
     private data class TimeParseResult(val minutes: Int?, val error: String? = null)
     private data class DaysParseResult(val daysCsv: String, val error: String? = null)
     private data class TriggerDataResult(val data: String, val error: String? = null)
+    private data class NotificationButtonsResult(val buttons: JSONArray, val error: String? = null)
+    private data class NotificationButtonResult(val button: JSONObject = JSONObject(), val error: String? = null)
     private data class SolarDate(
         val year: Int,
         val month: Int,
@@ -3410,6 +3535,8 @@ object HermesAutomationBridge {
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_RESULT_CHARS = 2_000
     private const val MAX_EVENT_VALUE_CHARS = 500
+    private const val MAX_NOTIFICATION_BUTTONS = 3
+    private const val MAX_NOTIFICATION_BUTTON_FIELD_CHARS = 120
     private const val MAX_IMPORTED_AUTOMATIONS = 200
     private const val MAX_AUTOMATION_ID_CHARS = 120
     private const val AUTOMATION_BUNDLE_KIND = "hermes_android_automation_bundle"

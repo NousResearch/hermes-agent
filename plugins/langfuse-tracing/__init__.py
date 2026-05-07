@@ -24,6 +24,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -231,14 +232,17 @@ def _on_session_start(**kwargs: Any) -> None:
         active = _get_session(session_id)
         active.trace = trace
 
-        # 解析 x-user JWT，提取用户和企业信息
+        # 解析 x-user JSON，提取用户和企业信息
         x_user_token = kwargs.get("x_user_token", "") or ""
         if x_user_token:
-            jwt_payload = _decode_jwt_payload(x_user_token)
-            user_id = str(jwt_payload.get("id", "")) or None
-            company_id = str(jwt_payload.get("companyId", "")) or None
+            try:
+                user_data = json.loads(x_user_token)
+            except json.JSONDecodeError:
+                user_data = {}
+            user_id = str(user_data.get("id", "")) or None
+            company_id = str(user_data.get("companyId", "")) or None
             if user_id or company_id:
-                logger.info("解析 x-user JWT 成功: 用户=%s, 企业=%s",
+                logger.info("解析 x-user 成功: 用户=%s, 企业=%s",
                              user_id or "-", company_id or "-")
             if user_id:
                 active.user_id = user_id
@@ -312,26 +316,6 @@ def _on_session_finalize(**kwargs: Any) -> None:
     _flush_and_cleanup(session_id)
 
 
-def _decode_jwt_payload(token: str) -> Dict[str, Any]:
-    """Decode a JWT payload without signature verification.
-
-    Returns an empty dict on any parse failure.
-    """
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return {}
-        payload = parts[1]
-        # base64url: replace URL-safe chars, add padding
-        payload = payload.replace("-", "+").replace("_", "/")
-        payload += "=" * ((4 - len(payload) % 4) % 4)
-        decoded = __import__("base64").b64decode(payload)
-        return __import__("json").loads(decoded)
-    except Exception as exc:
-        logger.warning("JWT 解析失败: %s", exc)
-        return {}
-
-
 def _on_pre_llm_call(**kwargs: Any) -> None:
     """Store user message and update trace attributes before each turn.
 
@@ -354,12 +338,15 @@ def _on_pre_llm_call(**kwargs: Any) -> None:
     try:
         active.trace.update(input={"user_message": _truncate(user_message, 10000)})
 
-        # 解析 x-user JWT，提取用户和企业信息
+        # 解析 x-user JSON，提取用户和企业信息
         x_user_token = kwargs.get("x_user_token", "") or ""
         if x_user_token:
-            jwt_payload = _decode_jwt_payload(x_user_token)
-            user_id = str(jwt_payload.get("id", "")) or None
-            company_id = str(jwt_payload.get("companyId", "")) or None
+            try:
+                user_data = json.loads(x_user_token)
+            except json.JSONDecodeError:
+                user_data = {}
+            user_id = str(user_data.get("id", "")) or None
+            company_id = str(user_data.get("companyId", "")) or None
 
             # 存入状态供其他 hook 读取
             active.user_id = user_id or ""
@@ -712,7 +699,3 @@ def register(ctx: Any) -> None:
     )
     logger.info("Langfuse 插件注册完成: %s", host)
 
-if __name__ == "__main__":
-    jwt_token = "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMyIsImNvbXBhbnlJZCI6IjEyMzEyMyJ9.xQfvluj44irrX3xM641CGbzw0TOcxeLIHoDKIhebCtSjzsRc8oCdTq_e3EMpbT_UtJuC_O91de-xgVQXkYvX7g"
-    dict = _decode_jwt_payload(jwt_token)
-    print(dict)

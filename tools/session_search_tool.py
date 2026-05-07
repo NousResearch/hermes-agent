@@ -22,7 +22,9 @@ import concurrent.futures
 import json
 import logging
 import re
-from typing import Dict, Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
+
+from tools.interrupt import is_interrupted
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
@@ -380,6 +382,18 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
+        # Check interrupt before expensive DB lookups (parent resolution, data prep).
+        if is_interrupted():
+            logging.info("session_search interrupted after FTS5 search — returning early")
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results": [],
+                "count": 0,
+                "sessions_searched": 0,
+                "interrupted": True,
+            }, ensure_ascii=False)
+
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
         def _resolve_to_parent(session_id: str) -> str:
@@ -450,6 +464,18 @@ def session_search(
                     exc_info=True,
                 )
 
+        # Check interrupt before LLM summarization — the slowest phase.
+        if is_interrupted():
+            logging.info("session_search interrupted before summarization — returning partial results")
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results": [],
+                "count": 0,
+                "sessions_searched": len(seen_sessions),
+                "interrupted": True,
+            }, ensure_ascii=False)
+
         # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
             """Summarize all sessions with bounded concurrency."""
@@ -485,6 +511,11 @@ def session_search(
                 "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
             }, ensure_ascii=False)
 
+        # Check interrupt after summarization — user may have moved on.
+        was_interrupted = is_interrupted()
+        if was_interrupted:
+            logging.info("session_search interrupted after summarization — returning partial results")
+
         summaries = []
         for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
             if isinstance(result, Exception):
@@ -518,13 +549,17 @@ def session_search(
 
             summaries.append(entry)
 
-        return json.dumps({
+        result_dict = {
             "success": True,
             "query": query,
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
-        }, ensure_ascii=False)
+        }
+        if was_interrupted:
+            result_dict["interrupted"] = True
+
+        return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)

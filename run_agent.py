@@ -3836,7 +3836,17 @@ class AIAgent:
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Remove private empty-response retry/failure scaffolding from transcript tails."""
+        """Remove private empty-response retry/failure scaffolding from transcript tails.
+
+        Also rewinds past any trailing tool-result / assistant(tool_calls) pair
+        that the failed iteration left hanging. Without this, the tail ends at
+        a raw ``tool`` message and the next user turn lands as
+        ``...tool, user, user`` — a protocol-invalid sequence that most
+        providers silently reject (returns empty content), causing the
+        empty-retry loop to fire forever. See #<TBD>.
+        """
+        # Pass 1: strip the flagged scaffolding messages themselves.
+        dropped_scaffolding = False
         while (
             messages
             and isinstance(messages[-1], dict)
@@ -3846,6 +3856,137 @@ class AIAgent:
             )
         ):
             messages.pop()
+            dropped_scaffolding = True
+
+        # Pass 2: if we stripped scaffolding, rewind through any trailing
+        # tool-result messages plus the assistant(tool_calls) message that
+        # produced them. This preserves role alternation so the next user
+        # message follows a user or assistant message, not an orphan tool
+        # result. Only runs when scaffolding was actually present — normal
+        # conversation tails (real tool loops mid-progress) are untouched.
+        if not dropped_scaffolding:
+            return
+
+        # Drop any trailing tool-result messages
+        while (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "tool"
+        ):
+            messages.pop()
+
+        # Drop the assistant message that issued the tool calls, if the tail
+        # now ends in an assistant-with-tool_calls (the pair that owned the
+        # just-popped tool results). Without this, the tail is
+        # ``assistant(tool_calls=...)`` with no tool answers, which some
+        # providers also reject.
+        if (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "assistant"
+            and messages[-1].get("tool_calls")
+        ):
+            messages.pop()
+
+    def _repair_message_sequence(self, messages: List[Dict]) -> int:
+        """Collapse malformed role-alternation left in the live history.
+
+        Providers (OpenAI, OpenRouter, Anthropic) expect strict alternation:
+        after the system message, user/tool alternates with assistant, with
+        no two consecutive user messages and no tool-result that doesn't
+        follow an assistant-with-tool_calls. Violations cause silent empty
+        responses on most providers, which triggers the empty-retry loop.
+
+        This runs right before the API call as a defensive belt — by the
+        time it fires, the scaffolding strip should already have prevented
+        most shapes, but external callers (gateway multi-queue replay,
+        session resume, cron, explicit conversation_history passed in by
+        host code) can feed in already-broken histories.
+
+        Repairs applied:
+          1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
+             any preceding assistant tool_call — dropped.
+          2. Consecutive ``user`` messages — merged with newline separator
+             so no user input is lost.
+
+        Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
+        pairs that precede a user message — that pattern IS valid when the
+        previous turn completed normally and the user jumped in to redirect
+        before the model got a continuation turn (the ongoing dialog
+        pattern). The empty-response scaffolding stripper handles the
+        genuinely-broken variant via its flag-gated rewind.
+
+        Returns the number of repairs made (for logging/telemetry).
+        """
+        if not messages:
+            return 0
+
+        repairs = 0
+
+        # Pass 1: drop stray tool messages that don't follow a known
+        # assistant tool_call_id. Uses a rolling set of known ids refreshed
+        # on each assistant message.
+        known_tool_ids: set = set()
+        filtered: List[Dict] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                filtered.append(msg)
+                continue
+            role = msg.get("role")
+            if role == "assistant":
+                known_tool_ids = set()
+                for tc in (msg.get("tool_calls") or []):
+                    tc_id = tc.get("id") if isinstance(tc, dict) else None
+                    if tc_id:
+                        known_tool_ids.add(tc_id)
+                filtered.append(msg)
+            elif role == "tool":
+                tc_id = msg.get("tool_call_id")
+                if tc_id and tc_id in known_tool_ids:
+                    filtered.append(msg)
+                else:
+                    repairs += 1
+            else:
+                if role == "user":
+                    # A user turn closes the tool-result run; subsequent
+                    # tool messages without a fresh assistant tool_call
+                    # are orphans.
+                    known_tool_ids = set()
+                filtered.append(msg)
+
+        # Pass 2: merge consecutive user messages. Preserves all user input
+        # so nothing the user typed is lost.
+        merged: List[Dict] = []
+        for msg in filtered:
+            if (
+                merged
+                and isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and isinstance(merged[-1], dict)
+                and merged[-1].get("role") == "user"
+            ):
+                prev = merged[-1]
+                prev_content = prev.get("content", "")
+                new_content = msg.get("content", "")
+                # Only merge plain-text content; leave multimodal (list)
+                # content alone — collapsing image/audio blocks risks
+                # mangling the attachment structure.
+                if isinstance(prev_content, str) and isinstance(new_content, str):
+                    prev["content"] = (
+                        (prev_content + "\n\n" + new_content)
+                        if prev_content and new_content
+                        else (prev_content or new_content)
+                    )
+                    repairs += 1
+                    continue
+            merged.append(msg)
+
+        if repairs > 0:
+            # Rewrite in place so downstream paths (persistence, return
+            # value, session DB flush) see the repaired sequence.
+            messages[:] = merged
+
+        return repairs
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -11130,6 +11271,21 @@ class AIAgent:
                 request_logger.info(
                     "Sanitized %s corrupted tool_call arguments before request (session=%s)",
                     repaired_tool_calls,
+                    self.session_id or "-",
+                )
+
+            # Defensive: repair malformed role-alternation before API call.
+            # Catches cases where the history got wedged into a
+            # ``tool → user`` or ``user → user`` tail (e.g. after empty-
+            # response scaffolding was stripped and a new user message
+            # landed after an orphan tool result). Most providers return
+            # empty content on malformed sequences, which would otherwise
+            # retrigger the empty-retry loop indefinitely.
+            repaired_seq = self._repair_message_sequence(messages)
+            if repaired_seq > 0:
+                request_logger.info(
+                    "Repaired %s message-alternation violations before request (session=%s)",
+                    repaired_seq,
                     self.session_id or "-",
                 )
 

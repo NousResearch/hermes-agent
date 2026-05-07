@@ -1243,12 +1243,26 @@ class MCPServerTask:
                     "mcp.client.sse.sse_client is not available. "
                     "Upgrade the mcp package to get SSE support."
                 )
-            async with sse_client(
-                url=url,
-                headers=headers or None,
-                timeout=float(connect_timeout),
-                sse_read_timeout=float(config.get("timeout", _DEFAULT_TOOL_TIMEOUT)),
-            ) as (read_stream, write_stream):
+            # sse_read_timeout governs how long sse_client will wait between
+            # events on the SSE stream. Using the tool_timeout (default 60s)
+            # here is wrong: SSE servers commonly hold the stream idle for
+            # minutes between events, so a 60s read timeout drops the
+            # connection after the first slow stretch. 300s matches the
+            # Streamable HTTP code path's httpx read timeout below. Original
+            # observation from @amiller in PR #5981 (Router Teamwork,
+            # Supermemory on Cloudflare Workers idle-disconnect at ~60s).
+            _sse_kwargs: dict = {
+                "url": url,
+                "headers": headers or None,
+                "timeout": float(connect_timeout),
+                "sse_read_timeout": 300.0,
+            }
+            if _oauth_auth is not None:
+                # Pass OAuth auth through to sse_client so SSE MCP servers
+                # behind OAuth 2.1 PKCE work. Previously built but never
+                # forwarded — SSE OAuth would silently fail with 401s.
+                _sse_kwargs["auth"] = _oauth_auth
+            async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:

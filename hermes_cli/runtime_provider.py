@@ -278,11 +278,14 @@ def _resolve_runtime_from_pool_entry(
             if detected:
                 api_mode = detected
 
-    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
+    # OpenCode and Kimi-Coding base URLs end with /v1 for OpenAI-compatible
+    # models, but the Anthropic SDK prepends its own /v1/messages to the
+    # base_url.  Strip the trailing /v1 so the SDK constructs the correct path
+    # (e.g. https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages,
+    # and https://api.kimi.com/coding/v1/messages instead of .../coding/v1/v1/messages).
+    if api_mode == "anthropic_messages" and provider in (
+        "opencode-zen", "opencode-go", "kimi-coding", "kimi-coding-cn",
+    ):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
     return {

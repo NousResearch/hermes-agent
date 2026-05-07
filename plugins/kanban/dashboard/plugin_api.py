@@ -1521,6 +1521,15 @@ async def stream_events(ws: WebSocket):
             await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
+    except asyncio.CancelledError:
+        # Graceful shutdown: uvicorn cancels all tasks on SIGINT/SIGTERM.
+        # Close the WebSocket cleanly instead of letting CancelledError
+        # propagate as an unhandled exception in the ASGI traceback.
+        try:
+            await ws.close(code=1001)  # 1001 = Going Away
+        except Exception:
+            pass
+        return
     except Exception as exc:  # defensive: never crash the dashboard worker
         log.warning("Kanban event stream error: %s", exc)
         try:

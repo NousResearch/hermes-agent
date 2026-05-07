@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # (path, mtime_ns, size) -> cached expanded config dict.
 # load_config() returns a deepcopy of the cached value when the file
@@ -4115,8 +4116,26 @@ def load_env() -> Dict[str, str]:
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
+
+        env_vars = {
+            key: _expand_env_refs(value, env_vars, (key,))
+            for key, value in env_vars.items()
+        }
     
     return env_vars
+
+
+def _expand_env_refs(value: str, env_vars: Dict[str, str], resolving: Tuple[str, ...] = ()) -> str:
+    """Expand ${VAR} references in .env values using .env first, then os.environ."""
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in resolving:
+            return os.environ.get(name, "")
+        if name in env_vars:
+            return _expand_env_refs(env_vars[name], env_vars, (*resolving, name))
+        return os.environ.get(name, "")
+
+    return _ENV_REF_RE.sub(_replace, value)
 
 
 def _sanitize_env_lines(lines: list) -> list:

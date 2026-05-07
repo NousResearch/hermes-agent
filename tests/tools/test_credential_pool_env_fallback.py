@@ -3,7 +3,7 @@
 Covers the fix from #15914 / PR #15920:
 - _seed_from_env reads API keys from ~/.hermes/.env when not in os.environ
 - _resolve_api_key_provider_secret falls back to credential_pool when env vars are empty
-- env vars take priority over .env file (handled by get_env_value itself)
+- ~/.hermes/.env takes priority over process env vars for credential pool seeding
 - env vars take priority over credential pool (fallback only kicks in when env is empty)
 """
 
@@ -106,8 +106,8 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert active_sources == set()
         assert entries == []
 
-    def test_os_environ_still_wins_over_dotenv(self, isolated_hermes_home, monkeypatch):
-        """get_env_value checks os.environ first — verify seeding picks that up."""
+    def test_dotenv_wins_over_os_environ_for_pool_seeding(self, isolated_hermes_home, monkeypatch):
+        """Hermes .env is authoritative for credential pool seeding."""
         _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-stale")
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-fresh-xyz")
 
@@ -118,7 +118,25 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert changed is True
         seeded = [e for e in entries if e.source == "env:DEEPSEEK_API_KEY"]
         assert len(seeded) == 1
-        assert seeded[0].access_token == "sk-env-fresh-xyz"
+        assert seeded[0].access_token == "sk-dotenv-stale"
+
+    def test_dotenv_reference_is_expanded_before_seeding(self, isolated_hermes_home):
+        """_seed_from_env must not persist literal ${VAR} placeholders as tokens."""
+        _write_env_file(
+            isolated_hermes_home,
+            OPENAI_API_KEY="sk-shared-source",
+            ANTHROPIC_API_KEY="${OPENAI_API_KEY}",
+        )
+
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("anthropic", entries)
+
+        assert changed is True
+        assert "env:ANTHROPIC_API_KEY" in active_sources
+        seeded = [e for e in entries if e.source == "env:ANTHROPIC_API_KEY"]
+        assert len(seeded) == 1
+        assert seeded[0].access_token == "sk-shared-source"
 
 
 class TestAuthResolvesFromDotEnv:

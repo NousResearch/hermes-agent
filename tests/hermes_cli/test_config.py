@@ -152,6 +152,37 @@ class TestSaveEnvValueSecure:
             assert env_mode == 0o600
 
 
+class TestLoadEnvRefs:
+    def test_expands_references_to_dotenv_values(self, tmp_path):
+        (tmp_path / ".env").write_text(
+            "OPENAI_API_KEY=sk-source\n"
+            "ANTHROPIC_API_KEY=${OPENAI_API_KEY}\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            env_values = load_env()
+
+        assert env_values["ANTHROPIC_API_KEY"] == "sk-source"
+
+    def test_expands_references_to_process_environment(self, tmp_path):
+        (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=${OPENAI_API_KEY}\n")
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "OPENAI_API_KEY": "sk-process",
+        }):
+            env_values = load_env()
+
+        assert env_values["ANTHROPIC_API_KEY"] == "sk-process"
+
+    def test_unresolved_references_do_not_survive_as_literal_tokens(self, tmp_path):
+        (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=${MISSING_API_KEY}\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("MISSING_API_KEY", None)
+            env_values = load_env()
+
+        assert env_values["ANTHROPIC_API_KEY"] == ""
+
+
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
         env_path = tmp_path / ".env"

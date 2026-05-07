@@ -50,6 +50,11 @@ from hermes_cli.config import cfg_get
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+
+# Per-send timeout for shutdown notifications. Keeps a slow / unreachable
+# platform from holding up the whole shutdown sequence and tripping systemd's
+# TimeoutStopSec (issue #21188).
+_SHUTDOWN_NOTIFY_TIMEOUT_S = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
@@ -2461,7 +2466,17 @@ class GatewayRunner:
                 # correct forum topic / thread.
                 metadata = {"thread_id": thread_id} if thread_id else None
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                try:
+                    result = await asyncio.wait_for(
+                        adapter.send(chat_id, msg, metadata=metadata),
+                        timeout=_SHUTDOWN_NOTIFY_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "Shutdown notification to %s:%s timed out after %.1fs; continuing.",
+                        platform_str, chat_id, _SHUTDOWN_NOTIFY_TIMEOUT_S,
+                    )
+                    continue
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -2493,10 +2508,23 @@ class GatewayRunner:
 
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
-                if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
-                else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                try:
+                    if metadata:
+                        result = await asyncio.wait_for(
+                            adapter.send(str(home.chat_id), msg, metadata=metadata),
+                            timeout=_SHUTDOWN_NOTIFY_TIMEOUT_S,
+                        )
+                    else:
+                        result = await asyncio.wait_for(
+                            adapter.send(str(home.chat_id), msg),
+                            timeout=_SHUTDOWN_NOTIFY_TIMEOUT_S,
+                        )
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "Shutdown notification to home channel %s:%s timed out after %.1fs; continuing.",
+                        platform.value, home.chat_id, _SHUTDOWN_NOTIFY_TIMEOUT_S,
+                    )
+                    continue
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",

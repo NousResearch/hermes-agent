@@ -541,13 +541,31 @@ class MemoryManager:
         Automatically injects ``hermes_home`` into *kwargs* so that every
         provider can resolve profile-scoped storage paths without importing
         ``get_hermes_home()`` themselves.
+
+        Skips providers that are already initialized for the same session_id
+        to prevent resource-heavy re-initialization (e.g. spawning bridge
+        processes) on every turn.  See #20939.
         """
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
         for provider in self._providers:
             try:
+                # Guard: skip if already initialized for the same session.
+                # Providers must still re-initialize when session_id changes
+                # (e.g. compression rotation) so per-session state refreshes.
+                # Use getattr for backward compat with subclasses that don't
+                # call super().__init__().
+                if (getattr(provider, '_initialized', False)
+                        and getattr(provider, '_initialized_session_id', '') == session_id):
+                    logger.debug(
+                        "Memory provider '%s' already initialized for session %s — skipping",
+                        provider.name, session_id,
+                    )
+                    continue
                 provider.initialize(session_id=session_id, **kwargs)
+                provider._initialized = True
+                provider._initialized_session_id = session_id
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",

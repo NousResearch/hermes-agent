@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 class MemoryProvider(ABC):
     """Abstract base class for memory providers."""
 
+    def __init__(self) -> None:
+        self._initialized: bool = False
+        self._initialized_session_id: str = ""
+
     @property
     @abstractmethod
     def name(self) -> str:

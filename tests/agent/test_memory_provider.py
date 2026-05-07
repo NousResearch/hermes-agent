@@ -352,6 +352,47 @@ class TestMemoryManager:
         assert p1._init_kwargs["session_id"] == "test-123"
         assert p1._init_kwargs["platform"] == "cli"
 
+    def test_initialize_all_skips_same_session(self):
+        """Guard #20939: initialize_all skips providers already initialized
+        for the same session_id to prevent resource-heavy re-initialization
+        (e.g. spawning bridge processes) on every turn."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("memos")
+        init_call_count = [0]
+        original_init = p1.initialize
+
+        def counting_init(session_id, **kwargs):
+            init_call_count[0] += 1
+            original_init(session_id, **kwargs)
+
+        p1.initialize = counting_init
+        mgr.add_provider(p1)
+
+        # First call — should initialize
+        mgr.initialize_all(session_id="sess-1", platform="cli")
+        assert init_call_count[0] == 1
+
+        # Same session — should skip
+        mgr.initialize_all(session_id="sess-1", platform="cli")
+        assert init_call_count[0] == 1
+
+        # Different session — should re-initialize
+        mgr.initialize_all(session_id="sess-2", platform="cli")
+        assert init_call_count[0] == 2
+
+    def test_initialize_guard_backward_compat_no_super_init(self):
+        """Providers that don't call super().__init__() still work
+        because the guard uses getattr with defaults."""
+        mgr = MemoryManager()
+        # FakeMemoryProvider doesn't call super().__init__()
+        p1 = FakeMemoryProvider("legacy")
+        assert not hasattr(p1, '_initialized') or not p1._initialized
+        mgr.add_provider(p1)
+
+        mgr.initialize_all(session_id="test", platform="cli")
+        assert p1._initialized is True
+        assert p1._initialized_session_id == "test"
+
     # -- Error resilience ---------------------------------------------------
 
     def test_prefetch_failure_doesnt_block(self):

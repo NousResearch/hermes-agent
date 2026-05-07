@@ -37,7 +37,9 @@ import json
 import logging
 import os
 import re
+import secrets
 import socket
+import stat
 import sys
 import threading
 import time
@@ -160,15 +162,41 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Write a dict as JSON with restricted permissions (0o600)."""
+    """Write a dict as JSON with restricted permissions (0o600).
+
+    Uses ``os.open`` with ``O_EXCL`` and an explicit mode so the file is
+    created atomically at 0o600. The previous ``write_text`` + post-write
+    ``chmod`` opened a TOCTOU window where the temp file briefly inherited
+    the process umask (commonly 0o644 = world-readable), exposing OAuth
+    tokens to other local users between create and chmod. Mirrors the fix
+    in ``agent/google_oauth.py`` (#19673).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    # Tighten parent dir to 0o700 so siblings can't traverse to the creds.
+    # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
     try:
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.rename(path)
+        os.chmod(path.parent, 0o700)
     except OSError:
-        tmp.unlink(missing_ok=True)
+        pass
+    # Per-process random suffix avoids collisions between concurrent
+    # writers and stale leftovers from a prior crashed write.
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+    try:
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 

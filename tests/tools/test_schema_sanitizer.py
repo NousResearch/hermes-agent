@@ -197,6 +197,22 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
+def test_array_schema_missing_items_gets_fallback_items():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "specifications": {
+                "type": "array",
+                "description": "Provider omitted items entirely",
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["specifications"]
+    assert prop["type"] == "array"
+    assert prop["items"] == {}
+
+
 def test_empty_tools_list_returns_empty():
     assert sanitize_tool_schemas([]) == []
 

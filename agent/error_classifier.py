@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -43,6 +44,7 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
+    tools_overflow = "tools_overflow"    # Provider capped the tools array length — disable some groups and retry
 
     # Model
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -235,6 +237,11 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints available matching your data policy",
     "no endpoints found matching your data policy",
 ]
+
+_TOOLS_OVERFLOW_RE = re.compile(
+    r"maximum length\s+(?P<max>\d+).*?(?:got(?: an array with)? length|but got(?: an array with)? length)\s+(?P<actual>\d+)",
+    re.IGNORECASE,
+)
 
 # Auth patterns (non-status-code signals)
 _AUTH_PATTERNS = [
@@ -745,6 +752,22 @@ def _classify_400(
         return result_fn(
             FailoverReason.image_too_large,
             retryable=True,
+        )
+
+    if "tools" in error_msg and "array too long" in error_msg:
+        error_context: dict[str, int] = {}
+        match = _TOOLS_OVERFLOW_RE.search(error_msg)
+        if match:
+            try:
+                error_context["max_tools"] = int(match.group("max"))
+                error_context["actual_tools"] = int(match.group("actual"))
+            except (TypeError, ValueError):
+                error_context = {}
+        return result_fn(
+            FailoverReason.tools_overflow,
+            retryable=True,
+            should_compress=False,
+            error_context=error_context,
         )
 
     # Context overflow from 400

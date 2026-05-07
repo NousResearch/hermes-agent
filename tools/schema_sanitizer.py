@@ -21,6 +21,7 @@ The failure modes we've seen in the wild:
   optional fields (common Pydantic/MCP shape). Anthropic rejects these at
   the top of ``input_schema``; collapse them to the non-null branch.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
+* Array-typed schemas with no ``items`` definition at all.
 
 This module walks the final tool schema tree (after MCP-level normalization
 and any per-tool dynamic rebuilds) and fixes the known-hostile constructs
@@ -242,6 +243,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Some MCP schemas declare an array but omit ``items`` entirely.
+    # Strict providers reject this as an invalid function schema; a permissive
+    # empty schema is the narrowest compatible fallback.
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

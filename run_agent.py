@@ -1618,6 +1618,7 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
+        self._session_disabled_toolsets: set[str] = set()
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
@@ -5457,6 +5458,160 @@ class AIAgent:
             return matches[0]
 
         return None
+
+    @staticmethod
+    def _tool_overflow_group_label(toolset_name: str, count: int) -> str:
+        """Human-readable label for an overflow-disable candidate."""
+        raw = str(toolset_name or "unknown")
+        if raw.startswith("mcp-"):
+            return f"MCP: {raw[4:]} ({count} tools)"
+        pretty = raw.replace("_", " ").replace("-", " ").strip()
+        if pretty.lower() == "homeassistant":
+            pretty = "Home Assistant"
+        elif pretty:
+            pretty = pretty.title()
+        else:
+            pretty = "Unknown"
+        return f"{pretty} ({count} tools)"
+
+    def _tool_overflow_candidates(self) -> list[dict[str, Any]]:
+        """Group currently loaded tools by source for overflow recovery."""
+        groups: dict[str, list[str]] = {}
+        for tool in self.tools or []:
+            fn = tool.get("function") if isinstance(tool, dict) else None
+            tool_name = fn.get("name") if isinstance(fn, dict) else None
+            if not tool_name:
+                continue
+            toolset_name = get_toolset_for_tool(tool_name) or "unknown"
+            groups.setdefault(toolset_name, []).append(tool_name)
+
+        candidates: list[dict[str, Any]] = []
+        for toolset_name, tool_names in groups.items():
+            tool_names = sorted(set(tool_names))
+            count = len(tool_names)
+            candidates.append(
+                {
+                    "toolset": toolset_name,
+                    "tool_names": tool_names,
+                    "count": count,
+                    "label": self._tool_overflow_group_label(toolset_name, count),
+                }
+            )
+
+        def _sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+            toolset_name = str(item["toolset"])
+            # Prefer trimming MCP groups before built-in toolsets — they are
+            # the common source of tool-count explosions and the safest to
+            # disable for just this session.
+            mcp_rank = 0 if toolset_name.startswith("mcp-") else 1
+            return (mcp_rank, -int(item["count"]), toolset_name)
+
+        return sorted(candidates, key=_sort_key)
+
+    def _disable_toolset_for_session(self, toolset_name: str) -> int:
+        """Remove all tools from one source group for the current session."""
+        remaining_tools: list[dict[str, Any]] = []
+        removed_names: set[str] = set()
+
+        for tool in self.tools or []:
+            fn = tool.get("function") if isinstance(tool, dict) else None
+            tool_name = fn.get("name") if isinstance(fn, dict) else None
+            if tool_name and get_toolset_for_tool(tool_name) == toolset_name:
+                removed_names.add(tool_name)
+                continue
+            remaining_tools.append(tool)
+
+        if not removed_names:
+            return 0
+
+        self.tools = remaining_tools
+        if isinstance(getattr(self, "valid_tool_names", None), set):
+            self.valid_tool_names.difference_update(removed_names)
+        else:
+            self.valid_tool_names = {
+                tool["function"]["name"]
+                for tool in self.tools or []
+                if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+            }
+        self._session_disabled_toolsets.add(toolset_name)
+        return len(removed_names)
+
+    def _recover_from_tool_overflow(
+        self,
+        *,
+        max_tools: int | None,
+        actual_tools: int | None,
+    ) -> bool:
+        """Interactively disable tool groups until the current session fits."""
+        if not self.tools:
+            return False
+
+        target_max = max_tools if isinstance(max_tools, int) and max_tools > 0 else None
+        session_changed = False
+
+        while self.tools and (target_max is None or len(self.tools) > target_max):
+            candidates = [
+                item
+                for item in self._tool_overflow_candidates()
+                if item["toolset"] not in self._session_disabled_toolsets
+            ]
+            if not candidates:
+                return False
+
+            current_count = len(self.tools)
+            prompt_lines = [
+                (
+                    f"Model {self.model or 'this model'} supports max {target_max or 'fewer'} "
+                    f"tools, but {actual_tools or current_count} are loaded."
+                ),
+                "Choose a tool group to disable for this session and retry.",
+            ]
+            for idx, candidate in enumerate(candidates[:4], start=1):
+                prompt_lines.append(f"[{idx}] {candidate['label']}")
+            question = "\n".join(prompt_lines)
+            choices = [candidate["label"] for candidate in candidates[:4]]
+
+            selected = candidates[0]
+            if callable(getattr(self, "clarify_callback", None)) and choices:
+                try:
+                    user_choice = self.clarify_callback(question, choices)
+                except Exception as exc:
+                    logger.warning(
+                        "%stool-overflow recovery: clarify callback failed: %s",
+                        self.log_prefix,
+                        exc,
+                    )
+                else:
+                    for candidate in candidates[:4]:
+                        if candidate["label"] == user_choice:
+                            selected = candidate
+                            break
+
+            removed_count = self._disable_toolset_for_session(selected["toolset"])
+            if removed_count <= 0:
+                return False
+
+            session_changed = True
+            current_count = len(self.tools or [])
+            self._vprint(
+                f"{self.log_prefix}🧰 Disabled {selected['label']} for this session. "
+                f"{current_count} tools remain loaded.",
+                force=True,
+            )
+            logger.warning(
+                "%stool-overflow recovery: disabled toolset '%s' (%d tools removed, %d remain)",
+                self.log_prefix,
+                selected["toolset"],
+                removed_count,
+                current_count,
+            )
+
+            if target_max is None or current_count <= target_max:
+                return True
+
+            actual_tools = current_count
+
+        return session_changed
 
     def _invalidate_system_prompt(self):
         """
@@ -11263,6 +11418,7 @@ class AIAgent:
             image_shrink_retry_attempted = False
             oauth_1m_beta_retry_attempted = False
             llama_cpp_grammar_retry_attempted = False
+            tool_overflow_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -12194,6 +12350,22 @@ class AIAgent:
                     )
                     if recovered_with_pool:
                         continue
+
+                    if (
+                        classified.reason == FailoverReason.tools_overflow
+                        and not tool_overflow_retry_attempted
+                    ):
+                        tool_overflow_retry_attempted = True
+                        _ctx = classified.error_context or {}
+                        if self._recover_from_tool_overflow(
+                            max_tools=_ctx.get("max_tools"),
+                            actual_tools=_ctx.get("actual_tools"),
+                        ):
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Retrying with a reduced session tool set...",
+                                force=True,
+                            )
+                            continue
 
                     # Image-too-large recovery: shrink oversized native image
                     # parts in-place and retry once.  Triggered by Anthropic's

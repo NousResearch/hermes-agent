@@ -54,7 +54,7 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout",
-            "context_overflow", "payload_too_large", "image_too_large",
+            "context_overflow", "payload_too_large", "image_too_large", "tools_overflow",
             "model_not_found", "format_error",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
@@ -244,6 +244,17 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
+
+    def test_400_tools_array_too_long(self):
+        e = MockAPIError(
+            "Invalid 'tools': array too long. Expected an array with maximum length 128, "
+            "but got an array with length 131 instead.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="copilot", model="gpt-5-mini")
+        assert result.reason == FailoverReason.tools_overflow
+        assert result.retryable is True
+        assert result.error_context == {"max_tools": 128, "actual_tools": 131}
 
     # ── Rate limit ──
 

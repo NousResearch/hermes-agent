@@ -13,18 +13,26 @@ try:
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
+_CURRENT_SCHEMA_VERSION = 1
+_CURRENT_ENCODING_VERSION = 1
+
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS facts (
-    fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    content         TEXT NOT NULL UNIQUE,
-    category        TEXT DEFAULT 'general',
-    tags            TEXT DEFAULT '',
-    trust_score     REAL DEFAULT 0.5,
-    retrieval_count INTEGER DEFAULT 0,
-    helpful_count   INTEGER DEFAULT 0,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    fact_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    content          TEXT NOT NULL UNIQUE,
+    category         TEXT DEFAULT 'general',
+    tags             TEXT DEFAULT '',
+    trust_score      REAL DEFAULT 0.5,
+    retrieval_count  INTEGER DEFAULT 0,
+    helpful_count    INTEGER DEFAULT 0,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    hrr_vector       BLOB,
+    encoding_version INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -146,14 +154,99 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
-        """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
+        """Create tables/indexes/triggers, reconcile columns, run data migrations.
+
+        Schema management mirrors hermes_state.py: ``_SCHEMA`` is the single
+        source of truth, ``_reconcile_columns`` declaratively ADDs any column
+        present in ``_SCHEMA`` but missing from the live DB, and the
+        ``schema_version`` table gates one-shot data migrations that cannot
+        be expressed declaratively.
+        """
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
-        # Migrate: add hrr_vector column if missing (safe for existing databases)
-        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
-        if "hrr_vector" not in columns:
-            self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        self._reconcile_columns()
+
+        row = self._conn.execute(
+            "SELECT version FROM schema_version LIMIT 1"
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                (_CURRENT_SCHEMA_VERSION,),
+            )
+        else:
+            current = row["version"] if isinstance(row, sqlite3.Row) else row[0]
+            # Future row-level data migrations gate on `current` here.
+            # Column additions are handled declaratively above.
+            if current < _CURRENT_SCHEMA_VERSION:
+                self._conn.execute(
+                    "UPDATE schema_version SET version = ?",
+                    (_CURRENT_SCHEMA_VERSION,),
+                )
         self._conn.commit()
+
+    @staticmethod
+    def _parse_schema_columns(schema_sql: str) -> "dict[str, dict[str, str]]":
+        """Use an in-memory SQLite to parse declared columns per table.
+
+        Avoids regex edge cases (DEFAULT expressions with commas, inline
+        constraints, etc.) by letting SQLite itself parse the DDL and
+        extracting column metadata via PRAGMA table_info. Returns
+        ``{table: {column: "TYPE [NOT NULL] [DEFAULT x]"}}`` suitable
+        for feeding into ALTER TABLE ADD COLUMN.
+        """
+        ref = sqlite3.connect(":memory:")
+        try:
+            ref.executescript(schema_sql)
+            tables: dict[str, dict[str, str]] = {}
+            for (tbl,) in ref.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall():
+                cols: dict[str, str] = {}
+                for row in ref.execute(
+                    f'PRAGMA table_info("{tbl}")'
+                ).fetchall():
+                    _, name, ctype, notnull, default, pk = row
+                    parts = [ctype] if ctype else []
+                    if notnull and not pk:
+                        parts.append("NOT NULL")
+                    if default is not None:
+                        parts.append(f"DEFAULT {default}")
+                    cols[name] = " ".join(parts)
+                tables[tbl] = cols
+            return tables
+        finally:
+            ref.close()
+
+    def _reconcile_columns(self) -> None:
+        """Declarative ADD COLUMN: diff live tables against ``_SCHEMA``.
+
+        Idempotent and self-healing: if a deploy skips a step or a future
+        column is added to ``_SCHEMA``, the next open of the DB picks it up.
+        """
+        expected = self._parse_schema_columns(_SCHEMA)
+        for table_name, declared in expected.items():
+            try:
+                rows = self._conn.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue
+            live_cols = {r[1] if isinstance(r, (tuple, list)) else r["name"] for r in rows}
+            for col_name, col_type in declared.items():
+                if col_name not in live_cols:
+                    safe_name = col_name.replace('"', '""')
+                    try:
+                        self._conn.execute(
+                            f'ALTER TABLE "{table_name}" '
+                            f'ADD COLUMN "{safe_name}" {col_type}'
+                        )
+                    except sqlite3.OperationalError:
+                        # duplicate column from a race, or a constraint that
+                        # ALTER cannot retro-add (e.g. UNIQUE) — surface only
+                        # at debug; not load-bearing for correctness.
+                        pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -497,13 +590,18 @@ class MemoryStore:
         )
         self._conn.commit()
 
-    def _compute_hrr_vector(self, fact_id: int, content: str) -> None:
-        """Compute and store HRR vector for a fact. No-op if numpy unavailable."""
+    def _compute_hrr_vector(self, fact_id: int, content: str, *, commit: bool = True) -> None:
+        """Compute and store HRR vector for a fact. No-op if numpy unavailable.
+
+        Stamps ``encoding_version = _CURRENT_ENCODING_VERSION`` on every write
+        so future algebra changes can be detected and self-healed by the
+        memory doctor. Pass ``commit=False`` to participate in a larger
+        transaction (e.g. ``rename_entity``).
+        """
         with self._lock:
             if not self._hrr_available:
                 return
 
-            # Get entities linked to this fact
             rows = self._conn.execute(
                 """
                 SELECT e.name FROM entities e
@@ -516,13 +614,18 @@ class MemoryStore:
 
             vector = hrr.encode_fact(content, entities, self.hrr_dim)
             self._conn.execute(
-                "UPDATE facts SET hrr_vector = ? WHERE fact_id = ?",
-                (hrr.phases_to_bytes(vector), fact_id),
+                "UPDATE facts SET hrr_vector = ?, encoding_version = ? "
+                "WHERE fact_id = ?",
+                (hrr.phases_to_bytes(vector), _CURRENT_ENCODING_VERSION, fact_id),
             )
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
 
-    def _rebuild_bank(self, category: str) -> None:
-        """Full rebuild of a category's memory bank from all its fact vectors."""
+    def _rebuild_bank(self, category: str, *, commit: bool = True) -> None:
+        """Full rebuild of a category's memory bank from all its fact vectors.
+
+        Pass ``commit=False`` to participate in a larger transaction.
+        """
         with self._lock:
             if not self._hrr_available:
                 return
@@ -535,14 +638,14 @@ class MemoryStore:
 
             if not rows:
                 self._conn.execute("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
-                self._conn.commit()
+                if commit:
+                    self._conn.commit()
                 return
 
             vectors = [hrr.bytes_to_phases(row["hrr_vector"]) for row in rows]
             bank_vector = hrr.bundle(*vectors)
             fact_count = len(vectors)
 
-            # Check SNR
             hrr.snr_estimate(self.hrr_dim, fact_count)
 
             self._conn.execute(
@@ -557,7 +660,8 @@ class MemoryStore:
                 """,
                 (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, fact_count),
             )
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
 
     def rebuild_all_vectors(self, dim: int | None = None) -> int:
         """Recompute all HRR vectors + banks from text. For recovery/migration.
@@ -668,6 +772,103 @@ class MemoryStore:
                 upserted += 1
             self._conn.commit()
         return upserted
+
+    def rename_entity(
+        self,
+        entity_id: int,
+        new_name: str,
+        *,
+        add_aliases: "list[str] | None" = None,
+    ) -> dict:
+        """Rename a canonical entity and re-encode every fact linked to it.
+
+        Atomic: the entity row update, alias merge, and per-fact HRR
+        re-encode all happen in a single transaction. If anything fails
+        mid-way, the DB is rolled back to its prior state — no half-renamed
+        entities, no facts with stale vectors pointing at a renamed atom.
+
+        The old canonical name is automatically merged into the entity's
+        aliases so probes by the previous name still resolve. Pass
+        ``add_aliases`` to merge additional aliases in the same transaction.
+
+        Returns a summary dict::
+
+            {"entity_id": int, "old_name": str, "new_name": str,
+             "facts_re_encoded": int, "categories_rebuilt": [str, ...]}
+
+        Raises ``KeyError`` if ``entity_id`` does not exist, ``ValueError``
+        if ``new_name`` is empty.
+        """
+        new_name = (new_name or "").strip()
+        if not new_name:
+            raise ValueError("new_name must not be empty")
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT entity_id, name, aliases FROM entities WHERE entity_id = ?",
+                (entity_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"entity_id {entity_id} not found")
+
+            old_name: str = row["name"]
+            existing_aliases = [
+                a.strip() for a in (row["aliases"] or "").split(",") if a.strip()
+            ]
+
+            # Merge old_name + add_aliases into aliases, preserving casing.
+            casing_map = {a.lower(): a for a in existing_aliases}
+            if old_name and old_name.lower() != new_name.lower():
+                casing_map.setdefault(old_name.lower(), old_name)
+            for alias in add_aliases or []:
+                a = (alias or "").strip()
+                if a:
+                    casing_map.setdefault(a.lower(), a)
+            # Drop the new canonical from aliases if it appears (would be redundant).
+            casing_map.pop(new_name.lower(), None)
+            merged_aliases = ",".join(casing_map.values())
+
+            # Find every fact linked to this entity (snapshot before commit).
+            fact_rows = self._conn.execute(
+                """
+                SELECT f.fact_id, f.content, f.category
+                FROM facts f
+                JOIN fact_entities fe ON fe.fact_id = f.fact_id
+                WHERE fe.entity_id = ?
+                """,
+                (entity_id,),
+            ).fetchall()
+            affected_facts = [
+                (r["fact_id"], r["content"]) for r in fact_rows
+            ]
+            categories = sorted({r["category"] for r in fact_rows})
+
+            # Single transaction. Python's sqlite3 starts an implicit
+            # transaction before the first DML below; everything runs
+            # inside it until the final commit() or rollback().
+            try:
+                self._conn.execute(
+                    "UPDATE entities SET name = ?, aliases = ? WHERE entity_id = ?",
+                    (new_name, merged_aliases, entity_id),
+                )
+                # Re-encode each linked fact (reads the new entity name via JOIN).
+                for fid, content in affected_facts:
+                    self._compute_hrr_vector(fid, content, commit=False)
+                # Rebuild affected category banks from the fresh vectors.
+                for cat in categories:
+                    self._rebuild_bank(cat, commit=False)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            return {
+                "entity_id":         entity_id,
+                "old_name":          old_name,
+                "new_name":          new_name,
+                "facts_re_encoded":  len(affected_facts),
+                "categories_rebuilt": categories,
+            }
 
     def get_state(self, key: str) -> "str | None":
         """Read a value from the plugin_state key/value table."""

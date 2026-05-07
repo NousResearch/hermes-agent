@@ -185,3 +185,41 @@ class TestMSGraphNotifications:
         await asyncio.sleep(0.05)
 
         assert len(scheduled) == 1
+
+    @pytest.mark.anyio
+    async def test_seen_receipts_are_bounded(self):
+        adapter = _make_adapter(max_seen_receipts=2)
+
+        async def _capture(notification, event):
+            return None
+
+        adapter.set_notification_scheduler(_capture)
+
+        async def _post(notification_id: str):
+            payload = {
+                "value": [
+                    {
+                        "id": notification_id,
+                        "subscriptionId": "sub-1",
+                        "changeType": "updated",
+                        "resource": "communications/onlineMeetings/meeting-3",
+                        "clientState": "expected-client-state",
+                    }
+                ]
+            }
+            return await adapter._handle_notification(_FakeRequest(json_payload=payload))
+
+        first = await _post("notif-a")
+        second = await _post("notif-b")
+        third = await _post("notif-c")
+
+        assert first.status == 202
+        assert second.status == 202
+        assert third.status == 202
+        assert len(adapter._seen_receipts) == 2
+        assert list(adapter._seen_receipt_order) == ["id:notif-b", "id:notif-c"]
+
+        replay = await _post("notif-a")
+        replay_data = json.loads(replay.text)
+        assert replay_data["accepted"] == 1
+        assert replay_data["duplicates"] == 0

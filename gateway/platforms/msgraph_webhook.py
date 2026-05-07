@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
 from hashlib import sha1
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
+DEFAULT_MAX_SEEN_RECEIPTS = 5000
 NotificationScheduler = Callable[[Dict[str, Any], MessageEvent], Awaitable[None] | None]
 
 
@@ -55,9 +57,13 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             if str(value).strip()
         ]
         self._client_state: Optional[str] = self._string_or_none(extra.get("client_state"))
+        self._max_seen_receipts = max(
+            1, int(extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS))
+        )
         self._runner = None
         self._notification_scheduler: Optional[NotificationScheduler] = None
         self._seen_receipts: set[str] = set()
+        self._seen_receipt_order: deque[str] = deque()
         self._accepted_count = 0
         self._duplicate_count = 0
 
@@ -172,10 +178,10 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 continue
 
             receipt_key = self._build_receipt_key(notification)
-            if receipt_key in self._seen_receipts:
+            if self._has_seen_receipt(receipt_key):
                 duplicates += 1
                 continue
-            self._seen_receipts.add(receipt_key)
+            self._remember_receipt(receipt_key)
 
             accepted += 1
             scheduled += 1
@@ -212,6 +218,16 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return True
         provided = self._string_or_none(notification.get("clientState"))
         return provided == expected
+
+    def _has_seen_receipt(self, receipt_key: str) -> bool:
+        return receipt_key in self._seen_receipts
+
+    def _remember_receipt(self, receipt_key: str) -> None:
+        self._seen_receipts.add(receipt_key)
+        self._seen_receipt_order.append(receipt_key)
+        while len(self._seen_receipt_order) > self._max_seen_receipts:
+            oldest = self._seen_receipt_order.popleft()
+            self._seen_receipts.discard(oldest)
 
     def _build_message_event(
         self,

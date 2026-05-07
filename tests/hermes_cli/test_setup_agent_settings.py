@@ -19,7 +19,7 @@ def test_setup_agent_settings_uses_displayed_max_iterations_value(tmp_path, monk
         "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
     }
 
-    prompt_answers = iter(["60", "all", "0.5"])
+    prompt_answers = iter(["60", "0", "0", "all", "0.5"])
 
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
@@ -50,7 +50,7 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
         "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
     }
 
-    prompt_answers = iter(["500", "all", "0.5"])
+    prompt_answers = iter(["500", "0", "0", "all", "0.5"])
 
     # Simulate stale .env value — the wizard must ignore this.
     monkeypatch.setattr(
@@ -76,3 +76,64 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
     assert "Press Enter to keep 60." not in out
     # And the stale .env entry gets cleaned up
     assert "HERMES_MAX_ITERATIONS" in removed_keys
+
+
+def test_setup_agent_settings_writes_tool_loop_guardrail_aliases(tmp_path, monkeypatch, capsys):
+    """The wizard's guardrail prompts persist both aliases and auto-enable hard_stop."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    config = {
+        "agent": {"max_turns": 90},
+        "display": {"tool_progress": "all"},
+        "compression": {"threshold": 0.50},
+        "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
+    }
+
+    # Answers: max_iter, max_retries_per_operation, max_consecutive_identical_calls,
+    # tool_progress, compression_threshold
+    prompt_answers = iter(["90", "3", "5", "all", "0.5"])
+
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
+
+    setup_agent_settings(config)
+
+    guardrails = config.get("tool_loop_guardrails", {})
+    assert guardrails.get("max_retries_per_operation") == 3
+    assert guardrails.get("max_consecutive_identical_calls") == 5
+    assert guardrails.get("hard_stop_enabled") is True
+
+
+def test_setup_agent_settings_zero_guardrail_values_remove_keys(tmp_path, monkeypatch, capsys):
+    """Entering 0 should remove any previously-set alias keys."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Pre-existing guardrail config the user is disabling
+    config = {
+        "agent": {"max_turns": 90},
+        "display": {"tool_progress": "all"},
+        "compression": {"threshold": 0.50},
+        "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
+        "tool_loop_guardrails": {
+            "max_retries_per_operation": 3,
+            "max_consecutive_identical_calls": 3,
+            "hard_stop_enabled": True,
+        },
+    }
+
+    prompt_answers = iter(["90", "0", "0", "all", "0.5"])
+
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
+
+    setup_agent_settings(config)
+
+    guardrails = config.get("tool_loop_guardrails", {})
+    assert "max_retries_per_operation" not in guardrails
+    assert "max_consecutive_identical_calls" not in guardrails

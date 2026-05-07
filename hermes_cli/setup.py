@@ -1720,6 +1720,67 @@ def setup_agent_settings(config: dict):
     except ValueError:
         print_warning("Invalid number, keeping current value")
 
+    # ── Tool Loop Guardrails ──
+    # Circuit breakers that stop the agent from burning iterations on a broken
+    # tool call. Separate from max_iterations (which is a hard ceiling) — these
+    # fire earlier and force the agent to report the failure instead of
+    # retrying blindly. See issue #18504.
+    print_info("")
+    print_info("Tool Loop Guardrails")
+    print_info(
+        "Stop the agent retrying the same failing tool call forever. "
+        "Fires before the iteration ceiling and reports the failure."
+    )
+    print_info("  Leave either at 0 to disable.")
+
+    guardrails_cfg = config.setdefault("tool_loop_guardrails", {})
+    current_retries = guardrails_cfg.get("max_retries_per_operation", 0)
+    current_consec = guardrails_cfg.get("max_consecutive_identical_calls", 0)
+
+    retries_str = prompt(
+        "Max retries per failing tool+args (0 = disabled)",
+        str(current_retries),
+    )
+    try:
+        retries_val = int(retries_str)
+        if retries_val < 0:
+            retries_val = 0
+        if retries_val > 0:
+            guardrails_cfg["max_retries_per_operation"] = retries_val
+            guardrails_cfg["hard_stop_enabled"] = True
+        else:
+            guardrails_cfg.pop("max_retries_per_operation", None)
+    except ValueError:
+        print_warning("Invalid number, skipping max_retries_per_operation")
+
+    consec_str = prompt(
+        "Max consecutive identical calls (0 = disabled)",
+        str(current_consec),
+    )
+    try:
+        consec_val = int(consec_str)
+        if consec_val < 0:
+            consec_val = 0
+        if consec_val > 0:
+            guardrails_cfg["max_consecutive_identical_calls"] = consec_val
+            guardrails_cfg["hard_stop_enabled"] = True
+        else:
+            guardrails_cfg.pop("max_consecutive_identical_calls", None)
+    except ValueError:
+        print_warning("Invalid number, skipping max_consecutive_identical_calls")
+
+    _retries_final = guardrails_cfg.get("max_retries_per_operation", 0)
+    _consec_final = guardrails_cfg.get("max_consecutive_identical_calls", 0)
+    if _retries_final or _consec_final:
+        _parts = []
+        if _retries_final:
+            _parts.append(f"retries/op={_retries_final}")
+        if _consec_final:
+            _parts.append(f"consecutive={_consec_final}")
+        print_success(f"Tool loop guardrails: {', '.join(_parts)}")
+    else:
+        print_info("Tool loop guardrails: disabled (soft warnings only).")
+
     # ── Tool Progress Display ──
     print_info("")
     print_info("Tool Progress Display")

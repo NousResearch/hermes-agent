@@ -49,6 +49,7 @@ AUTHOR_MAP = {
     "piyushvp1@gmail.com": "thelumiereguy",
     "harish.kukreja@gmail.com": "counterposition",
     "cleo@edaphic.xyz": "curiouscleo",
+    "altriatree@gmail.com": "TruaShamu",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "159539633+MottledShadow@users.noreply.github.com": "MottledShadow",

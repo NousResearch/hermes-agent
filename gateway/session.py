@@ -1028,42 +1028,6 @@ class SessionStore:
             self._save()
             return True
 
-    def list_resume_pending(
-        self,
-        *,
-        window_secs: Optional[float] = None,
-        now: Optional[float] = None,
-        allowed_reasons: Optional[set[str]] = None,
-    ) -> List[SessionEntry]:
-        """Return fresh restart-interrupted sessions eligible for resume.
-
-        Only entries that still have an origin are returned; the gateway needs
-        that origin to route continuation back through the original
-        platform/chat/thread.  ``suspended`` entries are excluded because
-        explicit suspension/stuck-loop escalation must win over resume.
-        """
-        current = datetime.fromtimestamp(now) if now is not None else _now()
-        window = float(window_secs) if window_secs is not None else None
-
-        with self._lock:
-            self._ensure_loaded_locked()
-            entries = list(self._entries.values())
-
-        pending: List[SessionEntry] = []
-        for entry in entries:
-            if not entry.resume_pending or entry.suspended or entry.origin is None:
-                continue
-            if allowed_reasons is not None and entry.resume_reason not in allowed_reasons:
-                continue
-            if window is not None and window > 0:
-                marker = entry.last_resume_marked_at or entry.updated_at
-                if marker is not None and (current - marker).total_seconds() > window:
-                    continue
-            pending.append(entry)
-
-        pending.sort(key=lambda entry: entry.last_resume_marked_at or entry.updated_at)
-        return pending
-
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 

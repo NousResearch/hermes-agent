@@ -37,6 +37,25 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Provider feature detection
+# ---------------------------------------------------------------------------
+
+def _provider_overrides_before_prompt_build(provider: MemoryProvider) -> bool:
+    """True iff `provider` overrides `before_prompt_build` (vs leaving the
+    ABC's default no-op).
+
+    We dispatch system-prompt-injection providers via this hook and skip
+    their `prefetch` to avoid double-injection. Implemented by walking
+    the MRO and checking which class defined `before_prompt_build` —
+    if it's still `MemoryProvider`, the provider hasn't overridden it."""
+    method = getattr(type(provider), "before_prompt_build", None)
+    if method is None:
+        return False
+    base_method = getattr(MemoryProvider, "before_prompt_build", None)
+    return method is not base_method
+
+
+# ---------------------------------------------------------------------------
 # Context fencing helpers
 # ---------------------------------------------------------------------------
 
@@ -287,9 +306,16 @@ class MemoryManager:
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
+
+        Providers that override ``before_prompt_build`` are SKIPPED here
+        — they get their context injected into the system prompt
+        instead, via :meth:`build_dynamic_system_prompt`. This prevents
+        double-injection.
         """
         parts = []
         for provider in self._providers:
+            if _provider_overrides_before_prompt_build(provider):
+                continue
             try:
                 result = provider.prefetch(query, session_id=session_id)
                 if result and result.strip():
@@ -300,6 +326,84 @@ class MemoryManager:
                     provider.name, e,
                 )
         return "\n\n".join(parts)
+
+    def build_dynamic_system_prompt(
+        self,
+        turn_state: Dict[str, Any],
+    ) -> str:
+        """Per-turn dynamic system-prompt context.
+
+        Collects ``before_prompt_build()`` output from each provider
+        that overrides it. Result is appended to the system prompt of
+        every API call within the turn — a more authoritative position
+        than ``prefetch`` (which appends to the user message).
+
+        Providers that don't override ``before_prompt_build`` return
+        ``""`` here and continue using the ``prefetch`` path.
+        """
+        parts = []
+        for provider in self._providers:
+            if not _provider_overrides_before_prompt_build(provider):
+                continue
+            try:
+                block = provider.before_prompt_build(turn_state)
+                if block and block.strip():
+                    parts.append(block)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' before_prompt_build failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts)
+
+    def notify_recall_used(
+        self,
+        response_text: str,
+        *,
+        session_id: str = "",
+    ) -> None:
+        """Fan ``on_recall_used`` out to all providers.
+
+        Called once per turn after the assistant's final response is
+        built — providers run their own heuristic to decide which of
+        their prefetched recalls were actually referenced and update
+        access counts accordingly. Best-effort; failures swallowed.
+        """
+        for provider in self._providers:
+            try:
+                provider.on_recall_used(response_text, session_id=session_id)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_recall_used failed (non-fatal): %s",
+                    provider.name, e,
+                )
+
+    def notify_tool_call(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        *,
+        session_id: str = "",
+        success: bool = True,
+    ) -> None:
+        """Fan ``on_tool_call_observed`` out to all providers.
+
+        Fires after every tool call — both memory-owned and external.
+        Providers that don't override the hook get a no-op. Best-effort;
+        failures swallowed.
+        """
+        for provider in self._providers:
+            try:
+                provider.on_tool_call_observed(
+                    tool_name, args, result,
+                    session_id=session_id, success=success,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_tool_call_observed failed (non-fatal): %s",
+                    provider.name, e,
+                )
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn."""

@@ -228,6 +228,20 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def _slack_tools_loaded() -> bool:
+    """True iff the Slack read/search tool will be available this session."""
+    if not (os.environ.get("SLACK_BOT_TOKEN") or "").strip():
+        return False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        enabled = _get_platform_tools(cfg, "slack", include_default_mcp_servers=False)
+        return "slack" in enabled
+    except Exception:
+        return False
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -317,14 +331,29 @@ def build_session_context_prompt(
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
         lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
-        )
+        if _slack_tools_loaded():
+            src = context.source
+            lines.append(
+                "**Platform notes:** You are running inside Slack. Use the `slack` tool "
+                "to list, read, and search only conversations the bot has already joined "
+                "and Slack scopes allow. You cannot join channels, bypass private-channel "
+                "membership, manage channels, or pin/unpin messages."
+            )
+            lines.append("**Slack IDs for this session:**")
+            lines.append(f"  - Channel: `{src.chat_id}`")
+            if src.thread_id:
+                lines.append(f"  - Thread: `{src.thread_id}`")
+            if src.message_id:
+                lines.append(f"  - Message: `{src.message_id}`")
+        else:
+            lines.append(
+                "**Platform notes:** You are running inside Slack. "
+                "You do NOT have access to Slack-specific APIs — you cannot search "
+                "channel history, pin/unpin messages, manage channels, or list users. "
+                "Do not promise to perform these actions. The gateway may inline the "
+                "current message's Slack block/attachment payload when available, but "
+                "you still cannot call Slack APIs yourself."
+            )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into

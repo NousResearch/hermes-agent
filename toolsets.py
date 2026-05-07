@@ -231,6 +231,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "slack": {
+        "description": "Slack read/search tools for channels the bot has joined",
+        "tools": ["slack"],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
@@ -393,7 +399,7 @@ TOOLSETS = {
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + ["slack"],
         "includes": []
     },
     

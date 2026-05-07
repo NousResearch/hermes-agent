@@ -1988,6 +1988,30 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     return text or "What do you see in this image?"
 
 
+def _message_content_text(content) -> str:
+    """Return a compact text preview for stored OpenAI-style content.
+
+    Older multimodal sessions can contain list-based message content like
+    [{"type": "text", ...}, {"type": "image_url", ...}].  TUI resume only
+    needs display text, so never stringify embedded base64 image URLs.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+            elif part.get("type") == "image_url":
+                parts.append("[image]")
+        return "\n".join(parts)
+    return str(content or "")
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -1998,6 +2022,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         role = m.get("role")
         if role not in ("user", "assistant", "tool", "system"):
             continue
+        content_text = _message_content_text(m.get("content"))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
@@ -2008,7 +2033,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not (m.get("content") or "").strip():
+            if not content_text.strip():
                 continue
         if role == "tool":
             tc_id = m.get("tool_call_id", "")
@@ -2019,9 +2044,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             )
             continue
-        if not (m.get("content") or "").strip():
+        if not content_text.strip():
             continue
-        messages.append({"role": role, "text": m.get("content") or ""})
+        messages.append({"role": role, "text": content_text})
 
     return messages
 

@@ -334,7 +334,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
-            return True
+            # SECURITY: No allowlist configured — fail-closed instead of
+            # allowing all callbacks.  Set TELEGRAM_ALLOWED_USERS=* to
+            # explicitly allow everyone.  See code-review 2026-05-07.
+            return False
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 

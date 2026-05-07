@@ -329,8 +329,10 @@ def _exc_str(exc: BaseException) -> str:
 # ---------------------------------------------------------------------------
 
 # Patterns that indicate potential prompt injection in MCP tool descriptions.
-# These are WARNING-level — we log but don't block, since false positives
-# would break legitimate MCP servers.
+# MCP tool descriptions and JSON-schema property descriptions come from the
+# MCP server, not from Hermes. They are model-visible, so suspicious content is
+# treated as untrusted data and removed from the tool schema unless the user has
+# explicitly opted in to raw descriptions for that server.
 _MCP_INJECTION_PATTERNS = [
     (re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.I),
      "prompt override attempt ('ignore previous instructions')"),
@@ -352,7 +354,15 @@ _MCP_INJECTION_PATTERNS = [
      "code execution reference"),
     (re.compile(r"import\s+(subprocess|os|shutil|socket)", re.I),
      "dangerous import reference"),
+    (re.compile(r"\b(api[-_ ]?keys?|tokens?|credentials?|secrets?)\b", re.I),
+     "credential-seeking language"),
+    (re.compile(r"\b(exfiltrate|leak|steal|send)\b.*\b(secret|token|credential|api[-_ ]?key)", re.I),
+     "credential exfiltration instruction"),
+    (re.compile(r"\b(always|must|required to|should)\s+(call|invoke|use)\b", re.I),
+     "tool-use steering instruction"),
 ]
+
+_MCP_DESCRIPTION_REDACTION = "[removed untrusted MCP description segment]"
 
 
 def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> List[str]:
@@ -374,6 +384,103 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
             description,
         )
     return findings
+
+
+def _mcp_description_findings(description: str) -> List[str]:
+    """Return suspicious MCP description finding reasons without logging."""
+    if not description:
+        return []
+    return [reason for pattern, reason in _MCP_INJECTION_PATTERNS if pattern.search(description)]
+
+
+def _sanitize_mcp_description(
+    server_name: str,
+    tool_name: str,
+    description: str,
+    *,
+    trusted: bool = False,
+) -> str:
+    """Return a model-visible MCP description safe for untrusted servers.
+
+    MCP descriptions are controlled by the server and are included in LLM tool
+    schemas. For untrusted servers, remove any line/sentence containing prompt
+    injection, role-tag, network, code-execution, or credential-seeking patterns
+    before the description is exposed to the model. Servers may opt into raw
+    descriptions with ``trusted_tool_descriptions: true`` in their config.
+    """
+    if not description:
+        return ""
+
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", str(description))
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+
+    findings = _scan_mcp_description(server_name, tool_name, text)
+    if trusted or not findings:
+        return text
+
+    safe_segments: List[str] = []
+    for line in re.split(r"[\r\n]+", text):
+        line = line.strip()
+        if not line:
+            continue
+        # Remove individual sentences when possible; if a whole line is one
+        # suspicious instruction, the whole line is replaced below.
+        for segment in re.split(r"(?<=[.!?])\s+", line):
+            segment = segment.strip()
+            if not segment:
+                continue
+            if _mcp_description_findings(segment):
+                continue
+            safe_segments.append(segment)
+
+    sanitized = " ".join(safe_segments).strip()
+    if not sanitized:
+        sanitized = _MCP_DESCRIPTION_REDACTION
+    else:
+        sanitized = f"{sanitized} {_MCP_DESCRIPTION_REDACTION}"
+
+    logger.warning(
+        "MCP server '%s' tool '%s': sanitized untrusted description before exposing it to the model",
+        server_name,
+        tool_name,
+    )
+    return sanitized
+
+
+def _sanitize_mcp_schema_descriptions(
+    value: Any,
+    server_name: str,
+    tool_name: str,
+    *,
+    trusted: bool = False,
+) -> Any:
+    """Recursively sanitize JSON-schema description fields from an MCP server."""
+    if isinstance(value, dict):
+        sanitized: dict = {}
+        for key, child in value.items():
+            if key == "description" and isinstance(child, str):
+                sanitized[key] = _sanitize_mcp_description(
+                    server_name,
+                    tool_name,
+                    child,
+                    trusted=trusted,
+                )
+            else:
+                sanitized[key] = _sanitize_mcp_schema_descriptions(
+                    child,
+                    server_name,
+                    tool_name,
+                    trusted=trusted,
+                )
+        return sanitized
+    if isinstance(value, list):
+        return [
+            _sanitize_mcp_schema_descriptions(item, server_name, tool_name, trusted=trusted)
+            for item in value
+        ]
+    return value
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
@@ -588,6 +695,10 @@ class SamplingHandler:
         )
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
+        self.trusted_tool_descriptions = _parse_boolish(
+            config.get("trusted_tool_descriptions"),
+            default=False,
+        )
 
         _log_levels = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING}
         self.audit_level = _log_levels.get(
@@ -856,19 +967,31 @@ class SamplingHandler:
         call_tools = None
         server_tools = getattr(params, "tools", None)
         if server_tools:
-            call_tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": getattr(t, "name", ""),
-                        "description": getattr(t, "description", "") or "",
-                        "parameters": _normalize_mcp_input_schema(
-                            getattr(t, "inputSchema", None)
-                        ),
-                    },
-                }
-                for t in server_tools
-            ]
+            call_tools = []
+            for t in server_tools:
+                tool_name = getattr(t, "name", "")
+                parameters = _normalize_mcp_input_schema(getattr(t, "inputSchema", None))
+                parameters = _sanitize_mcp_schema_descriptions(
+                    parameters,
+                    self.server_name,
+                    tool_name,
+                    trusted=self.trusted_tool_descriptions,
+                )
+                call_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "description": _sanitize_mcp_description(
+                                self.server_name,
+                                tool_name,
+                                getattr(t, "description", "") or "",
+                                trusted=self.trusted_tool_descriptions,
+                            ),
+                            "parameters": parameters,
+                        },
+                    }
+                )
 
         logger.log(
             self.audit_level,
@@ -1435,7 +1558,9 @@ class MCPServerTask:
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
-        sampling_config = config.get("sampling", {})
+        sampling_config = dict(config.get("sampling", {}) or {})
+        if "trusted_tool_descriptions" not in sampling_config:
+            sampling_config["trusted_tool_descriptions"] = config.get("trusted_tool_descriptions", False)
         if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
             self._sampling = SamplingHandler(self.name, sampling_config)
         else:
@@ -2684,13 +2809,16 @@ def sanitize_mcp_name_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 
 
-def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
+def _convert_mcp_schema(server_name: str, mcp_tool, *, trusted_descriptions: bool = False) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
     Args:
         server_name: The logical server name for prefixing.
         mcp_tool:    An MCP ``Tool`` object with ``.name``, ``.description``,
                      and ``.inputSchema``.
+        trusted_descriptions: When true, preserve raw server-provided
+                     descriptions. Defaults false because descriptions are
+                     model-visible untrusted data.
 
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
@@ -2698,10 +2826,23 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+    raw_description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    parameters = _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None))
+    parameters = _sanitize_mcp_schema_descriptions(
+        parameters,
+        server_name,
+        mcp_tool.name,
+        trusted=trusted_descriptions,
+    )
     return {
         "name": prefixed_name,
-        "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
+        "description": _sanitize_mcp_description(
+            server_name,
+            mcp_tool.name,
+            raw_description,
+            trusted=trusted_descriptions,
+        ),
+        "parameters": parameters,
     }
 
 
@@ -2927,6 +3068,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     tools_filter = config.get("tools") or {}
     include_set = _normalize_name_filter(tools_filter.get("include"), f"mcp_servers.{name}.tools.include")
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
+    trusted_descriptions = _parse_boolish(config.get("trusted_tool_descriptions"), default=False)
 
     def _should_register(tool_name: str) -> bool:
         if include_set:
@@ -2940,10 +3082,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
             continue
 
-        # Scan tool description for prompt injection patterns
-        _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
-
-        schema = _convert_mcp_schema(name, mcp_tool)
+        schema = _convert_mcp_schema(
+            name,
+            mcp_tool,
+            trusted_descriptions=trusted_descriptions,
+        )
         tool_name_prefixed = schema["name"]
 
         # Guard against collisions with built-in (non-MCP) tools.

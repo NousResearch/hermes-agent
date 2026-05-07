@@ -1512,11 +1512,40 @@ discord:
 
 ## Security
 
-Pre-execution security scanning and secret redaction:
+Pre-execution security scanning, secret redaction, and policy posture:
 
 ```yaml
 security:
   redact_secrets: false          # Redact API key patterns in tool output and logs (off by default)
+  policy:
+    version: 1
+    filesystem:
+      write_safe_root: ""        # Legacy single write_file/patch safe root
+      deny_hermes_control_plane: true
+    filesystem_policy:           # OpenShell-shaped filesystem policy
+      read_only: []
+      read_write: []             # Multiple write_file/patch safe roots
+      include_workdir: false
+      deny_hermes_control_plane: true
+    landlock:
+      compatibility: best_effort # Accepted for policy compatibility; external runtime required
+    commands:
+      deny: []
+      allow: []
+    network_policies: {}         # OpenShell-shaped egress intent, reported by doctor
+    permissions:
+      toolsets_allow: []
+      toolsets_deny: []
+      tools_allow: []
+      tools_deny: []
+      mcp_reload_confirm: true
+    gateway:
+      require_user_allowlist: true
+      allow_pairing: true
+      control_commands_bypass_busy_queue: true
+      approval_commands_inline: true
+    inference:
+      managed_provider_routing: false
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -1528,10 +1557,34 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **Off by default** — enable if you commonly work with real credentials in tool output and want a safety net. Set to `true` explicitly to turn on.
+- `policy.filesystem.write_safe_root` — when set, constrains file write and patch operations to that directory tree. `HERMES_WRITE_SAFE_ROOT` still takes precedence for backwards compatibility.
+- `policy.filesystem_policy.read_write` — OpenShell-shaped list of write roots. Hermes enforces these for file write and patch tools when `HERMES_WRITE_SAFE_ROOT` and the legacy single root are unset.
+- `policy.filesystem_policy.read_only` and `policy.landlock` — accepted and reported for OpenShell policy compatibility. Hermes does not provide Landlock itself; use OpenShell or another sandbox runtime for mandatory kernel filesystem controls.
+- `policy.filesystem.deny_hermes_control_plane` — when `true` (default), blocks file write and patch operations from mutating active Hermes control-plane state such as `config.yaml`, `auth.json`, OAuth files, webhook subscriptions, and MCP token stores.
+- `policy.network_policies` — OpenShell-shaped egress intent with endpoint and binary blocks. Hermes reports and validates this shape, but it does not provide a CONNECT proxy for terminal egress; mandatory network enforcement requires OpenShell or an equivalent gateway/proxy runtime.
+- `policy.commands` and `policy.permissions` — document command and tool exposure intent. Hermes' active enforcement comes from hardline command blocks, Tirith scanning, dangerous-command approvals, configured toolsets, and MCP reload confirmation.
+- `policy.gateway` — documents gateway posture such as required user allowlists and inline approval/control command handling. `hermes security doctor` checks the effective gateway allowlist environment and built-in approval command routing.
+- `policy.inference` — documents managed provider routing intent. Hermes strips provider credentials from tool subprocesses; a true `inference.local` privacy router requires an external runtime such as OpenShell.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/StackGuardian/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
 - `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
+
+Inspect the effective security posture with:
+
+```bash
+hermes security doctor
+hermes security doctor --strict
+hermes security policy show --json
+hermes security policy validate policy.yaml
+```
+
+The `security` command accepts and validates OpenShell-shaped policy sections
+(`filesystem_policy`, `landlock`, `process`, and `network_policies`) plus
+Hermes-specific `commands`, `permissions`, `gateway`, `environment`, and
+`inference` sections. Doctor output includes the enforcement point for each
+check so operators can distinguish Hermes-enforced controls from controls that
+need an external sandbox, CONNECT proxy, or inference gateway.
 
 ## Website Blocklist
 

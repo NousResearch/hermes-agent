@@ -1192,6 +1192,52 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": False,
+        "policy": {
+            "version": 1,
+            "filesystem": {
+                # Constrain write_file/patch operations to this subtree when set.
+                # Equivalent to HERMES_WRITE_SAFE_ROOT, which takes precedence.
+                "write_safe_root": "",
+                # Block write_file/patch from mutating active Hermes control-plane
+                # files such as config.yaml, auth.json, and MCP token stores.
+                "deny_hermes_control_plane": True,
+            },
+            "filesystem_policy": {
+                # OpenShell-shaped policy block. read_write is enforced by
+                # Hermes file tools as multiple write-safe roots; read_only is
+                # currently reported for posture compatibility.
+                "read_only": [],
+                "read_write": [],
+                "include_workdir": False,
+                "deny_hermes_control_plane": True,
+            },
+            "landlock": {
+                # Accepted for policy compatibility. Hermes itself does not
+                # provide Landlock; run inside OpenShell for kernel MAC.
+                "compatibility": "best_effort",
+            },
+            "commands": {
+                "deny": [],
+                "allow": [],
+            },
+            "network_policies": {},
+            "permissions": {
+                "toolsets_allow": [],
+                "toolsets_deny": [],
+                "tools_allow": [],
+                "tools_deny": [],
+                "mcp_reload_confirm": True,
+            },
+            "gateway": {
+                "require_user_allowlist": True,
+                "allow_pairing": True,
+                "control_commands_bypass_busy_queue": True,
+                "approval_commands_inline": True,
+            },
+            "inference": {
+                "managed_provider_routing": False,
+            },
+        },
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

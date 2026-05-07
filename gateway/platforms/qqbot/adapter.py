@@ -232,6 +232,14 @@ class QQAdapter(BasePlatformAdapter):
             Callable[[InteractionEvent], Awaitable[None]]
         ] = None
 
+        # Default interaction dispatcher: routes approval-button clicks to
+        # tools.approval.resolve_gateway_approval() and update-prompt clicks
+        # to ~/.hermes/.update_response. Set here so the cross-adapter gateway
+        # contract (send_exec_approval / send_update_prompt) works out of the
+        # box; callers can override with set_interaction_callback(None) or
+        # register a custom handler.
+        self._interaction_callback = self._default_interaction_dispatch
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -962,6 +970,101 @@ class QQAdapter(BasePlatformAdapter):
                 f"Interaction ACK failed [{resp.status_code}]: "
                 f"{resp.text[:200]}"
             )
+
+    # Mapping from QQ keyboard button decisions → the ``choice`` vocabulary
+    # accepted by ``tools.approval.resolve_gateway_approval``. QQ's 3-button
+    # layout (mobile-space constraint) collapses "session" and "always" into
+    # a single "always" button; users wanting session-only approval can fall
+    # back to the ``/approve session`` text command.
+    _APPROVAL_BUTTON_TO_CHOICE = {
+        "allow-once": "once",
+        "allow-always": "always",
+        "deny": "deny",
+    }
+
+    async def _default_interaction_dispatch(
+            self,
+            event: InteractionEvent,
+    ) -> None:
+        """Route ``INTERACTION_CREATE`` button clicks to the right subsystem.
+
+        - ``approve:<session_key>:<decision>`` →
+          :func:`tools.approval.resolve_gateway_approval`
+          (unblocks the agent thread waiting on a dangerous-command approval).
+        - ``update_prompt:<answer>`` →
+          writes the answer to ``~/.hermes/.update_response`` for the
+          detached ``hermes update --gateway`` process to consume.
+        - Anything else is logged at DEBUG and ignored.
+
+        Installed as the adapter's default interaction callback in
+        ``__init__``. Callers can replace via
+        :meth:`set_interaction_callback` to route clicks elsewhere (or pass
+        ``None`` to drop them entirely).
+        """
+        button_data = event.button_data
+        if not button_data:
+            return
+
+        approval = parse_approval_button_data(button_data)
+        if approval is not None:
+            session_key, decision = approval
+            choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
+            if choice is None:
+                logger.warning(
+                    "[%s] Unknown approval decision %r (session=%s)",
+                    self._log_tag, decision, session_key,
+                )
+                return
+            try:
+                # Import lazily to keep the adapter importable in tests that
+                # don't exercise the approval subsystem.
+                from tools.approval import resolve_gateway_approval
+                count = resolve_gateway_approval(session_key, choice)
+                logger.info(
+                    "[%s] Button resolved %d approval(s) for session %s "
+                    "(choice=%s, operator=%s)",
+                    self._log_tag, count, session_key, choice,
+                    event.operator_openid,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] resolve_gateway_approval failed for session %s: %s",
+                    self._log_tag, session_key, exc,
+                )
+            return
+
+        update_answer = parse_update_prompt_button_data(button_data)
+        if update_answer is not None:
+            self._write_update_response(update_answer, event.operator_openid)
+            return
+
+        logger.debug(
+            "[%s] Unrecognised button_data %r from interaction %s",
+            self._log_tag, button_data, event.id,
+        )
+
+    @staticmethod
+    def _write_update_response(answer: str, operator: str = "") -> None:
+        """Atomically write the update-prompt answer to ``.update_response``.
+
+        Mirrors the Discord / Telegram / Feishu adapters: the detached
+        ``hermes update --gateway`` watcher polls this file for a ``y``/``n``
+        response to its interactive prompts (stash-restore, config migration).
+        Writes via ``tmp + rename`` so a partial write can't fool the reader.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            response_path = home / ".update_response"
+            tmp = response_path.with_suffix(".tmp")
+            tmp.write_text(answer)
+            tmp.replace(response_path)
+            logger.info(
+                "QQ update prompt answered %r by %s",
+                answer, operator or "(unknown)",
+            )
+        except Exception as exc:
+            logger.error("Failed to write update response: %s", exc)
 
     async def _handle_c2c_message(
             self,
@@ -2391,22 +2494,78 @@ class QQAdapter(BasePlatformAdapter):
             reply_to=reply_to,
         )
 
+    # ------------------------------------------------------------------
+    # Cross-adapter gateway contract — send_exec_approval + send_update_prompt
+    # ------------------------------------------------------------------
+    #
+    # These mirror the signatures that gateway/run.py detects on the adapter
+    # class (e.g. type(adapter).send_exec_approval, type(adapter).send_update_prompt)
+    # for button-based approval / update-confirm UX. Discord, Telegram, Slack,
+    # Matrix, and Feishu already implement the same contract.
+
+    async def send_exec_approval(
+            self,
+            chat_id: str,
+            command: str,
+            session_key: str,
+            description: str = "dangerous command",
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a button-based exec-approval prompt for a dangerous command.
+
+        Called by ``gateway/run.py``'s ``_approval_notify_sync`` when the
+        agent is blocked waiting for approval. Button clicks resolve via
+        :func:`tools.approval.resolve_gateway_approval` — dispatched by the
+        adapter's interaction callback (:meth:`_default_interaction_dispatch`).
+        """
+        del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+
+        # Use the reply-to message for passive-message context when we have one.
+        # QQ requires a msg_id on outbound messages to a user we've never
+        # seen; the last inbound msg_id is the natural choice.
+        msg_id = self._last_msg_id.get(chat_id)
+
+        req = ApprovalRequest(
+            session_key=session_key,
+            title=f"Execute this command?",
+            description=description,
+            command_preview=command,
+            timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+        )
+        return await self.send_approval_request(
+            chat_id, req, reply_to=msg_id,
+        )
+
+    _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
+
     async def send_update_prompt(
             self,
             chat_id: str,
-            content: str,
-            reply_to: Optional[str] = None,
+            prompt: str,
+            default: str = "",
+            session_key: str = "",
+            metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Yes/No update-confirmation prompt with inline buttons.
 
-        Button clicks surface as ``INTERACTION_CREATE`` with
-        ``button_data = 'update_prompt:y'`` or ``'update_prompt:n'``.
+        Matches the cross-adapter contract used by
+        ``gateway/run.py``'s ``hermes update --gateway`` watcher. Button
+        clicks surface as ``INTERACTION_CREATE`` with
+        ``button_data = 'update_prompt:y'`` or ``'update_prompt:n'``;
+        the adapter's interaction callback writes the answer to
+        ``~/.hermes/.update_response`` so the detached update process
+        can read it.
         """
+        del session_key, metadata  # present for contract parity only.
+
+        default_hint = f" (default: {default})" if default else ""
+        content = f"⚕ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        msg_id = self._last_msg_id.get(chat_id)
         return await self.send_with_keyboard(
             chat_id,
             content,
             build_update_prompt_keyboard(),
-            reply_to=reply_to,
+            reply_to=msg_id,
         )
 
     def _build_text_body(

@@ -626,7 +626,7 @@ if (PAIR_ONLY) {
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else {
-      console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
+      console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — incoming messages are denied by default`);
     }
     console.log();
     startSocket();

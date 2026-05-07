@@ -65,7 +65,7 @@ export function expandWhatsAppIdentifiers(identifier, sessionDir) {
 
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   if (!allowedUsers || allowedUsers.size === 0) {
-    return true;
+    return false;
   }
 
   // "*" means allow everyone (consistent with SIGNAL_GROUP_ALLOWED_USERS)

@@ -332,16 +332,17 @@ def get_nous_subscription_features(
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
             or (web_search_backend == "searxng" and direct_searxng)
-            or web_backend == "brave"
-            or web_search_backend == "brave"
+            or (web_backend == "brave" and direct_brave)
+            or (web_search_backend == "brave" and direct_brave)
             or (web_search_backend == "exa" and direct_exa)
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
             or (web_search_backend == "tavily" and direct_tavily)
         )
     )
+    direct_brave = _has_env("BRAVE_API_KEY")
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
+        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng or direct_brave
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal

@@ -116,6 +116,72 @@ class TestBraveSearchProvider:
         assert result["data"]["web"] == []
 
 
+    def test_search_422_rejected(self, brave_key):
+        import httpx
+        mock_resp = MagicMock()
+        mock_resp.status_code = 422
+        with patch("httpx.get", side_effect=httpx.HTTPStatusError("", request=MagicMock(), response=mock_resp)):
+            from tools.web_providers.brave import BraveSearchProvider
+            result = BraveSearchProvider().search("test")
+        assert result["success"] is False
+        assert "422" in result["error"]
+
+    def test_search_500_generic_error(self, brave_key):
+        import httpx
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        with patch("httpx.get", side_effect=httpx.HTTPStatusError("", request=MagicMock(), response=mock_resp)):
+            from tools.web_providers.brave import BraveSearchProvider
+            result = BraveSearchProvider().search("test")
+        assert result["success"] is False
+        assert "HTTP 500" in result["error"]
+
+    def test_search_malformed_json(self, brave_key):
+        mock_response = MagicMock()
+        mock_response.json.side_effect = ValueError("not json")
+        mock_response.raise_for_status = MagicMock()
+        with patch("httpx.get", return_value=mock_response):
+            from tools.web_providers.brave import BraveSearchProvider
+            result = BraveSearchProvider().search("test")
+        assert result["success"] is False
+        assert "parse" in result["error"].lower()
+
+    def test_search_missing_results_key(self, brave_key):
+        """Handle Brave API response without 'web.results' gracefully."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}  # No 'web' key at all
+        mock_response.raise_for_status = MagicMock()
+        with patch("httpx.get", return_value=mock_response):
+            from tools.web_providers.brave import BraveSearchProvider
+            result = BraveSearchProvider().search("test")
+        assert result["success"] is True
+        assert result["data"]["web"] == []
+
+    def test_search_correct_request_headers(self, brave_key):
+        """Verify X-Subscription-Token header is sent with API key."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"web": {"results": []}}
+        mock_response.raise_for_status = MagicMock()
+        with patch("httpx.get", return_value=mock_response) as mock_get:
+            from tools.web_providers.brave import BraveSearchProvider
+            BraveSearchProvider().search("test")
+        call_kwargs = mock_get.call_args
+        headers = call_kwargs.kwargs.get("headers", {}) or call_kwargs[1].get("headers", {})
+        assert headers.get("X-Subscription-Token") == "test-brave-key"
+        assert headers.get("Accept") == "application/json"
+
+    def test_search_max_limit_capped_at_20(self, brave_key):
+        """Brave API max is 20 results per request."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"web": {"results": []}}
+        mock_response.raise_for_status = MagicMock()
+        with patch("httpx.get", return_value=mock_response) as mock_get:
+            from tools.web_providers.brave import BraveSearchProvider
+            BraveSearchProvider().search("test", limit=50)
+        call_kwargs = mock_get.call_args
+        params = call_kwargs.kwargs.get("params", {}) or call_kwargs[1].get("params", {})
+        assert params.get("count") == 20  # capped at 20
+
 class TestWebToolsBraveBackend:
     """Integration-style tests for Brave backend routing in web_tools."""
 
@@ -127,7 +193,7 @@ class TestWebToolsBraveBackend:
 
     def test_brave_in_fallback_chain(self, monkeypatch):
         # Remove all other keys, set only BRAVE_API_KEY
-        for key in ("FIRECRAWL_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY",
+        for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY",
                     "EXA_API_KEY", "SEARXNG_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("BRAVE_API_KEY", "test-key")

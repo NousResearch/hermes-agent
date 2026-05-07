@@ -13,9 +13,12 @@ Configuration::
 
     # ~/.hermes/config.yaml
     web:
-      search_backend: "brave"
-      # extract_backend defaults to firecrawl when brave is the search backend
-      # (Brave Search does not offer a content-extraction endpoint)
+      search_backend: "brave"           # use brave for search only
+      # OR: use brave as the single backend for all web operations
+      backend: "brave"
+      # Note: Brave Search does not offer a content-extraction endpoint.
+      # When brave is the search_backend, extract calls fall through to
+      # the configured extract_backend (defaults to firecrawl).
 
 Get an API key at: https://api.search.brave.com/app/keys
 Pricing: https://brave.com/search/api/

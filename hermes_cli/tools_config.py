@@ -309,8 +309,13 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Brave Search",
+                "badge": "free tier · 2K queries/month",
+                "tag": "Independent web index — not Google or Bing. Free tier available.",
                 "web_backend": "brave",
-                "BRAVE_API_KEY": "",
+                "env_vars": [
+                    {"key": "BRAVE_API_KEY", "prompt": "Brave Search API key", "url": "https://api.search.brave.com/app/keys"},
+                ],
             },
         ],
     },

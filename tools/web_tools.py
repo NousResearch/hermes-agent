@@ -197,6 +197,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("TAVILY_API_KEY")
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
+    if backend == "brave":
+        return _has_env("BRAVE_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -2053,7 +2055,7 @@ def check_web_api_key() -> bool:
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave"))
 
 
 def check_auxiliary_model() -> bool:

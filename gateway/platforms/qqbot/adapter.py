@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -123,6 +123,17 @@ from gateway.platforms.qqbot.chunked_upload import (
     ChunkedUploader,
     UploadDailyLimitExceededError,
     UploadFileTooLargeError,
+)
+from gateway.platforms.qqbot.keyboards import (
+    ApprovalRequest,
+    ApprovalSender,
+    InlineKeyboard,
+    InteractionEvent,
+    build_approval_keyboard,
+    build_update_prompt_keyboard,
+    parse_approval_button_data,
+    parse_interaction_event,
+    parse_update_prompt_button_data,
 )
 
 
@@ -212,6 +223,14 @@ class QQAdapter(BasePlatformAdapter):
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
+
+        # Inline-keyboard interaction routing. The callback (if set) is invoked
+        # for every INTERACTION_CREATE event after the adapter has already
+        # ACKed it. Callers (gateway wiring for approvals / update prompts)
+        # register via set_interaction_callback().
+        self._interaction_callback: Optional[
+            Callable[[InteractionEvent], Awaitable[None]]
+        ] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -764,6 +783,8 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_AT_MESSAGE_CREATE",
             ):
                 asyncio.create_task(self._on_message(t, d))
+            elif t == "INTERACTION_CREATE":
+                self._create_task(self._on_interaction(d))
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return
@@ -836,6 +857,111 @@ class QQAdapter(BasePlatformAdapter):
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
             await self._handle_dm_message(d, msg_id, content, author, timestamp)
+
+    # ------------------------------------------------------------------
+    # Inline-keyboard interactions (INTERACTION_CREATE)
+    # ------------------------------------------------------------------
+
+    def set_interaction_callback(
+        self,
+        callback: Optional[Callable[[InteractionEvent], Awaitable[None]]],
+    ) -> None:
+        """Register (or clear) the interaction callback.
+
+        Invoked once per ``INTERACTION_CREATE`` event *after* the adapter has
+        ACKed the interaction. The callback is responsible for routing the
+        button click to the right subsystem (approval resolver, update-prompt
+        resolver, etc.) based on the ``button_data`` payload.
+        """
+        self._interaction_callback = callback
+
+    async def _on_interaction(self, d: Any) -> None:
+        """Handle an ``INTERACTION_CREATE`` event.
+
+        Responsibilities:
+
+        1. Parse the raw payload into an :class:`InteractionEvent`.
+        2. ACK the interaction (``PUT /interactions/{id}``) so the client
+           stops showing a loading indicator on the button.
+        3. Dispatch to the registered interaction callback, if any.
+        """
+        if not isinstance(d, dict):
+            return
+        try:
+            event = parse_interaction_event(d)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to parse INTERACTION_CREATE: %s", self._log_tag, exc
+            )
+            return
+
+        if not event.id:
+            logger.warning(
+                "[%s] INTERACTION_CREATE missing id, skipping ACK", self._log_tag
+            )
+            return
+
+        # ACK the interaction promptly — per the QQ docs the client will show
+        # an error icon on the button if we don't respond quickly.
+        try:
+            await self._acknowledge_interaction(event.id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to ACK interaction %s: %s",
+                self._log_tag, event.id, exc,
+            )
+
+        logger.info(
+            "[%s] Interaction: scene=%s button_data=%r operator=%s",
+            self._log_tag, event.scene, event.button_data, event.operator_openid,
+        )
+
+        callback = self._interaction_callback
+        if callback is None:
+            logger.debug(
+                "[%s] No interaction callback registered; dropping button "
+                "click %r",
+                self._log_tag, event.button_data,
+            )
+            return
+        try:
+            await callback(event)
+        except Exception as exc:
+            logger.error(
+                "[%s] Interaction callback raised: %s",
+                self._log_tag, exc, exc_info=True,
+            )
+
+    async def _acknowledge_interaction(
+            self,
+            interaction_id: str,
+            code: int = 0,
+    ) -> None:
+        """ACK a button interaction via ``PUT /interactions/{id}``.
+
+        :param interaction_id: The ``id`` field from the
+            ``INTERACTION_CREATE`` event.
+        :param code: Response code (``0`` = success).
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized — not connected?")
+        token = await self._ensure_token()
+        headers = {
+            "Authorization": f"QQBot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": build_user_agent(),
+        }
+        resp = await self._http_client.put(
+            f"{API_BASE}/interactions/{interaction_id}",
+            headers=headers,
+            json={"code": code},
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Interaction ACK failed [{resp.status_code}]: "
+                f"{resp.text[:200]}"
+            )
 
     async def _handle_c2c_message(
             self,
@@ -1997,26 +2123,44 @@ class QQAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
     async def _send_c2c_text(
-            self, openid: str, content: str, reply_to: Optional[str] = None
+            self,
+            openid: str,
+            content: str,
+            reply_to: Optional[str] = None,
+            keyboard: Optional[InlineKeyboard] = None,
     ) -> SendResult:
-        """Send text to a C2C user via REST API."""
+        """Send text to a C2C user via REST API.
+
+        :param keyboard: Optional inline keyboard attached to the message.
+        """
         self._next_msg_seq(reply_to or openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
+        if keyboard is not None:
+            body["keyboard"] = keyboard.to_dict()
 
         data = await self._api_request("POST", f"/v2/users/{openid}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
     async def _send_group_text(
-            self, group_openid: str, content: str, reply_to: Optional[str] = None
+            self,
+            group_openid: str,
+            content: str,
+            reply_to: Optional[str] = None,
+            keyboard: Optional[InlineKeyboard] = None,
     ) -> SendResult:
-        """Send text to a group via REST API."""
+        """Send text to a group via REST API.
+
+        :param keyboard: Optional inline keyboard attached to the message.
+        """
         self._next_msg_seq(reply_to or group_openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
+        if keyboard is not None:
+            body["keyboard"] = keyboard.to_dict()
 
         data = await self._api_request(
             "POST", f"/v2/groups/{group_openid}/messages", body
@@ -2035,6 +2179,100 @@ class QQAdapter(BasePlatformAdapter):
         data = await self._api_request("POST", f"/channels/{channel_id}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
         return SendResult(success=True, message_id=msg_id, raw_response=data)
+
+    # ------------------------------------------------------------------
+    # Inline-keyboard outbound helpers (approval / update-prompt flows)
+    # ------------------------------------------------------------------
+
+    async def send_with_keyboard(
+            self,
+            chat_id: str,
+            content: str,
+            keyboard: InlineKeyboard,
+            reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a single text message with an inline keyboard attached.
+
+        Unlike :meth:`send`, this does NOT split long content into chunks —
+        a keyboard message has exactly one interactive surface, and splitting
+        would orphan the buttons from the first chunk. Callers should keep
+        approval/update-prompt bodies short.
+
+        Guild (channel) chats don't support inline keyboards; returns a
+        non-retryable failure for those.
+        """
+        if not self.is_connected:
+            if not await self._wait_for_reconnection():
+                return SendResult(
+                    success=False, error="Not connected", retryable=True
+                )
+
+        chat_type = self._guess_chat_type(chat_id)
+        formatted = self.format_message(content)
+        truncated = formatted[: self.MAX_MESSAGE_LENGTH]
+        try:
+            if chat_type == "c2c":
+                return await self._send_c2c_text(
+                    chat_id, truncated, reply_to, keyboard=keyboard,
+                )
+            if chat_type == "group":
+                return await self._send_group_text(
+                    chat_id, truncated, reply_to, keyboard=keyboard,
+                )
+            return SendResult(
+                success=False,
+                error=(
+                    f"Inline keyboards not supported for chat_type "
+                    f"{chat_type!r}"
+                ),
+                retryable=False,
+            )
+        except Exception as exc:
+            logger.error(
+                "[%s] send_with_keyboard failed: %s", self._log_tag, exc
+            )
+            return SendResult(success=False, error=str(exc))
+
+    async def send_approval_request(
+            self,
+            chat_id: str,
+            req: ApprovalRequest,
+            reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a 3-button approval request (``allow-once / allow-always / deny``).
+
+        The rendered text comes from :func:`build_approval_text`; callers can
+        override by passing a custom :class:`ApprovalRequest`.
+
+        Users click the button → ``INTERACTION_CREATE`` fires → the adapter's
+        registered :meth:`set_interaction_callback` handler decodes
+        ``button_data`` via :func:`parse_approval_button_data`.
+        """
+        from gateway.platforms.qqbot.keyboards import build_approval_text
+        return await self.send_with_keyboard(
+            chat_id,
+            build_approval_text(req),
+            build_approval_keyboard(req.session_key),
+            reply_to=reply_to,
+        )
+
+    async def send_update_prompt(
+            self,
+            chat_id: str,
+            content: str,
+            reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a Yes/No update-confirmation prompt with inline buttons.
+
+        Button clicks surface as ``INTERACTION_CREATE`` with
+        ``button_data = 'update_prompt:y'`` or ``'update_prompt:n'``.
+        """
+        return await self.send_with_keyboard(
+            chat_id,
+            content,
+            build_update_prompt_keyboard(),
+            reply_to=reply_to,
+        )
 
     def _build_text_body(
             self, content: str, reply_to: Optional[str] = None

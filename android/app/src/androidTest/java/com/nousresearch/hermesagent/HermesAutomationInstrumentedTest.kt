@@ -1,9 +1,12 @@
 package com.nousresearch.hermesagent
 
+import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesAutomationStore
 import com.nousresearch.hermesagent.device.HermesExternalTriggerReceiver
@@ -670,6 +673,90 @@ class HermesAutomationInstrumentedTest {
         assertEquals(1, matched.getInt("matched_count"))
         assertTrue("Expected ${target.absolutePath}", target.isFile)
         assertEquals("${app.packageName}:Hermes title:Hermes text", target.readText())
+    }
+
+    @Test
+    fun notificationActionAutomationPostsUpdatesAndCancels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching {
+                InstrumentationRegistry.getInstrumentation().uiAutomation.grantRuntimePermission(
+                    app.packageName,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                )
+            }
+        }
+
+        val variable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%NOTICE_TEXT")
+                    .put("value", "notification-action-ok"),
+            ),
+        )
+        assertTrue(variable.toString(), variable.getBoolean("success"))
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_notification_task",
+                JSONObject()
+                    .put("label", "Notification action smoke")
+                    .put("notification_title", "Hermes automation")
+                    .put("notification_text", "%NOTICE_TEXT")
+                    .put("notification_id", "9901")
+                    .put("notification_tag", "hermes-instrumented")
+                    .put("channel_id", "hermes_instrumented")
+                    .put("priority", "high")
+                    .put("only_alert_once", true)
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("notification_action", created.getJSONObject("automation").getString("action_type"))
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", created.getJSONObject("automation").getString("id")),
+            ),
+        )
+        val result = run.getJSONObject("result")
+        if (!run.getBoolean("success") &&
+            result.optString("requires_permission") == Manifest.permission.POST_NOTIFICATIONS
+        ) {
+            return
+        }
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals("notification_post", result.getString("action"))
+        assertEquals(9901, result.getInt("notification_id"))
+        assertEquals("hermes-instrumented", result.getString("notification_tag"))
+
+        val cancel = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_notification_task",
+                JSONObject()
+                    .put("label", "Cancel notification action smoke")
+                    .put("notification_action", "cancel")
+                    .put("notification_id", "9901")
+                    .put("notification_tag", "hermes-instrumented")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(cancel.toString(), cancel.getBoolean("success"))
+
+        val cancelRun = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", cancel.getJSONObject("automation").getString("id")),
+            ),
+        )
+        assertTrue(cancelRun.toString(), cancelRun.getBoolean("success"))
+        assertEquals("notification_cancel", cancelRun.getJSONObject("result").getString("action"))
     }
 
     @Test

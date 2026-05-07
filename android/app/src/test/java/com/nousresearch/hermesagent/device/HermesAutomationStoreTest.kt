@@ -752,6 +752,83 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsNotificationActionRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        assertTrue(store.setVariable("NOTICE_ID", "77"))
+        assertTrue(store.setVariable("NOTICE_TAG", "hermes-test"))
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_notification_task",
+                org.json.JSONObject()
+                    .put("id", "auto-notify")
+                    .put("label", "Notify smoke")
+                    .put("notification_title", "Hermes")
+                    .put("notification_text", "Tasker-style notification")
+                    .put("notification_id", "%NOTICE_ID")
+                    .put("notification_tag", "%NOTICE_TAG")
+                    .put("priority", "high")
+                    .put("group_key", "hermes-group")
+                    .put("only_alert_once", true)
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(ACTION_TYPE_NOTIFICATION_ACTION, created.getJSONObject("automation").getString("action_type"))
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-notify"),
+            ),
+        )
+        val result = run.getJSONObject("result")
+        if (run.getBoolean("success")) {
+            assertEquals("notification_post", result.getString("action"))
+            assertEquals(77, result.getInt("notification_id"))
+            assertEquals("hermes-test", result.getString("notification_tag"))
+        } else {
+            assertEquals("android.permission.POST_NOTIFICATIONS", result.getString("requires_permission"))
+        }
+
+        val cancel = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_notification_task",
+                org.json.JSONObject()
+                    .put("id", "auto-notify-cancel")
+                    .put("notification_action", "cancel")
+                    .put("notification_id", "%NOTICE_ID")
+                    .put("notification_tag", "%NOTICE_TAG")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(cancel.toString(), cancel.getBoolean("success"))
+        val cancelRun = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-notify-cancel"),
+            ),
+        )
+        assertTrue(cancelRun.toString(), cancelRun.getBoolean("success"))
+        assertEquals("notification_cancel", cancelRun.getJSONObject("result").getString("action"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_notification_task",
+                org.json.JSONObject().put("notification_action", "post"),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+    }
+
+    @Test
     fun bridgeCalculatesAndRunsSavedSunriseSunsetActions() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

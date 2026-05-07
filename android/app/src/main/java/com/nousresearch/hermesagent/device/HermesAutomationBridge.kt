@@ -34,6 +34,7 @@ object HermesAutomationBridge {
             "create_activity_task", "create_start_activity_task", "launch_activity_task" -> createIntentTaskJson(context, arguments, "start_activity")
             "create_shizuku_action_task", "create_shizuku_action", "create_privileged_action_task", "privileged_action_task" -> createShizukuActionTaskJson(context, arguments)
             "create_sunrise_sunset_task", "create_sun_task", "create_solar_task" -> createSunriseSunsetTaskJson(context, arguments)
+            "create_notification_task", "create_notify_task", "create_notify", "notify_task" -> createNotificationTaskJson(context, arguments)
             "calculate_sunrise_sunset", "sunrise_sunset", "sun_times", "solar_times" -> calculateSunriseSunsetJson(context, arguments)
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
@@ -488,6 +489,59 @@ object HermesAutomationBridge {
         val result = calculateSunriseSunset(input)
         setSunriseSunsetVariables(store, input, result)
         return sunriseSunsetResultJson(input, result, "calculate_sunrise_sunset").toString()
+    }
+
+    fun createNotificationTaskJson(context: Context, arguments: JSONObject): String {
+        val notificationAction = HermesNotificationActionBridge.normalizeAction(
+            stringArgument(arguments, "notification_action", "notify_action", "notification_mode", "mode")
+                .orEmpty()
+                .ifBlank { "post" },
+        )
+        val payload = JSONObject().put("notification_action", notificationAction)
+        putOptionalExpandedPayloadString(payload, "title", arguments, "notification_title", "title")
+        putOptionalExpandedPayloadString(payload, "text", arguments, "notification_text", "text", "content", "message", allowEmpty = true)
+        putOptionalExpandedPayloadString(payload, "notification_id", arguments, "notification_id", "notify_id")
+        putOptionalExpandedPayloadString(payload, "notification_tag", arguments, "notification_tag", "notify_tag", "tag")
+        putOptionalExpandedPayloadString(payload, "channel_id", arguments, "channel_id", "notification_channel_id")
+        putOptionalExpandedPayloadString(payload, "channel_name", arguments, "channel_name", "notification_channel_name")
+        putOptionalExpandedPayloadString(payload, "priority", arguments, "priority", "notification_priority")
+        putOptionalExpandedPayloadString(payload, "importance", arguments, "importance", "notification_importance")
+        putOptionalExpandedPayloadString(payload, "group_key", arguments, "group_key", "notification_group", "group")
+        listOf("ongoing", "auto_cancel", "only_alert_once", "show_when", "group_summary").forEach { key ->
+            if (arguments.has(key) && !arguments.isNull(key)) {
+                payload.put(key, arguments.optBoolean(key))
+            }
+        }
+        if (notificationAction == "post" &&
+            payload.optString("title").isBlank() &&
+            payload.optString("text").isBlank()
+        ) {
+            return errorJson("create_notification_task requires notification_title/title or notification_text/text")
+        }
+        if (notificationAction != "post" && notificationAction != "cancel") {
+            return errorJson("Unsupported notification action: $notificationAction")
+        }
+        val nulValues = listOf(
+            "title",
+            "text",
+            "notification_id",
+            "notification_tag",
+            "channel_id",
+            "channel_name",
+            "priority",
+            "importance",
+            "group_key",
+        ).mapNotNull { key -> payload.optString(key).takeIf { it.indexOf('\u0000') >= 0 } }
+        if (nulValues.isNotEmpty()) {
+            return errorJson("create_notification_task fields must not contain NUL bytes")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_NOTIFICATION_ACTION,
+            payload = payload.toString(),
+            defaultLabel = "Hermes notification automation",
+        )
     }
 
     private fun createRecordJson(
@@ -1100,6 +1154,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_INTENT -> runIntentRecord(context, record, variables)
             ACTION_TYPE_SHIZUKU_ACTION -> runShizukuActionRecord(context, record, variables)
             ACTION_TYPE_SUNRISE_SUNSET -> runSunriseSunsetRecord(store, record, variables)
+            ACTION_TYPE_NOTIFICATION_ACTION -> runNotificationActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1228,6 +1283,16 @@ object HermesAutomationBridge {
         val result = calculateSunriseSunset(input)
         setSunriseSunsetVariables(store, input, result)
         return sunriseSunsetResultJson(input, result, "sunrise_sunset")
+    }
+
+    private fun runNotificationActionRecord(
+        context: Context,
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+    ): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved notification automation payload is invalid"))
+        return JSONObject(HermesNotificationActionBridge.performNotificationJson(context, expandNotificationPayload(payload, variables)))
     }
 
     fun deleteJson(context: Context, id: String): String {
@@ -2240,6 +2305,21 @@ object HermesAutomationBridge {
         return expanded
     }
 
+    private fun expandNotificationPayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        NOTIFICATION_STRING_PAYLOAD_KEYS.forEach { key ->
+            if (payload.has(key) && !payload.isNull(key)) {
+                expanded.put(key, expandVariables(payload.optString(key), variables))
+            }
+        }
+        NOTIFICATION_BOOLEAN_PAYLOAD_KEYS.forEach { key ->
+            if (payload.has(key) && !payload.isNull(key)) {
+                expanded.put(key, payload.optBoolean(key))
+            }
+        }
+        return expanded
+    }
+
     private fun recordsToJson(records: List<HermesAutomationRecord>): JSONArray {
         return JSONArray().apply {
             records.forEach { record -> put(record.toJson()) }
@@ -3006,6 +3086,7 @@ object HermesAutomationBridge {
         "create_intent_task",
         "create_shizuku_action_task",
         "create_sunrise_sunset_task",
+        "create_notification_task",
         "calculate_sunrise_sunset",
         "export_automations",
         "import_automations",
@@ -3037,6 +3118,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_INTENT,
         ACTION_TYPE_SHIZUKU_ACTION,
         ACTION_TYPE_SUNRISE_SUNSET,
+        ACTION_TYPE_NOTIFICATION_ACTION,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
@@ -3047,6 +3129,9 @@ object HermesAutomationBridge {
         "sunset" to ACTION_TYPE_SUNRISE_SUNSET,
         "sun_times" to ACTION_TYPE_SUNRISE_SUNSET,
         "solar_times" to ACTION_TYPE_SUNRISE_SUNSET,
+        "notification" to ACTION_TYPE_NOTIFICATION_ACTION,
+        "notify" to ACTION_TYPE_NOTIFICATION_ACTION,
+        "post_notification" to ACTION_TYPE_NOTIFICATION_ACTION,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,
@@ -3272,6 +3357,25 @@ object HermesAutomationBridge {
         "class_name",
         "component",
         "category",
+    )
+    private val NOTIFICATION_STRING_PAYLOAD_KEYS = listOf(
+        "notification_action",
+        "title",
+        "text",
+        "notification_id",
+        "notification_tag",
+        "channel_id",
+        "channel_name",
+        "priority",
+        "importance",
+        "group_key",
+    )
+    private val NOTIFICATION_BOOLEAN_PAYLOAD_KEYS = listOf(
+        "ongoing",
+        "auto_cancel",
+        "only_alert_once",
+        "show_when",
+        "group_summary",
     )
     private val TASKER_VARIABLE_PATTERN = Regex("%([A-Za-z_][A-Za-z0-9_]{1,63})")
     private val BRACE_VARIABLE_PATTERN = Regex("\\{\\{([A-Za-z_][A-Za-z0-9_]{0,63})\\}\\}")

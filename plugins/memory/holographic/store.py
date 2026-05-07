@@ -870,6 +870,127 @@ class MemoryStore:
                 "categories_rebuilt": categories,
             }
 
+    def merge_entities(self, source_id: int, target_id: int) -> dict:
+        """Merge ``source`` entity into ``target``. Atomic.
+
+        Re-points every ``fact_entities`` row from ``source_id`` to
+        ``target_id`` (using INSERT OR IGNORE so facts already linked to
+        both collapse to one row), unions ``source.name`` and
+        ``source.aliases`` into ``target.aliases``, deletes the source
+        entity row, re-encodes every formerly-source-linked fact's
+        hrr_vector against the new entity set, and rebuilds affected
+        category banks. All inside a single transaction; rollback on
+        any failure leaves the DB exactly as it was.
+
+        Distinct from ``rename_entity``: rename mutates one row in
+        place; merge consolidates two rows into one and reassigns the
+        join table. Use rename when canonical name changes; use merge
+        when historical ingestion drift produced two rows for the same
+        conceptual entity.
+
+        Returns::
+
+            {"source_id": int, "target_id": int,
+             "source_name": str, "target_name": str,
+             "facts_re_pointed": int, "facts_re_encoded": int,
+             "categories_rebuilt": [str, ...]}
+
+        Raises ``KeyError`` if either id is missing, ``ValueError`` if
+        ``source_id == target_id``.
+        """
+        if source_id == target_id:
+            raise ValueError("source_id and target_id must differ")
+
+        with self._lock:
+            source = self._conn.execute(
+                "SELECT entity_id, name, aliases FROM entities WHERE entity_id = ?",
+                (source_id,),
+            ).fetchone()
+            if source is None:
+                raise KeyError(f"source entity_id {source_id} not found")
+            target = self._conn.execute(
+                "SELECT entity_id, name, aliases FROM entities WHERE entity_id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is None:
+                raise KeyError(f"target entity_id {target_id} not found")
+
+            source_name: str = source["name"]
+            target_name: str = target["name"]
+
+            # Union aliases (target ∪ source.aliases ∪ {source.name}); strip
+            # target.name itself so the canonical isn't listed redundantly.
+            target_aliases = [
+                a.strip() for a in (target["aliases"] or "").split(",") if a.strip()
+            ]
+            source_aliases = [
+                a.strip() for a in (source["aliases"] or "").split(",") if a.strip()
+            ]
+            casing_map = {a.lower(): a for a in target_aliases}
+            for a in source_aliases:
+                casing_map.setdefault(a.lower(), a)
+            if source_name and source_name.lower() != target_name.lower():
+                casing_map.setdefault(source_name.lower(), source_name)
+            casing_map.pop(target_name.lower(), None)
+            merged_aliases = ",".join(casing_map.values())
+
+            # Snapshot facts linked to source — they need re-encoding after
+            # the join move, since their entity-name set just changed.
+            fact_rows = self._conn.execute(
+                """
+                SELECT f.fact_id, f.content, f.category
+                FROM facts f
+                JOIN fact_entities fe ON fe.fact_id = f.fact_id
+                WHERE fe.entity_id = ?
+                """,
+                (source_id,),
+            ).fetchall()
+            affected_facts = [(r["fact_id"], r["content"]) for r in fact_rows]
+            categories = sorted({r["category"] for r in fact_rows})
+
+            # Single transaction. Implicit BEGIN on first DML below.
+            try:
+                # Re-point: copy (fact_id, target) for every (fact_id, source);
+                # INSERT OR IGNORE collapses pre-existing dual links.
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) "
+                    "SELECT fact_id, ? FROM fact_entities WHERE entity_id = ?",
+                    (target_id, source_id),
+                )
+                self._conn.execute(
+                    "DELETE FROM fact_entities WHERE entity_id = ?",
+                    (source_id,),
+                )
+                # Merge aliases and drop the source entity row.
+                self._conn.execute(
+                    "UPDATE entities SET aliases = ? WHERE entity_id = ?",
+                    (merged_aliases, target_id),
+                )
+                self._conn.execute(
+                    "DELETE FROM entities WHERE entity_id = ?",
+                    (source_id,),
+                )
+                # Re-encode each affected fact (now reads the new entity set
+                # — source is gone, target may already have been there).
+                for fid, content in affected_facts:
+                    self._compute_hrr_vector(fid, content, commit=False)
+                for cat in categories:
+                    self._rebuild_bank(cat, commit=False)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            return {
+                "source_id":          source_id,
+                "target_id":          target_id,
+                "source_name":        source_name,
+                "target_name":        target_name,
+                "facts_re_pointed":   len(affected_facts),
+                "facts_re_encoded":   len(affected_facts),
+                "categories_rebuilt": categories,
+            }
+
     def get_state(self, key: str) -> "str | None":
         """Read a value from the plugin_state key/value table."""
         with self._lock:

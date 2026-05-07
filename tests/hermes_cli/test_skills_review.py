@@ -163,6 +163,27 @@ def test_slash_skills_review_routes_flags(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/skills review --approve --apply-all",
+        "/skills review --reject --discard-all",
+        "/skills review --diff --approve",
+    ],
+)
+def test_slash_skills_review_rejects_option_token_as_missing_id(monkeypatch, command):
+    from hermes_cli.skills_hub import handle_skills_slash
+
+    calls = []
+    monkeypatch.setattr("hermes_cli.skills_hub.do_review", lambda **kwargs: calls.append(kwargs))
+
+    console = _capture_console()
+    handle_skills_slash(command, console=console)
+
+    assert calls == []
+    assert "Usage:" in console.export_text()
+
+
 def test_do_review_prints_empty_message(monkeypatch):
     from hermes_cli.skills_hub import do_review
 
@@ -334,6 +355,56 @@ def test_do_review_applies_all_pending_changes(monkeypatch):
 
     assert applied == ["change-1", "change-2"]
     assert "Applied 2 pending skill evolution changes." in console.export_text()
+
+
+def test_do_review_apply_all_uses_failure_summary_when_every_change_fails(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+
+    _install_fake_skill_evolution(
+        monkeypatch,
+        list_pending_changes=lambda: [
+            {"id": "change-1", "action": "create", "name": "writer"},
+            {"id": "change-2", "action": "create", "name": "coder"},
+        ],
+        approve_pending_change=lambda change_id, apply_func: {
+            "success": False,
+            "apply_result": {"success": False, "error": "blocked"},
+        },
+    )
+
+    console = _capture_console()
+    do_review(apply_all=True, console=console)
+    output = console.export_text()
+
+    assert "Applied 0 pending skill evolution changes." not in output
+    assert "Failed to apply 2 pending skill evolution changes." in output
+    assert "change-1" in output
+    assert "change-2" in output
+
+
+def test_do_review_apply_all_uses_partial_summary_when_some_changes_fail(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+
+    def fake_approve(change_id, apply_func):
+        if change_id == "change-1":
+            return {"success": True}
+        return {"success": False, "error": "blocked"}
+
+    _install_fake_skill_evolution(
+        monkeypatch,
+        list_pending_changes=lambda: [
+            {"id": "change-1", "action": "create", "name": "writer"},
+            {"id": "change-2", "action": "create", "name": "coder"},
+        ],
+        approve_pending_change=fake_approve,
+    )
+
+    console = _capture_console()
+    do_review(apply_all=True, console=console)
+    output = console.export_text()
+
+    assert "Applied 1 pending skill evolution change; 1 failed." in output
+    assert "change-2" in output
 
 
 @pytest.mark.parametrize(

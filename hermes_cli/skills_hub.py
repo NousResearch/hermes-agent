@@ -155,6 +155,10 @@ def _apply_pending_skill_change(change: Dict[str, Any]) -> Dict[str, Any]:
     name = change.get("name")
     payload = _skill_evolution_payload(change)
 
+    conflict = skill_manager_tool.validate_pending_change_base(action, name, payload)
+    if conflict:
+        return conflict
+
     if action == "create":
         result = skill_manager_tool._create_skill(
             name,
@@ -356,11 +360,22 @@ def do_review(
                     f"{result.get('error') or result.get('apply_result') if isinstance(result, dict) else result}"
                 )
 
-        c.print(f"[green]Applied {applied} pending skill evolution changes.[/]")
         if failed:
-            c.print("[yellow]Some pending skill evolution changes were not applied:[/]")
+            if applied == 0:
+                c.print(
+                    f"[bold red]Failed to apply {len(failed)} pending skill evolution "
+                    f"change{'s' if len(failed) != 1 else ''}.[/]"
+                )
+            else:
+                c.print(
+                    f"[yellow]Applied {applied} pending skill evolution "
+                    f"change{'s' if applied != 1 else ''}; {len(failed)} failed.[/]"
+                )
+            c.print("[yellow]Pending skill evolution changes not applied:[/]")
             for item in failed:
                 c.print(f"  - {item}")
+        else:
+            c.print(f"[green]Applied {applied} pending skill evolution changes.[/]")
         return
 
     if discard_all:
@@ -1795,6 +1810,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_audit(name=name, console=c)
 
     elif action == "review":
+        def _next_id(index: int) -> str:
+            if index + 1 >= len(args):
+                return ""
+            candidate = args[index + 1]
+            return "" if candidate.startswith("-") else candidate
+
         approve_id = ""
         reject_id = ""
         diff_id = ""
@@ -1802,15 +1823,15 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         discard_all = False
         i = 0
         while i < len(args):
-            if args[i] == "--approve" and i + 1 < len(args):
-                approve_id = args[i + 1]
-                i += 2
-            elif args[i] == "--reject" and i + 1 < len(args):
-                reject_id = args[i + 1]
-                i += 2
-            elif args[i] == "--diff" and i + 1 < len(args):
-                diff_id = args[i + 1]
-                i += 2
+            if args[i] == "--approve":
+                approve_id = _next_id(i)
+                i += 2 if approve_id else 1
+            elif args[i] == "--reject":
+                reject_id = _next_id(i)
+                i += 2 if reject_id else 1
+            elif args[i] == "--diff":
+                diff_id = _next_id(i)
+                i += 2 if diff_id else 1
             elif args[i] == "--apply-all":
                 apply_all = True
                 i += 1

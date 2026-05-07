@@ -5,6 +5,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 
 def test_normalize_evolution_mode_accepts_known_modes_and_defaults_unknown():
     from agent.skill_evolution import normalize_evolution_mode
@@ -95,6 +97,90 @@ def test_queue_pending_change_writes_pending_manifest_snapshot_and_diff(tmp_path
     assert "snapshot" not in manifest["payload"]
     assert "diff" not in manifest["payload"]
     assert skill_evolution.list_pending_changes()[0]["diff_path"] == str(diff_path)
+
+
+def test_list_pending_changes_rejects_manifest_paths_outside_change_dir(tmp_path, monkeypatch):
+    from agent import skill_evolution
+
+    hermes_home = tmp_path / "profile"
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+
+    pending_dir = hermes_home / "skills" / ".pending" / "change-1"
+    pending_dir.mkdir(parents=True)
+    (pending_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "change-1",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "action": "edit",
+                "name": "daily-review",
+                "payload": {"content": "new"},
+                "origin": "background_review",
+                "status": "pending",
+                "manifest_path": "manifest.json",
+                "diff_path": "../../secret.txt",
+            }
+        )
+    )
+
+    assert skill_evolution.list_pending_changes() == []
+
+
+def test_list_pending_changes_rejects_queue_artifact_paths_outside_change_dir(tmp_path, monkeypatch):
+    from agent import skill_evolution
+
+    hermes_home = tmp_path / "profile"
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+
+    queue_path = skill_evolution.pending_queue_path()
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(
+        json.dumps(
+            {
+                "changes": [
+                    {
+                        "id": "change-1",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "action": "edit",
+                        "name": "daily-review",
+                        "payload": {"content": "new"},
+                        "origin": "background_review",
+                        "status": "pending",
+                        "diff_path": str(tmp_path / "secret.txt"),
+                    }
+                ]
+            }
+        )
+    )
+
+    assert skill_evolution.list_pending_changes() == []
+
+
+def test_list_pending_changes_rejects_manifest_id_mismatch(tmp_path, monkeypatch):
+    from agent import skill_evolution
+
+    hermes_home = tmp_path / "profile"
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+
+    pending_dir = hermes_home / "skills" / ".pending" / "change-1"
+    pending_dir.mkdir(parents=True)
+    (pending_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "other-change",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "action": "edit",
+                "name": "daily-review",
+                "payload": {"content": "new"},
+                "origin": "background_review",
+                "status": "pending",
+                "manifest_path": "manifest.json",
+                "diff_path": "diff.md",
+            }
+        )
+    )
+
+    assert skill_evolution.list_pending_changes() == []
 
 
 def test_queue_pending_change_preserves_concurrent_appends(tmp_path, monkeypatch):
@@ -211,6 +297,49 @@ def test_approve_pending_change_returns_false_for_missing_id(tmp_path, monkeypat
     assert len(skill_evolution.list_pending_changes()) == 1
 
 
+def test_approve_pending_change_marks_applying_before_apply_to_avoid_replay_after_write_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import skill_evolution
+
+    hermes_home = tmp_path / "profile"
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+    queued = skill_evolution.queue_pending_change("patch", "daily-review", {"content": "ok"})
+    applied = []
+
+    original_write_queue = skill_evolution._write_queue
+    write_calls = 0
+
+    def fail_after_apply(queue):
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 2:
+            raise RuntimeError("queue write failed")
+        original_write_queue(queue)
+
+    monkeypatch.setattr(skill_evolution, "_write_queue", fail_after_apply)
+
+    with pytest.raises(RuntimeError, match="queue write failed"):
+        skill_evolution.approve_pending_change(
+            queued["id"],
+            lambda change: applied.append(change["id"]) or {"success": True},
+        )
+
+    pending = skill_evolution.list_pending_changes()
+    assert applied == [queued["id"]]
+    assert pending[0]["status"] == "applying"
+
+    result = skill_evolution.approve_pending_change(
+        queued["id"],
+        lambda change: applied.append("again") or {"success": True},
+    )
+
+    assert result["success"] is False
+    assert "already" in result["error"].lower()
+    assert applied == [queued["id"]]
+
+
 def test_reject_pending_change_removes_pending_change(tmp_path, monkeypatch):
     from agent import skill_evolution
 
@@ -265,3 +394,55 @@ def test_cleanup_expired_pending_changes_removes_old_entries(tmp_path, monkeypat
     assert [change["id"] for change in skill_evolution.list_pending_changes()] == [fresh["id"]]
     assert not (hermes_home / "skills" / ".pending" / old["id"]).exists()
     assert (hermes_home / "skills" / ".pending" / fresh["id"]).exists()
+
+
+def test_conflicting_base_hash_blocks_pending_approval(tmp_path, monkeypatch):
+    from hermes_cli.skills_hub import do_review
+    from tools import skill_manager_tool
+    from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+
+    original_skill = """\
+---
+name: queued-skill
+description: Queued skill for approval.
+---
+
+# Queued Skill
+
+Original content.
+"""
+    updated_skill = original_skill.replace("Original content.", "Queued content.")
+
+    hermes_home = tmp_path / "profile"
+    skills_dir = hermes_home / "skills"
+    monkeypatch.setattr("agent.skill_evolution.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills_dir])
+    monkeypatch.setattr(skill_manager_tool, "get_evolution_mode", lambda: "auto")
+    skill_manager_tool.skill_manage(
+        action="create",
+        name="queued-skill",
+        content=original_skill,
+    )
+
+    monkeypatch.setattr(skill_manager_tool, "get_evolution_mode", lambda: "confirm")
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        raw = skill_manager_tool.skill_manage(
+            action="edit",
+            name="queued-skill",
+            content=updated_skill,
+        )
+    finally:
+        reset_current_write_origin(token)
+
+    queued = json.loads(raw)
+    assert queued["success"] is True
+    live_skill = skills_dir / "queued-skill" / "SKILL.md"
+    live_skill.write_text(original_skill.replace("Original content.", "User changed content."))
+
+    console = __import__("rich.console").console.Console(record=True)
+    do_review(approve_id=queued["pending_id"], console=console)
+
+    assert "base file changed" in console.export_text().lower()
+    assert live_skill.read_text().endswith("User changed content.\n")

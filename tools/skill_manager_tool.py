@@ -32,6 +32,8 @@ Directory layout for user skills:
             └── SKILL.md
 """
 
+import difflib
+import hashlib
 import json
 import logging
 import os
@@ -415,6 +417,221 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     if error:
         return None, error
     return target, None
+
+
+def _read_text_lossy(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    return _sha256_bytes(path.read_bytes())
+
+
+def _sha256_skill_tree(skill_dir: Path) -> str:
+    hasher = hashlib.sha256()
+    for path in sorted(p for p in skill_dir.rglob("*") if p.is_file()):
+        rel = path.relative_to(skill_dir).as_posix()
+        hasher.update(rel.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+def _unified_diff(old_label: str, new_label: str, old_content: str, new_content: str) -> str:
+    lines = difflib.unified_diff(
+        old_content.splitlines(),
+        new_content.splitlines(),
+        fromfile=old_label,
+        tofile=new_label,
+        lineterm="",
+    )
+    diff = "\n".join(lines)
+    return f"{diff}\n" if diff else ""
+
+
+def _file_base_record(target_label: str, target: Path) -> Dict[str, Any]:
+    exists = target.exists()
+    record: Dict[str, Any] = {
+        "kind": "file",
+        "target": target_label,
+        "exists": exists,
+    }
+    if exists:
+        record["sha256"] = _sha256_file(target)
+    return record
+
+
+def _skill_base_record(skill_dir: Optional[Path]) -> Dict[str, Any]:
+    exists = skill_dir is not None and skill_dir.exists()
+    record: Dict[str, Any] = {
+        "kind": "skill",
+        "exists": exists,
+    }
+    if exists and skill_dir is not None:
+        record["sha256"] = _sha256_skill_tree(skill_dir)
+    return record
+
+
+def _pending_skill_change_artifacts(
+    action: str,
+    name: str,
+    *,
+    content: str = None,
+    category: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    absorbed_into: str = None,
+) -> Dict[str, Any]:
+    """Build review artifacts for a validated confirm-mode skill change."""
+    if action == "create":
+        label = f"{name}/SKILL.md"
+        return {
+            "snapshot": "",
+            "diff": _unified_diff("/dev/null", label, "", content or ""),
+            "base": {"kind": "skill", "exists": False},
+        }
+
+    existing = _find_skill(name)
+    skill_dir = existing["path"] if existing else None
+
+    if action == "edit" and skill_dir is not None:
+        target = skill_dir / "SKILL.md"
+        before = _read_text_lossy(target) if target.exists() else ""
+        label = f"{name}/SKILL.md"
+        return {
+            "snapshot": before,
+            "diff": _unified_diff(label, label, before, content or ""),
+            "base": _file_base_record("SKILL.md", target),
+        }
+
+    if action == "patch" and skill_dir is not None:
+        if file_path:
+            target, err = _resolve_skill_target(skill_dir, file_path)
+            target_label = file_path
+            label = f"{name}/{file_path}"
+        else:
+            target = skill_dir / "SKILL.md"
+            err = None
+            target_label = "SKILL.md"
+            label = f"{name}/SKILL.md"
+        if err or target is None or not target.exists():
+            return {}
+        before = _read_text_lossy(target)
+        from tools.fuzzy_match import fuzzy_find_and_replace
+
+        after, _match_count, _strategy, match_error = fuzzy_find_and_replace(
+            before, old_string, new_string, replace_all
+        )
+        if match_error:
+            return {}
+        return {
+            "snapshot": before,
+            "diff": _unified_diff(label, label, before, after),
+            "base": _file_base_record(target_label, target),
+        }
+
+    if action == "delete" and skill_dir is not None:
+        target = skill_dir / "SKILL.md"
+        before = _read_text_lossy(target) if target.exists() else ""
+        label = f"{name}/SKILL.md"
+        return {
+            "snapshot": before,
+            "diff": _unified_diff(label, "/dev/null", before, ""),
+            "base": _skill_base_record(skill_dir),
+        }
+
+    if action == "write_file" and skill_dir is not None:
+        target, err = _resolve_skill_target(skill_dir, file_path)
+        if err or target is None:
+            return {}
+        before = _read_text_lossy(target) if target.exists() else ""
+        old_label = f"{name}/{file_path}" if target.exists() else "/dev/null"
+        new_label = f"{name}/{file_path}"
+        return {
+            "snapshot": before,
+            "diff": _unified_diff(old_label, new_label, before, file_content or ""),
+            "base": _file_base_record(file_path, target),
+        }
+
+    if action == "remove_file" and skill_dir is not None:
+        target, err = _resolve_skill_target(skill_dir, file_path)
+        if err or target is None:
+            return {}
+        before = _read_text_lossy(target) if target.exists() else ""
+        label = f"{name}/{file_path}"
+        return {
+            "snapshot": before,
+            "diff": _unified_diff(label, "/dev/null", before, ""),
+            "base": _file_base_record(file_path, target),
+        }
+
+    return {}
+
+
+def validate_pending_change_base(action: str, name: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Reject approval if the reviewed base file/tree changed after queueing."""
+    base = payload.get("base") if isinstance(payload, dict) else None
+    if not isinstance(base, dict):
+        return None
+
+    kind = base.get("kind")
+    expected_exists = bool(base.get("exists"))
+
+    if kind == "skill":
+        existing = _find_skill(name)
+        current_exists = existing is not None
+        if current_exists != expected_exists:
+            return _validation_result(
+                f"Pending skill evolution base skill changed for '{name}'; review the change again."
+            )
+        expected_hash = base.get("sha256")
+        if current_exists and expected_hash and existing is not None:
+            current_hash = _sha256_skill_tree(existing["path"])
+            if current_hash != expected_hash:
+                return _validation_result(
+                    f"Pending skill evolution base skill changed for '{name}'; review the change again."
+                )
+        return None
+
+    if kind == "file":
+        existing = _find_skill(name)
+        if not existing:
+            return _validation_result(
+                f"Pending skill evolution base file changed for '{name}'; skill no longer exists."
+            )
+        target_label = str(base.get("target") or "SKILL.md")
+        if target_label == "SKILL.md":
+            target = existing["path"] / "SKILL.md"
+        else:
+            err = _validate_file_path(target_label)
+            if err:
+                return _validation_result(err)
+            target, err = _resolve_skill_target(existing["path"], target_label)
+            if err:
+                return _validation_result(err)
+        current_exists = target is not None and target.exists()
+        if current_exists != expected_exists:
+            return _validation_result(
+                f"Pending skill evolution base file changed for '{name}/{target_label}'; review the change again."
+            )
+        expected_hash = base.get("sha256")
+        if current_exists and expected_hash and target is not None:
+            current_hash = _sha256_file(target)
+            if current_hash != expected_hash:
+                return _validation_result(
+                    f"Pending skill evolution base file changed for '{name}/{target_label}'; review the change again."
+                )
+        return None
+
+    return None
 
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -1024,16 +1241,6 @@ def skill_manage(
     """
     valid_actions = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
     if action in valid_actions:
-        required_error = _validate_skill_manage_required_args(
-            action,
-            content=content,
-            file_path=file_path,
-            file_content=file_content,
-            old_string=old_string,
-            new_string=new_string,
-        )
-        if required_error:
-            return tool_error(required_error, success=False)
         try:
             from tools.skill_provenance import is_background_review
             background_review = is_background_review()
@@ -1045,6 +1252,7 @@ def skill_manage(
             if mode == "readonly":
                 result = {
                     "success": True,
+                    "suppressed": True,
                     "skipped": True,
                     "message": (
                         f"Skill evolution is readonly; skipped {action} "
@@ -1052,6 +1260,20 @@ def skill_manage(
                     ),
                 }
                 return json.dumps(result, ensure_ascii=False)
+
+        required_error = _validate_skill_manage_required_args(
+            action,
+            content=content,
+            file_path=file_path,
+            file_content=file_content,
+            old_string=old_string,
+            new_string=new_string,
+        )
+        if required_error:
+            return tool_error(required_error, success=False)
+
+        if background_review:
+            mode = get_evolution_mode()
             if mode == "confirm":
                 validation_error = _validate_pending_skill_change(
                     action,
@@ -1077,6 +1299,20 @@ def skill_manage(
                     "replace_all": replace_all,
                     "absorbed_into": absorbed_into,
                 }
+                payload.update(
+                    _pending_skill_change_artifacts(
+                        action,
+                        name,
+                        content=content,
+                        category=category,
+                        file_path=file_path,
+                        file_content=file_content,
+                        old_string=old_string,
+                        new_string=new_string,
+                        replace_all=replace_all,
+                        absorbed_into=absorbed_into,
+                    )
+                )
                 queued = queue_pending_change(action, name, payload)
                 if queued.get("success"):
                     result = {

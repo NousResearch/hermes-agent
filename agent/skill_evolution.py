@@ -150,6 +150,34 @@ def _normalize_change(change: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _artifact_path(change_id: str, value: Any) -> Path | None:
+    if not value:
+        return None
+    base = _pending_artifact_dir(change_id)
+    path = Path(str(value))
+    if not path.is_absolute():
+        path = base / path
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(base.resolve())
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def _normalize_stored_change(change: dict[str, Any]) -> dict[str, Any] | None:
+    normalized = _normalize_change(change)
+    change_id = normalized.get("id", "")
+    for key in ("manifest_path", "snapshot_path", "diff_path"):
+        if key not in normalized:
+            continue
+        resolved = _artifact_path(change_id, normalized.get(key))
+        if resolved is None:
+            return None
+        normalized[key] = str(resolved)
+    return normalized
+
+
 def _read_queue() -> dict[str, list[dict[str, Any]]]:
     path = pending_queue_path()
     data = _read_json_file(path)
@@ -159,9 +187,12 @@ def _read_queue() -> dict[str, list[dict[str, Any]]]:
         return _empty_queue()
     return {
         "changes": [
-            _normalize_change(change)
+            normalized
             for change in changes
-            if isinstance(change, dict) and change.get("id")
+            if isinstance(change, dict)
+            and change.get("id")
+            for normalized in [_normalize_stored_change(change)]
+            if normalized is not None
         ]
     }
 
@@ -237,15 +268,18 @@ def _read_manifest_change(manifest_path: Path) -> dict[str, Any] | None:
         return None
 
     base = manifest_path.parent
+    change_id = str(data.get("id", ""))
+    if change_id != base.name:
+        return None
     change = dict(data)
     for key in ("manifest_path", "snapshot_path", "diff_path"):
         value = change.get(key)
         if not value:
             continue
-        path = Path(str(value))
-        if not path.is_absolute():
-            path = base / path
-        change[key] = str(path)
+        resolved = _artifact_path(change_id, value)
+        if resolved is None:
+            return None
+        change[key] = str(resolved)
     return _normalize_change(change)
 
 
@@ -328,10 +362,31 @@ def approve_pending_change(change_id: str, apply_func: Callable[[dict], dict]) -
             if change.get("id") != change_id:
                 continue
 
+            if change.get("status") == "applying":
+                return {
+                    "success": False,
+                    "change_id": change_id,
+                    "error": (
+                        "Pending change is already marked as applying. "
+                        "It may have been applied before queue cleanup failed; "
+                        "reject it after inspection or recreate the proposal."
+                    ),
+                }
+
+            applying_change = _write_pending_artifacts({**change, "status": "applying"})
+            queue["changes"][index] = applying_change
+            try:
+                _write_queue(queue)
+            except BaseException:
+                _write_pending_artifacts({**change, "status": "pending"})
+                raise
+
             apply_result = apply_func(change)
             if not isinstance(apply_result, dict):
                 apply_result = {"success": False, "error": "Apply function returned a non-dict result"}
             if not apply_result.get("success"):
+                queue["changes"][index] = _write_pending_artifacts({**applying_change, "status": "pending"})
+                _write_queue(queue)
                 return {
                     "success": False,
                     "change_id": change_id,

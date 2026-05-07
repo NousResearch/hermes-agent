@@ -601,6 +601,55 @@ class TestSkillManageDispatcher:
         assert action == "create"
         assert name == "review-sediment"
         assert payload["content"] == VALID_SKILL_CONTENT
+        assert payload["snapshot"] == ""
+        assert "--- /dev/null" in payload["diff"]
+        assert "+++ review-sediment/SKILL.md" in payload["diff"]
+        assert payload["base"]["kind"] == "skill"
+        assert payload["base"]["exists"] is False
+
+    def test_background_review_confirm_queues_edit_with_snapshot_diff_and_base_hash(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="auto"):
+                skill_manage(action="create", name="review-sediment", content=VALID_SKILL_CONTENT)
+
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                mock_queue.return_value = {
+                    "success": True,
+                    "message": "Skill change queued for review: edit 'review-sediment'.",
+                    "id": "abc123",
+                }
+                raw = skill_manage(
+                    action="edit",
+                    name="review-sediment",
+                    content=VALID_SKILL_CONTENT_2,
+                )
+                content_after = (tmp_path / "review-sediment" / "SKILL.md").read_text()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["queued"] is True
+        assert content_after == VALID_SKILL_CONTENT
+        action, name, payload = mock_queue.call_args.args
+        assert action == "edit"
+        assert name == "review-sediment"
+        assert payload["snapshot"] == VALID_SKILL_CONTENT
+        assert "--- review-sediment/SKILL.md" in payload["diff"]
+        assert "+++ review-sediment/SKILL.md" in payload["diff"]
+        assert "-Step 1: Do the thing." in payload["diff"]
+        assert "+Step 1: Do the new thing." in payload["diff"]
+        assert payload["base"]["kind"] == "file"
+        assert payload["base"]["target"] == "SKILL.md"
+        assert payload["base"]["exists"] is True
+        assert payload["base"]["sha256"]
 
     def test_background_review_confirm_preserves_required_arg_validation(self, tmp_path):
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
@@ -728,9 +777,29 @@ Missing description.
 
         result = json.loads(raw)
         assert result["success"] is True
+        assert result["suppressed"] is True
         assert result["skipped"] is True
         assert "readonly" in result["message"]
         assert exists is False
+        mock_queue.assert_not_called()
+
+    def test_background_review_readonly_suppresses_before_required_arg_validation(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="readonly"), \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                raw = skill_manage(action="create", name="review-sediment")
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["suppressed"] is True
+        assert "readonly" in result["message"]
         mock_queue.assert_not_called()
 
     def test_foreground_create_ignores_confirm_mode(self, tmp_path):

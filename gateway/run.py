@@ -6153,6 +6153,11 @@ class GatewayRunner:
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            try:
+                from agent.image_routing import clear_recent_attached_image_paths
+                clear_recent_attached_image_paths(session_key)
+            except Exception:
+                pass
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -14090,6 +14095,19 @@ class GatewayRunner:
                 # runner instance don't re-attach stale images.
                 _native_imgs = self._consume_pending_native_image_paths(session_key)
                 if _native_imgs:
+                    # Make the same paths queryable from inside the
+                    # ``image_generate`` tool so the model can pass them as
+                    # ``reference_images`` (image-to-image) without having
+                    # to know the on-disk paths. Replaces any prior register
+                    # for this session — newest attachment shadows older ones.
+                    try:
+                        from agent.image_routing import register_recent_attached_image_paths
+                        register_recent_attached_image_paths(session_key, _native_imgs)
+                    except Exception as _reg_exc:
+                        logger.debug(
+                            "register_recent_attached_image_paths failed: %s",
+                            _reg_exc,
+                        )
                     try:
                         from agent.image_routing import build_native_content_parts
                         _parts, _skipped = build_native_content_parts(

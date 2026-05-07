@@ -119,3 +119,92 @@ class TestNormalizeReferenceImage:
         block = normalize_reference_image("~/ref.png")
         assert block is not None
         assert block["image_url"].startswith("data:image/png;base64,")
+
+
+class TestRecentAttachedImagePathsRegister:
+    """Cover the session-scoped attachment register that the gateway writes
+    into and the ``image_generate`` tool reads from for img2img auto-inject.
+    """
+
+    def setup_method(self, method):
+        # Reset module-level state between tests so they don't bleed.
+        from agent import image_routing
+        image_routing._RECENT_ATTACHED_IMAGE_PATHS.clear()
+
+    def teardown_method(self, method):
+        from agent import image_routing
+        image_routing._RECENT_ATTACHED_IMAGE_PATHS.clear()
+
+    def test_register_then_get_round_trip(self):
+        from agent.image_routing import (
+            register_recent_attached_image_paths,
+            get_recent_attached_image_paths,
+        )
+        register_recent_attached_image_paths("sess-A", ["/tmp/a.png", "/tmp/b.png"])
+        assert get_recent_attached_image_paths("sess-A") == ["/tmp/a.png", "/tmp/b.png"]
+
+    def test_get_returns_independent_copy(self):
+        """Mutating the returned list must not corrupt the register."""
+        from agent.image_routing import (
+            register_recent_attached_image_paths,
+            get_recent_attached_image_paths,
+        )
+        register_recent_attached_image_paths("sess-A", ["/tmp/a.png"])
+        out = get_recent_attached_image_paths("sess-A")
+        out.append("/tmp/sneaky.png")
+        assert get_recent_attached_image_paths("sess-A") == ["/tmp/a.png"]
+
+    def test_get_unknown_session_returns_empty(self):
+        from agent.image_routing import get_recent_attached_image_paths
+        assert get_recent_attached_image_paths("never-registered") == []
+
+    def test_empty_session_key_is_a_no_op(self):
+        from agent.image_routing import (
+            register_recent_attached_image_paths,
+            get_recent_attached_image_paths,
+            clear_recent_attached_image_paths,
+        )
+        register_recent_attached_image_paths("", ["/tmp/x.png"])
+        assert get_recent_attached_image_paths("") == []
+        clear_recent_attached_image_paths("")  # must not raise
+
+    def test_register_replaces_previous(self):
+        """A new attachment shadows older ones — the model edits the *latest*
+        thing the user sent, not stale state from earlier in the session.
+        """
+        from agent.image_routing import (
+            register_recent_attached_image_paths,
+            get_recent_attached_image_paths,
+        )
+        register_recent_attached_image_paths("sess-A", ["/tmp/old.png"])
+        register_recent_attached_image_paths("sess-A", ["/tmp/new.png"])
+        assert get_recent_attached_image_paths("sess-A") == ["/tmp/new.png"]
+
+    def test_clear_removes_only_target_session(self):
+        from agent.image_routing import (
+            register_recent_attached_image_paths,
+            get_recent_attached_image_paths,
+            clear_recent_attached_image_paths,
+        )
+        register_recent_attached_image_paths("sess-A", ["/tmp/a.png"])
+        register_recent_attached_image_paths("sess-B", ["/tmp/b.png"])
+        clear_recent_attached_image_paths("sess-A")
+        assert get_recent_attached_image_paths("sess-A") == []
+        assert get_recent_attached_image_paths("sess-B") == ["/tmp/b.png"]
+
+    def test_clear_unknown_session_is_noop(self):
+        from agent.image_routing import clear_recent_attached_image_paths
+        clear_recent_attached_image_paths("never-registered")  # must not raise
+
+    def test_persistent_across_reads_for_multi_turn_edits(self):
+        """Reads are non-destructive so the model can refer to the same
+        source across multiple agent turns ("now make it red", "now bigger")
+        without the user re-sending the photo.
+        """
+        from agent.image_routing import (
+            register_recent_attached_image_paths,
+            get_recent_attached_image_paths,
+        )
+        register_recent_attached_image_paths("sess-A", ["/tmp/a.png"])
+        for _ in range(3):
+            assert get_recent_attached_image_paths("sess-A") == ["/tmp/a.png"]

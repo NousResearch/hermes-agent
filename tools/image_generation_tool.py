@@ -1020,12 +1020,62 @@ def _dispatch_to_plugin_provider(
     return json.dumps(result)
 
 
+def _resolve_session_auto_reference_images() -> list:
+    """Look up image paths attached to the most recent inbound message on the
+    active gateway session, for auto-injection into ``image_generate`` calls.
+
+    Returns an empty list if the active session is unknown (e.g. CLI
+    invocation outside of a gateway context), if no attachments have been
+    registered for it, or if the lookup raises for any reason. Auto-inject
+    is a UX convenience — never let it block a generate call.
+    """
+    try:
+        from tools.approval import get_current_session_key
+        from agent.image_routing import get_recent_attached_image_paths
+
+        session_key = get_current_session_key(default="")
+        if not session_key:
+            return []
+        return get_recent_attached_image_paths(session_key)
+    except Exception as exc:
+        logger.debug("auto-resolve reference_images skipped: %s", exc)
+        return []
+
+
+def _merge_reference_images(explicit: list, auto: list) -> list:
+    """Combine explicit reference_images (from the model's tool call) with
+    auto-resolved session attachments. Explicit entries come first and win
+    duplicates, so the model can deliberately point to a different source
+    while still benefiting from auto-attachment when it doesn't.
+    """
+    merged = list(explicit or [])
+    seen = {str(x) for x in merged}
+    for p in auto or []:
+        key = str(p)
+        if key not in seen:
+            merged.append(p)
+            seen.add(key)
+    return merged
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
-    reference_images = args.get("reference_images") or []
+    explicit_refs = list(args.get("reference_images") or [])
+
+    # Auto-inject the most recent session attachment paths so "edit this"
+    # works without the model needing to know on-disk paths. Explicit
+    # reference_images from the model take precedence over auto-resolved
+    # ones (no overwrite, no shadowing — auto entries are appended).
+    auto_refs = _resolve_session_auto_reference_images()
+    reference_images = _merge_reference_images(explicit_refs, auto_refs)
+    if auto_refs and not explicit_refs:
+        logger.info(
+            "image_generate: auto-attaching %d session reference image(s)",
+            len(auto_refs),
+        )
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).

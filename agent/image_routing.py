@@ -295,7 +295,75 @@ def build_native_content_parts(
     return parts, skipped
 
 
+# ---------------------------------------------------------------------------
+# Session-scoped recent attachment register (for image_generate auto-inject)
+# ---------------------------------------------------------------------------
+#
+# When a gateway turn includes natively-attached images, the image bytes
+# reach the model as ``image_url`` content parts — the model can *see* them
+# but only as inline data, not as file paths it could pass to the
+# ``image_generate`` tool's ``reference_images`` argument.
+#
+# This register lets the gateway record the same paths under the active
+# session so the ``image_generate`` handler can auto-inject them when the
+# user follows the attachment with "edit this", "add a hat", "remove the
+# background", etc. The model just calls ``image_generate(prompt=...)``
+# and the tool handler resolves the most-recent attachment automatically.
+#
+# Lifecycle
+# ---------
+# * **Replace** — gateway calls :func:`register_recent_attached_image_paths`
+#   on every inbound turn that has native attachments. Replacing (not
+#   appending) is intentional: a new attachment shadows older ones in the
+#   same session so the model edits *the thing the user just sent*, not a
+#   stale image from earlier in the conversation.
+# * **Persist across model turns** — reads via :func:`get_recent_attached_image_paths`
+#   are non-destructive. The model can refer to the same source across
+#   multiple ``image_generate`` calls in the same session ("now make it
+#   red", "now bigger") without the user re-sending the photo.
+# * **Clear** — gateway calls :func:`clear_recent_attached_image_paths`
+#   on session reset / auto-reset so a brand-new conversation does not
+#   inherit a previous one's attachment state.
+
+_RECENT_ATTACHED_IMAGE_PATHS: Dict[str, List[str]] = {}
+
+
+def register_recent_attached_image_paths(session_key: str, paths: List[str]) -> None:
+    """Record image paths attached to the current inbound turn under
+    ``session_key``. Replaces any previously-registered paths for the session.
+
+    Called by the gateway right after consuming the per-turn pending-native
+    image paths, so the same paths are queryable from inside the
+    ``image_generate`` tool handler.
+    """
+    if not session_key:
+        return
+    _RECENT_ATTACHED_IMAGE_PATHS[session_key] = list(paths or [])
+
+
+def get_recent_attached_image_paths(session_key: str) -> List[str]:
+    """Return image paths attached to the most recent inbound turn for the
+    session, or an empty list. Non-destructive — the same paths can be read
+    again on subsequent agent turns until a new attachment replaces them or
+    the session is reset.
+    """
+    if not session_key:
+        return []
+    return list(_RECENT_ATTACHED_IMAGE_PATHS.get(session_key, []))
+
+
+def clear_recent_attached_image_paths(session_key: str) -> None:
+    """Drop the register for ``session_key``. Called by the gateway on
+    session reset / auto-reset so a fresh conversation starts clean.
+    """
+    if session_key:
+        _RECENT_ATTACHED_IMAGE_PATHS.pop(session_key, None)
+
+
 __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
+    "register_recent_attached_image_paths",
+    "get_recent_attached_image_paths",
+    "clear_recent_attached_image_paths",
 ]

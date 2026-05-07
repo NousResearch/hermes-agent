@@ -802,8 +802,8 @@ The curator is an auxiliary-model background task that periodically reviews agen
 | Subcommand | Description |
 |------------|-------------|
 | `status` | Show curator status and skill stats |
-| `run` | Trigger a curator review now |
-| `run --sync` | Block until the LLM pass finishes |
+| `run` | Trigger a curator review now (blocks until the LLM pass finishes) |
+| `run --background` | Start the LLM pass in a background thread and return immediately |
 | `run --dry-run` | Preview only — produce the review report with no mutations |
 | `backup` | Take a manual tar.gz snapshot of `~/.hermes/skills/` (curator also snapshots automatically before every real run) |
 | `rollback` | Restore `~/.hermes/skills/` from a snapshot (defaults to newest) |

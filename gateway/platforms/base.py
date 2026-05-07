@@ -2133,21 +2133,24 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
+                _tts_caption_sent = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
+                            caption=text_content[:1024] if text_content else None,
                             metadata=_thread_metadata,
                         )
+                        _tts_caption_sent = True
                     finally:
                         try:
                             os.remove(_tts_path)
                         except OSError:
                             pass
 
-                # Send the text portion
-                if text_content:
+                # Send the text portion (skip if TTS voice already carried the text as caption)
+                if text_content and not _tts_caption_sent:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,

@@ -2268,6 +2268,23 @@ class HermesCLI:
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._app = None
 
+        # Per-session state (see _reset_session_state for full list).
+        self._reset_session_state()
+
+        # Status bar visibility (toggled via /statusbar)
+        self._status_bar_visible = True
+
+        # Background task tracking: {task_id: threading.Thread}
+        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_task_counter = 0
+
+    def _reset_session_state(self) -> None:
+        """Reset all per-session state variables.
+
+        Called once in ``__init__`` so attributes exist for single-query mode
+        and again at the top of ``run()`` to reinitialise for each interactive
+        session (e.g. after a previous run exited).
+        """
         # State shared by interactive run() and single-query chat mode.
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
@@ -2299,7 +2316,7 @@ class HermesCLI:
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
 
-        # Voice mode state (also reinitialized inside run() for interactive TUI).
+        # Voice mode state (also reinitialised inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
         self._voice_mode = False
         self._voice_tts = False
@@ -2309,13 +2326,6 @@ class HermesCLI:
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
-
-        # Status bar visibility (toggled via /statusbar)
-        self._status_bar_visible = True
-
-        # Background task tracking: {task_id: threading.Thread}
-        self._background_tasks: Dict[str, threading.Thread] = {}
-        self._background_task_counter = 0
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -2353,12 +2363,12 @@ class HermesCLI:
             # next _redraw() starts from a known (0, 0) origin and
             # re-renders every cell rather than diffing against stale.
             renderer.reset(leave_alternate_screen=False)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("_force_full_redraw renderer.reset failed: %s", _exc)
         try:
             app.invalidate()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("_force_full_redraw app.invalidate failed: %s", _exc)
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -3408,7 +3418,8 @@ class HermesCLI:
                         self.model = _fb_model
                         _primary_exc = None
                         break
-                    except Exception:
+                    except Exception as _exc:
+                        logger.debug("fallback provider %s/%s failed: %s", _fb_provider, _fb_model, _exc)
                         continue
 
         if runtime is None:
@@ -3491,8 +3502,8 @@ class HermesCLI:
                         "No model configured — defaulting to %s for provider %s",
                         _default, resolved_provider,
                     )
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("get_default_model_for_provider failed for %s: %s", resolved_provider, _exc)
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.
@@ -3545,7 +3556,8 @@ class HermesCLI:
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
+        except Exception as _exc:
+            logger.debug("resolve_fast_mode_overrides failed for %s: %s", route["model"], _exc)
             overrides = None
         route["request_overrides"] = overrides
         return route
@@ -3587,7 +3599,8 @@ class HermesCLI:
             # See #15000 and SessionDB.resolve_resume_session_id.
             try:
                 resolved_id = self._session_db.resolve_resume_session_id(self.session_id)
-            except Exception:
+            except Exception as _exc:
+                logger.debug("resolve_resume_session_id failed: %s", _exc)
                 resolved_id = self.session_id
             if resolved_id and resolved_id != self.session_id:
                 ChatConsole().print(
@@ -3624,8 +3637,8 @@ class HermesCLI:
                     (self.session_id,),
                 )
                 self._session_db._conn.commit()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("failed to re-open resumed session in DB: %s", _exc)
         
         try:
             runtime = runtime_override or {
@@ -9307,8 +9320,8 @@ class HermesCLI:
                         use_streaming_tts = True
                 except (ImportError, OSError):
                     pass
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("streaming TTS setup failed: %s", _exc)
 
             if use_streaming_tts:
                 text_queue = queue.Queue()
@@ -9957,8 +9970,8 @@ class HermesCLI:
             _term_lines = shutil.get_terminal_size().lines
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("shutil.get_terminal_size failed in run(): %s", _exc)
 
         self.show_banner()
 
@@ -10000,10 +10013,10 @@ class HermesCLI:
                 try:
                     from hermes_cli.config import get_config_path as _get_cfg_path_resid
                     mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
-                except Exception:
-                    pass  # best-effort — banner will fire again next session
-        except Exception:
-            pass  # banner is non-critical — never break startup
+                except Exception as _exc:
+                    logger.debug("mark_seen failed for openclaw residue banner: %s", _exc)
+        except Exception as _exc:
+            logger.debug("openclaw residue banner failed: %s", _exc)
         # Show a random tip to help users discover features
         try:
             from hermes_cli.tips import get_random_tip
@@ -10013,8 +10026,8 @@ class HermesCLI:
             except Exception:
                 _tip_color = "#B8860B"
             self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
-        except Exception:
-            pass  # Tips are non-critical — never break startup
+        except Exception as _exc:
+            logger.debug("tips display failed: %s", _exc)
 
         # Curator — kick off a background skill-maintenance pass on startup
         # if the schedule says we're due.  Runs in a daemon thread so it
@@ -10028,8 +10041,8 @@ class HermesCLI:
                     f"[dim #6b7684]💾 {msg}[/]"
                 ),
             )
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("curator startup failed: %s", _exc)
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self._console_print(
@@ -10038,12 +10051,8 @@ class HermesCLI:
             self._startup_skills_line_shown = True
         self._console_print()
         
-        # State for async operation
-        self._agent_running = False
-        self._pending_input = queue.Queue()     # For normal input (commands + new queries)
-        self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
-        self._should_exit = False
-        self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        # Reset all per-session state (shared with __init__).
+        self._reset_session_state()
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager
@@ -10055,46 +10064,6 @@ class HermesCLI:
         self._config_mtime: float = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
-
-        # Clarify tool state: interactive question/answer with the user.
-        # When the agent calls the clarify tool, _clarify_state is set and
-        # the prompt_toolkit UI switches to a selection mode.
-        self._clarify_state = None      # dict with question, choices, selected, response_queue
-        self._clarify_freetext = False  # True when user chose "Other" and is typing
-        self._clarify_deadline = 0      # monotonic timestamp when the clarify times out
-
-        # Sudo password prompt state (similar mechanism to clarify)
-        self._sudo_state = None         # dict with response_queue when active
-        self._sudo_deadline = 0
-        self._modal_input_snapshot = None
-
-        # Dangerous command approval state (similar mechanism to clarify)
-        self._approval_state = None     # dict with command, description, choices, selected, response_queue
-        self._approval_deadline = 0
-        self._approval_lock = threading.Lock()  # serialize concurrent approval prompts (delegation race fix)
-
-        # Slash command loading state
-        self._command_running = False
-        self._command_status = ""
-
-        # Secure secret capture state for skill setup
-        self._secret_state = None       # dict with var_name, prompt, metadata, response_queue
-        self._secret_deadline = 0
-
-        # Clipboard image attachments (paste images into the CLI)
-        self._attached_images: list[Path] = []
-        self._image_counter = 0
-
-        # Voice mode state (protected by _voice_lock for cross-thread access)
-        self._voice_lock = threading.Lock()
-        self._voice_mode = False        # Whether voice mode is enabled
-        self._voice_tts = False         # Whether TTS output is enabled
-        self._voice_recorder = None     # AudioRecorder instance (lazy init)
-        self._voice_recording = False   # Whether currently recording
-        self._voice_processing = False  # Whether STT is in progress
-        self._voice_continuous = False  # Whether to auto-restart after agent responds
-        self._voice_tts_done = threading.Event()  # Signals TTS playback finished
-        self._voice_tts_done.set()  # Initially "done" (no TTS pending)
 
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
@@ -10113,8 +10082,8 @@ class HermesCLI:
                 if tirith_enabled:
                     _cprint(f"  {_DIM}⚠ tirith security scanner enabled but not available "
                             f"— command scanning will use pattern matching only{_RST}")
-        except Exception:
-            pass  # Non-fatal — fail-open at scan time if unavailable
+        except Exception as _exc:
+            logger.debug("tirith ensure_installed failed: %s", _exc)
         
         # Key bindings for the input area
         kb = KeyBindings()
@@ -11712,8 +11681,8 @@ class HermesCLI:
                                         _synth = _format_process_notification(evt)
                                         if _synth:
                                             self._pending_input.put(_synth)
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("idle process notification check failed: %s", _exc)
                         continue
                     
                     if not user_input:
@@ -11824,8 +11793,8 @@ class HermesCLI:
                                 _synth = _format_process_notification(evt)
                                 if _synth:
                                     self._pending_input.put(_synth)
-                        except Exception:
-                            pass  # Non-fatal — don't break the main loop
+                        except Exception as _exc:
+                            logger.debug("drain process notifications after turn failed: %s", _exc)
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
@@ -11866,8 +11835,8 @@ class HermesCLI:
                         _grace = 1.5
                     if _grace > 0:
                         time.sleep(_grace)
-            except Exception:
-                pass  # never block signal handling
+            except Exception as _exc:
+                logger.debug("signal handler grace period failed: %s", _exc)
             raise KeyboardInterrupt()
         
         try:

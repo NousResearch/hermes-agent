@@ -1079,8 +1079,8 @@ class AIAgent:
         # not mid-conversation.  Also validates the api_mode is registered.
         try:
             self._get_transport()
-        except Exception:
-            pass  # Non-fatal — transport may not exist for all modes yet
+        except Exception as _exc:
+            logger.debug("Transport warm-up skipped: %s", _exc)
 
         try:
             from hermes_cli.model_normalize import (
@@ -1090,8 +1090,8 @@ class AIAgent:
 
             if self.provider not in _AGGREGATOR_PROVIDERS:
                 self.model = normalize_model_for_provider(self.model, self.provider)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Model normalization skipped: %s", _exc)
 
         # GPT-5.x models usually require the Responses API path, but some
         # providers have exceptions (for example Copilot's gpt-5-mini still
@@ -1235,8 +1235,8 @@ class AIAgent:
             _ttl = _pc_cfg.get("cache_ttl", "5m")
             if _ttl in ("5m", "1h"):
                 self._cache_ttl = _ttl
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Prompt cache TTL config skipped: %s", _exc)
 
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
@@ -1400,8 +1400,8 @@ class AIAgent:
                         self._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
                     if _gr.get("trace"):
                         self._bedrock_guardrail_config["trace"] = _gr["trace"]
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Bedrock guardrail config skipped: %s", _exc)
             self.client = None
             self._client_kwargs = {}
             if not self.quiet_mode:
@@ -1481,8 +1481,8 @@ class AIAgent:
                             _pcfg = PROVIDER_REGISTRY.get(_explicit)
                             if _pcfg and _pcfg.api_key_env_vars:
                                 _env_hint = _pcfg.api_key_env_vars[0]
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("Provider env var hint lookup skipped: %s", _exc)
                         # --- Init-time fallback (#17929) ---
                         _fb_entries = []
                         if isinstance(fallback_model, list):
@@ -1689,7 +1689,8 @@ class AIAgent:
         try:
             from hermes_cli.config import load_config as _load_agent_config
             _agent_cfg = _load_agent_config()
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Agent config load failed, using defaults: %s", _exc)
             _agent_cfg = {}
         try:
             self._tool_guardrails = ToolCallGuardrailController(
@@ -1724,8 +1725,8 @@ class AIAgent:
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                     )
                     self._memory_store.load_from_disk()
-            except Exception:
-                pass  # Memory is optional -- don't break agent init
+            except Exception as _exc:
+                logger.debug("Memory store init/load skipped: %s", _exc)
         
 
 
@@ -1757,8 +1758,8 @@ class AIAgent:
                                 _st = self._session_db.get_session_title(self.session_id)
                                 if _st:
                                     _init_kwargs["session_title"] = _st
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("Session title lookup for memory provider skipped: %s", _exc)
                         # Thread gateway user identity for per-user memory scoping
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id
@@ -1781,8 +1782,8 @@ class AIAgent:
                             _profile = get_active_profile_name()
                             _init_kwargs["agent_identity"] = _profile
                             _init_kwargs["agent_workspace"] = "hermes"
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("Profile identity lookup for memory provider skipped: %s", _exc)
                         self._memory_manager.initialize_all(**_init_kwargs)
                         logger.info("Memory provider '%s' activated", _mem_provider_name)
                     else:
@@ -1819,8 +1820,8 @@ class AIAgent:
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Skills config read skipped: %s", _exc)
 
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
@@ -1856,7 +1857,8 @@ class AIAgent:
         # /models, so the startup feasibility check needs the config hint.
         try:
             _aux_cfg = cfg_get(_agent_cfg, "auxiliary", "compression", default={})
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Auxiliary compression config read failed: %s", _exc)
             _aux_cfg = {}
         if isinstance(_aux_cfg, dict):
             _aux_context_config = _aux_cfg.get("context_length")
@@ -1898,7 +1900,8 @@ class AIAgent:
         try:
             from hermes_cli.config import get_compatible_custom_providers
             _custom_providers = get_compatible_custom_providers(_agent_cfg)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Custom providers config read failed, using fallback: %s", _exc)
             _custom_providers = _agent_cfg.get("custom_providers")
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
@@ -1914,7 +1917,8 @@ class AIAgent:
                 )
                 if _cp_ctx_resolved:
                     _config_context_length = int(_cp_ctx_resolved)
-            except Exception:
+            except Exception as _exc:
+                logger.debug("Custom provider context length lookup failed: %s", _exc)
                 _cp_ctx_resolved = None
 
             # Surface a clear warning if the user set a context_length but it
@@ -1970,8 +1974,8 @@ class AIAgent:
         try:
             _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
             _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Context engine config read failed: %s", _exc)
 
         if _engine_name != "compressor":
             # Try loading from plugins/context_engine/<name>/
@@ -1988,8 +1992,8 @@ class AIAgent:
                     _candidate = get_plugin_context_engine()
                     if _candidate and _candidate.name == _engine_name:
                         _selected_engine = _candidate
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Plugin context engine candidate lookup failed: %s", _exc)
 
             if _selected_engine is None:
                 logger.warning(

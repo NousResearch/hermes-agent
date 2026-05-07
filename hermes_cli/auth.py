@@ -853,31 +853,43 @@ def _auth_lock_path() -> Path:
 
 _auth_lock_holder = threading.local()
 
+
 @contextmanager
-def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-process advisory lock for auth.json reads+writes.  Reentrant."""
-    # Reentrant: if this thread already holds the lock, just yield.
-    if getattr(_auth_lock_holder, "depth", 0) > 0:
-        _auth_lock_holder.depth += 1
+def _file_lock(
+    lock_path: Path,
+    holder: threading.local,
+    timeout_seconds: float,
+    timeout_message: str,
+):
+    """Cross-process advisory flock helper.
+
+    Reentrant per-thread via ``holder.depth``. Falls back to a depth-only
+    guard when neither ``fcntl`` nor ``msvcrt`` is available (rare).
+    Callers supply their own ``threading.local`` so independent locks
+    (e.g. profile auth.json vs shared Nous store) don't share reentrancy
+    state — that would let one lock's reentrant acquisition silently skip
+    the other's kernel-level flock.
+    """
+    if getattr(holder, "depth", 0) > 0:
+        holder.depth += 1
         try:
             yield
         finally:
-            _auth_lock_holder.depth -= 1
+            holder.depth -= 1
         return
 
-    lock_path = _auth_lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     if fcntl is None and msvcrt is None:
-        _auth_lock_holder.depth = 1
+        holder.depth = 1
         try:
             yield
         finally:
-            _auth_lock_holder.depth = 0
+            holder.depth = 0
         return
 
     # On Windows, msvcrt.locking needs the file to have content and the
-    # file pointer at position 0.  Ensure the lock file has at least 1 byte.
+    # file pointer at position 0. Ensure the lock file has at least 1 byte.
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")
 
@@ -893,14 +905,14 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
                 break
             except (BlockingIOError, OSError, PermissionError):
                 if time.time() >= deadline:
-                    raise TimeoutError("Timed out waiting for auth store lock")
+                    raise TimeoutError(timeout_message)
                 time.sleep(0.05)
 
-        _auth_lock_holder.depth = 1
+        holder.depth = 1
         try:
             yield
         finally:
-            _auth_lock_holder.depth = 0
+            holder.depth = 0
             if fcntl:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             elif msvcrt:
@@ -909,6 +921,25 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
                 except (OSError, IOError):
                     pass
+
+
+@contextmanager
+def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-process advisory lock for auth.json reads+writes.  Reentrant.
+
+    Lock ordering invariant: when this lock is held together with
+    ``_nous_shared_store_lock``, acquire ``_auth_store_lock`` FIRST
+    (outer) and the shared Nous lock SECOND (inner). All runtime
+    refresh paths follow this order; violating it risks deadlock
+    against a concurrent import on the shared store.
+    """
+    with _file_lock(
+        _auth_lock_path(),
+        _auth_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for auth store lock",
+    ):
+        yield
 
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
@@ -2811,61 +2842,30 @@ def _nous_shared_store_path() -> Path:
 
 @contextmanager
 def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-profile lock for the shared Nous OAuth store."""
-    if getattr(_nous_shared_lock_holder, "depth", 0) > 0:
-        _nous_shared_lock_holder.depth += 1
-        try:
-            yield
-        finally:
-            _nous_shared_lock_holder.depth -= 1
-        return
+    """Cross-profile lock for the shared Nous OAuth store.
 
+    Lock ordering invariant: if both this and ``_auth_store_lock`` need
+    to be held, acquire ``_auth_store_lock`` FIRST. All runtime refresh
+    paths follow this order. The one exception is
+    ``_try_import_shared_nous_state``, which holds this lock alone for
+    the entire refresh+mint cycle so concurrent imports on sibling
+    profiles can't race on the single-use shared refresh token; that
+    helper must NOT be called with ``_auth_store_lock`` already held.
+    """
     try:
         lock_path = _nous_shared_store_path().with_suffix(".lock")
     except RuntimeError:
+        # No HERMES_HOME yet (pre-setup): fall through without locking.
         yield
         return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if fcntl is None and msvcrt is None:
-        _nous_shared_lock_holder.depth = 1
-        try:
-            yield
-        finally:
-            _nous_shared_lock_holder.depth = 0
-        return
-
-    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
-
-    with lock_path.open("r+" if msvcrt else "a+") as lock_file:
-        deadline = time.time() + max(1.0, timeout_seconds)
-        while True:
-            try:
-                if fcntl:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                else:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                break
-            except (BlockingIOError, OSError, PermissionError):
-                if time.time() >= deadline:
-                    raise TimeoutError("Timed out waiting for shared Nous auth lock")
-                time.sleep(0.05)
-
-        _nous_shared_lock_holder.depth = 1
-        try:
-            yield
-        finally:
-            _nous_shared_lock_holder.depth = 0
-            if fcntl:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            elif msvcrt:
-                try:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
+    with _file_lock(
+        lock_path,
+        _nous_shared_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared Nous auth lock",
+    ):
+        yield
 
 
 def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:

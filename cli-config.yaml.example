@@ -658,6 +658,12 @@ platform_toolsets:
 #     reply_to_mode: "first"  # off | first | all
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+#   discord:
+#     channel_prompts:                              # Per-channel ephemeral system prompts
+#       "1487971329297744053": "You are a helpful assistant for this channel."
+#     channel_models:                               # Per-channel model override (inherits global provider)
+#       "1487971329297744053": qwen3.5-397b-fast    # Forum threads inherit parent channel model
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

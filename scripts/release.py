@@ -56,6 +56,7 @@ AUTHOR_MAP = {
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",
+    "am@studio1.tailb672fe.ts.net": "subtract0",
     "159539633+MottledShadow@users.noreply.github.com": "MottledShadow",
     "aludwin+gh@gmail.com": "adamludwin",
     "ngusev@astralinux.ru": "NikolayGusev-astra",

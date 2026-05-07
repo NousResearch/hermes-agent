@@ -2730,6 +2730,73 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
+def _manual_gateway_restart_command() -> list[str]:
+    """Build the command used for a detached manual gateway replacement."""
+    import shlex
+
+    cmd = [sys.executable, "-m", "hermes_cli.main"]
+    profile_arg = _profile_arg()
+    if profile_arg:
+        cmd.extend(shlex.split(profile_arg))
+    cmd.extend(["gateway", "run", "--replace"])
+    return cmd
+
+
+def _tail_file(path: Path, max_lines: int = 80) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def restart_manual_gateway_background(wait_seconds: float = 5.0) -> int:
+    """Restart a manually-run gateway with a detached `gateway run --replace`.
+
+    This is the non-service equivalent of `gateway restart`: it starts a fresh
+    replacement process in the background and lets `--replace` safely retire the
+    existing foreground/tmux/nohup gateway for the current profile.
+    """
+    import time
+
+    home = get_hermes_home()
+    log_dir = home / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    log_path = log_dir / f"gateway-safe-restart-{stamp}.log"
+    cmd = _manual_gateway_restart_command()
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+
+    print("Starting gateway replacement in the background...")
+    print(f"  Command: {' '.join(cmd)}")
+    print(f"  Log: {log_path}")
+
+    with log_path.open("ab") as log_file:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    time.sleep(max(0.0, wait_seconds))
+    if process.poll() is not None:
+        print_error("Gateway replacement exited before it became healthy.")
+        tail = _tail_file(log_path)
+        if tail:
+            print()
+            print("Recent restart log:")
+            print(tail)
+        sys.exit(process.returncode or 1)
+
+    print_success(f"Gateway replacement launched (PID {process.pid})")
+    print_info("Send Hermes a message to confirm the platform adapter is responding.")
+    return process.pid
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
@@ -4651,8 +4718,8 @@ def _gateway_command_inner(args):
             else:
                 print(f"✓ Stopped {get_service_name()} service")
     
-    elif subcmd == "restart":
-        # Try service first, fall back to killing and restarting
+    elif subcmd in ("restart", "safe-restart"):
+        # Try service first, fall back to a detached manual `gateway run --replace` restart
         service_available = False
         system = getattr(args, 'system', False)
         restart_all = getattr(args, 'all', False)
@@ -4728,15 +4795,11 @@ def _gateway_command_inner(args):
                 print("  Fix the service, then retry: hermes gateway start")
                 sys.exit(1)
 
-            # Manual restart: stop only this profile's gateway
-            if stop_profile_gateway():
-                print("✓ Stopped gateway for this profile")
-
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-
-            # Start fresh
-            print("Starting gateway...")
-            run_gateway(verbose=0)
+            # Manual restart: start a detached replacement for this profile.
+            # `gateway run --replace` handles retiring the old manual process
+            # without turning this CLI invocation into the long-running gateway.
+            restart_manual_gateway_background()
+            return
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)

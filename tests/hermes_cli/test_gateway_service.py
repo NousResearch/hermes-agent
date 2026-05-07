@@ -332,6 +332,44 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestGatewaySafeRestart:
+    def test_safe_restart_uses_background_manual_replacement_without_service(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_manual_gateway_background",
+            lambda: calls.append("manual-background-replace") or 1234,
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="safe-restart"))
+
+        assert calls == ["manual-background-replace"]
+
+    def test_restart_uses_safe_restart_for_manual_process_when_service_absent(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_manual_gateway_background",
+            lambda: calls.append("manual-background-replace") or 1234,
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", all=False, system=False))
+
+        assert calls == ["manual-background-replace"]
+
+
 class TestLaunchdServiceRecovery:
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)

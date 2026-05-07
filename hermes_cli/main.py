@@ -8638,6 +8638,22 @@ def main():
         help="Kill ALL gateway processes across all profiles before restarting",
     )
 
+    # gateway safe-restart
+    gateway_safe_restart = gateway_subparsers.add_parser(
+        "safe-restart",
+        help="Restart service or manually-run gateway without staying attached",
+        description=(
+            "Restart the gateway safely. Uses the installed systemd/launchd "
+            "service when present; otherwise launches a detached `gateway run "
+            "--replace` replacement and writes a restart log."
+        ),
+    )
+    gateway_safe_restart.add_argument(
+        "--system",
+        action="store_true",
+        help="Target the Linux system-level gateway service",
+    )
+
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")

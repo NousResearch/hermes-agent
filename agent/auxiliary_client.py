@@ -1988,10 +1988,20 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
-            resolved_provider = "custom"
+        if runtime_base_url:
+            # Pass the user's configured base_url to resolve_provider_client()
+            # so it is honoured for ALL provider types, not just custom.
+            # Without this, named providers (zai, anthropic, gemini, …) lose
+            # model.base_url from config.yaml and fall back to auto-detection
+            # probe results (e.g. Z.AI hopping between api.z.ai and
+            # open.bigmodel.cn on every call).  See _resolve_zai_base_url().
+            # The CLI main-model path (resolve_runtime_provider) already
+            # respects cfg_base_url; this makes the auxiliary auto-chain
+            # consistent with it.
+            if main_provider == "custom" or main_provider.startswith("custom:"):
+                resolved_provider = "custom"
+                explicit_api_key = runtime_api_key or None
             explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
         client, resolved = resolve_provider_client(
             resolved_provider,
             main_model,

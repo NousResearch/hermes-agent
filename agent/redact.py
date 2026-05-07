@@ -108,6 +108,16 @@ _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
+# Line-oriented config patterns: spring.datasource.password=..., password: ...
+# Keep this separate from _ENV_ASSIGN_RE so lowercase source-code assignments
+# such as `api_key = config.get(...)` remain unchanged.
+_CONFIG_KEY_NAMES = r"(?:api[_-]?key|token|secret|password|passwd|credential|auth|private[_-]?key|client[_-]?secret)"
+_CONFIG_KEY_RE = rf"(?:[A-Za-z0-9]+[._-])*{_CONFIG_KEY_NAMES}(?:[._-][A-Za-z0-9]+)*"
+_CONFIG_KV_RE = re.compile(
+    rf"^([ \t]*{_CONFIG_KEY_RE})([ \t]*[:=][ \t]*)(['\"]?)([^\s#&;,(){{}}\[\]<>]+)\3([ \t]*(?:#.*)?)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(
@@ -336,6 +346,12 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             name, quote, value = m.group(1), m.group(2), m.group(3)
             return f"{name}={quote}{_mask_token(value)}{quote}"
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+
+        # Config files: lowercase/dotted/hyphenated keys in properties, YAML, INI.
+        def _redact_config_kv(m):
+            key, sep, quote, value, suffix = m.groups()
+            return f"{key}{sep}{quote}{_mask_token(value)}{quote}{suffix}"
+        text = _CONFIG_KV_RE.sub(_redact_config_kv, text)
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
         def _redact_json(m):

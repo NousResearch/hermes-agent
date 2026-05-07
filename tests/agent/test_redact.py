@@ -115,6 +115,50 @@ class TestEnvAssignments:
         assert "mypassword" not in result
 
 
+class TestConfigFileFormats:
+    def test_spring_boot_password(self):
+        text = "spring.datasource.password=MySecret123"
+        result = redact_sensitive_text(text)
+        assert "spring.datasource.password=" in result
+        assert "MySecret123" not in result
+
+    def test_lowercase_password(self):
+        text = "password=hunter2"
+        result = redact_sensitive_text(text)
+        assert "password=" in result
+        assert "hunter2" not in result
+
+    def test_dotted_secret_key(self):
+        text = "app.secret.key=xyz"
+        result = redact_sensitive_text(text)
+        assert "app.secret.key=" in result
+        assert "xyz" not in result
+
+    def test_yaml_style_password(self):
+        text = "  password: hunter2"
+        result = redact_sensitive_text(text)
+        assert "  password: " in result
+        assert "hunter2" not in result
+
+    def test_quoted_password(self):
+        text = "spring.password='s3cr3t'"
+        result = redact_sensitive_text(text)
+        assert "spring.password='" in result
+        assert "s3cr3t" not in result
+
+    def test_mixed_case_dotted(self):
+        text = "MyApp.Configuration.Password=pass"
+        result = redact_sensitive_text(text)
+        assert "MyApp.Configuration.Password=" in result
+        assert "pass" not in result
+
+    def test_preserves_inline_comment(self):
+        text = "spring.datasource.password=MySecret123  # local db password"
+        result = redact_sensitive_text(text)
+        assert "MySecret123" not in result
+        assert "# local db password" in result
+
+
 class TestJsonFields:
     def test_json_api_key(self):
         text = '{"apiKey": "sk-proj-abc123def456ghi789jkl012"}'

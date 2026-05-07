@@ -595,7 +595,7 @@ async def get_status():
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=50)
+            sessions = db.list_sessions_rich(limit=50, order_by_last_active=True)
             now = time.time()
             active_sessions = sum(
                 1 for s in sessions
@@ -764,7 +764,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
+            sessions = db.list_sessions_rich(limit=limit, offset=offset, order_by_last_active=True)
             total = db.session_count()
             now = time.time()
             for s in sessions:

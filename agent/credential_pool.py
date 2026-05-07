@@ -948,6 +948,9 @@ class CredentialPool:
                 if exhausted_until is not None and now < exhausted_until:
                     continue
                 if clear_expired:
+                    previous_error_code = entry.last_error_code
+                    previous_error_reason = entry.last_error_reason
+                    previous_error_message = entry.last_error_message
                     cleared = replace(
                         entry,
                         last_status=STATUS_OK,
@@ -985,14 +988,35 @@ class CredentialPool:
                                         "Pool entry %s: Z.AI re-probe failed, keeping exhausted",
                                         entry.id,
                                     )
-                                    entry = replace(entry, last_status=STATUS_EXHAUSTED)
+                                    entry = replace(
+                                        entry,
+                                        last_status=STATUS_EXHAUSTED,
+                                        last_status_at=now,
+                                        last_error_code=previous_error_code,
+                                        last_error_reason=previous_error_reason,
+                                        last_error_message=previous_error_message,
+                                        last_error_reset_at=None,
+                                    )
                                     self._replace_entry(cleared, entry)
                                     cleared_any = True
+                                    continue
                             except Exception as exc:
                                 logger.debug(
                                     "Pool entry %s: Z.AI re-probe error: %s",
                                     entry.id, exc,
                                 )
+                                entry = replace(
+                                    entry,
+                                    last_status=STATUS_EXHAUSTED,
+                                    last_status_at=now,
+                                    last_error_code=previous_error_code,
+                                    last_error_reason=previous_error_reason,
+                                    last_error_message=previous_error_message,
+                                    last_error_reset_at=None,
+                                )
+                                self._replace_entry(cleared, entry)
+                                cleared_any = True
+                                continue
             if refresh and self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:

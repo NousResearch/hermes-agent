@@ -1641,3 +1641,160 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+def test_zai_exhausted_entry_recovers_when_detected_endpoint_changes(tmp_path, monkeypatch):
+    """Z.AI entries can be stuck on the wrong billing surface.
+
+    Regression for GLM/Z.AI coding-plan accounts: the pool entry may have
+    been seeded with the regular endpoint, then exhausted with 429
+    "insufficient balance" even though the same key has quota on the coding
+    endpoint. Once endpoint detection has found the coding endpoint, an
+    exhausted profile entry should adopt it and become selectable immediately.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "zai": {
+                    "detected_endpoint": {
+                        "base_url": "https://api.z.ai/api/coding/paas/v4",
+                        "endpoint_id": "coding-global",
+                        "model": "glm-5.1",
+                        "label": "Global (Coding Plan)",
+                        "key_hash": "unused-in-pool-sync",
+                    }
+                }
+            },
+            "credential_pool": {
+                "zai": [
+                    {
+                        "id": "zai-1",
+                        "label": "ZAI_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:ZAI_API_KEY",
+                        "access_token": "zai-key",
+                        "base_url": "https://api.z.ai/api/paas/v4",
+                        "last_status": "exhausted",
+                        "last_status_at": now,
+                        "last_error_code": 429,
+                        "last_error_reason": "1305",
+                        "last_error_message": "Insufficient balance or no resource package",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("zai")
+    available = pool._available_entries(clear_expired=True, refresh=False)
+
+    assert len(available) == 1
+    assert available[0].base_url == "https://api.z.ai/api/coding/paas/v4"
+    assert available[0].last_status is None
+    assert available[0].last_error_code is None
+
+
+def test_zai_expired_entry_reprobes_endpoint_before_reuse(tmp_path, monkeypatch):
+    """After Z.AI cooldown, re-probe before sending traffic to a stale URL."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "zai": [
+                    {
+                        "id": "zai-1",
+                        "label": "ZAI_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:ZAI_API_KEY",
+                        "access_token": "zai-key",
+                        "base_url": "https://api.z.ai/api/paas/v4",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 3700,
+                        "last_error_code": 429,
+                        "last_error_reason": "1305",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent import credential_pool as credential_pool_mod
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        credential_pool_mod,
+        "detect_zai_endpoint",
+        lambda api_key, timeout=8.0: {
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "id": "coding-global",
+            "model": "glm-5.1",
+            "label": "Global (Coding Plan)",
+        },
+    )
+
+    pool = load_pool("zai")
+    available = pool._available_entries(clear_expired=True, refresh=False)
+
+    assert len(available) == 1
+    assert available[0].base_url == "https://api.z.ai/api/coding/paas/v4"
+    assert available[0].last_status == "ok"
+
+
+def test_zai_failed_reprobe_keeps_entry_unavailable(tmp_path, monkeypatch):
+    """Do not resurrect an expired Z.AI entry when no endpoint currently works."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "zai": [
+                    {
+                        "id": "zai-1",
+                        "label": "ZAI_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:ZAI_API_KEY",
+                        "access_token": "zai-key",
+                        "base_url": "https://api.z.ai/api/paas/v4",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 3700,
+                        "last_error_code": 429,
+                        "last_error_reason": "1305",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent import credential_pool as credential_pool_mod
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        credential_pool_mod,
+        "detect_zai_endpoint",
+        lambda api_key, timeout=8.0: None,
+    )
+
+    pool = load_pool("zai")
+    available = pool._available_entries(clear_expired=True, refresh=False)
+
+    assert available == []
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = persisted["credential_pool"]["zai"][0]
+    assert entry["last_status"] == "exhausted"
+    assert entry["last_error_code"] == 429
+

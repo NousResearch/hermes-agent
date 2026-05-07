@@ -1170,6 +1170,30 @@ class MCPServerTask:
         self._reconnect_event.clear()
         return "reconnect"
 
+    async def _sse_keepalive(self, session, interval: float = 60.0):
+        """Ping an SSE MCP session periodically until cancelled or stale.
+
+        The generic lifecycle keepalive uses ``list_tools`` every few minutes
+        for all transports.  SSE transports also need a lightweight ping before
+        Cloudflare-Workers-style idle windows close the stream.  A failed ping
+        requests a reconnect; the transport task still owns teardown.
+        """
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await session.send_ping()
+                except Exception as exc:
+                    logger.warning(
+                        "MCP server '%s' SSE keepalive failed, "
+                        "triggering reconnect: %s",
+                        self.name, exc,
+                    )
+                    self._reconnect_event.set()
+                    break
+        except asyncio.CancelledError:
+            pass
+
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
         command = config.get("command")
@@ -1328,7 +1352,17 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
-                    reason = await self._wait_for_lifecycle_event()
+                    keepalive_task = asyncio.create_task(
+                        self._sse_keepalive(session)
+                    )
+                    try:
+                        reason = await self._wait_for_lifecycle_event()
+                    finally:
+                        keepalive_task.cancel()
+                        await asyncio.gather(
+                            keepalive_task,
+                            return_exceptions=True,
+                        )
                     if reason == "reconnect":
                         logger.info(
                             "MCP server '%s': reconnect requested — "

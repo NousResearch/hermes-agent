@@ -207,3 +207,48 @@ class TestSSEOAuthForwarding:
             f"sse_client was called with auth= when no OAuth was configured: "
             f"{patch_sse_client!r}"
         )
+
+
+class TestSSEKeepalive:
+    def test_sse_transport_starts_keepalive_task(self, patch_sse_client):
+        """SSE transport should scope keepalive to the SSE session lifetime."""
+        from tools.mcp_tool import MCPServerTask
+
+        server = _build_server_with_sse()
+        keepalive = AsyncMock(return_value=None)
+
+        async def drive():
+            with patch.object(MCPServerTask, "_wait_for_lifecycle_event",
+                              new=AsyncMock(return_value="shutdown")), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()), \
+                 patch.object(MCPServerTask, "_sse_keepalive", new=keepalive):
+                await server._run_http({
+                    "url": "https://example.com/mcp/sse",
+                    "transport": "sse",
+                    "timeout": 60,
+                })
+
+        asyncio.run(drive())
+
+        assert keepalive.call_count == 1
+
+    def test_sse_keepalive_sends_ping_until_ping_fails(self):
+        """SSE keepalive should use MCP ping, not tool-list RPCs.
+
+        ``_wait_for_lifecycle_event`` has a broad lifecycle keepalive, but SSE
+        idle disconnects need a transport-scoped lightweight ping loop. The
+        loop exits cleanly once ping fails so transport teardown/reconnect can
+        own lifecycle handling.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("sse-test")
+        session = MagicMock()
+        session.send_ping = AsyncMock(side_effect=[None, RuntimeError("closed")])
+        session.list_tools = AsyncMock()
+
+        asyncio.run(server._sse_keepalive(session, interval=0.01))
+
+        assert session.send_ping.await_count == 2
+        assert server._reconnect_event.is_set()
+        session.list_tools.assert_not_called()

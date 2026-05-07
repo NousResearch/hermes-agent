@@ -90,6 +90,90 @@ def check_discord_requirements() -> bool:
     return DISCORD_AVAILABLE
 
 
+def _wrap_markdown_tables(content: str) -> str:
+    """Wrap markdown table blocks in ``` fences for Discord.
+
+    Discord does not render native markdown tables — pipe-delimited rows
+    display as raw garbage.  Wrapping them in code fences makes them
+    legible while preserving alignment.
+    """
+    if not content or "|" not in content:
+        return content
+
+    lines = content.split("\n")
+    result: list[str] = []
+    in_fence = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Toggle fence state when we see triple-backtick lines
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            result.append(line)
+            i += 1
+            continue
+
+        # Skip processing inside existing code fences
+        if in_fence:
+            result.append(line)
+            i += 1
+            continue
+
+        # Detect potential table start: a line with | that has at least
+        # two pipe characters (header row) AND a following separator row.
+        if line.count("|") >= 2 and i + 1 < len(lines):
+            next_line = lines[i + 1]
+            # Separator row: mostly dashes, colons, and pipes
+            if _is_table_separator(next_line):
+                # Collect the full table block
+                table_lines = [line, next_line]
+                j = i + 2
+                while j < len(lines) and lines[j].count("|") >= 2:
+                    if lines[j].strip().startswith("```"):
+                        break
+                    table_lines.append(lines[j])
+                    j += 1
+
+                # Only wrap if we have at least header + separator + 1 body row
+                if len(table_lines) >= 3:
+                    result.append("```")
+                    result.extend(table_lines)
+                    result.append("```")
+                    i = j
+                    continue
+
+        result.append(line)
+        i += 1
+
+    return "\n".join(result)
+
+
+def _is_table_separator(line: str) -> bool:
+    """Check if a line is a markdown table separator row.
+
+    Matches patterns like ``| --- | --- |``, ``|:---|:---:|``, etc.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return False
+    # Remove leading/trailing pipes and check each cell
+    inner = stripped[1:-1]
+    cells = inner.split("|")
+    if len(cells) < 2:
+        return False
+    for cell in cells:
+        cell = cell.strip()
+        if not cell:
+            return False
+        # Allow optional leading/trailing colons, rest must be dashes
+        core = cell.strip(":")
+        if not core or not all(c == "-" for c in core):
+            return False
+    return True
+
+
 def _build_allowed_mentions():
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -2720,10 +2804,12 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Discord uses its own markdown variant but does NOT support
+        markdown tables — pipe-delimited tables render as garbage.
+        We detect table blocks and auto-wrap them in ``` fences so
+        they render legibly on Discord.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        return _wrap_markdown_tables(content)
 
     async def _run_simple_slash(
         self,

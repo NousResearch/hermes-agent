@@ -9,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesAutomationStore
+import com.nousresearch.hermesagent.device.HermesAutomationWidgetBridge
 import com.nousresearch.hermesagent.device.HermesExternalTriggerReceiver
 import com.nousresearch.hermesagent.device.HermesLauncherShortcutBridge
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
@@ -423,6 +424,76 @@ class HermesAutomationInstrumentedTest {
         assertEquals("tile-ok", target.readText())
 
         val cleared = JSONObject(HermesAutomationBridge.performActionJson(app, "clear_quick_settings_tile_automation"))
+        assertTrue(cleared.toString(), cleared.getBoolean("success"))
+        assertFalse(cleared.getBoolean("configured"))
+    }
+
+    @Test
+    fun homeScreenWidgetRunsConfiguredSavedAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-home-screen-widget.txt").apply { delete() }
+        val appWidgetId = 1001
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Widget smoke")
+                    .put("path", "hermes-home-screen-widget.txt")
+                    .put("content", "widget-ok")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automationId = created.getJSONObject("automation").getString("id")
+
+        val configured = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_home_screen_widget_automation",
+                JSONObject()
+                    .put("automation_id", automationId)
+                    .put("app_widget_id", appWidgetId)
+                    .put("label", "Widget smoke"),
+            ),
+        )
+        assertTrue(configured.toString(), configured.getBoolean("success"))
+        assertTrue(configured.getBoolean("configured"))
+        assertEquals(automationId, configured.getString("automation_id"))
+        assertEquals(appWidgetId, configured.getInt("app_widget_id"))
+
+        val status = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "get_home_screen_widget_automation",
+                JSONObject().put("app_widget_id", appWidgetId),
+            ),
+        )
+        assertTrue(status.toString(), status.getBoolean("success"))
+        assertTrue(status.getBoolean("configured"))
+        assertTrue(status.getBoolean("automation_exists"))
+        assertFalse(status.getBoolean("uses_default_config"))
+        assertEquals(automationId, status.getString("automation_id"))
+
+        val listed = JSONObject(HermesAutomationBridge.performActionJson(app, "list_home_screen_widgets"))
+        assertTrue(listed.toString(), listed.getBoolean("success"))
+        assertTrue(listed.getJSONArray("stored_widget_configs").toString().contains(automationId))
+
+        val run = JSONObject(HermesAutomationWidgetBridge.runConfiguredAutomationJson(app, appWidgetId))
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals("home_screen_widget", run.getString("trigger"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("widget-ok", target.readText())
+
+        val cleared = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "clear_home_screen_widget_automation",
+                JSONObject().put("app_widget_id", appWidgetId),
+            ),
+        )
         assertTrue(cleared.toString(), cleared.getBoolean("success"))
         assertFalse(cleared.getBoolean("configured"))
     }

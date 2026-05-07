@@ -42,6 +42,11 @@ object HermesAutomationBridge {
             "get_quick_settings_tile_automation", "get_qs_tile_automation", "quick_settings_tile_status", "qs_tile_status" -> HermesQuickSettingsTileBridge.getTileAutomationJson(context)
             "clear_quick_settings_tile_automation", "clear_qs_tile_automation" -> HermesQuickSettingsTileBridge.clearTileAutomationJson(context)
             "run_quick_settings_tile", "run_qs_tile" -> HermesQuickSettingsTileBridge.runConfiguredAutomationJson(context)
+            "set_home_screen_widget_automation", "set_widget_automation", "configure_home_screen_widget", "configure_widget", "create_home_screen_widget", "create_automation_widget" -> HermesAutomationWidgetBridge.setWidgetAutomationJson(context, arguments)
+            "get_home_screen_widget_automation", "get_widget_automation", "home_screen_widget_status", "widget_status" -> HermesAutomationWidgetBridge.getWidgetAutomationJson(context, arguments)
+            "list_home_screen_widgets", "list_automation_widgets", "list_widgets" -> HermesAutomationWidgetBridge.listWidgetsJson(context)
+            "clear_home_screen_widget_automation", "clear_widget_automation" -> HermesAutomationWidgetBridge.clearWidgetAutomationJson(context, arguments)
+            "run_home_screen_widget", "run_widget" -> HermesAutomationWidgetBridge.runConfiguredAutomationJson(context, arguments)
             "calculate_sunrise_sunset", "sunrise_sunset", "sun_times", "solar_times" -> calculateSunriseSunsetJson(context, arguments)
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
@@ -3246,6 +3251,11 @@ object HermesAutomationBridge {
         "get_quick_settings_tile_automation",
         "clear_quick_settings_tile_automation",
         "run_quick_settings_tile",
+        "set_home_screen_widget_automation",
+        "get_home_screen_widget_automation",
+        "list_home_screen_widgets",
+        "clear_home_screen_widget_automation",
+        "run_home_screen_widget",
         "calculate_sunrise_sunset",
         "export_automations",
         "import_automations",

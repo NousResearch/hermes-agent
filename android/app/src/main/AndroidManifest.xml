@@ -103,6 +103,20 @@
         </service>
 
         <receiver
+            android:name=".device.HermesAutomationWidgetProvider"
+            android:enabled="true"
+            android:exported="false"
+            android:label="@string/hermes_automation_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/hermes_automation_widget_info" />
+        </receiver>
+
+        <receiver
             android:name=".device.HermesAutomationReceiver"
             android:enabled="true"
             android:exported="false">

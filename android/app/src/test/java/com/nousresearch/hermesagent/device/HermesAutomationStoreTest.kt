@@ -536,6 +536,77 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeExposesShizukuGatedLogcatWatcherActions() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val parsed = HermesLogcatWatcherBridge.parseThreadtimeLogcatLinesJson(
+            """
+                05-07 12:34:56.789 10123  4242  777 E ActivityManager: ANR in com.example.app
+                not a logcat threadtime line
+                05-07 12:34:57.000  1000  1000 I Hermes: watcher ok
+            """.trimIndent(),
+        )
+        assertEquals(2, parsed.length())
+        assertEquals("05-07 12:34:56.789", parsed.getJSONObject(0).getString("logcat_timestamp"))
+        assertEquals("10123", parsed.getJSONObject(0).getString("logcat_uid"))
+        assertEquals("4242", parsed.getJSONObject(0).getString("logcat_pid"))
+        assertEquals("E", parsed.getJSONObject(0).getString("logcat_level"))
+        assertEquals("ActivityManager", parsed.getJSONObject(0).getString("logcat_tag"))
+        assertEquals("ANR in com.example.app", parsed.getJSONObject(0).getString("logcat_message"))
+
+        val packagesByUid = HermesLogcatWatcherBridge.parseUidPackageLines(
+            """
+                package:com.example.first uid:10123
+                package:com.example.second uid:10123
+                ignored
+                package:android uid:1000
+            """.trimIndent(),
+        )
+        assertEquals(listOf("com.example.first", "com.example.second"), packagesByUid["10123"])
+        assertEquals(listOf("android"), packagesByUid["1000"])
+
+        val list = org.json.JSONObject(HermesAutomationBridge.performActionJson(context, "list"))
+        assertTrue(list.getJSONArray("available_actions").toString().contains("start_logcat_watcher"))
+        assertTrue(list.getJSONArray("available_actions").toString().contains("scan_logcat_entries"))
+
+        val status = org.json.JSONObject(HermesAutomationBridge.performActionJson(context, "logcat_watcher_status"))
+        assertTrue(status.toString(), status.getBoolean("success"))
+        assertFalse(status.getBoolean("running"))
+        assertTrue(status.getBoolean("requires_shizuku"))
+        assertTrue(status.getBoolean("durable_foreground_service"))
+        assertFalse(status.getBoolean("foreground_service_running"))
+        assertFalse(status.getBoolean("watcher_desired"))
+        assertEquals(0, status.getInt("enabled_logcat_record_count"))
+
+        val scan = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "scan_logcat_entries",
+                org.json.JSONObject().put("max_lines", 25),
+            ),
+        )
+        assertFalse(scan.toString(), scan.getBoolean("success"))
+        assertTrue(scan.getString("error").contains("Shizuku"))
+
+        val start = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "start_logcat_watcher",
+                org.json.JSONObject()
+                    .put("scan_interval_seconds", 1)
+                    .put("max_lines", 5),
+            ),
+        )
+        assertFalse(start.toString(), start.getBoolean("success"))
+        assertTrue(start.getString("error").contains("Shizuku"))
+        assertFalse(
+            org.json.JSONObject(HermesAutomationBridge.performActionJson(context, "logcat_watcher_status"))
+                .getBoolean("watcher_desired"),
+        )
+    }
+
+    @Test
     fun bridgeCreatesAndRunsExternalTriggerRecordsWithTokenGate() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

@@ -39,6 +39,7 @@ object HermesAutomationBridge {
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
             "import_tasker_xml", "import_tasker_data_uri", "import_tasker_project", "import_tasker_task" -> importTaskerXmlJson(context, arguments)
+            "logcat_watcher_status", "start_logcat_watcher", "stop_logcat_watcher", "scan_logcat_entries" -> HermesLogcatWatcherBridge.performActionJson(context, action, arguments)
             "run", "run_now", "trigger" -> runAutomationJson(context, arguments.optString("id"), "manual")
             "run_trigger", "trigger_event", "run_event" -> runTriggerJson(
                 context,
@@ -3112,6 +3113,10 @@ object HermesAutomationBridge {
         "export_automations",
         "import_automations",
         "import_tasker_xml",
+        "logcat_watcher_status",
+        "start_logcat_watcher",
+        "stop_logcat_watcher",
+        "scan_logcat_entries",
         "run",
         "run_trigger",
         "run_app_foreground_trigger",

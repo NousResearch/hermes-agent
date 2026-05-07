@@ -63,6 +63,11 @@
             android:foregroundServiceType="dataSync" />
 
         <service
+            android:name=".device.HermesLogcatWatcherService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
             android:name=".device.HermesAccessibilityService"
             android:exported="false"
             android:label="@string/hermes_accessibility_service_label"

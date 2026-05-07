@@ -1049,6 +1049,48 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun logcatWatcherRequiresShizukuOrStopsCleanly() {
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Logcat watcher smoke")
+                    .put("path", "hermes-logcat-watcher.txt")
+                    .put("content", "%LOGCAT_TAG:%LOGCAT_MESSAGE")
+                    .put("trigger", "logcat_entry")
+                    .put("logcat_tag", "Hermes")
+                    .put("logcat_message_contains", "watcher")
+                    .put("enabled", true),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+
+        val status = JSONObject(HermesAutomationBridge.performActionJson(app, "logcat_watcher_status"))
+        assertTrue(status.toString(), status.getBoolean("success"))
+        assertTrue(status.getBoolean("requires_shizuku"))
+
+        val started = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "start_logcat_watcher",
+                JSONObject()
+                    .put("scan_interval_seconds", 5)
+                    .put("max_lines", 25),
+            ),
+        )
+        if (started.optBoolean("success", false)) {
+            assertTrue(started.toString(), started.getBoolean("running"))
+            val stopped = JSONObject(HermesAutomationBridge.performActionJson(app, "stop_logcat_watcher"))
+            assertTrue(stopped.toString(), stopped.getBoolean("success"))
+            assertTrue(stopped.toString(), stopped.getBoolean("stopped"))
+        } else {
+            assertTrue(started.toString(), started.getString("error").contains("Shizuku"))
+            assertFalse(started.optBoolean("running", false))
+        }
+    }
+
+    @Test
     fun timeTriggerRunsMatchingAutomation() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

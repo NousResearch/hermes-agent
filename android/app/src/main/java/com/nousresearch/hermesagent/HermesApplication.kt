@@ -4,6 +4,7 @@ import android.app.Application
 import com.nousresearch.hermesagent.backend.HermesRuntimeService
 import com.nousresearch.hermesagent.data.DeviceCapabilityStore
 import com.nousresearch.hermesagent.device.DeviceStateWriter
+import com.nousresearch.hermesagent.device.HermesLogcatWatcherService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -22,6 +23,7 @@ class HermesApplication : Application() {
                 delay(BACKGROUND_RUNTIME_STARTUP_DELAY_MS)
                 HermesRuntimeService.start(this@HermesApplication)
             }
+            HermesLogcatWatcherService.startIfDesired(this@HermesApplication)
         }
     }
 

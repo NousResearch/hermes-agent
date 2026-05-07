@@ -1756,18 +1756,18 @@
       : "workspace path (optional, derived from assignee if blank)";
 
     return h("div", { className: "hermes-kanban-inline-create" },
-      h(Input, {
+      h("textarea", {
         value: title,
         onChange: function (e) { setTitle(e.target.value); },
         onKeyDown: function (e) {
-          if (e.key === "Enter") { e.preventDefault(); submit(); }
           if (e.key === "Escape") props.onCancel();
         },
         placeholder: props.columnName === "triage"
           ? "Rough idea — AI will spec it…"
           : "New task title…",
         autoFocus: true,
-        className: "h-8 text-sm",
+        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+        rows: 2,
       }),
       h("div", { className: "flex gap-2" },
         h(Input, {

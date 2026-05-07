@@ -193,6 +193,52 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
 
+def test_gmail_send_requires_some_recipient(api_module):
+    args = api_module.argparse.Namespace(
+        to="",
+        cc="",
+        bcc="",
+        subject="Test",
+        body="Hello",
+        html=False,
+        thread_id="",
+        from_header="",
+    )
+
+    with pytest.raises(SystemExit, match="at least one recipient"):
+        api_module.gmail_send(args)
+
+
+def test_gmail_send_allows_bcc_only(api_module):
+    captured = {}
+
+    def fake_run_gws(path, *, params=None, body=None):
+        captured["path"] = path
+        captured["params"] = params
+        captured["body"] = body
+        return {"id": "msg123", "threadId": "thread123"}
+
+    args = api_module.argparse.Namespace(
+        to="",
+        cc="",
+        bcc="hidden@example.com",
+        subject="Test",
+        body="Hello",
+        html=False,
+        thread_id="",
+        from_header="",
+    )
+
+    with patch.object(api_module, "_run_gws", side_effect=fake_run_gws):
+        api_module.gmail_send(args)
+
+    raw = captured["body"]["raw"]
+    decoded = api_module.base64.urlsafe_b64decode(raw.encode()).decode()
+    assert "Bcc: hidden@example.com" in decoded
+    assert "Subject: Test" in decoded
+    assert captured["path"] == ["gmail", "users", "messages", "send"]
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")

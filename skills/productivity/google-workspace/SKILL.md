@@ -186,6 +186,11 @@ $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
 
+Important: current `gmail reply` behavior replies to the original sender only. It is not reply-all.
+If you need to notify multiple original participants, do not assume `gmail reply`
+will preserve the full recipient set. Use `gmail send --to ... --cc ... [--bcc ...]`
+explicitly or extend the script for reply-all behavior.
+
 # Labels
 $GAPI gmail labels
 $GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID

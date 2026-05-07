@@ -375,15 +375,34 @@ def gmail_get(args):
 
 
 
+def _split_recipients(value: str) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+
+def _require_any_recipient(*fields: str) -> None:
+    recipients = []
+    for field in fields:
+        recipients.extend(_split_recipients(field))
+    if not recipients:
+        raise SystemExit("ERROR: at least one recipient is required across --to, --cc, or --bcc")
+
+
+
 def gmail_send(args):
+    _require_any_recipient(args.to, args.cc, args.bcc)
+
     if _gws_binary():
         message = MIMEText(args.body, "html" if args.html else "plain")
-        message["to"] = args.to
-        message["subject"] = args.subject
+        if args.to:
+            message["To"] = args.to
+        message["Subject"] = args.subject
         if args.cc:
-            message["cc"] = args.cc
+            message["Cc"] = args.cc
+        if args.bcc:
+            message["Bcc"] = args.bcc
         if args.from_header:
-            message["from"] = args.from_header
+            message["From"] = args.from_header
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         body = {"raw": raw}
@@ -400,12 +419,15 @@ def gmail_send(args):
 
     service = build_service("gmail", "v1")
     message = MIMEText(args.body, "html" if args.html else "plain")
-    message["to"] = args.to
-    message["subject"] = args.subject
+    if args.to:
+        message["To"] = args.to
+    message["Subject"] = args.subject
     if args.cc:
-        message["cc"] = args.cc
+        message["Cc"] = args.cc
+    if args.bcc:
+        message["Bcc"] = args.bcc
     if args.from_header:
-        message["from"] = args.from_header
+        message["From"] = args.from_header
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {"raw": raw}
@@ -436,11 +458,14 @@ def gmail_reply(args):
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
+        recipient = headers.get("From", "")
+        _require_any_recipient(recipient)
+
         message = MIMEText(args.body)
-        message["to"] = headers.get("From", "")
-        message["subject"] = subject
+        message["To"] = recipient
+        message["Subject"] = subject
         if args.from_header:
-            message["from"] = args.from_header
+            message["From"] = args.from_header
         if headers.get("Message-ID"):
             message["In-Reply-To"] = headers["Message-ID"]
             message["References"] = headers["Message-ID"]
@@ -465,11 +490,14 @@ def gmail_reply(args):
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
+    recipient = headers.get("From", "")
+    _require_any_recipient(recipient)
+
     message = MIMEText(args.body)
-    message["to"] = headers.get("From", "")
-    message["subject"] = subject
+    message["To"] = recipient
+    message["Subject"] = subject
     if args.from_header:
-        message["from"] = args.from_header
+        message["From"] = args.from_header
     if headers.get("Message-ID"):
         message["In-Reply-To"] = headers["Message-ID"]
         message["References"] = headers["Message-ID"]
@@ -828,11 +856,13 @@ def main():
     p.set_defaults(func=gmail_get)
 
     p = gmail_sub.add_parser("send")
-    p.add_argument("--to", required=True)
+    p.add_argument("--to", default="")
     p.add_argument("--subject", required=True)
     p.add_argument("--body", required=True)
     p.add_argument("--cc", default="")
+    p.add_argument("--bcc", default="")
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    p.add_argument("--from-header", dest="from_header", help=argparse.SUPPRESS)
     p.add_argument("--html", action="store_true", help="Send body as HTML")
     p.add_argument("--thread-id", default="", help="Thread ID for threading")
     p.set_defaults(func=gmail_send)

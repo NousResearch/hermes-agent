@@ -1561,9 +1561,13 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
 
-        # Key by (base_url, api_key) instead of slug: names frequently
-        # differ per model ("Ollama — X") while the endpoint stays the
-        # same. Slug-based grouping left them as separate rows.
+        # Key by (base_url, api_key, cleaned_name) so that entries sharing
+        # the same endpoint AND the same base provider name collapse into
+        # one picker row (e.g. "Ollama — GLM 5.1" + "Ollama — Qwen3"
+        # become a single "Ollama" row), while entries with distinct names
+        # remain separate even when they share a proxy endpoint (e.g.
+        # "guava-litellm", "copilot-litellm", "elderberry-mtp" all routing
+        # through the same LiteLLM proxy stay as separate picker rows).
         groups: "OrderedDict[tuple, dict]" = OrderedDict()
         for entry in custom_providers:
             if not isinstance(entry, dict):
@@ -1580,7 +1584,16 @@ def list_authenticated_providers(
                 continue
             api_key = (entry.get("api_key") or "").strip()
 
-            group_key = (api_url, api_key)
+            # Clean the name for grouping (strip per-model em-dash suffix)
+            # BEFORE using it as the group key, so "Ollama — X" entries
+            # still collapse together.
+            _cleaned_name = raw_name
+            for _sep in ("—", " - "):
+                if _sep in _cleaned_name:
+                    _cleaned_name = _cleaned_name.split(_sep)[0].strip()
+                    break
+
+            group_key = (api_url, api_key, _cleaned_name)
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
                 # "Ollama" for the grouped row. Em dash is the convention
@@ -1638,7 +1651,7 @@ def list_authenticated_providers(
 
         _section4_emitted_slugs: set = set()
         for grp_key, grp in groups.items():
-            api_url, api_key = grp_key
+            api_url, api_key, _grp_name = grp_key
             slug = grp["slug"]
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group

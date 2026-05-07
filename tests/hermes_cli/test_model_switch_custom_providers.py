@@ -567,3 +567,64 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_list_same_endpoint_distinct_names_stay_separate(monkeypatch):
+    """Entries sharing a base_url+api_key but with distinct provider names
+    must produce separate picker rows.
+
+    Real-world case: a LiteLLM proxy routes bedrock, copilot, and local
+    models through a single endpoint. Each provider group should remain
+    individually selectable in the picker, not collapsed into one giant row.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:guava-litellm",
+        current_base_url="http://192.168.68.79:8182/v1",
+        user_providers={},
+        custom_providers=[
+            {"name": "guava-litellm", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "bedrock/claude-haiku-4.5"},
+            {"name": "guava-litellm", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "bedrock/claude-sonnet-4.6"},
+            {"name": "guava-litellm", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "bedrock/claude-opus-4.6"},
+            {"name": "copilot-litellm", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "copilot/gpt-5.2"},
+            {"name": "copilot-litellm", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "copilot/gpt-4.1"},
+            {"name": "elderberry-mtp", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "mtp/default"},
+            {"name": "elderberry-ollama", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "ollama/qwen3.5:9b"},
+            {"name": "elderberry-ollama", "base_url": "http://192.168.68.79:8182/v1",
+             "api_key": "sk-proxy", "model": "ollama/qwen3.6:35b"},
+        ],
+        max_models=50,
+    )
+
+    custom_groups = [p for p in providers if p.get("is_user_defined")]
+    assert len(custom_groups) == 4, (
+        f"Expected 4 provider groups, got {len(custom_groups)}: "
+        f"{[p['name'] for p in custom_groups]}"
+    )
+
+    guava = next(p for p in custom_groups if p["name"] == "guava-litellm")
+    assert set(guava["models"]) == {
+        "bedrock/claude-haiku-4.5", "bedrock/claude-sonnet-4.6", "bedrock/claude-opus-4.6"
+    }
+    assert guava["total_models"] == 3
+
+    copilot = next(p for p in custom_groups if p["name"] == "copilot-litellm")
+    assert set(copilot["models"]) == {"copilot/gpt-5.2", "copilot/gpt-4.1"}
+    assert copilot["total_models"] == 2
+
+    mtp = next(p for p in custom_groups if p["name"] == "elderberry-mtp")
+    assert mtp["models"] == ["mtp/default"]
+    assert mtp["total_models"] == 1
+
+    ollama = next(p for p in custom_groups if p["name"] == "elderberry-ollama")
+    assert set(ollama["models"]) == {"ollama/qwen3.5:9b", "ollama/qwen3.6:35b"}
+    assert ollama["total_models"] == 2

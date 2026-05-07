@@ -19,7 +19,10 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -32,6 +35,30 @@ from agent.image_gen_provider import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MAX_REFERENCE_IMAGES = 8
+_MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_DATA_IMAGE_URL_LENGTH = 30 * 1024 * 1024
+_IMAGE_MIME_BY_KIND = {
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+_SUPPORTED_DATA_IMAGE_MIMES = set(_IMAGE_MIME_BY_KIND.values())
+
+
+def _detect_image_mime(raw: bytes) -> Optional[str]:
+    """Return a supported image MIME type from file magic, or None."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +188,68 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _coerce_reference_image_url(ref: str) -> Optional[str]:
+    """Return a Responses-compatible image_url from URL/data URL/local path."""
+    value = (ref or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    if value.startswith("data:image/"):
+        if len(value) > _MAX_DATA_IMAGE_URL_LENGTH:
+            raise ValueError("Reference image data URL is too large")
+        header, sep, _ = value.partition(",")
+        if not sep or ";base64" not in header:
+            raise ValueError("Reference image data URL must be base64-encoded")
+        mime = header.removeprefix("data:").split(";", 1)[0]
+        if mime not in _SUPPORTED_DATA_IMAGE_MIMES:
+            raise ValueError(f"Unsupported reference image MIME type: {mime}")
+        return value
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError("Local reference images must use absolute paths")
+    try:
+        if not path.is_file():
+            logger.warning("Skipping missing reference image: %s", path.name)
+            return None
+        if path.stat().st_size > _MAX_REFERENCE_IMAGE_BYTES:
+            raise ValueError("Local reference image is too large")
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"Could not read local reference image: {path.name}") from exc
+
+    mime = _detect_image_mime(raw)
+    if not mime:
+        guessed_mime, _ = mimetypes.guess_type(str(path))
+        raise ValueError(
+            f"Unsupported or invalid reference image: {guessed_mime or path.suffix or 'unknown'}"
+        )
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _build_input_content(prompt: str, reference_images: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    """Build multimodal Responses input content for prompt + optional refs."""
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    refs = reference_images or []
+    if len(refs) > _MAX_REFERENCE_IMAGES:
+        raise ValueError(f"At most {_MAX_REFERENCE_IMAGES} reference images are supported")
+    for ref in refs:
+        image_url = _coerce_reference_image_url(str(ref))
+        if image_url:
+            content.append({"type": "input_image", "image_url": image_url})
+    return content
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[List[str]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
 
@@ -172,7 +260,7 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": _build_input_content(prompt, reference_images),
         }],
         tools=[{
             "type": "image_generation",
@@ -306,6 +394,13 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        raw_refs = kwargs.get("reference_images") or []
+        if isinstance(raw_refs, str):
+            reference_images = [raw_refs]
+        elif isinstance(raw_refs, list):
+            reference_images = [str(ref) for ref in raw_refs if ref]
+        else:
+            reference_images = []
 
         client = _build_codex_client()
         if client is None:
@@ -324,6 +419,16 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=reference_images,
+            )
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -364,7 +469,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "reference_images": len(reference_images),
+            },
         )
 
 

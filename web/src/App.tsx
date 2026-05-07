@@ -38,17 +38,16 @@ import {
   Sparkles,
   Star,
   Terminal,
+  Users,
   Wrench,
   X,
   Zap,
 } from "lucide-react";
-import {
-  Button,
-  ListItem,
-  SelectionSwitcher,
-  Spinner,
-  Typography,
-} from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
@@ -64,17 +63,28 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
+import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
+import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 function RootRedirect() {
+  return <Navigate to="/sessions" replace />;
+}
+
+function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
+  if (pluginsLoading) {
+    // Render nothing during the plugin-load window — a spinner here would just flash.
+    return null;
+  }
   return <Navigate to="/sessions" replace />;
 }
 
@@ -102,6 +112,8 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
+  "/plugins": PluginsPage,
+  "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -137,6 +149,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
+  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {
@@ -163,6 +177,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Globe,
   Database,
   Shield,
+  Users,
   Wrench,
   Zap,
   Heart,
@@ -210,6 +225,22 @@ function buildNavItems(
   return items;
 }
 
+/** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
+function partitionSidebarNav(
+  builtIn: NavItem[],
+  manifests: PluginManifest[],
+): { coreItems: NavItem[]; pluginItems: NavItem[] } {
+  const merged = buildNavItems(builtIn, manifests);
+  const builtinPaths = new Set(builtIn.map((i) => i.path));
+  const coreItems: NavItem[] = [];
+  const pluginItems: NavItem[] = [];
+  for (const item of merged) {
+    if (builtinPaths.has(item.path)) coreItems.push(item);
+    else pluginItems.push(item);
+  }
+  return { coreItems, pluginItems };
+}
+
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
@@ -250,6 +281,7 @@ function buildRoutes(
 
   for (const m of addons) {
     if (m.tab.hidden) continue;
+    if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path]) continue;
     routes.push({
       key: `plugin:${m.name}`,
@@ -260,6 +292,7 @@ function buildRoutes(
 
   for (const m of manifests) {
     if (!m.tab.hidden) continue;
+    if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path] || m.tab.override) continue;
     routes.push({
       key: `plugin:hidden:${m.name}`,
@@ -319,8 +352,8 @@ export default function App() {
     [embeddedChat],
   );
 
-  const navItems = useMemo(
-    () => buildNavItems(builtinNav, manifests),
+  const sidebarNav = useMemo(
+    () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
   const routes = useMemo(
@@ -473,56 +506,44 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {navItems.map(({ path, label, labelKey, icon: Icon }) => {
-                  const navLabel = labelKey
-                    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-                    : label;
-                  return (
-                    <li key={path}>
-                      <NavLink
-                        to={path}
-                        end={path === "/sessions"}
-                        onClick={closeMobile}
-                        className={({ isActive }) =>
-                          cn(
-                            "group relative flex items-center gap-3",
-                            "px-5 py-2.5",
-                            "font-mondwest text-[0.8rem] tracking-[0.12em]",
-                            "whitespace-nowrap transition-colors cursor-pointer",
-                            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                            isActive
-                              ? "text-midground"
-                              : "opacity-60 hover:opacity-100",
-                          )
-                        }
-                        style={{
-                          clipPath: "var(--component-tab-clip-path)",
-                        }}
-                      >
-                        {({ isActive }) => (
-                          <>
-                            <Icon className="h-3.5 w-3.5 shrink-0" />
-                            <span className="truncate">{navLabel}</span>
-
-                            <span
-                              aria-hidden
-                              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                            />
-
-                            {isActive && (
-                              <span
-                                aria-hidden
-                                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                                style={{ mixBlendMode: "plus-lighter" }}
-                              />
-                            )}
-                          </>
-                        )}
-                      </NavLink>
-                    </li>
-                  );
-                })}
+                {sidebarNav.coreItems.map((item) => (
+                  <SidebarNavLink
+                    closeMobile={closeMobile}
+                    item={item}
+                    key={item.path}
+                    t={t}
+                  />
+                ))}
               </ul>
+
+              {sidebarNav.pluginItems.length > 0 && (
+                <div
+                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
+                  className="flex flex-col border-t border-current/10 pb-2"
+                  role="group"
+                >
+                  <span
+                    className={cn(
+                      "px-5 pt-2.5 pb-1",
+                      "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+                    )}
+                    id="hermes-sidebar-plugin-nav-heading"
+                  >
+                    {t.app.pluginNavSection}
+                  </span>
+
+                  <ul className="flex flex-col">
+                    {sidebarNav.pluginItems.map((item) => (
+                      <SidebarNavLink
+                        closeMobile={closeMobile}
+                        item={item}
+                        key={item.path}
+                        t={t}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
             </nav>
 
             <SidebarSystemActions onNavigate={closeMobile} />
@@ -569,7 +590,9 @@ export default function App() {
                   ))}
                   <Route
                     path="*"
-                    element={<Navigate to="/sessions" replace />}
+                    element={
+                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                    }
                   />
                 </Routes>
 
@@ -609,6 +632,57 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+  );
+}
+
+function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+  const { path, label, labelKey, icon: Icon } = item;
+
+  const navLabel = labelKey
+    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
+    : label;
+
+  return (
+    <li>
+      <NavLink
+        to={path}
+        end={path === "/sessions"}
+        onClick={closeMobile}
+        className={({ isActive }) =>
+          cn(
+            "group relative flex items-center gap-3",
+            "px-5 py-2.5",
+            "font-mondwest text-[0.8rem] tracking-[0.12em]",
+            "whitespace-nowrap transition-colors cursor-pointer",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+            isActive ? "text-midground" : "opacity-60 hover:opacity-100",
+          )
+        }
+        style={{
+          clipPath: "var(--component-tab-clip-path)",
+        }}
+      >
+        {({ isActive }) => (
+          <>
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{navLabel}</span>
+
+            <span
+              aria-hidden
+              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+            />
+
+            {isActive && (
+              <span
+                aria-hidden
+                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+                style={{ mixBlendMode: "plus-lighter" }}
+              />
+            )}
+          </>
+        )}
+      </NavLink>
+    </li>
   );
 }
 
@@ -728,6 +802,12 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+}
+
+interface SidebarNavLinkProps {
+  closeMobile: () => void;
+  item: NavItem;
+  t: Translations;
 }
 
 interface SystemActionItem {

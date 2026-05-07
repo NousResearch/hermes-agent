@@ -35,6 +35,7 @@ class TestSessionLifecycle:
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
 
+
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
@@ -212,6 +213,82 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["tool_calls"] == tool_calls
 
+    def test_multimodal_list_content_round_trip(self, db):
+        """Multimodal ``content`` (list of parts) must survive the SQLite
+        round-trip.  sqlite3 cannot bind Python lists directly, so the DB
+        layer JSON-encodes structured content on write and decodes on read.
+
+        Regression test for the "Error binding parameter 3: type 'list' is
+        not supported" crash users hit when pasting screenshots into the
+        TUI (issue #17522).
+        """
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "describe this screenshot"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,iVBORw0KG..."},
+            },
+        ]
+
+        # Write must not raise
+        db.append_message("s1", role="user", content=content)
+
+        # get_messages decodes back to the original list
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == content
+
+        # get_messages_as_conversation decodes back to the original list
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0] == {"role": "user", "content": content}
+
+    def test_dict_content_round_trip(self, db):
+        """Dict-shaped content (e.g. provider wrappers) also round-trips."""
+        db.create_session(session_id="s1", source="cli")
+        content = {"parts": [{"text": "hi"}]}
+
+        db.append_message("s1", role="user", content=content)
+        msgs = db.get_messages("s1")
+        assert msgs[0]["content"] == content
+
+    def test_string_content_unchanged_by_encoding(self, db):
+        """Plain strings must not be wrapped — FTS search and legacy
+        consumers depend on raw-string storage for text content.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="plain text")
+
+        # Peek at the raw column to confirm no encoding was applied
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?", ("s1",)
+            ).fetchone()
+        assert row["content"] == "plain text"
+
+    def test_replace_messages_handles_multimodal_content(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must also
+        handle list content without crashing."""
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": "I see a screenshot."},
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        assert msgs[0]["content"] == content
+        assert msgs[1]["content"] == "I see a screenshot."
+
     def test_get_messages_as_conversation(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -322,6 +399,27 @@ class TestMessageStorage:
         msg = conv[0]
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
+
+    def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
+        """finish_reason on assistant messages must survive conversation replay.
+
+        Without this, /branch copies and other transcript round-trips silently
+        drop the provider's stop signal.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Done",
+            finish_reason="tool_calls",
+        )
+        db.append_message("s1", role="user", content="next")
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["role"] == "assistant"
+        assert conv[0]["finish_reason"] == "tool_calls"
+        # Non-assistant rows should not have a finish_reason key added.
+        assert "finish_reason" not in conv[1]
 
     def test_reasoning_content_persisted_and_restored(self, db):
         """reasoning_content must survive session replay as its own field."""
@@ -1324,6 +1422,242 @@ class TestSchemaInit:
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
 
+    def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
+        """Opening an old DB should not add topic-mode columns until /topic opts in.
+
+        The gateway must remain rollback-safe: simply upgrading Hermes and starting
+        the old bot should not eagerly mutate the state DB for this feature.
+        """
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        db.close()
+
+    def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
+        """The /topic opt-in path owns the DB migration for Telegram topic mode."""
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        db.apply_telegram_topic_migration()
+
+        tables = {
+            row[0]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "telegram_dm_topic_mode" in tables
+        assert "telegram_dm_topic_bindings" in tables
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        db.close()
+
+    def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+
+        assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="telegram:dm:208214988:thread:17585",
+            session_id="topic-session",
+        )
+
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding is not None
+        assert binding["chat_id"] == "208214988"
+        assert binding["thread_id"] == "17585"
+        assert binding["user_id"] == "208214988"
+        assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
+        assert binding["session_id"] == "topic-session"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        db.close()
+
+    def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="topic-session",
+        )
+
+        with pytest.raises(ValueError, match="already linked"):
+            db.bind_telegram_topic(
+                chat_id="208214988",
+                thread_id="99999",
+                user_id="208214988",
+                session_key="key-99999",
+                session_id="topic-session",
+            )
+        db.close()
+
+    def test_list_unlinked_telegram_sessions_for_user_excludes_bound_and_other_users(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="old-unlinked",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.set_session_title("old-unlinked", "Old research")
+        db.append_message("old-unlinked", "user", "first prompt")
+        db.create_session(
+            session_id="already-linked",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="already-linked",
+        )
+        db.create_session(
+            session_id="other-user",
+            source="telegram",
+            user_id="someone-else",
+        )
+
+        sessions = db.list_unlinked_telegram_sessions_for_user(
+            chat_id="208214988",
+            user_id="208214988",
+        )
+
+        assert [s["id"] for s in sessions] == ["old-unlinked"]
+        assert sessions[0]["title"] == "Old research"
+        assert sessions[0]["preview"] == "first prompt"
+        db.close()
+
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
         import sqlite3
@@ -1718,6 +2052,97 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         # No messages, so last_active falls back to started_at
         assert sessions[0]["last_active"] == sessions[0]["started_at"]
+
+    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
+        t0 = 1709500000.0
+        db.create_session("old", "cli")
+        db.create_session("new", "cli")
+
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "old"))
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "new"))
+
+        db.append_message("old", "user", "old first")
+        db.append_message("new", "user", "new first")
+        db.append_message("old", "assistant", "old touched later")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 1, "old", "user", "old first"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 11, "new", "user", "new first"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 20, "old", "assistant", "old touched later"),
+            )
+            db._conn.commit()
+
+        assert [s["id"] for s in db.list_sessions_rich(limit=5)] == ["new", "old"]
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=5, order_by_last_active=True)
+        ] == ["old", "new"]
+
+    def test_order_by_last_active_uses_compression_tip_activity(self, db):
+        """A compression root whose tip was touched recently must rank above
+        a newer uncompressed session, even when that tip activity lives in a
+        different row and the outer LIMIT could otherwise cut it.
+
+        This is the case that forced SQL-level chain walking: a naive "cap
+        the SQL fetch at limit*K" optimization would drop the old root off
+        the SQL page before post-projection could promote it.
+        """
+        t0 = 1709500000.0
+        db.create_session("root1", "cli")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+            db._conn.execute(
+                "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+                (t0 + 100, "compression", "root1"),
+            )
+        db.append_message("root1", "user", "old ask")
+
+        # Continuation tip created after root ended; last activity much later.
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip1"))
+        db.append_message("tip1", "user", "latest message")
+
+        # Bunch of newer, uncompressed sessions — fresher start_at but older
+        # last activity than the tip. Explicitly pin message timestamps so
+        # they don't pick up wall-clock from append_message.
+        for i in range(5):
+            sid = f"newer{i}"
+            db.create_session(sid, "cli")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (t0 + 500 + i, sid),
+                )
+            db.append_message(sid, "user", f"msg {i}")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE messages SET timestamp=? WHERE session_id=? AND content=?",
+                    (t0 + 500 + i, sid, f"msg {i}"),
+                )
+
+        # Tip activity timestamp is the latest thing in the DB.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND content=?",
+                (t0 + 10_000, "tip1", "latest message"),
+            )
+            db._conn.commit()
+
+        # limit=1 is the stress test: the old root must win the single slot.
+        top = db.list_sessions_rich(limit=1, order_by_last_active=True)
+        assert len(top) == 1
+        # Projection surfaces the tip's id in the root's slot.
+        assert top[0]["id"] == "tip1"
+        assert top[0]["_lineage_root_id"] == "root1"
 
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")

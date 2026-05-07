@@ -1304,8 +1304,12 @@ class _SupervisorRegistry:
             existing = self._by_task.get(task_id)
             if existing is not None:
                 if existing.cdp_url == cdp_url:
-                    return existing
-                # URL changed — tear down old, fall through to re-create.
+                    thread_ok = existing._thread is not None and existing._thread.is_alive()
+                    loop_ok = existing._loop is not None and existing._loop.is_running()
+                    if thread_ok and loop_ok:
+                        return existing
+                    # Unhealthy — tear down and recreate.
+                # URL changed or unhealthy — tear down, fall through to re-create.
                 self._by_task.pop(task_id, None)
         if existing is not None:
             existing.stop()

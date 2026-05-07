@@ -514,7 +514,7 @@ class SessionDB:
     # Session lifecycle
     # =========================================================================
 
-    def create_session(
+    def _insert_session_row(
         self,
         session_id: str,
         source: str,
@@ -523,8 +523,8 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
-    ) -> str:
-        """Create a new session record. Returns the session_id."""
+    ) -> None:
+        """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
@@ -542,8 +542,11 @@ class SessionDB:
                 ),
             )
         self._execute_write(_do)
-        return session_id
 
+    def create_session(self, session_id: str, source: str, **kwargs) -> str:
+        """Create a new session record. Returns the session_id."""
+        self._insert_session_row(session_id, source, **kwargs)
+        return session_id
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -679,21 +682,80 @@ class SessionDB:
         session_id: str,
         source: str = "unknown",
         model: str = None,
-    ) -> None:
-        """Ensure a session row exists, creating it with minimal metadata if absent.
+        **kwargs,
+    ) -> str:
+        """Ensure a session row exists (INSERT OR IGNORE). Accepts optional kwargs."""
+        self._insert_session_row(session_id, source, model=model, **kwargs)
+        return session_id
 
-        Used by _flush_messages_to_session_db to recover from a failed
-        create_session() call (e.g. transient SQLite lock at agent startup).
-        INSERT OR IGNORE is safe to call even when the row already exists.
-        """
+    def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
+        """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
+        cutoff = time.time() - 86400  # Only sessions older than 24 hours
+
         def _do(conn):
-            conn.execute(
-                """INSERT OR IGNORE INTO sessions
-                   (id, source, model, started_at)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, source, model, time.time()),
+            rows = conn.execute("""
+                SELECT id FROM sessions
+                WHERE source = 'tui'
+                  AND title IS NULL
+                  AND ended_at IS NOT NULL
+                  AND started_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+            """, (cutoff,)).fetchall()
+            ids = [r[0] if isinstance(r, (tuple, list)) else r["id"] for r in rows]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})", ids
+                )
+            return ids
+
+        removed_ids = self._execute_write(_do) or []
+        # Clean up any on-disk session files (belt-and-suspenders)
+        if sessions_dir and removed_ids:
+            for sid in removed_ids:
+                self._remove_session_files(sessions_dir, sid)
+        return len(removed_ids)
+
+    def finalize_orphaned_compression_sessions(self) -> int:
+        """Mark orphaned compression continuation sessions as ended.
+
+        Targets child sessions that were never finalized: parent is ended
+        with reason='compression', child has messages but no end_reason/ended_at
+        and api_call_count=0.  Non-destructive: preserves all messages and sets
+        end_reason='orphaned_compression'.  Fix for #20001.
+        """
+        cutoff = time.time() - 604800  # 7 days
+
+        def _do(conn):
+            now = time.time()
+            result = conn.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = 'orphaned_compression'
+                WHERE api_call_count = 0
+                  AND end_reason IS NULL
+                  AND ended_at IS NULL
+                  AND started_at < ?
+                  AND parent_session_id IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM sessions p
+                      WHERE p.id = sessions.parent_session_id
+                        AND p.end_reason = 'compression'
+                        AND p.ended_at IS NOT NULL
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM messages m
+                      WHERE m.session_id = sessions.id
+                  )
+                """,
+                (now, cutoff),
             )
-        self._execute_write(_do)
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
@@ -933,6 +995,7 @@ class SessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
+        order_by_last_active: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -952,6 +1015,14 @@ class SessionDB:
         compressed continuations from being invisible to users while keeping
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
+
+        Pass ``order_by_last_active=True`` to sort by most-recent activity
+        instead of original conversation start time. For compression chains,
+        the "most-recent activity" is taken from the live tip (not the root),
+        so an old conversation that was compressed and continued recently
+        surfaces in the correct slot. Ordering is computed at SQL level via
+        a recursive CTE that walks compression-continuation edges, so LIMIT
+        and OFFSET still apply efficiently.
         """
         where_clauses = []
         params = []
@@ -979,25 +1050,80 @@ class SessionDB:
             params.extend(exclude_sources)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT s.*,
-                COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                     FROM messages m
-                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
-                    ''
-                ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
-            FROM sessions s
-            {where_sql}
-            ORDER BY s.started_at DESC
-            LIMIT ? OFFSET ?
-        """
-        params.extend([limit, offset])
+        if order_by_last_active:
+            # Compute effective_last_active by walking each surfaced session's
+            # compression-continuation chain forward in SQL and taking the MAX
+            # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
+            # level instead of fetching every row and sorting in Python, while
+            # still surfacing old compression roots whose live tip is fresh.
+            #
+            # The CTE seeds from rows the outer WHERE admits (roots + branch
+            # children), then recursively joins forward through
+            # compression-continuation edges using the same criteria as
+            # get_compression_tip (parent.end_reason='compression' AND
+            # child.started_at >= parent.ended_at).
+            query = f"""
+                WITH RECURSIVE chain(root_id, cur_id) AS (
+                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    UNION ALL
+                    SELECT c.root_id, child.id
+                    FROM chain c
+                    JOIN sessions parent ON parent.id = c.cur_id
+                    JOIN sessions child ON child.parent_session_id = c.cur_id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                ),
+                chain_max AS (
+                    SELECT
+                        root_id,
+                        MAX(COALESCE(
+                            (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
+                            (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
+                        )) AS effective_last_active
+                    FROM chain
+                    GROUP BY root_id
+                )
+                SELECT s.*,
+                    COALESCE(
+                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw,
+                    COALESCE(
+                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        s.started_at
+                    ) AS last_active,
+                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                FROM sessions s
+                LEFT JOIN chain_max cm ON cm.root_id = s.id
+                {where_sql}
+                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                LIMIT ? OFFSET ?
+            """
+            # WHERE params apply twice (CTE seed + outer select).
+            params = params + params + [limit, offset]
+        else:
+            query = f"""
+                SELECT s.*,
+                    COALESCE(
+                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw,
+                    COALESCE(
+                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        s.started_at
+                    ) AS last_active
+                FROM sessions s
+                {where_sql}
+                ORDER BY s.started_at DESC
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
         with self._lock:
             cursor = self._conn.execute(query, params)
             rows = cursor.fetchall()
@@ -1011,6 +1137,8 @@ class SessionDB:
                 s["preview"] = text + ("..." if len(raw) > 60 else "")
             else:
                 s["preview"] = ""
+            # Drop the internal ordering column so callers see a clean dict.
+            s.pop("_effective_last_active", None)
             sessions.append(s)
 
         # Project compression roots forward to their tips. Each row whose
@@ -1088,6 +1216,48 @@ class SessionDB:
     # Message storage
     # =========================================================================
 
+    # Sentinel prefix used to distinguish JSON-encoded structured content
+    # (multimodal messages: lists of parts like text + image_url) from plain
+    # string content. The NUL byte is not legal in normal text, so this
+    # cannot collide with real user content.
+    _CONTENT_JSON_PREFIX = "\x00json:"
+
+    @classmethod
+    def _encode_content(cls, content: Any) -> Any:
+        """Serialize structured (list/dict) message content for sqlite.
+
+        sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
+        to query parameters. Multimodal messages have ``content`` as a list of
+        parts (``[{"type": "text", ...}, {"type": "image_url", ...}]``), which
+        raises ``ProgrammingError: Error binding parameter N: type 'list' is
+        not supported`` when bound directly.
+
+        Returns the value unchanged when it's already a safe scalar, or a
+        sentinel-prefixed JSON string for lists/dicts. Paired with
+        :meth:`_decode_content` on read.
+        """
+        if content is None or isinstance(content, (str, bytes, int, float)):
+            return content
+        try:
+            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
+        except (TypeError, ValueError):
+            # Last-resort fallback: stringify so persistence never fails.
+            return str(content)
+
+    @classmethod
+    def _decode_content(cls, content: Any) -> Any:
+        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
+        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
+            try:
+                return json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Failed to decode JSON-encoded message content; "
+                    "returning raw string"
+                )
+                return content
+        return content
+
     def append_message(
         self,
         session_id: str,
@@ -1124,6 +1294,9 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
+        # cannot bind list/dict parameters directly.
+        stored_content = self._encode_content(content)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -1140,7 +1313,7 @@ class SessionDB:
                 (
                     session_id,
                     role,
-                    content,
+                    stored_content,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -1223,7 +1396,7 @@ class SessionDB:
                     (
                         session_id,
                         role,
-                        msg.get("content"),
+                        self._encode_content(msg.get("content")),
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -1262,6 +1435,8 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
@@ -1351,15 +1526,15 @@ class SessionDB:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
-                "codex_message_items "
+                "finish_reason, reasoning, reasoning_content, reasoning_details, "
+                "codex_reasoning_items, codex_message_items "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
                 tuple(session_ids),
             ).fetchall()
 
         messages = []
         for row in rows:
-            content = row["content"]
+            content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
@@ -1377,6 +1552,8 @@ class SessionDB:
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
             if row["role"] == "assistant":
+                if row["finish_reason"]:
+                    msg["finish_reason"] = row["finish_reason"]
                 if row["reasoning"]:
                     msg["reasoning"] = row["reasoning"]
                 if row["reasoning_content"] is not None:
@@ -1744,10 +1921,26 @@ class SessionDB:
                            )""",
                         (match["id"], match["id"]),
                     )
-                    context_msgs = [
-                        {"role": r["role"], "content": (r["content"] or "")[:200]}
-                        for r in ctx_cursor.fetchall()
-                    ]
+                    context_msgs = []
+                    for r in ctx_cursor.fetchall():
+                        raw = r["content"]
+                        decoded = self._decode_content(raw)
+                        # Multimodal context: render a compact text-only
+                        # summary for search previews.
+                        if isinstance(decoded, list):
+                            text_parts = [
+                                p.get("text", "") for p in decoded
+                                if isinstance(p, dict) and p.get("type") == "text"
+                            ]
+                            text = " ".join(t for t in text_parts if t).strip()
+                            preview = text or "[multimodal content]"
+                        elif isinstance(decoded, str):
+                            preview = decoded
+                        else:
+                            preview = ""
+                        context_msgs.append(
+                            {"role": r["role"], "content": preview[:200]}
+                        )
                 match["context"] = context_msgs
             except Exception:
                 match["context"] = []
@@ -1993,6 +2186,388 @@ class SessionDB:
                 (key, value),
             )
         self._execute_write(_do)
+
+    def apply_telegram_topic_migration(self) -> None:
+        """Create Telegram DM topic-mode tables on explicit /topic opt-in.
+
+        This migration is deliberately not part of automatic SessionDB startup
+        reconciliation. Operators must be able to upgrade Hermes, keep the old
+        Telegram bot behavior running, and only mutate topic-mode state when the
+        user executes /topic to opt into the feature.
+
+        Schema versions:
+          v1 — initial shape (no ON DELETE CASCADE on session_id FK)
+          v2 — session_id FK gets ON DELETE CASCADE so session pruning
+               automatically clears bindings.
+        """
+        def _do(conn):
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_dm_topic_mode (
+                    chat_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    activated_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    has_topics_enabled INTEGER,
+                    allows_users_to_create_topics INTEGER,
+                    capability_checked_at REAL,
+                    intro_message_id TEXT,
+                    pinned_message_id TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS telegram_dm_topic_bindings (
+                    chat_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    managed_mode TEXT NOT NULL DEFAULT 'auto',
+                    linked_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (chat_id, thread_id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
+                ON telegram_dm_topic_bindings(session_id);
+
+                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
+                ON telegram_dm_topic_bindings(user_id, chat_id);
+                """
+            )
+
+            # v1 → v2: rebuild telegram_dm_topic_bindings if its session_id FK
+            # lacks ON DELETE CASCADE. SQLite can't ALTER a foreign key, so we
+            # rebuild the table. Only runs once per DB (version gate).
+            current = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                ("telegram_dm_topic_schema_version",),
+            ).fetchone()
+            current_version = int(current[0]) if current and str(current[0]).isdigit() else 0
+            if current_version < 2:
+                fk_rows = conn.execute(
+                    "PRAGMA foreign_key_list('telegram_dm_topic_bindings')"
+                ).fetchall()
+                needs_rebuild = any(
+                    row[2] == "sessions" and (row[6] or "") != "CASCADE"
+                    for row in fk_rows
+                )
+                if needs_rebuild:
+                    conn.executescript(
+                        """
+                        CREATE TABLE telegram_dm_topic_bindings_new (
+                            chat_id TEXT NOT NULL,
+                            thread_id TEXT NOT NULL,
+                            user_id TEXT NOT NULL,
+                            session_key TEXT NOT NULL,
+                            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                            managed_mode TEXT NOT NULL DEFAULT 'auto',
+                            linked_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            PRIMARY KEY (chat_id, thread_id)
+                        );
+                        INSERT INTO telegram_dm_topic_bindings_new
+                            SELECT chat_id, thread_id, user_id, session_key,
+                                   session_id, managed_mode, linked_at, updated_at
+                            FROM telegram_dm_topic_bindings;
+                        DROP TABLE telegram_dm_topic_bindings;
+                        ALTER TABLE telegram_dm_topic_bindings_new
+                            RENAME TO telegram_dm_topic_bindings;
+                        CREATE UNIQUE INDEX idx_telegram_dm_topic_bindings_session
+                            ON telegram_dm_topic_bindings(session_id);
+                        CREATE INDEX idx_telegram_dm_topic_bindings_user
+                            ON telegram_dm_topic_bindings(user_id, chat_id);
+                        """
+                    )
+
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("telegram_dm_topic_schema_version", "2"),
+            )
+        self._execute_write(_do)
+
+    def enable_telegram_topic_mode(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        has_topics_enabled: Optional[bool] = None,
+        allows_users_to_create_topics: Optional[bool] = None,
+    ) -> None:
+        """Enable Telegram DM topic mode for one private chat/user.
+
+        This method intentionally owns the explicit topic migration. Ordinary
+        SessionDB startup must not create these side tables.
+        """
+        self.apply_telegram_topic_migration()
+        now = time.time()
+
+        def _to_int(value: Optional[bool]) -> Optional[int]:
+            if value is None:
+                return None
+            return 1 if value else 0
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO telegram_dm_topic_mode (
+                    chat_id, user_id, enabled, activated_at, updated_at,
+                    has_topics_enabled, allows_users_to_create_topics,
+                    capability_checked_at
+                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    enabled = 1,
+                    updated_at = excluded.updated_at,
+                    has_topics_enabled = excluded.has_topics_enabled,
+                    allows_users_to_create_topics = excluded.allows_users_to_create_topics,
+                    capability_checked_at = excluded.capability_checked_at
+                """,
+                (
+                    str(chat_id),
+                    str(user_id),
+                    now,
+                    now,
+                    _to_int(has_topics_enabled),
+                    _to_int(allows_users_to_create_topics),
+                    now,
+                ),
+            )
+        self._execute_write(_do)
+
+    def disable_telegram_topic_mode(
+        self,
+        *,
+        chat_id: str,
+        clear_bindings: bool = True,
+    ) -> None:
+        """Disable Telegram DM topic mode for one private chat.
+
+        When ``clear_bindings`` is True (default) the (chat_id, thread_id)
+        bindings for this chat are also cleared so re-enabling later
+        starts from a clean slate. Set to False if the operator wants to
+        preserve bindings for a later re-enable.
+
+        Never creates the topic-mode tables from scratch; if they don't
+        exist there is nothing to disable and the call is a no-op.
+        """
+        def _do(conn):
+            try:
+                conn.execute(
+                    "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
+                    "WHERE chat_id = ?",
+                    (time.time(), str(chat_id)),
+                )
+                if clear_bindings:
+                    conn.execute(
+                        "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ?",
+                        (str(chat_id),),
+                    )
+            except sqlite3.OperationalError:
+                # Tables don't exist yet — nothing to disable.
+                return
+        self._execute_write(_do)
+
+    def is_telegram_topic_mode_enabled(self, *, chat_id: str, user_id: str) -> bool:
+        """Return whether Telegram DM topic mode is enabled for this chat/user."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT enabled FROM telegram_dm_topic_mode
+                    WHERE chat_id = ? AND user_id = ?
+                    """,
+                    (str(chat_id), str(user_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return False
+        if row is None:
+            return False
+        enabled = row["enabled"] if isinstance(row, sqlite3.Row) else row[0]
+        return bool(enabled)
+
+    def get_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the session binding for a Telegram DM topic, if present."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (str(chat_id), str(thread_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return dict(row) if row else None
+
+    def bind_telegram_topic(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        user_id: str,
+        session_key: str,
+        session_id: str,
+        managed_mode: str = "auto",
+    ) -> None:
+        """Bind one Telegram DM topic thread to one Hermes session.
+
+        A Hermes session may only be linked to one Telegram topic in MVP.
+        Rebinding the same topic to the same session is idempotent; trying to
+        link the same session to a different topic raises ValueError.
+        """
+        self.apply_telegram_topic_migration()
+        now = time.time()
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        user_id = str(user_id)
+        session_key = str(session_key)
+        session_id = str(session_id)
+
+        def _do(conn):
+            existing_session = conn.execute(
+                """
+                SELECT chat_id, thread_id FROM telegram_dm_topic_bindings
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if existing_session is not None:
+                linked_chat = existing_session["chat_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[0]
+                linked_thread = existing_session["thread_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[1]
+                if str(linked_chat) != chat_id or str(linked_thread) != thread_id:
+                    raise ValueError("session is already linked to another Telegram topic")
+
+            conn.execute(
+                """
+                INSERT INTO telegram_dm_topic_bindings (
+                    chat_id, thread_id, user_id, session_key, session_id,
+                    managed_mode, linked_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    session_key = excluded.session_key,
+                    session_id = excluded.session_id,
+                    managed_mode = excluded.managed_mode,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    chat_id,
+                    thread_id,
+                    user_id,
+                    session_key,
+                    session_id,
+                    managed_mode,
+                    now,
+                    now,
+                ),
+            )
+        self._execute_write(_do)
+
+    def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
+        """Return True if a Hermes session is already bound to any Telegram DM topic.
+
+        Read-only: does NOT trigger the telegram-topic migration. If the
+        topic-mode tables have not been created yet (i.e. nobody has run
+        ``/topic`` in this profile), the session is by definition unbound
+        and we return False.
+        """
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT 1 FROM telegram_dm_topic_bindings
+                    WHERE session_id = ?
+                    LIMIT 1
+                    """,
+                    (str(session_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return False
+        return row is not None
+
+    def list_unlinked_telegram_sessions_for_user(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """List previous Telegram sessions for this user that are not bound to a topic.
+
+        Read-only: does NOT trigger the telegram-topic migration. If the
+        topic-mode tables are absent, fall back to a simpler query that
+        just returns this user's Telegram sessions — there can't be any
+        bindings yet.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT s.*,
+                        COALESCE(
+                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                             FROM messages m
+                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                             ORDER BY m.timestamp, m.id LIMIT 1),
+                            ''
+                        ) AS _preview_raw,
+                        COALESCE(
+                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                            s.started_at
+                        ) AS last_active
+                    FROM sessions s
+                    WHERE s.source = 'telegram'
+                      AND s.user_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM telegram_dm_topic_bindings b
+                          WHERE b.session_id = s.id
+                      )
+                    ORDER BY last_active DESC, s.started_at DESC
+                    LIMIT ?
+                    """,
+                    (str(user_id), int(limit)),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # telegram_dm_topic_bindings doesn't exist yet — no bindings
+                # means every telegram session for this user is "unlinked".
+                rows = self._conn.execute(
+                    """
+                    SELECT s.*,
+                        COALESCE(
+                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                             FROM messages m
+                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                             ORDER BY m.timestamp, m.id LIMIT 1),
+                            ''
+                        ) AS _preview_raw,
+                        COALESCE(
+                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                            s.started_at
+                        ) AS last_active
+                    FROM sessions s
+                    WHERE s.source = 'telegram'
+                      AND s.user_id = ?
+                    ORDER BY last_active DESC, s.started_at DESC
+                    LIMIT ?
+                    """,
+                    (str(user_id), int(limit)),
+                ).fetchall()
+
+        sessions: List[Dict[str, Any]] = []
+        for row in rows:
+            session = dict(row)
+            raw = str(session.pop("_preview_raw", "") or "").strip()
+            session["preview"] = raw[:60] + ("..." if len(raw) > 60 else "") if raw else ""
+            sessions.append(session)
+        return sessions
 
     # ── Space reclamation ──
 

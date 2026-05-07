@@ -416,7 +416,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -981,7 +981,7 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
-@dataclass 
+@dataclass
 class SendResult:
     """Result of sending a message."""
     success: bool
@@ -989,6 +989,45 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+
+
+class EphemeralReply(str):
+    """System-notice reply that auto-deletes after a TTL.
+
+    Slash-command handlers in ``gateway/run.py`` can return this wrapper
+    instead of a plain string to request that the reply message be deleted
+    after ``ttl_seconds`` on platforms that support ``delete_message``.
+
+    Subclassing ``str`` keeps the wrapper transparent to anything that
+    treats handler return values as text (existing tests use ``in`` /
+    ``startswith`` / equality; the ``_process_message_background`` pipeline
+    extracts attachments from the string content).  ``isinstance(r,
+    EphemeralReply)`` still distinguishes ephemeral replies from plain
+    strings so the send path can schedule deletion.
+
+    Platforms that don't override :meth:`BasePlatformAdapter.delete_message`
+    silently ignore the TTL — the message is sent normally and left in
+    place.  When ``ttl_seconds`` is ``None``, the pipeline uses the
+    configured ``display.ephemeral_system_ttl`` default.  A default of ``0``
+    disables auto-deletion globally, preserving prior behavior.
+    """
+
+    ttl_seconds: Optional[int]
+
+    def __new__(cls, text: str, ttl_seconds: Optional[int] = None):
+        instance = super().__new__(cls, text)
+        instance.ttl_seconds = ttl_seconds
+        return instance
+
+    @property
+    def text(self) -> str:
+        """Return the underlying text.
+
+        Provided for call sites that want an explicit string conversion,
+        though ``str(reply)`` and using ``reply`` directly where a string
+        is expected both work identically.
+        """
+        return str.__str__(self)
 
 
 def merge_pending_message_event(
@@ -1034,6 +1073,11 @@ def merge_pending_message_event(
                     existing.text = event.text
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
+            elif (
+                getattr(existing, "message_type", None) == MessageType.TEXT
+                and event.message_type != MessageType.TEXT
+            ):
+                existing.message_type = event.message_type
             return
 
         if (
@@ -1068,8 +1112,10 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
-# Type for message handlers
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
+# Type for message handlers.  Handlers may return a plain string (normal
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
+# ``None`` when the response was already delivered (e.g. via streaming).
+MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
 def resolve_channel_prompt(
@@ -1258,37 +1304,52 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
-        except Exception:
-            pass
+        self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
 
     def _mark_disconnected(self) -> None:
         self._running = False
         if self.has_fatal_error:
             return
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
-        except Exception:
-            pass
+        self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
+        self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
+
+    def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
+        """Write runtime status; log first failure per context at warning, rest at debug.
+
+        Status writes can fail on permissions, ENOSPC, missing status dir, etc.
+        A persistently failing status dir used to be silent (``except: pass``).
+        Logging every failure would spam the log on reconnect loops, so this
+        surfaces the first failure per (platform, context) at warning level and
+        downgrades subsequent failures to debug.
+        """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(
-                platform=self.platform.value,
-                platform_state="fatal",
-                error_code=code,
-                error_message=message,
-            )
-        except Exception:
-            pass
+            write_runtime_status(platform=self.platform.value, **kwargs)
+        except Exception as exc:
+            # Use getattr so object.__new__(...) test harnesses that skip __init__
+            # don't blow up on attribute access.
+            logged = getattr(self, "_status_write_logged", None)
+            if logged is None:
+                logged = set()
+                try:
+                    self._status_write_logged = logged
+                except Exception:
+                    pass
+            key = (self.platform.value, context)
+            if key not in logged:
+                logger.warning(
+                    "Failed to write runtime status (%s) for %s: %s (further failures at debug level)",
+                    context, self.platform.value, exc,
+                )
+                logged.add(key)
+            else:
+                logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler
@@ -1454,6 +1515,64 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+    def _get_ephemeral_system_ttl_default(self) -> int:
+        """Read ``display.ephemeral_system_ttl`` from config.
+
+        Returns the TTL in seconds to use when an :class:`EphemeralReply`
+        does not specify one explicitly.  ``0`` (the default) disables
+        auto-deletion.  Non-fatal if config is unreadable.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            return 0
+        try:
+            cfg = _load_config()
+        except Exception:
+            return 0
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(display, dict):
+            return 0
+        raw = display.get("ephemeral_system_ttl", 0)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _schedule_ephemeral_delete(
+        self,
+        chat_id: str,
+        message_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``.
+
+        Best-effort — failures (gateway restart, permission denied, message
+        too old for Telegram's 48h window) are swallowed at debug level.
+        Does not block the caller.
+        """
+
+        async def _run_delete() -> None:
+            try:
+                await asyncio.sleep(max(1, int(ttl_seconds)))
+                await self.delete_message(chat_id=chat_id, message_id=message_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(
+                    "[%s] Ephemeral delete failed for %s/%s: %s",
+                    self.name, chat_id, message_id, e,
+                )
+
+        coro = _run_delete()
+        try:
+            asyncio.create_task(coro)
+        except RuntimeError:
+            # No running loop (e.g. unit tests that never reach the async
+            # path).  Close the coroutine cleanly so Python doesn't warn
+            # about it never being awaited, then drop silently.
+            coro.close()
+
     async def send_slash_confirm(
         self,
         chat_id: str,
@@ -1488,6 +1607,26 @@ class BasePlatformAdapter(ABC):
         route the callback (e.g. Telegram's ``_approval_state`` dict).
         """
         return SendResult(success=False, error="Not supported")
+
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a notice privately when the platform supports it.
+
+        The default implementation falls back to a normal send so callers can
+        use one code path across platforms.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
@@ -1750,23 +1889,38 @@ class BasePlatformAdapter(ABC):
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
-        
+
         The TTS tool returns responses like:
             [[audio_as_voice]]
             MEDIA:/path/to/audio.ogg
-        
+
+        Skills that produce large/lossless images (e.g. info-graph, where a
+        rendered JPG is 1-2 MB but Telegram's sendPhoto recompresses to
+        ~200 KB at 1280px) can use ``[[as_document]]`` to request unmodified
+        delivery via sendDocument instead of sendPhoto/sendMediaGroup. The
+        directive is detected at the dispatch sites (which have access to the
+        original response); this method just strips it so it never leaks into
+        user-visible text. Per-file granularity is intentionally not exposed —
+        when an agent emits ``[[as_document]]`` once, every image path in the
+        same response is delivered as a document, mirroring the all-or-nothing
+        scope of ``[[audio_as_voice]]``.
+
         Args:
             content: The response text to scan.
-        
+
         Returns:
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
         media = []
         cleaned = content
-        
+
         # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        # Strip [[as_document]] directive — callers inspect the original
+        # ``content`` for it (so they can still react to it); here we just
+        # keep it out of the user-visible cleaned text.
+        cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
@@ -1972,9 +2126,52 @@ class BasePlatformAdapter(ABC):
 
         ``generation`` lets callers tie the callback to a specific gateway run
         generation so stale runs cannot clear callbacks owned by a fresher run.
+
+        If a callback for the same ``session_key`` (and generation, when set)
+        is already registered, the new callback is chained — both fire, in
+        registration order, with per-callback exception isolation. This lets
+        independent features (background-review release + temporary-bubble
+        cleanup) coexist without clobbering each other. Stale-generation
+        callers never overwrite a fresher generation's slot.
         """
         if not session_key or not callable(callback):
             return
+
+        existing = self._post_delivery_callbacks.get(session_key)
+        if existing is not None:
+            if isinstance(existing, tuple) and len(existing) == 2:
+                existing_gen, existing_cb = existing
+            else:
+                existing_gen, existing_cb = None, existing
+            # Stale-generation registrations never overwrite a fresher slot.
+            if (
+                existing_gen is not None
+                and generation is not None
+                and int(generation) < int(existing_gen)
+            ):
+                return
+            # Same-or-newer generation: chain with the existing callback so
+            # both fire in registration order.
+            if callable(existing_cb) and (
+                existing_gen is None
+                or generation is None
+                or int(existing_gen) == int(generation)
+            ):
+                _prev = existing_cb
+                _new = callback
+
+                def _chained() -> None:
+                    try:
+                        _prev()
+                    except Exception:
+                        logger.debug("Post-delivery callback failed", exc_info=True)
+                    try:
+                        _new()
+                    except Exception:
+                        logger.debug("Post-delivery callback failed", exc_info=True)
+
+                callback = _chained
+
         if generation is None:
             self._post_delivery_callbacks[session_key] = callback
         else:
@@ -2042,6 +2239,28 @@ class BasePlatformAdapter(ABC):
             return False
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+
+    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
+        """Unwrap a handler response into (text, ttl_seconds).
+
+        Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
+        Returns ``(text, ttl)`` where ``ttl > 0`` means the caller should
+        schedule a deletion via :meth:`_schedule_ephemeral_delete` after
+        the send succeeds.  ``ttl`` is forced to 0 when the adapter
+        doesn't override :meth:`delete_message` so non-supporting
+        platforms silently degrade to normal sends.
+        """
+        if isinstance(response, EphemeralReply):
+            ttl = response.ttl_seconds
+            if ttl is None:
+                try:
+                    ttl = int(self._get_ephemeral_system_ttl_default())
+                except Exception:
+                    ttl = 0
+            if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
+                ttl = 0
+            return response.text, int(ttl or 0)
+        return response, 0
 
     async def _send_with_retry(
         self,
@@ -2343,20 +2562,45 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            # Old adapter task (if any) is cancelled AFTER the runner has
-            # fully handled the command — keeps ordering deterministic.
+            _text, _eph_ttl = self._unwrap_ephemeral(response)
+            # Send the response BEFORE cancelling the old task so the send
+            # cannot be affected by task-cancellation side effects (race
+            # condition fix — issue #18912).  Previously the send happened
+            # after cancel_session_processing, which could silently drop the
+            # "/new" confirmation when an agent was actively running.
+            if _text:
+                logger.info(
+                    "[%s] Sending command '/%s' response (%d chars) to %s",
+                    self.name,
+                    cmd,
+                    len(_text),
+                    event.source.chat_id,
+                )
+                _r = await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=_text,
+                    reply_to=(
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU
+                        and event.source.thread_id
+                        and event.reply_to_message_id
+                        else event.message_id
+                    ),
+                    metadata=thread_meta,
+                )
+                if _eph_ttl > 0 and _r.success and _r.message_id:
+                    self._schedule_ephemeral_delete(
+                        chat_id=event.source.chat_id,
+                        message_id=_r.message_id,
+                        ttl_seconds=_eph_ttl,
+                    )
+            # Old adapter task (if any) is cancelled AFTER the response has
+            # been sent — keeps ordering deterministic and avoids the race.
             await self.cancel_session_processing(
                 session_key,
                 release_guard=False,
                 discard_pending=False,
             )
-            if response:
-                await self._send_with_retry(
-                    chat_id=event.source.chat_id,
-                    content=response,
-                    reply_to=event.message_id,
-                    metadata=thread_meta,
-                )
         except Exception:
             # On failure, restore the original guard if one still exists so
             # we don't leave the session in a half-reset state.
@@ -2436,13 +2680,26 @@ class BasePlatformAdapter(ABC):
                 try:
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
                     response = await self._message_handler(event)
-                    if response:
-                        await self._send_with_retry(
+                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text:
+                        _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
-                            content=response,
-                            reply_to=event.message_id,
+                            content=_text,
+                            reply_to=(
+                                event.reply_to_message_id
+                                if event.source.platform == Platform.FEISHU
+                                and event.source.thread_id
+                                and event.reply_to_message_id
+                                else event.message_id
+                            ),
                             metadata=_thread_meta,
                         )
+                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=_r.message_id,
+                                ttl_seconds=_eph_ttl,
+                            )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
@@ -2491,10 +2748,18 @@ class BasePlatformAdapter(ABC):
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0
-        min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
-        max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
         if mode == "natural":
             min_ms, max_ms = 800, 2500
+            return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+        # custom mode — tolerate malformed env vars instead of crashing.
+        try:
+            min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
+        except (TypeError, ValueError):
+            min_ms = 800
+        try:
+            max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
+        except (TypeError, ValueError):
+            max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
@@ -2516,7 +2781,6 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -2549,7 +2813,16 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
-            
+
+            # Slash-command handlers may return an EphemeralReply sentinel to
+            # request that their reply message auto-delete after a TTL (used
+            # for system notices like "✨ New session started!" that the user
+            # doesn't need to keep in the thread).  Unwrap here so all the
+            # downstream extract_media / text-processing logic sees a plain
+            # string, and remember the TTL + platform capability so the
+            # post-send block can schedule the deletion.
+            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
             # when the message was queued behind an active agent.  Log at
@@ -2572,13 +2845,21 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
+                # Capture [[as_document]] before extract_media strips it, so the
+                # dispatch partition below can route image-extension files
+                # through send_document instead of send_multiple_images. Used
+                # by skills that produce large/lossless images (e.g. info-graph)
+                # where Telegram's sendPhoto recompression destroys legibility.
+                force_document_attachments = "[[as_document]]" in response
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = text_content.replace("[[as_document]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
@@ -2630,13 +2911,33 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    _reply_anchor = (
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
+                        else event.message_id
+                    )
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
+                        reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+
+                    # Schedule auto-deletion of system-notice replies.
+                    # Detached so the handler returns immediately; errors
+                    # (permission denied, message too old) are swallowed.
+                    if (
+                        _ephemeral_ttl
+                        and _ephemeral_ttl > 0
+                        and result.success
+                        and result.message_id
+                    ):
+                        self._schedule_ephemeral_delete(
+                            chat_id=event.source.chat_id,
+                            message_id=result.message_id,
+                            ttl_seconds=_ephemeral_ttl,
+                        )
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -2660,19 +2961,26 @@ class BasePlatformAdapter(ABC):
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 # Partition images out of media_files + local_files so they
-                # can be sent as a single batch (Signal RPC)
+                # can be sent as a single batch (Signal RPC). When
+                # ``[[as_document]]`` was set on the original response, image
+                # files skip the photo path and route to send_document below
+                # so they're delivered with original bytes (no Telegram
+                # sendPhoto recompression).
                 from urllib.parse import quote as _quote
                 _image_paths: list = []
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
                     _ext = Path(media_path).suffix.lower()
-                    if _ext in _IMAGE_EXTS and not is_voice:
+                    if (_ext in _IMAGE_EXTS
+                            and not is_voice
+                            and not force_document_attachments):
                         _image_paths.append(media_path)
                     else:
                         _non_image_media.append((media_path, is_voice))
                 _non_image_local: list = []
                 for file_path in local_files:
-                    if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                    if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                            and not force_document_attachments):
                         _image_paths.append(file_path)
                     else:
                         _non_image_local.append(file_path)
@@ -2815,7 +3123,20 @@ class BasePlatformAdapter(ABC):
         finally:
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
-            _callback_generation = callback_generation
+            #
+            # Snapshot the callback generation HERE (after the agent has run),
+            # not at the top of this task.  _hermes_run_generation is set on
+            # the interrupt event by GatewayRunner._bind_adapter_run_generation
+            # during _handle_message_with_agent — which happens DURING the
+            # self._message_handler(event) await above.  Snapshotting earlier
+            # always captured None, which bypassed the generation-ownership
+            # check in pop_post_delivery_callback and let stale runs fire a
+            # fresher run's callbacks.
+            _callback_generation = getattr(
+                interrupt_event,
+                "_hermes_run_generation",
+                None,
+            )
             if hasattr(self, "pop_post_delivery_callback"):
                 _post_cb = self.pop_post_delivery_callback(
                     session_key,

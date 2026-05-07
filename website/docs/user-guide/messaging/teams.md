@@ -13,8 +13,10 @@ Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Te
 | Context | Behavior |
 |---------|----------|
 | **Personal chat (DM)** | Bot responds to every message. No @mention needed. |
-| **Group chat** | Bot responds to every message in the chat. |
-| **Channel** | Bot only responds when @mentioned (Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically). |
+| **Group chat** | Bot only responds when @mentioned. |
+| **Channel** | Bot only responds when @mentioned. |
+
+Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
 ---
 
@@ -35,21 +37,21 @@ teams status --verbose
 
 ---
 
-## Step 2: Expose Port 3978
+## Step 2: Expose the Webhook Port
 
-Teams cannot deliver messages to `localhost`. For local development, use any tunnel tool to get a public HTTPS URL:
+Teams cannot deliver messages to `localhost`. For local development, use any tunnel tool to get a public HTTPS URL. The default port is `3978` — change it with `TEAMS_PORT` if needed.
 
 ```bash
 # devtunnel (Microsoft)
 devtunnel create hermes-bot --allow-anonymous
-devtunnel port create hermes-bot -p 3978 --protocol https
+devtunnel port create hermes-bot -p 3978 --protocol https  # replace 3978 with TEAMS_PORT if changed
 devtunnel host hermes-bot
 
 # ngrok
-ngrok http 3978
+ngrok http 3978  # replace 3978 with TEAMS_PORT if changed
 
 # cloudflared
-cloudflared tunnel --url http://localhost:3978
+cloudflared tunnel --url http://localhost:3978  # replace 3978 with TEAMS_PORT if changed
 ```
 
 Copy the `https://` URL from the output — you'll use it in the next step. Leave the tunnel running while developing.
@@ -66,7 +68,7 @@ teams app create \
   --endpoint "https://<your-tunnel-url>/api/messages"
 ```
 
-The CLI outputs your `CLIENT_ID`, `CLIENT_SECRET`, and `TENANT_ID`. Save them — you'll need all three.
+The CLI outputs your `CLIENT_ID`, `CLIENT_SECRET`, and `TENANT_ID`, plus an install link for Step 6. Save the client secret — it won't be shown again.
 
 ---
 
@@ -93,7 +95,7 @@ TEAMS_ALLOWED_USERS=<your-aad-object-id>
 HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d gateway
 ```
 
-This starts the gateway and maps port 3978 on your host to the container. Check that it's running:
+This starts the gateway. The default webhook port is `3978` (override with `TEAMS_PORT`). Check that it's running:
 
 ```bash
 curl http://localhost:3978/health   # should return: ok
@@ -110,10 +112,10 @@ Look for:
 ## Step 6: Install the App in Teams
 
 ```bash
-teams app install --id <teamsAppId>
+teams app get <teamsAppId> --install-link
 ```
 
-The `teamsAppId` was printed by `teams app create` in Step 3. After installing, open Microsoft Teams and send a direct message to your bot — it's ready.
+Open the printed link in your browser — it opens directly in the Teams client. After installing, send a direct message to your bot — it's ready.
 
 ---
 
@@ -127,6 +129,7 @@ The `teamsAppId` was printed by `teams app create` in Step 3. After installing, 
 | `TEAMS_CLIENT_SECRET` | Azure AD client secret |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
 | `TEAMS_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to use the bot |
+| `TEAMS_ALLOW_ALL_USERS` | Set `true` to skip the allowlist and allow anyone |
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
@@ -179,7 +182,7 @@ If you've already created the bot and just need to update the endpoint:
 teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messages"
 ```
 
-Make sure port 3978 (or your configured `TEAMS_PORT`) is reachable from the internet and that your TLS certificate is valid — Teams rejects self-signed certificates.
+Make sure your configured port (`TEAMS_PORT`, default `3978`) is reachable from the internet and that your TLS certificate is valid — Teams rejects self-signed certificates.
 
 ---
 

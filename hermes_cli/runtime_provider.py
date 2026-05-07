@@ -319,9 +319,10 @@ def _try_resolve_from_custom_pool(
     base_url: str,
     provider_label: str,
     api_mode_override: Optional[str] = None,
+    provider_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
-    pool_key = get_custom_provider_pool_key(base_url)
+    pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
     if not pool_key:
         return None
     try:
@@ -358,11 +359,20 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            auth_mod.resolve_provider(requested_norm)
+            canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
         else:
-            return None
+            # A user-declared ``custom_providers`` entry whose name matches
+            # only an *alias* (``kimi`` → built-in ``kimi-coding``) is the
+            # user's intended target — alias rewriting would otherwise hijack
+            # the request.  We only defer to the built-in when the raw name is
+            # the canonical provider itself (``nous``, ``openrouter``, …) so
+            # accidentally shadowing a canonical provider still resolves to
+            # the built-in. See tests/hermes_cli/test_runtime_provider_resolution.py
+            # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
+            if (canonical or "").strip().lower() == requested_norm:
+                return None
 
     config = load_config()
     
@@ -512,7 +522,7 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -631,8 +641,11 @@ def _resolve_openrouter_runtime(
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
+        # Pass requested_provider so pool lookup prefers name match over base_url,
+        # fixing credential mix-ups when multiple custom providers share a base_url.
         pool_result = _try_resolve_from_custom_pool(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
+            provider_name=requested_provider if requested_norm != "custom" else None,
         )
         if pool_result:
             return pool_result

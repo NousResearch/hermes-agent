@@ -724,6 +724,56 @@ class TestInit:
             )
             assert a._cache_ttl == "1h"
 
+    def test_model_max_tokens_from_config(self):
+        """model.max_tokens config populates the chat-completions request cap."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.max_tokens == 4096
+        assert kwargs["max_tokens"] == 4096
+
+    def test_constructor_max_tokens_wins_over_config(self):
+        """Explicit constructor max_tokens keeps programmatic callers stable."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                max_tokens=8192,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 8192
+
     def test_prompt_caching_cache_ttl_invalid_falls_back(self):
         """Non-Anthropic TTL values keep default 5m without raising."""
         with (
@@ -1117,6 +1167,7 @@ class TestBuildApiKwargs:
         assert "temperature" not in kwargs
 
     def test_kimi_coding_endpoint_omits_temperature(self, agent):
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -1129,6 +1180,7 @@ class TestBuildApiKwargs:
     def test_kimi_coding_endpoint_sends_max_tokens_and_reasoning(self, agent):
         """Kimi endpoint should send max_tokens=32000 and reasoning_effort as
         top-level params, matching Kimi CLI's default behavior."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1141,6 +1193,7 @@ class TestBuildApiKwargs:
 
     def test_kimi_coding_endpoint_respects_custom_effort(self, agent):
         """reasoning_effort should reflect reasoning_config.effort when set."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1154,6 +1207,7 @@ class TestBuildApiKwargs:
     def test_kimi_coding_endpoint_sends_thinking_extra_body(self, agent):
         """Kimi endpoint should send extra_body.thinking={"type":"enabled"}
         to activate reasoning mode, mirroring Kimi CLI's with_thinking()."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1167,6 +1221,7 @@ class TestBuildApiKwargs:
         """When reasoning_config.enabled=False, thinking should be disabled
         and reasoning_effort should be omitted entirely — mirroring Kimi
         CLI's with_thinking("off") which maps to reasoning_effort=None."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1180,6 +1235,7 @@ class TestBuildApiKwargs:
 
     def test_moonshot_endpoint_sends_max_tokens_and_reasoning(self, agent):
         """api.moonshot.ai should get the same Kimi-compatible params."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.moonshot.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -1193,6 +1249,7 @@ class TestBuildApiKwargs:
 
     def test_moonshot_cn_endpoint_sends_max_tokens_and_reasoning(self, agent):
         """api.moonshot.cn (China endpoint) should get the same params."""
+        agent.provider = "kimi-coding-cn"
         agent.base_url = "https://api.moonshot.cn/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -1205,6 +1262,7 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_provider_preferences_injected(self, agent):
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.providers_allowed = ["Anthropic"]
         messages = [{"role": "user", "content": "hi"}]
@@ -1213,6 +1271,7 @@ class TestBuildApiKwargs:
 
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "anthropic/claude-sonnet-4-20250514"
         messages = [{"role": "user", "content": "hi"}]
@@ -1222,6 +1281,7 @@ class TestBuildApiKwargs:
         assert reasoning["effort"] == "medium"
 
     def test_reasoning_config_custom(self, agent):
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "anthropic/claude-sonnet-4-20250514"
         agent.reasoning_config = {"enabled": False}
@@ -1237,6 +1297,7 @@ class TestBuildApiKwargs:
         assert "reasoning" not in kwargs.get("extra_body", {})
 
     def test_reasoning_sent_for_supported_openrouter_model(self, agent):
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "qwen/qwen3.5-plus-02-15"
         messages = [{"role": "user", "content": "hi"}]
@@ -1244,6 +1305,7 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
     def test_reasoning_sent_for_nous_route(self, agent):
+        agent.provider = "nous"
         agent.base_url = "https://inference-api.nousresearch.com/v1"
         agent.model = "minimax/minimax-m2.5"
         messages = [{"role": "user", "content": "hi"}]
@@ -1251,18 +1313,38 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
     def test_reasoning_sent_for_copilot_gpt5(self, agent):
-        agent.base_url = "https://api.githubcopilot.com"
-        agent.model = "gpt-5.4"
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
+        """Copilot/GitHub Models: GPT-5 reasoning goes in extra_body.reasoning."""
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        transport = get_transport("chat_completions")
+        profile = get_provider_profile("copilot")
+        msgs = [{"role": "user", "content": "hi"}]
+        kwargs = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=msgs,
+            tools=None,
+            supports_reasoning=True,
+            provider_profile=profile,
+        )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
     def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        agent.base_url = "https://api.githubcopilot.com"
-        agent.model = "gpt-5.4"
-        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
+        """xhigh effort should normalize to high for Copilot GitHub Models."""
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        transport = get_transport("chat_completions")
+        profile = get_provider_profile("copilot")
+        msgs = [{"role": "user", "content": "hi"}]
+        kwargs = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=msgs,
+            tools=None,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            provider_profile=profile,
+        )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
@@ -1280,6 +1362,7 @@ class TestBuildApiKwargs:
 
 
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.session_id = "sess-123"
@@ -1296,6 +1379,7 @@ class TestBuildApiKwargs:
         assert kwargs["messages"][2]["content"][0]["text"] == "hi"
 
     def test_qwen_portal_normalizes_bare_string_content_parts(self, agent):
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         messages = [
@@ -1308,6 +1392,7 @@ class TestBuildApiKwargs:
         assert user_content[1] == {"type": "text", "text": "world"}
 
     def test_qwen_portal_no_system_message(self, agent):
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         messages = [{"role": "user", "content": "hi"}]
@@ -1328,6 +1413,7 @@ class TestBuildApiKwargs:
     def test_qwen_portal_default_max_tokens(self, agent):
         """When max_tokens is None, Qwen Portal gets a default of 65536
         to prevent reasoning models from exhausting their output budget."""
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.max_tokens = None
@@ -1465,8 +1551,8 @@ class TestBuildAssistantMessage:
 
         This preserves ``_copy_reasoning_content_for_api``'s downstream
         tiers at replay time — cross-provider leak guard (#15748),
-        promote-from-``reasoning``, and DeepSeek/Kimi ""-pad — which
-        would all be bypassed if we eagerly wrote ``reasoning_content=""``
+        promote-from-``reasoning``, and DeepSeek/Kimi " "-pad — which
+        would all be bypassed if we eagerly wrote ``reasoning_content=" "``
         on every assistant turn regardless of provider.
         """
         msg = _mock_assistant_msg(content="plain answer")
@@ -2180,6 +2266,150 @@ class TestHandleMaxIterations:
         assert result == "Summary"
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_summary_request_removes_orphan_tool_result(self, agent):
+        """Regression: max-iterations summary request must NOT contain
+        orphan tool results (tool_call_id with no matching assistant tool_call)."""
+        resp = _mock_response(content="Summary of work done.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "Analyze finance-data-router"},
+            {"role": "assistant", "content": "[Session Arc Summary] ..."},
+            {"role": "tool", "tool_call_id": "call_cfedFhJjGmu1RvRc1OUC38j8", "content": "file content here"},
+            {"role": "assistant", "tool_calls": [{"id": "call_8fXBXsT592Vpvm7wnW4obPEu", "function": {"name": "patch", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_8fXBXsT592Vpvm7wnW4obPEu", "content": "patch result"},
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        result = agent._handle_max_iterations(messages, 120)
+
+        assert result == "Summary of work done."
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        orphan_ids = [
+            m.get("tool_call_id") for m in sent_msgs
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_cfedFhJjGmu1RvRc1OUC38j8"
+        ]
+        assert len(orphan_ids) == 0, f"Orphan tool result still present: {orphan_ids}"
+
+    def test_summary_request_inserts_stub_for_missing_tool_result(self, agent):
+        """If an assistant tool_call has no matching tool result in the
+        summary request, a stub must be inserted to satisfy the API contract."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {"role": "assistant", "tool_calls": [{"id": "call_no_result", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "assistant", "content": "Continuing..."},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        stub_ids = [
+            m.get("tool_call_id") for m in sent_msgs
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
+        ]
+        assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openai"
+        agent.providers_allowed = ["Anthropic"]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "provider" not in kwargs.get("extra_body", {})
+
+    def test_summary_keeps_provider_preferences_for_openrouter(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.providers_allowed = ["Anthropic"]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
+
+    def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._cached_system_prompt = "You are helpful."
+        captured = {}
+
+        def fake_run_codex_stream(kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text="Summary")],
+                    )
+                ],
+            )
+
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_orphan",
+                "content": "orphaned result from compressed history",
+            },
+        ]
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations(messages, 90)
+
+        assert result == "Summary"
+        input_items = captured["input"]
+        assert not any(
+            item.get("type") == "function_call_output"
+            and item.get("call_id") == "call_orphan"
+            for item in input_items
+        )
+
+    def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "result"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
+            "call_123"
+        ]
 
 
 class TestRunConversation:
@@ -3486,6 +3716,18 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_github_copilot(self, agent):
+        """GitHub Copilot's OpenAI-compatible API rejects max_tokens for newer models."""
+        agent.base_url = "https://api.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_github_copilot_path(self, agent):
+        """Detect Copilot by hostname even when the configured URL includes a path."""
+        agent.base_url = "https://api.githubcopilot.com/chat/completions"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
 
 class TestAzureOpenAIRouting:
     """Verify Azure OpenAI endpoints stay on chat_completions for gpt-5.x."""
@@ -4550,7 +4792,7 @@ class TestReasoningReplayForStrictProviders:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_kimi_tool_replay_includes_empty_reasoning_content(self, agent):
+    def test_kimi_tool_replay_includes_space_reasoning_content(self, agent):
         self._setup_agent(agent)
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -4587,7 +4829,7 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["role"] == "assistant"
         assert replayed_assistant["tool_calls"][0]["function"]["name"] == "terminal"
         assert "reasoning_content" in replayed_assistant
-        assert replayed_assistant["reasoning_content"] == ""
+        assert replayed_assistant["reasoning_content"] == " "
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)
@@ -4844,6 +5086,28 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestSupportsReasoningExtraBody:
+    def _make_agent(self):
+        agent = object.__new__(AIAgent)
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = ""
+        return agent
+
+    def test_xiaomi_models_are_treated_as_reasoning_capable(self):
+        agent = self._make_agent()
+        for model in (
+            "xiaomi/mimo-v2.5-pro",
+            "xiaomi/mimo-v2.5",
+            "xiaomi/mimo-v2-omni",
+            "xiaomi/mimo-v2-pro",
+            "xiaomi/mimo-v2-flash",
+        ):
+            agent.model = model
+            assert agent._supports_reasoning_extra_body() is True, model
 
 
 class TestMemoryContextSanitization:

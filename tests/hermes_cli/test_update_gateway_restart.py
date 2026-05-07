@@ -394,6 +394,91 @@ class TestCmdUpdateLaunchdRestart:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_restarts_profile_manual_gateways(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """Profile-mapped manual gateways are relaunched automatically after update."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: tmp_path / "ai.hermes.gateway.plist",
+        )
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            launchctl_loaded=False,
+        )
+        process = gateway_cli.ProfileGatewayProcess(
+            profile="coder",
+            path=tmp_path / ".hermes" / "profiles" / "coder",
+            pid=12345,
+        )
+
+        # ``find_gateway_pids`` is invoked twice: once to enumerate manual
+         # PIDs to restart, then again ~3s later by the post-restart survivor
+         # sweep (#17648). Return the live PID first, then an empty list to
+         # simulate the process actually exiting after the graceful restart
+         # — otherwise the sweep would SIGKILL pid 12345 even though graceful
+         # drain succeeded, and ``kill.assert_not_called()`` would fire.
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
+             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
+             patch("os.kill") as kill:
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        restart.assert_called_once_with("coder", 12345)
+        graceful.assert_called_once()
+        # Graceful drain succeeded — no SIGTERM fallback needed.
+        kill.assert_not_called()
+        assert "Restarting manual gateway profile(s): coder" in captured
+        assert "Restart manually: hermes gateway run" not in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_profile_manual_gateway_falls_back_to_sigterm(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """When graceful SIGUSR1 drain fails, manual profile restart falls back to SIGTERM."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: tmp_path / "ai.hermes.gateway.plist",
+        )
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            launchctl_loaded=False,
+        )
+        process = gateway_cli.ProfileGatewayProcess(
+            profile="coder",
+            path=tmp_path / ".hermes" / "profiles" / "coder",
+            pid=12345,
+        )
+
+        # See note in ``test_update_restarts_profile_manual_gateways``: the
+        # post-restart survivor sweep (#17648) re-queries ``find_gateway_pids``
+        # ~3s after the restart attempt. Return ``[]`` on the second call so
+        # the SIGTERM fallback isn't escalated to SIGKILL by the sweep.
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
+             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
+             patch("os.kill") as kill:
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        restart.assert_called_once_with("coder", 12345)
+        graceful.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback.
+        kill.assert_called_once()
+        assert "Restarting manual gateway profile(s): coder" in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_with_systemd_still_restarts_via_systemd(
         self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
     ):
@@ -797,15 +882,25 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
+        # Survivor sweep (#17648) re-queries ``find_gateway_pids`` after
+         # SIGTERM. ``os.kill`` is mocked, so the PID never "dies" — track
+         # the killed-via-SIGTERM PIDs ourselves and exclude them on later
+         # calls to simulate the OS reaping the process. Without this the
+         # sweep escalates with SIGKILL and ``manual_kills == 2`` instead of 1.
+        _killed_pids: set[int] = set()
+
         def fake_find(exclude_pids=None, all_profiles=False):
-            _exclude = exclude_pids or set()
+            _exclude = (exclude_pids or set()) | _killed_pids
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
+
+        def fake_kill(pid, _sig):
+            _killed_pids.add(pid)
 
         with patch.object(
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids", side_effect=fake_find,
-        ), patch("os.kill") as mock_kill:
+        ), patch("os.kill", side_effect=fake_kill) as mock_kill:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out

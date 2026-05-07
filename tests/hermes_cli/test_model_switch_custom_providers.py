@@ -506,3 +506,64 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     )
 
     assert "base_url" not in captured
+
+
+def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch):
+    """Custom providers with api_key + base_url should prefer live /models.
+
+    Custom providers (section 4 of list_authenticated_providers) point at
+    gateways like Bifrost that expose hundreds of models.  Reading only the
+    static ``models:`` dict from config.yaml leaves the /model picker with
+    a stale subset.  Live discovery fills the picker with all available
+    models from the endpoint.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "sk-gateway-key",
+            "base_url": "https://gateway.example.com/v1",
+            "model": "gateway-model-a",
+            "models": {
+                "gateway-model-a": {"context_length": 128000},
+                "gateway-model-b": {"context_length": 128000},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("api_url") == "https://gateway.example.com/v1"
+        ),
+        None,
+    )
+
+    assert gateway_prov is not None, "Custom provider group not found in results"
+    assert calls == [("sk-gateway-key", "https://gateway.example.com/v1")], (
+        "fetch_api_models must be called with the custom provider's credentials"
+    )
+    assert gateway_prov["models"] == [
+        "gateway-model-a",
+        "gateway-model-b",
+        "gateway-model-c",
+    ], "Live models must replace the static subset"
+    assert gateway_prov["total_models"] == 3

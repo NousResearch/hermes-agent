@@ -119,7 +119,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             pass
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=20.0)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
             self._app = web.Application()
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)

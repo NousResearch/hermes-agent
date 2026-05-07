@@ -191,6 +191,50 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
+
+# ---------------------------------------------------------------------------
+# WebSocket proxy handling
+# ---------------------------------------------------------------------------
+
+class TestQQWebSocketProxy:
+    @pytest.mark.asyncio
+    async def test_open_ws_honors_proxy_env(self, monkeypatch):
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+        seen_session_kwargs = {}
+        seen_ws_kwargs = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                seen_session_kwargs.update(kwargs)
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert seen_session_kwargs.get("trust_env") is True
+        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+
 # ---------------------------------------------------------------------------
 # _strip_at_mention
 # ---------------------------------------------------------------------------

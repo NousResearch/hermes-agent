@@ -7,14 +7,11 @@ import {
 } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import {
-  Badge,
-  Button,
-  FilterGroup,
-  Segmented,
-  Spinner,
-  Switch,
-} from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { FilterGroup, Segmented } from "@nous-research/ui/ui/components/segmented";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";

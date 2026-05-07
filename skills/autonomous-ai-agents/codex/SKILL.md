@@ -26,9 +26,16 @@ Requires the codex CLI and a git repository.
 ## Prerequisites
 
 - Codex installed: `npm install -g @openai/codex`
-- OpenAI API key configured
+- OpenAI auth configured: either `OPENAI_API_KEY` or Codex OAuth credentials
+  from the Codex CLI login flow
 - **Must run inside a git repository** — Codex refuses to run outside one
 - Use `pty=true` in terminal calls — Codex is an interactive terminal app
+
+For Hermes itself, `model.provider: openai-codex` uses Hermes-managed Codex
+OAuth from `~/.hermes/auth.json` after `hermes auth add openai-codex`. For the
+standalone Codex CLI, a valid CLI OAuth session may live under
+`~/.codex/auth.json`; do not treat a missing `OPENAI_API_KEY` alone as proof
+that Codex auth is missing.
 
 ## One-Shot Tasks
 

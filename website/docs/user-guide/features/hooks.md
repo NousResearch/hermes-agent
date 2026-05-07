@@ -18,7 +18,7 @@ All three systems are non-blocking — errors in any hook are caught and logged,
 
 ## Gateway Event Hooks
 
-Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp) without blocking the main agent pipeline.
+Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp, Teams) without blocking the main agent pipeline.
 
 ### Creating a Hook
 
@@ -346,7 +346,7 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
-Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
+Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Teams). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
 :::
 
 ## Plugin Hooks
@@ -387,6 +387,7 @@ def register(ctx):
 | [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
+| [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
 
 ---
 
@@ -1090,6 +1091,49 @@ def register(ctx):
 ```
 
 Pairs well with `transform_tool_result` (which covers every other tool).
+
+---
+
+### `transform_llm_output`
+
+Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller). Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    response_text: str,
+    session_id: str,
+    model: str,
+    platform: str,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `response_text` | `str` | The assistant's final response text for this turn. |
+| `session_id` | `str` | Session ID for this conversation (may be empty for one-shot runs). |
+| `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
+| `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
+
+**Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register — mirroring `transform_tool_result`.
+
+**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
+
+```python
+import os, re
+
+def spongebob(response_text, **kwargs):
+    if os.environ.get("SPONGEBOB_MODE") != "on":
+        return None  # pass through unchanged
+    return re.sub(r"!", "!! Tartar sauce!", response_text)
+
+def register(ctx):
+    ctx.register_hook("transform_llm_output", spongebob)
+```
+
+The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
 
 ---
 

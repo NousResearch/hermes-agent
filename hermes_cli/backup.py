@@ -61,6 +61,9 @@ _EXCLUDED_NAMES = {
     "cron.pid",
 }
 
+# zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+
 
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
@@ -381,6 +384,8 @@ def run_import(args) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
+                if target.name in _SECRET_FILE_NAMES:
+                    os.chmod(target, 0o600)
                 restored += 1
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")
@@ -788,9 +793,17 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     Returns the number of files deleted.  Only touches files matching
     ``pre-update-*.zip`` so hand-made zips dropped in the same directory
     are never touched.
+
+    ``keep`` is floored to 1 because this helper is only called immediately
+    after a fresh backup is written: deleting that backup right after the
+    user paid the disk/CPU cost to create it would leave them worse off
+    than no backup at all (and the wrapper in ``main.py`` would still print
+    a misleading ``Saved: <path>`` line for a file that no longer exists).
+    Operators who genuinely don't want a backup should set
+    ``updates.pre_update_backup: false`` in config — that gates creation.
     """
-    if keep < 0:
-        keep = 0
+    if keep < 1:
+        keep = 1
     if not backup_dir.exists():
         return 0
 

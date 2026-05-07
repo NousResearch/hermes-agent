@@ -245,6 +245,47 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "nous":
+        # Codex-style auto-import: if a shared Nous credential lives at
+        # ~/.hermes/shared/nous_auth.json (written by any previous
+        # successful login), offer to import it instead of running the
+        # full device-code flow. This makes `hermes --profile <name>
+        # auth add nous --type oauth` a one-tap operation for users who
+        # run multiple profiles.
+        shared = auth_mod._read_shared_nous_state()
+        if shared:
+            try:
+                path = auth_mod._nous_shared_store_path()
+            except RuntimeError:
+                path = None
+            print()
+            if path:
+                print(f"Found existing Nous OAuth credentials at {path}")
+            else:
+                print("Found existing shared Nous OAuth credentials")
+            try:
+                do_import = input("Import these credentials? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "y"
+            if do_import in ("", "y", "yes"):
+                print("Rehydrating Nous session from shared credentials...")
+                rehydrated = auth_mod._try_import_shared_nous_state(
+                    timeout_seconds=getattr(args, "timeout", None) or 15.0,
+                    min_key_ttl_seconds=max(
+                        60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))
+                    ),
+                )
+                if rehydrated is not None:
+                    custom_label = (getattr(args, "label", None) or "").strip() or None
+                    entry = auth_mod.persist_nous_credentials(rehydrated, label=custom_label)
+                    shown_label = entry.label if entry is not None else label_from_token(
+                        rehydrated.get("access_token", ""), _oauth_default_label(provider, 1),
+                    )
+                    print(f'Imported {provider} OAuth credentials: "{shown_label}"')
+                    return
+                # Rehydrate failed (expired refresh_token, portal down, etc.)
+                # — fall through to device-code flow.
+                print("Could not refresh shared credentials — falling back to device-code login.")
+
         creds = auth_mod._nous_device_code_login(
             portal_base_url=getattr(args, "portal_url", None),
             inference_base_url=getattr(args, "inference_url", None),

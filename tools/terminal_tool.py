@@ -620,6 +620,32 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
     return "".join(out), found
 
 
+def _sudo_nopasswd_works() -> bool:
+    """Return True when local sudo currently works without prompting.
+
+    Only probes for the `local` terminal backend; Docker/SSH/Modal/etc. must
+    not inherit the host's sudo state. Re-probes every call (no process-level
+    cache) so an expired sudo timestamp cannot make a later command silently
+    block waiting for a password.
+    """
+    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    if terminal_env != "local":
+        return False
+
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+        return probe.returncode == 0
+    except Exception:
+        return False
+
+
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
 
@@ -832,6 +858,15 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         if has_configured_password
         else _get_cached_sudo_password()
     )
+
+    # Local hosts with sudoers NOPASSWD should not be forced through the
+    # interactive Hermes password prompt or the sudo -S password-pipe path.
+    # Scoped to the local terminal backend so Docker/SSH/Modal/etc. can't
+    # inherit host sudo state. Re-probes every call (no process-lifetime
+    # cache) so an expired sudo timestamp doesn't make a later command block
+    # silently without Hermes prompting.
+    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
+        return command, None
 
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)

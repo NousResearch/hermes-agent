@@ -4,9 +4,9 @@
 # transitive deps like onnxruntime that lack compatible wheels on
 # aarch64-darwin. The package and devShell still work on macOS.
 { inputs, ... }: {
-  perSystem = { pkgs, system, lib, ... }:
+  perSystem = { pkgs, lib, self', ... }:
     let
-      hermes-agent = inputs.self.packages.${system}.default;
+      hermes-agent = self'.packages.default;
       hermesVenv = hermes-agent.hermesVenv;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
@@ -51,7 +51,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
         in pkgs.runCommand "hermes-cross-eval" { } (
           if failures != [] then
-            builtins.throw "Package fails to evaluate on:\n${failMsg}"
+            throw "Package fails to evaluate on:\n${failMsg}"
           else ''
             echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
             mkdir -p $out

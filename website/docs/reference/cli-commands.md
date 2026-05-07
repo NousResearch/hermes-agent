@@ -378,6 +378,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `tail <id>` | Follow a task's event stream. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--json`. |
 | `context <id>` | Print the full context a worker would see (title + body + parent results + comments). |
+| `specify <id>` / `specify --all` | Flesh out a triage-column task into a concrete spec (title + body with goal, approach, acceptance criteria) via the auxiliary LLM, then promote it to `todo`. Flags: `--tenant` (scope `--all` to one tenant), `--author`, `--json`. Configure the model under `auxiliary.triage_specifier` in `config.yaml`. |
 | `gc` | Remove scratch workspaces for archived tasks. |
 
 Examples:

@@ -29,6 +29,7 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    rate_limit_state=None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -42,7 +43,7 @@ def _attach_agent(
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
-        get_rate_limit_state=lambda: None,
+        get_rate_limit_state=lambda: rate_limit_state,
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
@@ -80,6 +81,30 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_shows_5h_and_week_token_limits(self):
+        rate_limit_state = SimpleNamespace(
+            has_data=True,
+            tokens_5h=SimpleNamespace(limit=1_000_000, remaining=600_000, usage_pct=40.0),
+            tokens_week=SimpleNamespace(limit=10_000_000, remaining=2_000_000, usage_pct=80.0),
+        )
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            rate_limit_state=rate_limit_state,
+        )
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "5h[" in text
+        assert "40%" in text
+        assert "W[" in text
+        assert "80%" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()

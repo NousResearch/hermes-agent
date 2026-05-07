@@ -5925,6 +5925,7 @@ class AIAgent:
             collected_output_items: list = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
+                    self._capture_rate_limits(getattr(stream, "response", None) or getattr(stream, "_response", None))
                     for event in stream:
                         self._touch_activity("receiving stream response")
                         if self._interrupt_requested:
@@ -6039,6 +6040,7 @@ class AIAgent:
         fallback_kwargs["stream"] = True
         fallback_kwargs = self._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = active_client.responses.create(**fallback_kwargs)
+        self._capture_rate_limits(getattr(stream_or_response, "response", None) or getattr(stream_or_response, "_response", None))
 
         # Compatibility shim for mocks or providers that still return a concrete response.
         if hasattr(stream_or_response, "output"):
@@ -6941,9 +6943,10 @@ class AIAgent:
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             # Capture rate limit headers from the initial HTTP response.
-            # The OpenAI SDK Stream object exposes the underlying httpx
-            # response via .response before any chunks are consumed.
-            self._capture_rate_limits(getattr(stream, "response", None))
+            # The OpenAI SDK Stream object usually exposes the underlying
+            # httpx response via .response, but Codex Responses streams have
+            # also exposed it only via the private ._response attribute.
+            self._capture_rate_limits(getattr(stream, "response", None) or getattr(stream, "_response", None))
 
             # Log OpenRouter response cache status when present.
             self._check_openrouter_cache_status(getattr(stream, "response", None))

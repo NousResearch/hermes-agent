@@ -2576,6 +2576,36 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    def _status_bar_limit_style(self, bucket: Any) -> str:
+        pct = getattr(bucket, "usage_pct", 0.0) if bucket else 0.0
+        return self._status_bar_context_style(round(pct))
+
+    def _build_limit_bar(self, bucket: Any, width: int = 5) -> str:
+        pct = getattr(bucket, "usage_pct", 0.0) if bucket else 0.0
+        safe_percent = max(0.0, min(100.0, pct))
+        filled = round((safe_percent / 100.0) * width)
+        return f"[{'█' * filled}{'░' * max(0, width - filled)}]"
+
+    @staticmethod
+    def _format_limit_percent(bucket: Any) -> str:
+        if not bucket or getattr(bucket, "limit", 0) <= 0:
+            return "--"
+        return f"{round(getattr(bucket, 'usage_pct', 0.0))}%"
+
+    def _status_bar_rate_limit_parts(self, snapshot: Dict[str, Any], *, visual: bool = False) -> list[str]:
+        """Return compact 5h/week token quota labels for the status bar."""
+        parts: list[str] = []
+        for key, label in (("rate_limit_tokens_5h", "5h"), ("rate_limit_tokens_week", "W")):
+            bucket = snapshot.get(key)
+            if not bucket or getattr(bucket, "limit", 0) <= 0:
+                continue
+            pct = self._format_limit_percent(bucket)
+            if visual:
+                parts.append(f"{label}{self._build_limit_bar(bucket, width=4)}{pct}")
+            else:
+                parts.append(f"{label} {pct}")
+        return parts
+
     @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
@@ -2649,6 +2679,8 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "rate_limit_tokens_5h": None,
+            "rate_limit_tokens_week": None,
         }
 
         if not agent:
@@ -2662,6 +2694,14 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        try:
+            get_rl_state = getattr(agent, "get_rate_limit_state", None)
+            rl_state = get_rl_state() if callable(get_rl_state) else None
+            if rl_state and getattr(rl_state, "has_data", False):
+                snapshot["rate_limit_tokens_5h"] = getattr(rl_state, "tokens_5h", None)
+                snapshot["rate_limit_tokens_week"] = getattr(rl_state, "tokens_week", None)
+        except Exception:
+            pass
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -2865,6 +2905,9 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            limit_parts = self._status_bar_rate_limit_parts(snapshot, visual=width >= 110)
+            if width >= 100 and limit_parts:
+                parts.append(" ".join(limit_parts))
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -2925,9 +2968,23 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    if width >= 100:
+                        for key, label in (("rate_limit_tokens_5h", "5h"), ("rate_limit_tokens_week", "W")):
+                            bucket = snapshot.get(key)
+                            if not bucket or getattr(bucket, "limit", 0) <= 0:
+                                continue
+                            limit_style = self._status_bar_limit_style(bucket)
+                            frags.extend([
+                                ("class:status-bar-dim", " │ "),
+                                ("class:status-bar-dim", f"{label}"),
+                                (limit_style, self._build_limit_bar(bucket, width=4)),
+                                (limit_style, self._format_limit_percent(bucket)),
+                            ])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                    ]
+                    ])
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

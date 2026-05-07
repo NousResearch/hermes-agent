@@ -53,6 +53,63 @@ class TestParseHeaders:
         assert state.tokens_hour.remaining == 335999000
         assert state.tokens_hour.reset_seconds == 3490.0
 
+    def test_parses_long_codex_token_windows(self):
+        headers = {
+            "x-ratelimit-limit-tokens-5h": "1000000",
+            "x-ratelimit-remaining-tokens-5h": "750000",
+            "x-ratelimit-reset-tokens-5h": "14400",
+            "x-ratelimit-limit-tokens-1w": "10000000",
+            "x-ratelimit-remaining-tokens-1w": "2500000",
+            "x-ratelimit-reset-tokens-1w": "259200",
+        }
+        state = parse_rate_limit_headers(headers, provider="openai-codex")
+
+        assert state is not None
+        assert state.tokens_5h.limit == 1_000_000
+        assert state.tokens_5h.remaining == 750_000
+        assert state.tokens_week.limit == 10_000_000
+        assert state.tokens_week.remaining == 2_500_000
+
+    def test_parses_codex_plan_limit_headers(self):
+        headers = {
+            "x-codex-active-limit": "premium",
+            "x-codex-plan-type": "plus",
+            "x-codex-credits-balance": "0",
+            "x-codex-credits-has-credits": "false",
+            "x-codex-credits-unlimited": "false",
+            "x-codex-primary-used-percent": "40.2",
+            "x-codex-primary-window-minutes": "300",
+            "x-codex-primary-reset-after-seconds": "5900",
+            "x-codex-secondary-used-percent": "21",
+            "x-codex-secondary-window-minutes": "10080",
+            "x-codex-secondary-reset-after-seconds": "521340",
+        }
+        state = parse_rate_limit_headers(headers, provider="openai-codex")
+
+        assert state is not None
+        assert state.plan_type == "plus"
+        assert state.active_limit == "premium"
+        assert state.credits_has_credits is False
+        assert state.credits_unlimited is False
+        assert state.tokens_5h.limit == 100
+        assert state.tokens_5h.remaining == 60
+        assert round(state.tokens_5h.usage_pct) == 40
+        assert state.tokens_5h.reset_seconds == 5900
+        assert state.tokens_week.limit == 100
+        assert state.tokens_week.remaining == 79
+        assert round(state.tokens_week.usage_pct) == 21
+
+    def test_parses_weekly_aliases(self):
+        headers = {
+            "x-ratelimit-limit-tokens-weekly": "9000000",
+            "x-ratelimit-remaining-tokens-weekly": "4500000",
+        }
+        state = parse_rate_limit_headers(headers)
+
+        assert state is not None
+        assert state.tokens_week.limit == 9_000_000
+        assert state.tokens_week.remaining == 4_500_000
+
     def test_no_headers(self):
         state = parse_rate_limit_headers({})
         assert state is None
@@ -159,6 +216,42 @@ class TestFormatting:
         assert "Tokens/min" in result
         assert "Tokens/hr" in result
         assert "resets in" in result
+
+    def test_format_display_includes_long_token_windows_when_present(self):
+        state = parse_rate_limit_headers(
+            {
+                **NOUS_HEADERS,
+                "x-ratelimit-limit-tokens-5h": "1000000",
+                "x-ratelimit-remaining-tokens-5h": "500000",
+                "x-ratelimit-limit-tokens-1w": "10000000",
+                "x-ratelimit-remaining-tokens-1w": "9000000",
+            }
+        )
+        result = format_rate_limit_display(state)
+
+        assert "Tokens/5h" in result
+        assert "Tokens/week" in result
+
+    def test_format_display_includes_codex_plan_metadata(self):
+        state = parse_rate_limit_headers(
+            {
+                "x-codex-active-limit": "premium",
+                "x-codex-plan-type": "plus",
+                "x-codex-credits-has-credits": "false",
+                "x-codex-primary-used-percent": "40",
+                "x-codex-secondary-used-percent": "21",
+            },
+            provider="openai-codex",
+        )
+        result = format_rate_limit_display(state)
+        compact = format_rate_limit_compact(state)
+
+        assert "Plan: plus / premium" in result
+        assert "Credits: none" in result
+        assert "Tokens/5h" in result
+        assert "Tokens/week" in result
+        assert "plan plus" in compact
+        assert "T5H:" in compact
 
     def test_format_display_warning_on_high_usage(self):
         headers = {

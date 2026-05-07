@@ -15269,7 +15269,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 try:
                     os.kill(existing_pid, 0)
                     time.sleep(0.5)
-                except (ProcessLookupError, PermissionError):
+                except (ProcessLookupError, PermissionError, OSError):
+                    # OSError covers Windows' WinError 87 "invalid parameter"
+                    # for an already-gone PID — without this the probe loop
+                    # busy-spins for the full 10s on every --replace start.
                     break  # Process is gone
             else:
                 # Still alive after 10s — force kill
@@ -15554,6 +15557,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
 def main():
     """CLI entry point for the gateway."""
+    # Force UTF-8 stdio on Windows — gateway logs and startup banner would
+    # otherwise UnicodeEncodeError on cp1252 consoles.  No-op on POSIX.
+    try:
+        from hermes_cli.stdio import configure_windows_stdio
+        configure_windows_stdio()
+    except Exception:
+        pass
+
     import argparse
     
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")

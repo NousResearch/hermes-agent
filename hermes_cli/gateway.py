@@ -232,6 +232,10 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
             # Process still exists but we can't signal it.  Treat as alive
             # so the caller falls back.
             pass
+        except OSError:
+            # Windows raises OSError (WinError 87 "invalid parameter") for
+            # a gone PID — treat the same as ProcessLookupError.
+            return True
         _time.sleep(0.5)
     # Drain didn't finish in time.
     return False
@@ -458,6 +462,9 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
                 break
             except PermissionError:
                 pass
+            except OSError:
+                # Windows: gone PID raises OSError (WinError 87).
+                break
             time.sleep(0.2)
         subprocess.Popen(
             cmd,
@@ -935,7 +942,8 @@ def stop_profile_gateway() -> bool:
         try:
             os.kill(pid, 0)
             _time.sleep(0.5)
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
+            # OSError covers Windows' WinError 87 for gone PIDs.
             break
 
     if get_running_pid() is None:

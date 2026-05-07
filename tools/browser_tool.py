@@ -1175,6 +1175,10 @@ def _reap_orphaned_browser_sessions():
                     # Owner exists but we can't signal it (different uid).
                     # Treat as alive — don't reap someone else's session.
                     owner_alive = True
+                except OSError:
+                    # Windows: gone PID raises OSError (WinError 87) instead
+                    # of ProcessLookupError.  Treat as dead to match POSIX.
+                    owner_alive = False
             except (ValueError, OSError):
                 owner_alive = None  # corrupt file — fall through
 
@@ -1210,6 +1214,11 @@ def _reap_orphaned_browser_sessions():
             continue
         except PermissionError:
             # Alive but owned by someone else — leave it alone
+            continue
+        except OSError:
+            # Windows raises OSError (WinError 87) for a gone PID — treat
+            # as dead and clean up, mirroring the ProcessLookupError branch.
+            shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.

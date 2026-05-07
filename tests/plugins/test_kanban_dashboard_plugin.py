@@ -553,6 +553,67 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         assert ws is not None  # handshake succeeded
 
 
+def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
+    """``asyncio.CancelledError`` while sleeping in the poll loop is the
+    normal uvicorn-shutdown path (``BaseException``, so the bare
+    ``except Exception:`` does NOT catch it). Without the explicit
+    clause the cancellation surfaces as an application traceback.
+
+    Regression test for #20790 (fix in #20938). Drives the coroutine
+    directly (rather than through FastAPI TestClient) so we can observe
+    the cancellation outcome deterministically.
+    """
+    import asyncio
+    import types
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Short-circuit the token check — this test is about the cancellation
+    # path, not auth.
+    import plugins.kanban.dashboard.plugin_api as pa
+    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0"}
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            pass
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        # Give the handler a tick to accept + start polling.
+        await asyncio.sleep(0.05)
+        assert ws.accepted is True
+        task.cancel()
+        # stream_events should swallow CancelledError and return cleanly.
+        # If it doesn't, this await re-raises the CancelledError.
+        result = await task
+        return result, ws
+
+    result, ws = asyncio.run(_run())
+    assert result is None, (
+        f"stream_events should return cleanly after cancellation, got {result!r}"
+    )
+    # The bug symptom was a traceback; we don't assert on stderr because
+    # capturing asyncio's internal "exception was never retrieved" logging
+    # is flaky. The assertion that matters is: no CancelledError escaped.
+
+
 # ---------------------------------------------------------------------------
 # Bulk actions
 # ---------------------------------------------------------------------------

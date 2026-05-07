@@ -246,7 +246,63 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
-    def test_bare_platform_uses_matching_origin_chat(self):
+    def test_origin_delivery_ignores_configured_home_when_origin_present(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "home-topic")
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "17585",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1001",
+            "thread_id": "17585",
+        }
+
+    def test_bare_platform_prefers_configured_home_over_same_platform_origin(self, monkeypatch):
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C_HOME")
+        monkeypatch.delenv("SLACK_HOME_CHANNEL_THREAD_ID", raising=False)
+        job = {
+            "deliver": "slack",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C_ORIGIN",
+                "thread_id": "1777931946.284039",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "C_HOME",
+            "thread_id": None,
+        }
+
+    def test_bare_platform_prefers_home_thread_over_origin_thread(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL_THREAD_ID", "topic-7")
+        job = {
+            "deliver": "discord",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "origin-parent",
+                "thread_id": "origin-thread",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "parent-42",
+            "thread_id": "topic-7",
+        }
+
+    def test_bare_platform_falls_back_to_matching_origin_when_no_home_configured(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
         job = {
             "deliver": "telegram",
             "origin": {
@@ -260,6 +316,22 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001",
             "thread_id": "17585",
+        }
+
+    def test_bare_dynamic_platform_falls_back_to_matching_origin(self):
+        job = {
+            "deliver": "customchat",
+            "origin": {
+                "platform": "customchat",
+                "chat_id": "room-1",
+                "thread_id": "thread-2",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "customchat",
+            "chat_id": "room-1",
+            "thread_id": "thread-2",
         }
 
     def test_bare_platform_falls_back_to_home_channel(self, monkeypatch):

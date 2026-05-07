@@ -244,6 +244,17 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     platform_name = deliver_value
+    platform_key = platform_name.lower()
+
+    if platform_key in _KNOWN_DELIVERY_PLATFORMS:
+        chat_id = _get_home_target_chat_id(platform_name)
+        if chat_id:
+            return {
+                "platform": platform_name,
+                "chat_id": chat_id,
+                "thread_id": _get_home_target_thread_id(platform_name),
+            }
+
     if origin and origin.get("platform") == platform_name:
         return {
             "platform": platform_name,
@@ -251,17 +262,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "thread_id": origin.get("thread_id"),
         }
 
-    if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
-        return None
-    chat_id = _get_home_target_chat_id(platform_name)
-    if not chat_id:
-        return None
-
-    return {
-        "platform": platform_name,
-        "chat_id": chat_id,
-        "thread_id": _get_home_target_thread_id(platform_name),
-    }
+    return None
 
 
 def _normalize_deliver_value(deliver) -> str:

@@ -38,6 +38,10 @@ Agent Android implementation work.
 - Tasker App Factory can export Tasker tasks or projects as Android apps, with
   linked resources included. Source:
   https://tasker.joaoapps.com/userguide/en/appcreation.html
+- Tasker XML exports identify actions by numeric codes. Hermes uses a
+  community-maintained code map only for a conservative import subset and
+  refuses unsupported or high-risk actions. Source:
+  https://github.com/Taskomater/Tasker-XML-Info/blob/master/Tasker_XML_Codes.md
 
 ## Hermes Support Map
 
@@ -58,8 +62,8 @@ Agent Android implementation work.
 | Tasker-style scenes/widgets | Not yet present as user-created Android scenes, overlays, widgets, or launcher shortcuts. Hermes has its fixed app UI and accessibility control of other apps. |
 | Tasker plugin model | Not yet present. Hermes has model tool schemas, not Android Locale/Tasker plugin integration. |
 | Tasker Java/JavaScript/Java Code actions | Partially present through app-workspace shell/Python and Shizuku shell. Tasker 6.6.18's arbitrary Java Code action is not exposed and should stay permission-gated if implemented because imported arbitrary code is a high-risk review surface. |
-| Hermes automation bundle export/import | Present through `android_automation_tool` actions `export_automations` and `import_automations`. Bundles preserve saved Hermes records plus variables, validate imported action and trigger types, reject invalid NUL-bearing payloads, can merge or replace existing automations, and reschedule enabled imported records. Native Tasker XML/Data URI import remains not yet present. |
-| Tasker XML/Data URI import | Not yet present for native Tasker project/profile/task formats. |
+| Hermes automation bundle export/import | Present through `android_automation_tool` actions `export_automations` and `import_automations`. Bundles preserve saved Hermes records plus variables, validate imported action and trigger types, reject invalid NUL-bearing payloads, can merge or replace existing automations, and reschedule enabled imported records. Safe Tasker XML/Data URI import feeds this same validated bundle importer. |
+| Tasker XML/Data URI import | Partially present through `android_automation_tool` action `import_tasker_xml` plus aliases for Tasker project/task/data URI import. Hermes accepts raw XML, `data:text/xml` URI, or base64 XML; converts a safe subset of Tasker Run Shell, Write File, Delete File, Launch App, Browse URL, Notify, and Variable data; rejects NUL, `DOCTYPE`, and `ENTITY` XML payloads; reports skipped unsupported actions; and leaves imported records disabled by default unless `enable_imported` is explicitly set. Full native Tasker project/profile fidelity, plugins, arbitrary Java/JavaScript, scenes, and background provider observers remain gaps. |
 | Tasker 6.6.18 sunrise/sunset action | Present through `android_automation_tool` actions `calculate_sunrise_sunset` and `create_sunrise_sunset_task`. Hermes calculates sunrise, sunset, civil dawn/dusk, solar noon, day/night or polar state, and daylight duration offline from latitude, longitude, optional `YYYY-MM-DD` date, and optional timezone, then exposes `%SUNRISE`, `%SUNSET`, `%SUN_DAWN`, `%SUN_DUSK`, `%SOLAR_NOON`, `%SUN_DAYLIGHT_MINUTES`, `%SUN_STATE`, `%SUN_DATE`, `%SUN_TIMEZONE`, `%SUN_LAT`, and `%SUN_LON`. |
 | Tasker 6.6.18 extra trigger apps | Present as token-gated Hermes external-trigger records. Third-party trigger apps can send `com.nousresearch.hermesagent.EXTERNAL_TRIGGER` with `trigger_id`, `external_token`, optional package/referrer data, and primitive extras; Hermes only runs matching enabled records and exposes `%SA_TRIGGER_ID`, `%SA_REFERRER`, `%SA_EXTRAS`, and `%SA_TRIGGER_PACKAGE_NAME`. |
 | Tasker Logcat Entry with Shizuku | Partially present: Hermes now stores bounded `logcat_entry` profile filters and dispatches explicit logcat events through `run_logcat_entry_trigger`, exposing logcat variables to saved actions. A Shizuku-backed background logcat watcher remains not yet present; Hermes can still run explicit Shizuku shell commands after user grant. |
@@ -84,13 +88,15 @@ control available to consenting users.
 The next credible Tasker-parity feature after shell/file/system/UI/app-launch,
 saved Android intent actions, saved notification actions, saved Shizuku
 package/permission actions, variables, Hermes automation bundle import/export,
-time/day triggers, basic phone-state triggers, app-foreground triggers,
-notification-posted triggers, explicit calendar-event triggers, explicit
-location triggers, explicit sensor triggers, and Shizuku-state triggers should
-extend profile coverage with explicit user-visible records:
+safe Tasker XML/Data URI import, time/day triggers, basic phone-state triggers,
+app-foreground triggers, notification-posted triggers, explicit calendar-event
+triggers, explicit location triggers, explicit sensor triggers, and
+Shizuku-state triggers should extend profile coverage with explicit
+user-visible records:
 
-- Tasker XML/Data URI import into the Hermes bundle schema, starting with a
-  safe subset of shell/file/intent/system actions and refusing arbitrary code,
+- expand Tasker XML import only where actions can be mapped safely to existing
+  Hermes records, with imported arbitrary code, plugins, scenes, and protected
+  setting mutations refused unless a permission-gated Hermes equivalent exists,
 - Shizuku-backed background Logcat Entry watcher that feeds the existing
   bounded `logcat_entry` records after the user starts Shizuku/Sui and grants
   Hermes permission,

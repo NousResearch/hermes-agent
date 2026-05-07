@@ -38,6 +38,7 @@ object HermesAutomationBridge {
             "calculate_sunrise_sunset", "sunrise_sunset", "sun_times", "solar_times" -> calculateSunriseSunsetJson(context, arguments)
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
+            "import_tasker_xml", "import_tasker_data_uri", "import_tasker_project", "import_tasker_task" -> importTaskerXmlJson(context, arguments)
             "run", "run_now", "trigger" -> runAutomationJson(context, arguments.optString("id"), "manual")
             "run_trigger", "trigger_event", "run_event" -> runTriggerJson(
                 context,
@@ -187,6 +188,26 @@ object HermesAutomationBridge {
             .put("imported_variable_count", variables.length())
             .put("automations", recordsToJson(importedRecords))
             .put("variables", variables)
+            .toString()
+    }
+
+    fun importTaskerXmlJson(context: Context, arguments: JSONObject): String {
+        val taskerImport = runCatching { HermesTaskerImportBridge.bundleFromArguments(arguments) }.getOrElse { error ->
+            return errorJson("import_tasker_xml failed to parse Tasker XML: ${error.message}")
+        } ?: return errorJson("import_tasker_xml requires tasker_xml, tasker_data_uri, or tasker_xml_base64")
+        val importArguments = JSONObject(arguments.toString()).put("bundle", taskerImport.bundle)
+        if (!importArguments.has("enable_imported") && !importArguments.has("disable_imported")) {
+            importArguments.put("disable_imported", true)
+        }
+        val imported = JSONObject(importAutomationsJson(context, importArguments))
+        if (!imported.optBoolean("success", false)) {
+            return imported.toString()
+        }
+        return imported
+            .put("source", "tasker_xml")
+            .put("tasker_task_count", taskerImport.taskCount)
+            .put("tasker_imported_action_count", taskerImport.importedActionCount)
+            .put("tasker_skipped_actions", taskerImport.skippedActions)
             .toString()
     }
 
@@ -3090,6 +3111,7 @@ object HermesAutomationBridge {
         "calculate_sunrise_sunset",
         "export_automations",
         "import_automations",
+        "import_tasker_xml",
         "run",
         "run_trigger",
         "run_app_foreground_trigger",

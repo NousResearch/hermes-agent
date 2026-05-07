@@ -1145,6 +1145,63 @@ class HermesAutomationInstrumentedTest {
         assertEquals("import:bundle-restored", target.readText())
     }
 
+    @Test
+    fun taskerXmlImportCreatesDisabledSafeFileTask() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-tasker-import.txt").apply { delete() }
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Tasker Import</nme>
+                <Action sr="act0" ve="7">
+                  <code>410</code>
+                  <Str sr="arg0" ve="3">hermes-tasker-import.txt</Str>
+                  <Str sr="arg1" ve="3">tasker:%TASKER_MESSAGE</Str>
+                  <Int sr="arg2" val="0"/>
+                </Action>
+                <Action sr="act1" ve="7">
+                  <code>129</code>
+                </Action>
+              </Task>
+              <Variable sr="var1">
+                <nme>%TASKER_MESSAGE</nme>
+                <val>xml-ok</val>
+              </Variable>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "import_tasker_xml",
+                JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(1, imported.getInt("tasker_imported_action_count"))
+        assertEquals(1, imported.getJSONArray("tasker_skipped_actions").length())
+        assertEquals("xml-ok", HermesAutomationStore(app).getVariable("TASKER_MESSAGE"))
+
+        val record = HermesAutomationStore(app).list().single()
+        assertFalse(record.enabled)
+        assertEquals("file_write", record.actionType)
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", record.id),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("tasker:xml-ok", target.readText())
+    }
+
     private fun eventually(timeoutMs: Long = 5_000L, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {

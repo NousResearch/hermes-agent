@@ -983,4 +983,143 @@ class HermesAutomationStoreTest {
         assertFalse(rejected.toString(), rejected.getBoolean("success"))
         assertTrue(rejected.getString("error").contains("unsupported action_type"))
     }
+
+    @Test
+    fun bridgeImportsSafeTaskerXmlSubset() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Daily Import</nme>
+                <Action sr="act0" ve="7">
+                  <code>123</code>
+                  <Str sr="arg0" ve="3">printf tasker-shell-ok</Str>
+                  <Int sr="arg1" val="0"/>
+                </Action>
+                <Action sr="act1" ve="7">
+                  <code>410</code>
+                  <Str sr="arg0" ve="3">tasker-import.txt</Str>
+                  <Str sr="arg1" ve="3">Tasker says %MESSAGE</Str>
+                  <Int sr="arg2" val="1"/>
+                </Action>
+                <Action sr="act2" ve="7">
+                  <code>104</code>
+                  <Str sr="arg0" ve="3">https://nousresearch.com/</Str>
+                </Action>
+                <Action sr="act3" ve="7">
+                  <code>9999</code>
+                </Action>
+              </Task>
+              <Variable sr="var1">
+                <nme>%MESSAGE</nme>
+                <val>hello</val>
+              </Variable>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals("tasker_xml", imported.getString("source"))
+        assertEquals(1, imported.getInt("tasker_task_count"))
+        assertEquals(3, imported.getInt("tasker_imported_action_count"))
+        assertEquals(1, imported.getJSONArray("tasker_skipped_actions").length())
+        assertEquals(3, imported.getInt("imported_automation_count"))
+        assertEquals("hello", store.getVariable("MESSAGE"))
+
+        val records = store.list()
+        assertTrue(records.any { it.actionType == ACTION_TYPE_SHELL && it.command == "printf tasker-shell-ok" })
+        assertTrue(records.any { it.actionType == ACTION_TYPE_INTENT && it.command.contains("nousresearch.com") })
+        assertTrue(records.none { it.enabled })
+
+        val fileRecord = records.first { it.actionType == ACTION_TYPE_FILE_WRITE }
+        val payload = org.json.JSONObject(fileRecord.command)
+        assertEquals("tasker-import.txt", payload.getString("path"))
+        assertEquals("Tasker says %MESSAGE", payload.getString("content"))
+        assertTrue(payload.getBoolean("append"))
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", fileRecord.id),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertTrue(run.getJSONObject("result").getString("path").endsWith("tasker-import.txt"))
+        assertTrue(run.getJSONObject("result").getBoolean("append"))
+
+        val rejected = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject().put(
+                    "tasker_xml",
+                    "<TaskerData><Task><nme>Unsafe</nme><Action><code>129</code></Action></Task></TaskerData>",
+                ),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+        assertTrue(rejected.getString("error").contains("supported safe actions"))
+
+        val malicious = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject().put(
+                    "tasker_xml",
+                    """
+                        <!DOCTYPE TaskerData [
+                          <!ENTITY xxe SYSTEM "file:///etc/passwd">
+                        ]>
+                        <TaskerData>
+                          <Variable><nme>%MESSAGE</nme><val>&xxe;</val></Variable>
+                        </TaskerData>
+                    """.trimIndent(),
+                ),
+            ),
+        )
+        assertFalse(malicious.toString(), malicious.getBoolean("success"))
+        assertTrue(malicious.getString("error").contains("DOCTYPE"))
+
+        val dataUriXml = """
+            <TaskerData>
+              <Task>
+                <nme>Data URI Import</nme>
+                <Action>
+                  <code>410</code>
+                  <Str sr="arg0" ve="3">tasker-data-uri.txt</Str>
+                  <Str sr="arg1" ve="3">uri-ok</Str>
+                </Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+        val dataUri = "data:text/xml," + java.net.URLEncoder.encode(
+            dataUriXml,
+            java.nio.charset.StandardCharsets.UTF_8.name(),
+        )
+        val dataUriImported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_data_uri",
+                org.json.JSONObject()
+                    .put("tasker_data_uri", dataUri)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(dataUriImported.toString(), dataUriImported.getBoolean("success"))
+        assertEquals(1, dataUriImported.getInt("tasker_imported_action_count"))
+        assertEquals("tasker_xml", dataUriImported.getString("source"))
+        assertFalse(store.list().single().enabled)
+    }
 }

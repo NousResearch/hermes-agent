@@ -713,7 +713,8 @@ class TestUpdateInHelp:
         result = await runner._handle_help_command(event)
         assert "/update" in result
 
-    def test_update_is_known_command(self):
+    @pytest.mark.asyncio
+    async def test_update_is_known_command(self):
         """The /update command is in the help text (proxy for _known_commands)."""
         # _known_commands is local to _handle_message, so we verify by
         # checking the help output includes it.

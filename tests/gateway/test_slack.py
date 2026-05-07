@@ -139,16 +139,22 @@ class TestSlashCommandSessionIsolation:
 class TestAppMentionHandler:
     """Verify that the app_mention event handler is registered."""
 
-    def test_app_mention_registered_on_connect(self):
+    @pytest.mark.asyncio
+    async def test_app_mention_registered_on_connect(self):
         """connect() should register message + assistant lifecycle handlers."""
         config = PlatformConfig(enabled=True, token="xoxb-fake")
         adapter = SlackAdapter(config)
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
 
         # Track which events get registered
         registered_events = []
         registered_commands = []
 
         mock_app = MagicMock()
+        mock_handler = MagicMock()
+        mock_handler.start_async = MagicMock(name="start_async")
+        mock_handler.close_async = AsyncMock()
 
         def mock_event(event_type):
             def decorator(fn):
@@ -164,14 +170,14 @@ class TestAppMentionHandler:
 
         mock_app.event = mock_event
         mock_app.command = mock_command
-        mock_app.client = AsyncMock()
+        mock_app.client = MagicMock()
         mock_app.client.auth_test = AsyncMock(return_value={
             "user_id": "U_BOT",
             "user": "testbot",
         })
 
         # Mock AsyncWebClient so multi-workspace auth_test is awaitable
-        mock_web_client = AsyncMock()
+        mock_web_client = MagicMock()
         mock_web_client.auth_test = AsyncMock(return_value={
             "user_id": "U_BOT",
             "user": "testbot",
@@ -181,11 +187,11 @@ class TestAppMentionHandler:
 
         with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
              patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
-             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=mock_handler), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("asyncio.create_task"):
-            asyncio.run(adapter.connect())
+            await adapter.connect()
+            await adapter.disconnect()
 
         assert "message" in registered_events
         assert "app_mention" in registered_events

@@ -20,6 +20,7 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -556,12 +557,34 @@ def _ensure_current_event_loop(request):
     except RuntimeError:
         pass
 
-    if loop is None and sys.version_info < (3, 12):
+    if loop is None:
+        needs_current_loop = False
         try:
-            loop = asyncio.get_event_loop_policy().get_event_loop()
-        except RuntimeError:
-            loop = None
+            source = inspect.getsource(request.function)
+        except (OSError, TypeError):
+            source = ""
+        module_path = getattr(request.node, "path", None)
+        if module_path is not None:
+            try:
+                source += "\n" + Path(module_path).read_text(encoding="utf-8")
+            except OSError:
+                pass
+        needs_current_loop = any(
+            token in source
+            for token in (
+                "get_event_loop(",
+                "get_event_loop_policy(",
+                "run_until_complete(",
+            )
+        )
+        if not needs_current_loop:
+            yield
+            return
 
+    # Do not call policy.get_event_loop() here. On Python 3.11 that call may
+    # implicitly create and install a loop, making it look pre-existing to this
+    # fixture; the loop then escapes teardown and emits ResourceWarning during
+    # pytest GC. If no loop is running, install one we explicitly own and close.
     created = loop is None or loop.is_closed()
     if created:
         loop = asyncio.new_event_loop()

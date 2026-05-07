@@ -550,7 +550,10 @@ class TeamsMeetingPipeline:
             confidence_notes=parsed.get("confidence_notes"),
             notion_target=(self.config.notion or {}).get("database_id"),
             linear_target=(self.config.linear or {}).get("team_id"),
-            teams_target=(self.config.teams_delivery or {}).get("channel_id"),
+            teams_target=(
+                (self.config.teams_delivery or {}).get("channel_id")
+                or (self.config.teams_delivery or {}).get("chat_id")
+            ),
         )
 
     async def _write_sinks(self, job: TeamsMeetingPipelineJob, payload: TeamsMeetingSummaryPayload) -> None:

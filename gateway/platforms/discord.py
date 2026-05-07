@@ -1210,6 +1210,38 @@ class DiscordAdapter(BasePlatformAdapter):
             "options": canonical["options"],
         }
 
+    @staticmethod
+    def _requires_app_command_recreate(
+        current_payload: Dict[str, Any], desired_payload: Dict[str, Any]
+    ) -> bool:
+        """Return True when Discord command shape changes should be delete+create.
+
+        Some slash-command transitions are semantically the same top-level command
+        name/type but structurally different enough that Discord rejects in-place
+        edits. The main production case is migrating an older nested ``/skill``
+        command group (subcommand/group option types 1/2) into the newer flat
+        autocomplete-based ``/skill`` command (plain string options). Recreating
+        the command avoids the 50035 sync failure instead of repeatedly trying an
+        invalid edit against the stale remote shape.
+        """
+
+        def _option_shape(payload: Dict[str, Any]) -> tuple[int, ...]:
+            return tuple(
+                int(item.get("type", 0) or 0)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            )
+
+        current_shape = _option_shape(current_payload)
+        desired_shape = _option_shape(desired_payload)
+        if current_shape != desired_shape:
+            current_has_subcommands = any(t in (1, 2) for t in current_shape)
+            desired_has_subcommands = any(t in (1, 2) for t in desired_shape)
+            if current_has_subcommands != desired_has_subcommands:
+                return True
+
+        return False
+
     async def _safe_sync_slash_commands(self) -> Dict[str, int]:
         """Diff existing global commands and only mutate the commands that changed."""
         if not self._client:
@@ -1271,7 +1303,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 unchanged += 1
                 continue
 
-            if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+            if (
+                self._patchable_app_command_payload(current_existing_payload)
+                == self._patchable_app_command_payload(desired)
+                or self._requires_app_command_recreate(
+                    current_existing_payload,
+                    desired,
+                )
+            ):
                 await mutate(http.delete_global_command, app_id, current.id)
                 await mutate(http.upsert_global_command, app_id, desired)
                 recreated += 1

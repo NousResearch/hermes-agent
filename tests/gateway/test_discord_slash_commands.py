@@ -81,6 +81,7 @@ from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 class FakeTree:
     def __init__(self):
         self.commands = {}
+        self.fetched_commands = []
 
     def command(self, *, name, description):
         def decorator(fn):
@@ -93,7 +94,16 @@ class FakeTree:
         self.commands[cmd.name] = cmd
 
     def get_commands(self):
-        return [SimpleNamespace(name=n) for n in self.commands]
+        out = []
+        for name, cmd in self.commands.items():
+            if hasattr(cmd, "to_dict"):
+                out.append(cmd)
+            else:
+                out.append(SimpleNamespace(name=name))
+        return out
+
+    async def fetch_commands(self):
+        return list(self.fetched_commands)
 
 
 @pytest.fixture
@@ -980,4 +990,89 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreates_stale_nested_skill_command(adapter):
+    """A stale remote nested /skill command should be deleted+recreated.
+
+    Editing a legacy ``/skill <category> <name>`` command into the newer flat
+    autocomplete-based ``/skill`` shape can trigger Discord 50035 errors. The
+    safe reconciler should recreate the command instead of attempting an
+    in-place edit when the option structure changes from subcommands/groups to
+    plain string arguments.
+    """
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=({"media": [("gif-search", "Search GIFs", "/gif-search")]}, [], 0),
+    ):
+        adapter._register_slash_commands()
+    adapter._client.tree.commands["skill"].to_dict = lambda _tree: {
+        "type": 1,
+        "name": "skill",
+        "description": "Run a Hermes skill",
+        "options": [
+            {
+                "type": 3,
+                "name": "name",
+                "description": "Which skill to run",
+                "required": True,
+                "autocomplete": True,
+            },
+            {
+                "type": 3,
+                "name": "args",
+                "description": "Optional arguments for the skill",
+                "required": False,
+            },
+        ],
+    }
+    adapter._client.tree.get_commands = lambda: [adapter._client.tree.commands["skill"]]
+
+    http = SimpleNamespace(
+        delete_global_command=AsyncMock(),
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+    )
+    adapter._client.http = http
+    adapter._client.application_id = 4242
+
+    adapter._client.tree.fetched_commands = [
+        SimpleNamespace(
+            id=777,
+            name="skill",
+            type=1,
+            to_dict=lambda: {
+                "type": 1,
+                "name": "skill",
+                "description": "Run a Hermes skill",
+                "options": [
+                    {
+                        "type": 2,
+                        "name": "media",
+                        "description": "Media skills",
+                        "options": [
+                            {
+                                "type": 1,
+                                "name": "gif-search",
+                                "description": "Search GIFs",
+                                "options": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            nsfw=False,
+            guild_only=False,
+            default_member_permissions=None,
+        )
+    ]
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    assert summary["updated"] == 0
+    http.delete_global_command.assert_awaited_once_with(4242, 777)
+    http.upsert_global_command.assert_awaited_once()
+    http.edit_global_command.assert_not_awaited()
 

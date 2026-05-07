@@ -6,6 +6,8 @@ export interface ThemeColors {
   muted: string
   completionBg: string
   completionCurrentBg: string
+  completionMetaBg: string
+  completionMetaCurrentBg: string
 
   label: string
   ok: string
@@ -264,8 +266,10 @@ export const DARK_THEME: Theme = {
     // new value sits ~60% luminance — readable without losing the "muted /
     // secondary" semantic.  Field labels still use `label` (65%) which
     // stays brighter so hierarchy holds.
-    completionBg: '#FFFFFF',
-    completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
+    completionBg: '#1a1a2e',
+    completionCurrentBg: '#333355',
+    completionMetaBg: '#1a1a2e',
+    completionMetaCurrentBg: '#333355',
 
     label: '#DAA520',
     ok: '#4caf50',
@@ -312,6 +316,8 @@ export const LIGHT_THEME: Theme = {
     muted: '#7A5A0F',
     completionBg: '#F5F5F5',
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    completionMetaBg: '#F5F5F5',
+    completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
 
     label: '#7A5A0F',
     ok: '#2E7D32',
@@ -517,11 +523,19 @@ export function fromSkin(
 ): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
+  const hasSkinColors = Object.keys(colors).length > 0
 
   const accent = c('ui_accent') ?? c('banner_accent') ?? d.color.accent
   const bannerAccent = c('banner_accent') ?? c('banner_title') ?? d.color.accent
   const muted = c('banner_dim') ?? d.color.muted
   const completionBg = c('completion_menu_bg') ?? d.color.completionBg
+
+  const completionCurrentBg =
+    c('completion_menu_current_bg') ??
+    (hasSkinColors ? mix(completionBg, bannerAccent, 0.25) : d.color.completionCurrentBg)
+
+  const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
+  const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
 
   return normalizeThemeForAnsiLightTerminal({
     color: {
@@ -531,7 +545,9 @@ export function fromSkin(
       text: c('ui_text') ?? c('banner_text') ?? d.color.text,
       muted,
       completionBg,
-      completionCurrentBg: c('completion_menu_current_bg') ?? mix(completionBg, bannerAccent, 0.25),
+      completionCurrentBg,
+      completionMetaBg,
+      completionMetaCurrentBg,
 
       label: c('ui_label') ?? d.color.label,
       ok: c('ui_ok') ?? d.color.ok,
@@ -548,7 +564,7 @@ export function fromSkin(
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
       statusBad: d.color.statusBad,
       statusCritical: d.color.statusCritical,
-      selectionBg: c('selection_bg') ?? d.color.selectionBg,
+      selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
       diffAdded: d.color.diffAdded,
       diffRemoved: d.color.diffRemoved,

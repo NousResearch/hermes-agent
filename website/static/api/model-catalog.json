@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-04T09:41:25Z",
+  "updated_at": "2026-05-06T02:14:51Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -42,6 +42,10 @@
         },
         {
           "id": "openrouter/elephant-alpha",
+          "description": "free"
+        },
+        {
+          "id": "openrouter/owl-alpha",
           "description": "free"
         },
         {
@@ -125,6 +129,10 @@
           "description": ""
         },
         {
+          "id": "x-ai/grok-4.3",
+          "description": ""
+        },
+        {
           "id": "nvidia/nemotron-3-super-120b-a12b",
           "description": ""
         },
@@ -146,6 +154,10 @@
         },
         {
           "id": "openai/gpt-5.4-nano",
+          "description": ""
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro",
           "description": ""
         }
       ]
@@ -232,7 +244,10 @@
           "id": "z-ai/glm-5-turbo"
         },
         {
-          "id": "x-ai/grok-4.20"
+          "id": "x-ai/grok-4.20-beta"
+        },
+        {
+          "id": "x-ai/grok-4.3"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"
@@ -245,6 +260,9 @@
         },
         {
           "id": "openai/gpt-5.4-nano"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro"
         }
       ]
     }

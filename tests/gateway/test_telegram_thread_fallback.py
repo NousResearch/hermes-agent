@@ -159,23 +159,44 @@ async def test_send_omits_general_topic_thread_id():
 
 
 @pytest.mark.asyncio
-async def test_send_typing_retries_without_general_thread_when_not_found():
-    """Typing for forum General should fall back if Telegram rejects thread 1."""
+async def test_send_typing_general_topic_uses_none_thread_id():
+    """Typing for forum General should hit the API with message_thread_id=None directly.
+
+    _message_thread_id_for_typing() maps the General topic (thread id "1") to None
+    the same way _message_thread_id_for_send() does, so there's no retry path — the
+    first call is already correct.
+    """
     adapter = _make_adapter()
     call_log = []
 
     async def mock_send_chat_action(**kwargs):
         call_log.append(dict(kwargs))
-        if kwargs.get("message_thread_id") == 1:
-            raise FakeBadRequest("Message thread not found")
 
     adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
 
     await adapter.send_typing("-100123", metadata={"thread_id": "1"})
 
     assert call_log == [
-        {"chat_id": -100123, "action": "typing", "message_thread_id": 1},
         {"chat_id": -100123, "action": "typing", "message_thread_id": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_typing_does_not_fall_back_to_root_for_dm_topic():
+    """Typing failures in DM topics should not show an indicator in All Messages."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_chat_action(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+
+    await adapter.send_typing("12345", metadata={"thread_id": "22182"})
+
+    assert call_log == [
+        {"chat_id": 12345, "action": "typing", "message_thread_id": 22182},
     ]
 
 

@@ -454,7 +454,7 @@ AUTHOR_MAP = {
     "m@statecraft.systems": "mbierling",
     "balyan.sid@gmail.com": "alt-glitch",
     "52913345+alt-glitch@users.noreply.github.com": "alt-glitch",
-    "oluwadareab12@gmail.com": "bennytimz",
+    "oluwadareab12@gmail.com": "oluwadareab12",
     "simon@simonmarcus.org": "simon-marcus",
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",

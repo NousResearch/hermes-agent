@@ -591,6 +591,54 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
 
+    def test_cron_create_preserves_spaced_cron_expression(self, monkeypatch):
+        import cron.jobs as cron_jobs
+
+        captured = {}
+
+        def fake_create_job(**kwargs):
+            captured.update(kwargs)
+            return {"id": "job-1", **kwargs}
+
+        monkeypatch.setattr(cron_jobs, "create_job", fake_create_job)
+
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "prompt": "Send digest",
+                "schedule": "30    9   *   *   *",
+                "name": "Digest",
+                "deliver": "local",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert captured["schedule"] == "30 9 * * *"
+
+    def test_cron_create_converts_daily_time_to_cron_expression(self, monkeypatch):
+        import cron.jobs as cron_jobs
+
+        captured = {}
+
+        def fake_create_job(**kwargs):
+            captured.update(kwargs)
+            return {"id": "job-1", **kwargs}
+
+        monkeypatch.setattr(cron_jobs, "create_job", fake_create_job)
+
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "prompt": "Send digest",
+                "schedule": "09:30",
+                "name": "Digest",
+                "deliver": "local",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert captured["schedule"] == "30 9 * * *"
+
     # --- Profiles ---
 
     def test_profiles_list_includes_default(self):

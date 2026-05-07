@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -2287,6 +2288,22 @@ class CronJobUpdate(BaseModel):
     updates: dict
 
 
+def _normalize_dashboard_cron_schedule(schedule: str) -> str:
+    """Normalize schedule text submitted through the dashboard/API boundary."""
+    normalized = " ".join(str(schedule or "").strip().split())
+    time_match = re.fullmatch(r"(\d{1,2}):(\d{2})", normalized)
+    if not time_match:
+        return normalized
+
+    hour = int(time_match.group(1))
+    minute = int(time_match.group(2))
+    if hour > 23 or minute > 59:
+        raise ValueError(
+            f"Invalid daily time schedule '{normalized}'. Use HH:MM from 00:00 to 23:59"
+        )
+    return f"{minute} {hour} * * *"
+
+
 @app.get("/api/cron/jobs")
 async def list_cron_jobs():
     from cron.jobs import list_jobs
@@ -2306,7 +2323,8 @@ async def get_cron_job(job_id: str):
 async def create_cron_job(body: CronJobCreate):
     from cron.jobs import create_job
     try:
-        job = create_job(prompt=body.prompt, schedule=body.schedule,
+        schedule = _normalize_dashboard_cron_schedule(body.schedule)
+        job = create_job(prompt=body.prompt, schedule=schedule,
                          name=body.name, deliver=body.deliver)
         return job
     except Exception as e:
@@ -2883,7 +2901,6 @@ async def get_models_analytics(days: int = 30):
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
 
-import re
 import asyncio
 
 from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError

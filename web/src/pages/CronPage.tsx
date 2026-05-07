@@ -23,6 +23,17 @@ function formatTime(iso?: string | null): string {
   return d.toLocaleString();
 }
 
+function normalizeScheduleForCreate(value: string): string {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  const timeMatch = normalized.match(/^(\d{1,2}):(\d{2})$/);
+  if (!timeMatch) return normalized;
+
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  if (hour > 23 || minute > 59) return normalized;
+  return `${minute} ${hour} * * *`;
+}
+
 const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   enabled: "success",
   scheduled: "success",
@@ -57,7 +68,8 @@ export default function CronPage() {
   }, [loadJobs]);
 
   const handleCreate = async () => {
-    if (!prompt.trim() || !schedule.trim()) {
+    const normalizedSchedule = normalizeScheduleForCreate(schedule);
+    if (!prompt.trim() || !normalizedSchedule) {
       showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
       return;
     }
@@ -65,7 +77,7 @@ export default function CronPage() {
     try {
       await api.createCronJob({
         prompt: prompt.trim(),
-        schedule: schedule.trim(),
+        schedule: normalizedSchedule,
         name: name.trim() || undefined,
         deliver,
       });
@@ -202,6 +214,10 @@ export default function CronPage() {
                 <Label htmlFor="cron-schedule">{t.cron.schedule}</Label>
                 <Input
                   id="cron-schedule"
+                  type="text"
+                  inputMode="text"
+                  autoComplete="off"
+                  spellCheck={false}
                   placeholder={t.cron.schedulePlaceholder}
                   value={schedule}
                   onChange={(e) => setSchedule(e.target.value)}

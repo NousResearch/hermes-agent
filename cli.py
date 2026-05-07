@@ -245,6 +245,38 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+
+def _make_quiet_stream_callbacks():
+    """Build the stdout/stderr callbacks used by `chat -Q --stream`.
+
+    Split off `main()` so it can be exercised by unit tests. The contract:
+    assistant text deltas go to stdout (so wrappers that capture stdout get
+    the answer with no extra framing); tool lifecycle markers go to stderr
+    (kept distinct from the answer payload, mirroring the existing
+    `session_id: ...` line that already lands on stderr).
+    """
+    def stream_delta(text: str) -> None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def tool_progress(event_type, name=None, preview=None, args=None,
+                      **kwargs):
+        # Only surface lifecycle events; ignore "_thinking" / "subagent.*"
+        # noise so quiet-mode stderr stays compact and grep-friendly.
+        if event_type == "tool.started" and name:
+            sys.stderr.write(f"[tool] {name} started\n")
+            sys.stderr.flush()
+        elif event_type == "tool.completed" and name:
+            dur = kwargs.get("duration")
+            err = kwargs.get("is_error")
+            suffix = f" ({dur:.1f}s)" if isinstance(dur, (int, float)) else ""
+            tag = "failed" if err else "completed"
+            sys.stderr.write(f"[tool] {name} {tag}{suffix}\n")
+            sys.stderr.flush()
+
+    return stream_delta, tool_progress
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -12237,6 +12269,7 @@ def main(
     max_turns: int = None,
     verbose: bool = False,
     quiet: bool = False,
+    stream: bool = False,
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
@@ -12462,11 +12495,23 @@ def main(
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
-                    # Suppress streaming display callbacks so stdout stays
-                    # machine-readable (no styled "Hermes" box, no tool-gen
-                    # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
+                    if stream:
+                        # Opt-in live feedback for long turns (e.g. running
+                        # inside a remote sandbox). The agent already streams
+                        # internally via _fire_stream_delta; we just route
+                        # the deltas to stdout and tool lifecycle to stderr.
+                        # tool_gen_callback stays off to avoid duplicate
+                        # "preparing <tool>" noise alongside [tool] markers.
+                        delta_cb, progress_cb = _make_quiet_stream_callbacks()
+                        cli.agent.stream_delta_callback = delta_cb
+                        cli.agent.tool_progress_callback = progress_cb
+                        cli.agent.tool_gen_callback = None
+                    else:
+                        # Suppress streaming display callbacks so stdout stays
+                        # machine-readable (no styled "Hermes" box, no tool-gen
+                        # status lines).  The response is printed once below.
+                        cli.agent.stream_delta_callback = None
+                        cli.agent.tool_gen_callback = None
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
@@ -12481,7 +12526,14 @@ def main(
                     ):
                         cli.session_id = cli.agent.session_id
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    if response:
+                    if stream:
+                        # stdout already received the full text via deltas;
+                        # avoid duplicating it. Emit a trailing newline so
+                        # piped consumers see a line-terminated payload and
+                        # the stderr session line below starts cleanly.
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    elif response:
                         print(response)
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

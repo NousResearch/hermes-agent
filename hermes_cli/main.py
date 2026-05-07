@@ -1455,6 +1455,7 @@ def cmd_chat(args):
         "skills": getattr(args, "skills", None),
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
+        "stream": getattr(args, "stream", False),
         "query": args.query,
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),

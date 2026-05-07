@@ -274,6 +274,11 @@ def build_top_level_parser():
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.",
     )
     chat_parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream the response on stdout (and tool-progress markers on stderr) while the agent works. Only meaningful with -Q/--quiet; ignored in interactive mode.",
+    )
+    chat_parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION_ID",

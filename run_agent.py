@@ -10620,6 +10620,123 @@ class AIAgent:
 
         return final_response
 
+    def _user_status_turn_context(self) -> str:
+        """Build a short ephemeral turn-context line from cross-bot user status.
+
+        Reads agent/user_status.py state (single shared file under
+        ``~/.hermes/state/user_status.json``) and emits one short line per
+        active, non-stale field. Returns ``""`` when nothing should be injected.
+
+        Staleness thresholds (seconds):
+            device_mode      → 12h
+            afk_status       → 30min
+            focus_project    → 24h
+            quiet_hours_until→ uses its own timestamp value (vs now)
+            location         → 24h
+
+        Stale fields produce a softened hint (e.g. "may be on phone") rather
+        than a hard claim, so the model does not act on outdated state with
+        full confidence. The full system prompt is NOT mutated; the result is
+        intended to be appended to the per-turn ephemeral turn-context parts.
+        """
+        try:
+            from agent import user_status as _us
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("user_status import failed: %s", exc)
+            return ""
+
+        try:
+            status = _us.load()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("user_status load failed: %s", exc)
+            return ""
+
+        # Staleness windows in seconds.
+        _THRESHOLDS = {
+            "device_mode": 12 * 60 * 60,
+            "afk_status": 30 * 60,
+            "focus_project": 24 * 60 * 60,
+            "location": 24 * 60 * 60,
+        }
+
+        lines: list[str] = []
+
+        # --- device_mode ---
+        if status.device_mode:
+            stale = _us.is_stale("device_mode", _THRESHOLDS["device_mode"], status=status)
+            mode = str(status.device_mode).strip()
+            if mode == "phone":
+                if stale:
+                    lines.append(
+                        "Device: may be on phone (stale) — if still mobile, "
+                        "keep replies ≤100 words; deep-dives go to file."
+                    )
+                else:
+                    lines.append(
+                        "Device: phone — keep replies ≤100 words; "
+                        "deep-dives go to file."
+                    )
+            elif mode == "desktop":
+                if stale:
+                    lines.append("Device: may be on desktop (stale).")
+                else:
+                    lines.append("Device: desktop — long-form replies OK.")
+            else:
+                if stale:
+                    lines.append(f"Device: {mode} (stale).")
+                else:
+                    lines.append(f"Device: {mode}.")
+
+        # --- afk_status ---
+        if status.afk_status:
+            stale = _us.is_stale("afk_status", _THRESHOLDS["afk_status"], status=status)
+            afk = str(status.afk_status).strip()
+            if stale:
+                lines.append(f"AFK: may be {afk} (stale) — do not assume.")
+            else:
+                lines.append(f"AFK: {afk}.")
+
+        # --- focus_project ---
+        if status.focus_project:
+            stale = _us.is_stale("focus_project", _THRESHOLDS["focus_project"], status=status)
+            proj = str(status.focus_project).strip()
+            if stale:
+                lines.append(f"Focus: possibly {proj} (stale).")
+            else:
+                lines.append(f"Focus: {proj}.")
+
+        # --- quiet_hours_until --- (uses its own timestamp value)
+        if status.quiet_hours_until:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                until = _dt.fromisoformat(str(status.quiet_hours_until))
+                if until.tzinfo is None:
+                    until = until.replace(tzinfo=_tz.utc)
+                now = _dt.now(_tz.utc)
+                if until > now:
+                    lines.append(
+                        f"Quiet hours until {until.isoformat()} — "
+                        "minimize proactive notifications."
+                    )
+                # else: expired — omit silently.
+            except Exception:
+                # Unparseable — emit a soft hint rather than a hard claim.
+                lines.append("Quiet hours: set (unparseable timestamp).")
+
+        # --- location ---
+        if status.location:
+            stale = _us.is_stale("location", _THRESHOLDS["location"], status=status)
+            loc = str(status.location).strip()
+            if stale:
+                lines.append(f"Location: possibly {loc} (stale).")
+            else:
+                lines.append(f"Location: {loc}.")
+
+        if not lines:
+            return ""
+        return " ".join(lines)
+
+
     def run_conversation(
         self,
         user_message: str,
@@ -10949,6 +11066,14 @@ class AIAgent:
                     _ctx_parts.append(str(r["context"]))
                 elif isinstance(r, str) and r.strip():
                     _ctx_parts.append(r)
+            # Cross-bot user-status ephemeral injection (issue #21122).
+            # Read-only; never mutates _cached_system_prompt.
+            try:
+                _us_line = self._user_status_turn_context()
+                if _us_line:
+                    _ctx_parts.append(_us_line)
+            except Exception as _us_exc:
+                logger.debug("user_status turn-context failed: %s", _us_exc)
             if _ctx_parts:
                 _plugin_user_context = "\n\n".join(_ctx_parts)
         except Exception as exc:

@@ -48,6 +48,8 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # Cross-bot user status (shared across gateway profiles)
+    "user_status",
     # Session history search
     "session_search",
     # Clarifying questions

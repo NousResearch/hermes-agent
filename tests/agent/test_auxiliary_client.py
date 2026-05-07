@@ -16,9 +16,11 @@ from agent.auxiliary_client import (
     auxiliary_max_tokens_param,
     call_llm,
     async_call_llm,
+    _build_call_kwargs,
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _is_rate_limit_error,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
@@ -788,6 +790,65 @@ class TestIsPaymentError:
         assert _is_payment_error(exc) is False
 
 
+class TestIsRateLimitError:
+    """_is_rate_limit_error detects 429 rate-limit errors warranting fallback."""
+
+    def test_429_with_rate_limit_message(self):
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_resets_in_message(self):
+        """Nous-style 429: 'resets in 3508s'."""
+        exc = Exception("Hold up for a bit, you've exceeded the rate limit on your API key")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_too_many_requests(self):
+        exc = Exception("Too many requests")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_without_billing_keywords_is_rate_limit(self):
+        """Generic 429 without billing keywords = likely a rate limit."""
+        exc = Exception("Something went wrong")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_credits_message_is_not_rate_limit(self):
+        """Billing-related 429 should NOT be classified as rate limit."""
+        exc = Exception("insufficient credits remaining")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_429_with_billing_message_is_not_rate_limit(self):
+        exc = Exception("you can only afford 1000 tokens")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_402_is_not_rate_limit(self):
+        exc = Exception("Payment Required")
+        exc.status_code = 402
+        assert _is_rate_limit_error(exc) is False
+
+    def test_500_is_not_rate_limit(self):
+        exc = Exception("Internal Server Error")
+        exc.status_code = 500
+        assert _is_rate_limit_error(exc) is False
+
+    def test_openai_ratelimiterror_classname(self):
+        """OpenAI SDK RateLimitError may omit .status_code — detect by class name."""
+        class RateLimitError(Exception):
+            pass
+        exc = RateLimitError("rate limit exceeded")
+        # No status_code set, but class name matches
+        assert _is_rate_limit_error(exc) is True
+
+    def test_no_status_code_no_keywords_is_not_rate_limit(self):
+        exc = Exception("connection reset")
+        assert _is_rate_limit_error(exc) is False
+
+
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
@@ -859,11 +920,16 @@ class TestTryPaymentFallback:
 
 
 class TestCallLlmPaymentFallback:
-    """call_llm() retries with a different provider on 402 / payment errors."""
+    """call_llm() retries with a different provider on 402 / payment / rate-limit errors."""
 
     def _make_402_error(self, msg="Payment Required: insufficient credits"):
         exc = Exception(msg)
         exc.status_code = 402
+        return exc
+
+    def _make_429_rate_limit_error(self, msg="Rate limit exceeded, try again in 60 seconds"):
+        exc = Exception(msg)
+        exc.status_code = 429
         return exc
 
     def test_non_payment_error_not_caught(self, monkeypatch):
@@ -884,6 +950,32 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_429_rate_limit_triggers_fallback(self, monkeypatch):
+        """429 rate-limit errors should trigger fallback to next provider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        rate_err = self._make_429_rate_limit_error()
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "xiaomi/mimo-v2-pro")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "xiaomi/mimo-v2-pro", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        # Fallback client should have been used
+        assert fallback_client.chat.completions.create.called
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -1649,6 +1741,42 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert "reasoning" not in captured
 
+    def test_reasoning_effort_null_falls_back_to_medium(self):
+        """Parity with agent/transports/codex.py::build_kwargs() — falsy
+        ``effort`` (None / empty / 0) keeps the default ``medium`` instead
+        of being forwarded to Codex.  Codex rejects ``{"effort": null}``
+        with HTTP 400 (Invalid value for parameter `reasoning.effort`)."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": None}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_empty_string_falls_back_to_medium(self):
+        """Empty-string effort (e.g. ``effort: ""`` in YAML) is falsy in
+        the main-agent path's truthy check; mirror that here so the same
+        config produces the same result."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": ""}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_zero_falls_back_to_medium(self):
+        """Numeric ``0`` is also falsy — the docstring lists it explicitly,
+        so cover the contract.  Codex would reject ``{"effort": 0}`` the
+        same way it rejects ``null``."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": 0}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
 class TestVisionAutoSkipsKimiCoding:
@@ -1752,3 +1880,193 @@ class TestVisionAutoSkipsKimiCoding:
             "kimi-coding",
             "kimi-coding-cn",
         })
+
+
+# ---------------------------------------------------------------------------
+# _build_call_kwargs — tool dedup at API boundary
+# ---------------------------------------------------------------------------
+
+class TestBuildCallKwargsToolDedup:
+    """_build_call_kwargs must deduplicate tool names before passing to API.
+
+    Providers like Google Vertex, Azure, and Bedrock reject requests with
+    duplicate tool names (HTTP 400).  This guard converts a hard failure into
+    a warning log so agent turns succeed even if an upstream injection path
+    regresses.  See: https://github.com/NousResearch/hermes-agent/issues/18478
+    """
+
+    def _make_tool(self, name: str) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"Tool {name}",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    def test_unique_tools_pass_through_unchanged(self):
+        tools = [self._make_tool("alpha"), self._make_tool("beta")]
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], tools=tools,
+        )
+        assert len(kwargs["tools"]) == 2
+        names = [t["function"]["name"] for t in kwargs["tools"]]
+        assert names == ["alpha", "beta"]
+
+    def test_duplicate_tool_names_are_deduplicated(self):
+        """RED test — must fail until dedup guard is added."""
+        tools = [
+            self._make_tool("lcm_grep"),
+            self._make_tool("lcm_describe"),
+            self._make_tool("lcm_grep"),  # duplicate
+            self._make_tool("lcm_expand"),
+            self._make_tool("lcm_describe"),  # duplicate
+        ]
+        kwargs = _build_call_kwargs(
+            provider="google", model="gemini-2.5-pro", messages=[], tools=tools,
+        )
+        result_tools = kwargs["tools"]
+        names = [t["function"]["name"] for t in result_tools]
+        # Must be deduplicated — no repeated names
+        assert len(names) == len(set(names)), (
+            f"Duplicate tool names found: {names}"
+        )
+        assert len(result_tools) == 3  # lcm_grep, lcm_describe, lcm_expand
+
+    def test_empty_tools_unchanged(self):
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], tools=[],
+        )
+        assert kwargs.get("tools") == [] or "tools" not in kwargs
+
+    def test_none_tools_unchanged(self):
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], tools=None,
+        )
+        assert "tools" not in kwargs
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    """Strip provider env vars so each test starts clean."""
+    for key in (
+        "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+class TestOpenRouterExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_openrouter()."""
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_openrouter(
+        self, monkeypatch
+    ):
+        """
+        When resolve_provider_client() is called with explicit_api_key for OpenRouter,
+        the explicit key should be passed to the OpenAI client instead of falling back
+        to OPENROUTER_API_KEY env var.
+        """
+        # Set up env var as fallback (should NOT be used when explicit_api_key is provided)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+
+        # Mock OpenAI to capture the api_key used
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openrouter-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key="explicit-pool-key",
+            )
+
+            # Verify a client was created
+            assert client is not None
+            # Verify the explicit key was used, not the env var fallback
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "explicit-pool-key", (
+                f"Expected explicit_api_key to be passed, got: {call_kwargs['api_key']}"
+            )
+            assert call_kwargs["api_key"] != "env-fallback-key", (
+                "Should NOT fall back to OPENROUTER_API_KEY when explicit_api_key is provided"
+            )
+
+    def test_resolve_provider_client_without_explicit_api_key_falls_back_to_env(
+        self, monkeypatch
+    ):
+        """
+        When resolve_provider_client() is called WITHOUT explicit_api_key for OpenRouter,
+        it should fall back to OPENROUTER_API_KEY env var.
+        """
+        # Set up env var as fallback (should be used when explicit_api_key is NOT provided)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+
+        # Mock OpenAI to capture the api_key used
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openrouter-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key=None,
+            )
+
+            # Verify a client was created
+            assert client is not None
+            # Verify the env var fallback was used
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "env-fallback-key", (
+                f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
+            )
+
+
+class TestAnthropicExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_anthropic().
+
+    Parity with the OpenRouter fix in #18768: resolve_provider_client() passes
+    explicit_api_key to _try_openrouter(), but the anthropic branch was not
+    updated — _try_anthropic() always fell back to resolve_anthropic_token()
+    even when an explicit key was supplied (e.g. from a fallback_model entry).
+    """
+
+    def test_try_anthropic_uses_explicit_api_key_over_env(self):
+        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic("explicit-pool-key")
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-pool-key", (
+            f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"
+        )
+        assert mock_build.call_args.args[0] != "env-fallback-key"
+
+    def test_try_anthropic_without_explicit_key_falls_back_to_resolve(self):
+        """Without explicit_api_key, _try_anthropic falls back to resolve_anthropic_token."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic()
+        assert client is not None
+        assert mock_build.call_args.args[0] == "env-fallback-key"
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
+        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                provider="anthropic",
+                explicit_api_key="explicit-fallback-key",
+            )
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-fallback-key", (
+            "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
+        )

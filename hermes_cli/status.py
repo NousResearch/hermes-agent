@@ -122,10 +122,16 @@ def show_status(args):
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
 
-    keys = {
+    # Values may be a single env var name (str) or a tuple of alternates (first found wins).
+    keys: dict[str, str | tuple[str, ...]] = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
-        "Z.AI/GLM": "GLM_API_KEY",
+        "Anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+        "Google / Gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        "DeepSeek": "DEEPSEEK_API_KEY",
+        "xAI / Grok": "XAI_API_KEY",
+        "NVIDIA NIM": "NVIDIA_API_KEY",
+        "Z.AI / GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
@@ -141,8 +147,23 @@ def show_status(args):
         "GitHub": "GITHUB_TOKEN",
     }
 
-    for name, env_var in keys.items():
-        value = get_env_value(env_var) or ""
+    def _resolve_env(env_ref) -> str:
+        """Return first non-empty env var value from a str or tuple of names."""
+        if isinstance(env_ref, tuple):
+            for candidate in env_ref:
+                v = get_env_value(candidate) or ""
+                if v:
+                    return v
+            return ""
+        return get_env_value(env_ref) or ""
+
+    for name, env_ref in keys.items():
+        # Anthropic already has a dedicated lookup below; keep that as the
+        # single source of truth (it also resolves OAuth tokens), skip here
+        # so we don't print two "Anthropic" rows.
+        if name == "Anthropic":
+            continue
+        value = _resolve_env(env_ref)
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")

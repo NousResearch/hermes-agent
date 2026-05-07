@@ -1,4 +1,4 @@
-import { ListItem } from "@nous-research/ui";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import {
   AlertCircle,
   Check,
@@ -186,9 +186,8 @@ function Section({
   return (
     <div className="flex gap-3">
       <span
-        className={`uppercase tracking-wider text-[0.6rem] shrink-0 w-14 pt-0.5 ${
-          tone === "error" ? "text-destructive/80" : "text-muted-foreground/60"
-        }`}
+        className={`uppercase tracking-wider text-[0.6rem] shrink-0 w-14 pt-0.5 ${tone === "error" ? "text-destructive/80" : "text-muted-foreground/60"
+          }`}
       >
         {label}
       </span>

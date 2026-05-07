@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 
-from tools.schema_sanitizer import sanitize_tool_schemas
+from tools.schema_sanitizer import sanitize_tool_schemas, strip_pattern_and_format
 
 
 def _tool(name: str, parameters: dict) -> dict:
@@ -203,3 +203,102 @@ def test_empty_tools_list_returns_empty():
 
 def test_none_tools_returns_none():
     assert sanitize_tool_schemas(None) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# strip_pattern_and_format — reactive recovery when llama.cpp rejects a
+# schema with an HTTP 400 grammar-parse error. Must be opt-in (only
+# invoked on recovery) and must not damage property names.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_strip_pattern_removes_schema_pattern_keyword():
+    """`pattern` as a sibling of `type` → stripped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "pattern": "\\d{4,4}-\\d{2,2}-\\d{2,2}"},
+        },
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 1
+    prop = tools[0]["function"]["parameters"]["properties"]["date"]
+    assert "pattern" not in prop
+    assert prop["type"] == "string"
+
+
+def test_strip_format_removes_schema_format_keyword():
+    """`format` as a sibling of `type` → stripped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "ts": {"type": "string", "format": "date-time"},
+        },
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 1
+    assert "format" not in tools[0]["function"]["parameters"]["properties"]["ts"]
+
+
+def test_strip_preserves_property_named_pattern():
+    """Property literally *named* 'pattern' (search_files) must survive."""
+    tools = [_tool("search_files", {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regex pattern..."},
+            "limit": {"type": "integer"},
+        },
+        "required": ["pattern"],
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 0
+    params = tools[0]["function"]["parameters"]
+    # Property named "pattern" still exists with its schema intact
+    assert "pattern" in params["properties"]
+    assert params["properties"]["pattern"]["type"] == "string"
+    assert params["required"] == ["pattern"]
+
+
+def test_strip_recurses_into_anyof_variants():
+    """Pattern/format inside anyOf variant schemas are also stripped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    {"type": "string", "pattern": "[A-Z]+", "format": "uuid"},
+                    {"type": "integer"},
+                ],
+            },
+        },
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 2
+    variants = tools[0]["function"]["parameters"]["properties"]["value"]["anyOf"]
+    assert "pattern" not in variants[0]
+    assert "format" not in variants[0]
+    assert variants[0]["type"] == "string"
+
+
+def test_strip_is_idempotent():
+    """Second call on already-stripped tools is a no-op."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"d": {"type": "string", "pattern": "\\d+"}},
+    })]
+    _, first = strip_pattern_and_format(tools)
+    _, second = strip_pattern_and_format(tools)
+    assert first == 1
+    assert second == 0
+
+
+def test_strip_empty_tools_returns_zero():
+    tools, stripped = strip_pattern_and_format([])
+    assert tools == []
+    assert stripped == 0
+
+
+def test_strip_none_returns_zero():
+    tools, stripped = strip_pattern_and_format(None)
+    assert tools is None
+    assert stripped == 0

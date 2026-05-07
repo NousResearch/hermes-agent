@@ -356,12 +356,17 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    elif disabled_toolsets:
+    else:
+        # Default: start with everything
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always apply disabled toolsets as a subtraction step at the end.
+    # This ensures that even if a composite toolset (like hermes-cli)
+    # is enabled, any tools belonging to a disabled toolset are strictly
+    # stripped out. See issue #17309.
+    if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -376,10 +381,6 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -510,6 +511,12 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
     and union types (``"type": ["integer", "string"]``).
+
+    Also wraps bare scalar values in a single-element list when the schema
+    declares ``"type": "array"``.  Open-weight models (DeepSeek, Qwen, GLM)
+    sometimes emit ``{"urls": "https://a.com"}`` when the tool expects
+    ``{"urls": ["https://a.com"]}``; wrapping here avoids a confusing tool
+    failure on what is otherwise a well-formed call.
     """
     if not args or not isinstance(args, dict):
         return args
@@ -522,13 +529,42 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not properties:
         return args
 
-    for key, value in args.items():
-        if not isinstance(value, str):
-            continue
+    for key, value in list(args.items()):
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
+
+        # Wrap bare non-list values when the schema declares ``array``.
+        # Strings still go through _coerce_value first so JSON-encoded
+        # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
+        # becomes ``None`` rather than ``["null"]``.
+        # ``None`` itself is preserved — we don't know whether the model
+        # meant "omit" or "empty list", and tools with sensible defaults
+        # (e.g. read_file's normalize_read_pagination) already handle it.
+        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+            if isinstance(value, str):
+                coerced = _coerce_value(value, expected, schema=prop_schema)
+                if coerced is not value:
+                    # _coerce_value handled it (JSON-parsed list or
+                    # nullable "null" → None).
+                    args[key] = coerced
+                    continue
+                args[key] = [value]
+                logger.info(
+                    "coerce_tool_args: wrapped bare string in list for %s.%s",
+                    tool_name, key,
+                )
+                continue
+            args[key] = [value]
+            logger.info(
+                "coerce_tool_args: wrapped bare %s in list for %s.%s",
+                type(value).__name__, tool_name, key,
+            )
+            continue
+
+        if not isinstance(value, str):
+            continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)

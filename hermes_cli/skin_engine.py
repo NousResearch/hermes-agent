@@ -42,6 +42,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       session_border: "#8B8682"          # Session ID dim color
       status_bar_bg: "#1a1a2e"          # TUI status/usage bar background
       voice_status_bg: "#1a1a2e"        # TUI voice status background
+      selection_bg: "#333355"           # TUI mouse-selection highlight background
       completion_menu_bg: "#1a1a2e"      # Completion menu background
       completion_menu_current_bg: "#333355"  # Active completion row background
       completion_menu_meta_bg: "#1a1a2e"     # Completion meta column background

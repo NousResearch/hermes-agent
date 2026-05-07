@@ -76,6 +76,20 @@ class TestResolveVerifyFallback:
         )
         assert result is False
 
+    def test_string_false_in_auth_state_does_not_disable_tls_verify(self):
+        import ssl
+        from hermes_cli.auth import _resolve_verify
+
+        result = _resolve_verify(auth_state={"tls": {"insecure": "false"}})
+        assert result is not False
+        assert result is True or isinstance(result, ssl.SSLContext)
+
+    def test_string_true_in_auth_state_disables_tls_verify(self):
+        from hermes_cli.auth import _resolve_verify
+
+        result = _resolve_verify(auth_state={"tls": {"insecure": "true"}})
+        assert result is False
+
     def test_no_ca_bundle_returns_true(self, monkeypatch):
         from hermes_cli.auth import _resolve_verify
 
@@ -882,3 +896,286 @@ def test_refresh_non_reuse_error_keeps_original_description():
     assert "Refresh session has been revoked" in str(exc_info.value)
     # Must not have been rewritten with the reuse message.
     assert "external process" not in str(exc_info.value).lower()
+
+
+# =============================================================================
+# Shared Nous token store — cross-profile persistence (Codex-style auto-import)
+# =============================================================================
+
+
+@pytest.fixture
+def shared_store_env(tmp_path, monkeypatch):
+    """Redirect HERMES_SHARED_AUTH_DIR to a tmp_path.
+
+    Required for every test that exercises the shared Nous store — the
+    in-auth.py seat belt refuses to touch the real user's shared store
+    under pytest, so tests that forget this fixture fail loudly instead
+    of corrupting real state.
+    """
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    return shared_dir
+
+
+def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
+    """Without HERMES_SHARED_AUTH_DIR override, the seat belt must trip.
+
+    Mirrors the existing ``_auth_file_path`` seat belt: forgetting to
+    redirect this store in a test must fail loudly instead of silently
+    writing to the user's real ``~/.hermes/shared/`` across CI runs.
+    """
+    from hermes_cli.auth import _nous_shared_store_path
+
+    monkeypatch.delenv("HERMES_SHARED_AUTH_DIR", raising=False)
+
+    with pytest.raises(RuntimeError, match="shared Nous auth store"):
+        _nous_shared_store_path()
+
+
+def test_shared_store_honors_env_override(tmp_path, monkeypatch):
+    """HERMES_SHARED_AUTH_DIR must redirect the path."""
+    from hermes_cli.auth import _nous_shared_store_path, NOUS_SHARED_STORE_FILENAME
+
+    custom_dir = tmp_path / "custom_shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(custom_dir))
+
+    path = _nous_shared_store_path()
+    assert path == custom_dir / NOUS_SHARED_STORE_FILENAME
+
+
+def test_shared_store_read_missing_returns_none(shared_store_env):
+    """Missing file → ``_read_shared_nous_state()`` returns None."""
+    from hermes_cli.auth import _read_shared_nous_state
+
+    assert _read_shared_nous_state() is None
+
+
+def test_shared_store_read_malformed_returns_none(shared_store_env):
+    """Unreadable / non-JSON file → None, not an exception."""
+    from hermes_cli.auth import _nous_shared_store_path, _read_shared_nous_state
+
+    path = _nous_shared_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json")
+
+    assert _read_shared_nous_state() is None
+
+
+def test_shared_store_read_missing_required_fields_returns_none(shared_store_env):
+    """Payload without refresh_token → None (nothing worth importing)."""
+    from hermes_cli.auth import _nous_shared_store_path, _read_shared_nous_state
+
+    path = _nous_shared_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"_schema": 1, "access_token": "abc"}))
+
+    assert _read_shared_nous_state() is None
+
+
+def test_shared_store_write_and_read_roundtrip(shared_store_env):
+    """Write → read must preserve refresh_token + OAuth URLs."""
+    from hermes_cli.auth import (
+        _nous_shared_store_path,
+        _read_shared_nous_state,
+        _write_shared_nous_state,
+    )
+
+    _write_shared_nous_state(_full_state_fixture())
+
+    path = _nous_shared_store_path()
+    assert path.is_file()
+
+    # Permissions should be 0600 where the platform supports it.
+    mode = path.stat().st_mode & 0o777
+    assert mode == 0o600 or mode == 0o644  # 0o644 on platforms without chmod
+
+    loaded = _read_shared_nous_state()
+    assert loaded is not None
+    assert loaded["refresh_token"] == "refresh-tok"
+    assert loaded["access_token"] == "access-tok"
+    assert loaded["portal_base_url"] == "https://portal.example.com"
+    assert loaded["inference_base_url"] == "https://inference.example.com/v1"
+    # Volatile agent_key MUST NOT be persisted to the shared store
+    # (24h TTL, profile-specific — only long-lived OAuth tokens are
+    # cross-profile useful).
+    assert "agent_key" not in loaded
+
+
+def test_shared_store_write_skips_when_refresh_token_missing(shared_store_env):
+    """Write is a no-op when refresh_token is absent (nothing to share)."""
+    from hermes_cli.auth import _nous_shared_store_path, _write_shared_nous_state
+
+    state = dict(_full_state_fixture())
+    state["refresh_token"] = ""
+
+    _write_shared_nous_state(state)
+
+    assert not _nous_shared_store_path().is_file()
+
+
+def test_persist_nous_credentials_mirrors_to_shared_store(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """persist_nous_credentials must populate BOTH per-profile auth.json
+    AND the shared store, so a future profile's `hermes auth add nous
+    --type oauth` can one-tap import instead of redoing device-code.
+    """
+    from hermes_cli.auth import (
+        _nous_shared_store_path,
+        _read_shared_nous_state,
+        persist_nous_credentials,
+    )
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    persist_nous_credentials(_full_state_fixture())
+
+    # Per-profile auth.json populated
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert "nous" in payload.get("providers", {})
+
+    # Shared store populated with the same refresh_token
+    shared = _read_shared_nous_state()
+    assert shared is not None
+    assert shared["refresh_token"] == "refresh-tok"
+
+    # Shared file path lives under the tmp override, NOT the real home
+    assert str(_nous_shared_store_path()).startswith(str(shared_store_env))
+
+
+def test_try_import_shared_returns_none_when_store_missing(shared_store_env):
+    """No shared store → no rehydrate (fall through to device-code)."""
+    from hermes_cli.auth import _try_import_shared_nous_state
+
+    assert _try_import_shared_nous_state() is None
+
+
+def test_try_import_shared_returns_none_on_refresh_failure(
+    shared_store_env, monkeypatch,
+):
+    """If the portal rejects the stored refresh_token (revoked, expired,
+    portal down), _try_import_shared_nous_state must return None so the
+    login flow falls back to a fresh device-code run.
+    """
+    from hermes_cli import auth as auth_mod
+
+    # Seed the shared store
+    auth_mod._write_shared_nous_state(_full_state_fixture())
+
+    # Make refresh fail
+    def _boom(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _boom)
+
+    assert auth_mod._try_import_shared_nous_state() is None
+
+
+def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
+    """Happy path: stored refresh_token is accepted, forced refresh+mint
+    returns a fresh access_token + agent_key, and the returned dict has
+    every field persist_nous_credentials() needs.
+    """
+    from hermes_cli import auth as auth_mod
+
+    auth_mod._write_shared_nous_state(_full_state_fixture())
+
+    def _fake_refresh(state, **kwargs):
+        # Simulate portal returning fresh tokens + a new agent_key
+        assert kwargs.get("force_refresh") is True
+        assert kwargs.get("force_mint") is True
+        return {
+            **state,
+            "access_token": "fresh-access-tok",
+            "refresh_token": "fresh-refresh-tok",  # rotated
+            "agent_key": "new-agent-key",
+            "agent_key_expires_at": "2026-04-19T22:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _fake_refresh)
+
+    result = auth_mod._try_import_shared_nous_state()
+
+    assert result is not None
+    assert result["access_token"] == "fresh-access-tok"
+    assert result["refresh_token"] == "fresh-refresh-tok"
+    assert result["agent_key"] == "new-agent-key"
+    # Preserved from shared state
+    assert result["portal_base_url"] == "https://portal.example.com"
+    assert result["client_id"] == "hermes-cli"
+
+
+def test_shared_store_survives_across_profile_switch(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """End-to-end: profile A logs in → shared store populated → profile B
+    (different HERMES_HOME) sees the same shared state and can rehydrate
+    without re-running device-code.
+    """
+    from hermes_cli import auth as auth_mod
+
+    # Profile A: login, which mirrors to shared store
+    profile_a = tmp_path / "profile_a"
+    profile_a.mkdir(parents=True, exist_ok=True)
+    (profile_a / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_a))
+    auth_mod.persist_nous_credentials(_full_state_fixture())
+
+    # Profile A's auth.json has nous
+    a_payload = json.loads((profile_a / "auth.json").read_text())
+    assert "nous" in a_payload.get("providers", {})
+
+    # Profile B: fresh HERMES_HOME, no auth yet, but the shared store
+    # persists — _read_shared_nous_state() must still return the tokens.
+    profile_b = tmp_path / "profile_b"
+    profile_b.mkdir(parents=True, exist_ok=True)
+    (profile_b / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    # B's own auth.json has no nous
+    b_payload = json.loads((profile_b / "auth.json").read_text())
+    assert "nous" not in b_payload.get("providers", {})
+
+    # But the shared store is visible
+    shared = auth_mod._read_shared_nous_state()
+    assert shared is not None
+    assert shared["refresh_token"] == "refresh-tok"
+
+    # And a successful rehydrate + persist lands nous into profile B
+    def _fake_refresh(state, **kwargs):
+        return {
+            **state,
+            "access_token": "b-access-tok",
+            "refresh_token": "b-refresh-tok",
+            "agent_key": "b-agent-key",
+            "agent_key_expires_at": "2026-04-19T22:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _fake_refresh)
+    result = auth_mod._try_import_shared_nous_state()
+    assert result is not None
+
+    auth_mod.persist_nous_credentials(result)
+
+    b_payload = json.loads((profile_b / "auth.json").read_text())
+    assert "nous" in b_payload.get("providers", {})
+    assert b_payload["providers"]["nous"]["refresh_token"] == "b-refresh-tok"
+
+    # Shared store was updated with the rotated refresh_token too
+    shared_after = auth_mod._read_shared_nous_state()
+    assert shared_after is not None
+    assert shared_after["refresh_token"] == "b-refresh-tok"

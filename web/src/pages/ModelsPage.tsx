@@ -20,9 +20,11 @@ import type {
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { formatTokenCount } from "@/lib/format";
-import { Button, Spinner, Stats } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
@@ -612,10 +614,9 @@ function ModelSettingsPanel({
             title={
               picker.kind === "main"
                 ? "Set Main Model"
-                : `Set Auxiliary: ${
-                    AUX_TASKS.find((t) => t.key === picker.task)?.label ??
-                    picker.task
-                  }`
+                : `Set Auxiliary: ${AUX_TASKS.find((t) => t.key === picker.task)?.label ??
+                picker.task
+                }`
             }
             onApply={async ({ provider, model }) => {
               await applyAssignment({
@@ -667,7 +668,7 @@ export default function ModelsPage() {
     api
       .getAuxiliaryModels()
       .then(setAux)
-      .catch(() => {});
+      .catch(() => { });
     setSaveKey((k) => k + 1);
   }, []);
 

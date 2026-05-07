@@ -23,8 +23,8 @@
  * terminal pane keeps working unimpaired.
  */
 
-import { Button } from "@nous-research/ui";
-import { Badge } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
@@ -238,11 +238,11 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       } else if (type === "tool.complete") {
         const p = payload as
           | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
+            tool_id?: string;
+            summary?: string;
+            error?: string;
+            inline_diff?: string;
+          }
           | undefined;
 
         if (!p?.tool_id) {
@@ -253,13 +253,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           prev.map((t) =>
             t.tool_id === p.tool_id
               ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
+                ...t,
+                status: p.error ? "error" : "done",
+                summary: p.summary,
+                error: p.error,
+                inline_diff: p.inline_diff,
+                completedAt: Date.now(),
+              }
               : t,
           ),
         );

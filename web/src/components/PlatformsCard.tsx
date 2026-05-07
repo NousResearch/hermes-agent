@@ -1,7 +1,7 @@
 import { AlertTriangle, Radio, Wifi, WifiOff } from "lucide-react";
 import type { PlatformStatus } from "@/lib/api";
 import { isoTimeAgo } from "@/lib/utils";
-import { Badge } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useI18n } from "@/i18n";
 
@@ -47,13 +47,12 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
             >
               <div className="flex items-center gap-3 min-w-0 w-full">
                 <IconComponent
-                  className={`h-4 w-4 shrink-0 ${
-                    info.state === "connected"
+                  className={`h-4 w-4 shrink-0 ${info.state === "connected"
                       ? "text-success"
                       : info.state === "fatal"
                         ? "text-destructive"
                         : "text-warning"
-                  }`}
+                    }`}
                 />
 
                 <div className="flex flex-col gap-0.5 min-w-0">

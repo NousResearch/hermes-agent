@@ -10,11 +10,13 @@ Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Te
 
 ## How the Bot Responds
 
-| Context | Behavior |
-|---------|----------|
+| Context                | Behavior                                           |
+| ---------------------- | -------------------------------------------------- |
 | **Personal chat (DM)** | Bot responds to every message. No @mention needed. |
-| **Group chat** | Bot responds to every message in the chat. |
-| **Channel** | Bot only responds when @mentioned (Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically). |
+| **Group chat**         | Bot only responds when @mentioned.                 |
+| **Channel**            | Bot only responds when @mentioned.                 |
+
+Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
 ---
 
@@ -35,21 +37,21 @@ teams status --verbose
 
 ---
 
-## Step 2: Expose Port 3978
+## Step 2: Expose the Webhook Port
 
-Teams cannot deliver messages to `localhost`. For local development, use any tunnel tool to get a public HTTPS URL:
+Teams cannot deliver messages to `localhost`. For local development, use any tunnel tool to get a public HTTPS URL. The default port is `3978` — change it with `TEAMS_PORT` if needed.
 
 ```bash
 # devtunnel (Microsoft)
 devtunnel create hermes-bot --allow-anonymous
-devtunnel port create hermes-bot -p 3978 --protocol https
+devtunnel port create hermes-bot -p 3978 --protocol https  # replace 3978 with TEAMS_PORT if changed
 devtunnel host hermes-bot
 
 # ngrok
-ngrok http 3978
+ngrok http 3978  # replace 3978 with TEAMS_PORT if changed
 
 # cloudflared
-cloudflared tunnel --url http://localhost:3978
+cloudflared tunnel --url http://localhost:3978  # replace 3978 with TEAMS_PORT if changed
 ```
 
 Copy the `https://` URL from the output — you'll use it in the next step. Leave the tunnel running while developing.
@@ -66,7 +68,7 @@ teams app create \
   --endpoint "https://<your-tunnel-url>/api/messages"
 ```
 
-The CLI outputs your `CLIENT_ID`, `CLIENT_SECRET`, and `TENANT_ID`. Save them — you'll need all three.
+The CLI outputs your `CLIENT_ID`, `CLIENT_SECRET`, and `TENANT_ID`, plus an install link for Step 6. Save the client secret — it won't be shown again.
 
 ---
 
@@ -81,7 +83,7 @@ TEAMS_CLIENT_SECRET=<your-client-secret>
 TEAMS_TENANT_ID=<your-tenant-id>
 
 # Restrict access to specific users (recommended)
-# Use your raw AAD Object ID from `teams status --verbose` (emails are NOT supported)
+# Use AAD object IDs from `teams status --verbose`
 TEAMS_ALLOWED_USERS=<your-aad-object-id>
 ```
 
@@ -93,7 +95,7 @@ TEAMS_ALLOWED_USERS=<your-aad-object-id>
 HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d gateway
 ```
 
-This starts the gateway and maps port 3978 on your host to the container. Check that it's running:
+This starts the gateway. The default webhook port is `3978` (override with `TEAMS_PORT`). Check that it's running:
 
 ```bash
 curl http://localhost:3978/health   # should return: ok
@@ -110,10 +112,10 @@ Look for:
 ## Step 6: Install the App in Teams
 
 ```bash
-teams app install --id <teamsAppId>
+teams app get <teamsAppId> --install-link
 ```
 
-The `teamsAppId` was printed by `teams app create` in Step 3. After installing, open Microsoft Teams and send a direct message to your bot — it's ready.
+Open the printed link in your browser — it opens directly in the Teams client. After installing, send a direct message to your bot — it's ready.
 
 ---
 
@@ -121,19 +123,20 @@ The `teamsAppId` was printed by `teams app create` in Step 3. After installing, 
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `TEAMS_CLIENT_ID` | Azure AD App (client) ID |
-| `TEAMS_CLIENT_SECRET` | Azure AD client secret |
-| `TEAMS_TENANT_ID` | Azure AD tenant ID |
-| `TEAMS_ALLOWED_USERS` | Comma-separated list of allowed users (AAD Object IDs only) |
-| `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
-| `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
-| `TEAMS_PORT` | Webhook port (default: `3978`) |
+| Variable                  | Description                                           |
+| ------------------------- | ----------------------------------------------------- |
+| `TEAMS_CLIENT_ID`         | Azure AD App (client) ID                              |
+| `TEAMS_CLIENT_SECRET`     | Azure AD client secret                                |
+| `TEAMS_TENANT_ID`         | Azure AD tenant ID                                    |
+| `TEAMS_ALLOWED_USERS`     | Comma-separated AAD object IDs allowed to use the bot |
+| `TEAMS_ALLOW_ALL_USERS`   | Set `true` to skip the allowlist and allow anyone     |
+| `TEAMS_HOME_CHANNEL`      | Conversation ID for cron/proactive message delivery   |
+| `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel                     |
+| `TEAMS_PORT`              | Webhook port (default: `3978`)                        |
 
 ### config.yaml
 
-Alternatively, configure via `~/.hermes/config.yaml`. This is the recommended approach as it supports advanced lists for user and channel filtering:
+Alternatively, configure via `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -144,28 +147,7 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
-      
-      # Optional filtering lists
-      allowed_users:
-        - "00000000-0000-0000-0000-000000000000" # AAD Object ID (Emails are NOT supported)
-      allowed_channels:
-        - "19:abcdef1234567890@thread.v2"        # Channel Thread ID
-      free_response_channels:
-        - "19:abcdef1234567890@thread.v2"        # Channels where the bot replies without @mentions
 ```
-
-### Channel Configuration (Thread IDs)
-
-Microsoft Teams often obfuscates channel names when communicating with bots, sending only the raw internal thread ID (e.g. `19:xxx@thread.v2`). For this reason, you **must use the raw thread ID** in `allowed_channels` and `free_response_channels`. You can discover this ID by monitoring the gateway logs when sending a message from the desired channel. We recommend using YAML comments (e.g. `# Channel Name`) next to the ID in your `config.yaml` to keep track of them.
-
-### Channel Policy & Free Response
-
-- `allowed_channels`: Restricts the bot to only operate in specific group chats or channels. DM (personal) chats are always allowed.
-- `free_response_channels`: Channels where the bot will respond to *every* message, even if it is not explicitly @mentioned. 
-  
-:::info RSC Requirement for Free Response
-To use `free_response_channels`, the Teams bot must actually receive unmentioned messages. By default, Teams only sends messages containing an `@mention` to the bot. A Microsoft 365 Tenant Admin must grant **Resource-Specific Consent (RSC)** with the `ChannelMessage.Read.Group` permission to your bot to allow it to read all messages in the channel.
-:::
 
 ---
 
@@ -200,22 +182,22 @@ If you've already created the bot and just need to update the endpoint:
 teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messages"
 ```
 
-Make sure port 3978 (or your configured `TEAMS_PORT`) is reachable from the internet and that your TLS certificate is valid — Teams rejects self-signed certificates.
+Make sure your configured port (`TEAMS_PORT`, default `3978`) is reachable from the internet and that your TLS certificate is valid — Teams rejects self-signed certificates.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| `health` endpoint works but bot doesn't respond | Check that your tunnel is still running and the bot's messaging endpoint matches the tunnel URL |
-| `KeyError: 'teams'` in logs | Restart the container — this is fixed in the current version |
-| Bot responds with auth errors | Verify `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, and `TEAMS_TENANT_ID` are all set correctly |
-| `No inference provider configured` | Check that `ANTHROPIC_API_KEY` (or another provider key) is set in `~/.hermes/.env` |
-| Bot receives messages but ignores them | Your AAD object ID may not be in `TEAMS_ALLOWED_USERS`. Run `teams status --verbose` to find it |
-| Tunnel URL changes on restart | devtunnel URLs are persistent if you use a named tunnel (`devtunnel create hermes-bot`). ngrok and cloudflared generate a new URL each run unless you have a paid plan — update the bot endpoint with `teams app update` when it changes |
-| Teams shows "This bot is not responding" | The webhook returned an error. Check `docker logs hermes` for tracebacks |
-| `[teams] Failed to connect` in logs | The SDK failed to authenticate. Double-check your credentials and that the tenant ID matches the account you used in `teams login` |
+| Problem                                         | Solution                                                                                                                                                                                                                                 |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health` endpoint works but bot doesn't respond | Check that your tunnel is still running and the bot's messaging endpoint matches the tunnel URL                                                                                                                                          |
+| `KeyError: 'teams'` in logs                     | Restart the container — this is fixed in the current version                                                                                                                                                                             |
+| Bot responds with auth errors                   | Verify `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, and `TEAMS_TENANT_ID` are all set correctly                                                                                                                                             |
+| `No inference provider configured`              | Check that `ANTHROPIC_API_KEY` (or another provider key) is set in `~/.hermes/.env`                                                                                                                                                      |
+| Bot receives messages but ignores them          | Your AAD object ID may not be in `TEAMS_ALLOWED_USERS`. Run `teams status --verbose` to find it                                                                                                                                          |
+| Tunnel URL changes on restart                   | devtunnel URLs are persistent if you use a named tunnel (`devtunnel create hermes-bot`). ngrok and cloudflared generate a new URL each run unless you have a paid plan — update the bot endpoint with `teams app update` when it changes |
+| Teams shows "This bot is not responding"        | The webhook returned an error. Check `docker logs hermes` for tracebacks                                                                                                                                                                 |
+| `[teams] Failed to connect` in logs             | The SDK failed to authenticate. Double-check your credentials and that the tenant ID matches the account you used in `teams login`                                                                                                       |
 
 ---
 

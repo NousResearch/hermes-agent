@@ -33,12 +33,15 @@ so plugin-defined tools appear alongside the built-in tools.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import logging
 import os
 import sys
+import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -170,7 +173,7 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
-_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform"}
+_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
 @dataclass
@@ -640,15 +643,17 @@ class PluginManager:
         #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
         #
-        # ``memory/`` and ``context_engine/`` are skipped at the top level —
-        # they have their own discovery systems. ``platforms/`` is a category
-        # holding platform adapters (scanned one level deeper below).
+        # ``memory/``, ``context_engine/``, and ``model-providers/`` are
+        # skipped at the top level — they have their own discovery systems
+        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
+        # is a category holding platform adapters (scanned one level deeper
+        # below).
         repo_plugins = get_bundled_plugins_dir()
         manifests.extend(
             self._scan_directory(
                 repo_plugins,
                 source="bundled",
-                skip_names={"memory", "context_engine", "platforms"},
+                skip_names={"memory", "context_engine", "platforms", "model-providers"},
             )
         )
         manifests.extend(
@@ -702,6 +707,21 @@ class PluginManager:
                 self._plugins[lookup_key] = loaded
                 logger.debug(
                     "Skipping '%s' (exclusive, handled by category discovery)",
+                    lookup_key,
+                )
+                continue
+
+            # Model provider plugins are loaded by providers/__init__.py
+            # (its own lazy discovery keyed off first get_provider_profile()
+            # call). We record the manifest here for introspection but do
+            # not import the module — a second import would create two
+            # ProviderProfile instances and break the "last writer wins"
+            # override semantics between bundled and user plugins.
+            if manifest.kind == "model-provider":
+                loaded = LoadedPlugin(manifest=manifest, enabled=True)
+                self._plugins[lookup_key] = loaded
+                logger.debug(
+                    "Skipping '%s' (model-provider, handled by providers/ discovery)",
                     lookup_key,
                 )
                 continue
@@ -881,6 +901,19 @@ class PluginManager:
                             logger.debug(
                                 "Plugin %s: detected memory provider, "
                                 "treating as kind='exclusive'",
+                                key,
+                            )
+                        elif (
+                            "register_provider" in source_text
+                            and "ProviderProfile" in source_text
+                        ):
+                            # Model provider plugin (calls register_provider()
+                            # from ``providers`` with a ProviderProfile). Route
+                            # to providers/__init__.py discovery.
+                            kind = "model-provider"
+                            logger.debug(
+                                "Plugin %s: detected model provider, "
+                                "treating as kind='model-provider'",
                                 key,
                             )
                     except Exception:
@@ -1224,6 +1257,55 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+def resolve_plugin_command_result(result: Any) -> Any:
+    """Resolve a plugin command return value, awaiting async handlers when needed.
+
+    Sync CLI/TUI dispatch sites call plugin handlers from plain functions.
+    If a handler is async, await it directly when no loop is running; if
+    we're already inside an active loop, run it in a helper thread with its
+    own loop so the caller still gets a concrete result synchronously. The
+    threaded path is bounded by a 30s timeout so a hung async handler cannot
+    wedge the terminal indefinitely.
+    """
+    if not inspect.isawaitable(result):
+        return result
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+
+    outcome: Dict[str, Any] = {}
+    failure: Dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(result)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_runner,
+        name="hermes-plugin-command-await",
+        daemon=True,
+    )
+    thread.start()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError(
+            "Plugin command async handler did not complete within "
+            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s"
+        )
+    if "exc" in failure:
+        raise failure["exc"]
+    return outcome.get("value")
 
 
 def get_plugin_commands() -> Dict[str, dict]:

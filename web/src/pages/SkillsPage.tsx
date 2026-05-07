@@ -20,7 +20,11 @@ import type { SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge, Button, ListItem, Spinner, Switch } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
@@ -309,11 +313,10 @@ export default function SkillsPage() {
                           >
                             <span className="flex-1 truncate">{name}</span>
                             <span
-                              className={`text-[10px] tabular-nums ${
-                                isActive
+                              className={`text-[10px] tabular-nums ${isActive
                                   ? "text-foreground/60"
                                   : "text-muted-foreground/50"
-                              }`}
+                                }`}
                             >
                               {count}
                             </span>
@@ -375,9 +378,9 @@ export default function SkillsPage() {
                     <Package className="h-4 w-4" />
                     {activeCategory
                       ? prettyCategory(
-                          activeCategory === "__none__" ? null : activeCategory,
-                          t.common.general,
-                        )
+                        activeCategory === "__none__" ? null : activeCategory,
+                        t.common.general,
+                      )
                       : t.skills.all}
                   </CardTitle>
                   <Badge tone="secondary" className="text-[10px]">
@@ -470,9 +473,9 @@ export default function SkillsPage() {
                                 <span className="text-[10px] text-muted-foreground/60">
                                   {ts.enabled
                                     ? t.skills.toolsetLabel.replace(
-                                        "{name}",
-                                        ts.name,
-                                      )
+                                      "{name}",
+                                      ts.name,
+                                    )
                                     : t.skills.disabledForCli}
                                 </span>
                               )}
@@ -511,9 +514,8 @@ function SkillRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5">
           <span
-            className={`font-mono-ui text-sm ${
-              skill.enabled ? "text-foreground" : "text-muted-foreground"
-            }`}
+            className={`font-mono-ui text-sm ${skill.enabled ? "text-foreground" : "text-muted-foreground"
+              }`}
           >
             {skill.name}
           </span>

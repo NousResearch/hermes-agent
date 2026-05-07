@@ -16,27 +16,27 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 Convert text to speech with ten providers:
 
-| Provider | Quality | Cost | API Key |
-|----------|---------|------|---------|
-| **Edge TTS** (default) | Good | Free | None needed |
-| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
-| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
-| **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
-| **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
-| **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
-| **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
-| **NeuTTS** | Good | Free (local) | None needed |
-| **KittenTTS** | Good | Free (local) | None needed |
-| **Piper** | Good | Free (local) | None needed |
+| Provider                  | Quality   | Cost         | API Key                  |
+| ------------------------- | --------- | ------------ | ------------------------ |
+| **Edge TTS** (default)    | Good      | Free         | None needed              |
+| **ElevenLabs**            | Excellent | Paid         | `ELEVENLABS_API_KEY`     |
+| **OpenAI TTS**            | Good      | Paid         | `VOICE_TOOLS_OPENAI_KEY` |
+| **MiniMax TTS**           | Excellent | Paid         | `MINIMAX_API_KEY`        |
+| **Mistral (Voxtral TTS)** | Excellent | Paid         | `MISTRAL_API_KEY`        |
+| **Google Gemini TTS**     | Excellent | Free tier    | `GEMINI_API_KEY`         |
+| **xAI TTS**               | Excellent | Paid         | `XAI_API_KEY`            |
+| **NeuTTS**                | Good      | Free (local) | None needed              |
+| **KittenTTS**             | Good      | Free (local) | None needed              |
+| **Piper**                 | Good      | Free (local) | None needed              |
 
 ### Platform Delivery
 
-| Platform | Delivery | Format |
-|----------|----------|--------|
-| Telegram | Voice bubble (plays inline) | Opus `.ogg` |
-| Discord | Voice bubble (Opus/OGG), falls back to file attachment | Opus/MP3 |
-| WhatsApp | Audio file attachment | MP3 |
-| CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
+| Platform | Delivery                                               | Format      |
+| -------- | ------------------------------------------------------ | ----------- |
+| Telegram | Voice bubble (plays inline)                            | Opus `.ogg` |
+| Discord  | Voice bubble (Opus/OGG), falls back to file attachment | Opus/MP3    |
+| WhatsApp | Audio file attachment                                  | MP3         |
+| CLI      | Saved to `~/.hermes/audio_cache/`                      | MP3         |
 
 ### Configuration
 
@@ -69,7 +69,7 @@ tts:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
   xai:
-    voice_id: "eve"             # xAI TTS voice (see https://docs.x.ai/docs/api-reference#tts)
+    voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
@@ -96,6 +96,43 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+
+### Input length limits
+
+Each provider has a documented per-request input-character cap. Hermes truncates text before calling the provider so requests never fail with a length error:
+
+| Provider      | Default cap (chars)     |
+| ------------- | ----------------------- |
+| Edge TTS      | 5000                    |
+| OpenAI        | 4096                    |
+| xAI           | 15000                   |
+| MiniMax       | 10000                   |
+| Mistral       | 4000                    |
+| Google Gemini | 5000                    |
+| ElevenLabs    | Model-aware (see below) |
+| NeuTTS        | 2000                    |
+| KittenTTS     | 2000                    |
+
+**ElevenLabs** picks a cap from the configured `model_id`:
+
+| `model_id`                                                                                                     | Cap (chars)                            |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `eleven_flash_v2_5`                                                                                            | 40000                                  |
+| `eleven_flash_v2`                                                                                              | 30000                                  |
+| `eleven_multilingual_v2` (default), `eleven_multilingual_v1`, `eleven_english_sts_v2`, `eleven_english_sts_v1` | 10000                                  |
+| `eleven_v3`, `eleven_ttv_v3`                                                                                   | 5000                                   |
+| Unknown model                                                                                                  | Falls back to provider default (10000) |
+
+**Override per provider** with `max_text_length:` under the provider section of your TTS config:
+
+```yaml
+tts:
+  openai:
+    max_text_length: 8192   # raise or lower the provider cap
+```
+
+Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
 
 ### Telegram Voice Bubbles & ffmpeg
 
@@ -126,6 +163,19 @@ Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are se
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
+
+### xAI Custom Voices (voice cloning)
+
+xAI supports cloning your voice and using it with TTS. Create a custom voice in the [xAI Console](https://console.x.ai/team/default/voice/voice-library), then set the resulting `voice_id` in your config:
+
+```yaml
+tts:
+  provider: xai
+  xai:
+    voice_id: "nlbqfwie"   # your custom voice ID
+```
+
+See the [xAI Custom Voices docs](https://docs.x.ai/developers/model-capabilities/audio/custom-voices) for details on recording, supported formats, and limits.
 
 ### Piper (local, 44 languages)
 
@@ -185,31 +235,55 @@ tts:
       output_format: wav
 ```
 
+#### Example: Doubao (Chinese seed-tts-2.0)
+
+For high-quality Chinese TTS via ByteDance's [seed-tts-2.0](https://www.volcengine.com/docs/6561/1257544) bidirectional-streaming API, install the [`doubao-speech`](https://pypi.org/project/doubao-speech/) PyPI package and wire it in as a command provider:
+
+```bash
+pip install doubao-speech
+export VOLCENGINE_APP_ID="your-app-id"
+export VOLCENGINE_ACCESS_TOKEN="your-access-token"
+```
+
+```yaml
+tts:
+  provider: doubao
+  providers:
+    doubao:
+      type: command
+      command: "doubao-speech say --text-file {input_path} --out {output_path}"
+      output_format: mp3
+      max_text_length: 1024
+      timeout: 30
+```
+
+Credentials come from your shell environment (`VOLCENGINE_APP_ID` / `VOLCENGINE_ACCESS_TOKEN`) or `~/.doubao-speech/config.yaml`. Pick a voice by adding `--voice zh-female-warm` (or any other alias from `doubao-speech list-voices`) to the command. `doubao-speech` also bundles streaming ASR — see the [STT section below](#example-doubao--volcengine-asr) for Hermes integration. Source and full docs: [github.com/Hypnus-Yuan/doubao-speech](https://github.com/Hypnus-Yuan/doubao-speech).
+
 #### Placeholders
 
 Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces and other shell-sensitive characters are safe.
 
-| Placeholder      | Meaning                                              |
-|------------------|------------------------------------------------------|
-| `{input_path}`   | Path to the temp UTF-8 text file Hermes wrote        |
-| `{text_path}`    | Alias for `{input_path}`                             |
-| `{output_path}`  | Path the command must write audio to                 |
-| `{format}`       | `mp3` / `wav` / `ogg` / `flac`                       |
-| `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
-| `{model}`        | `tts.providers.<name>.model`                         |
-| `{speed}`        | Resolved speed multiplier (provider or global)       |
+| Placeholder     | Meaning                                        |
+| --------------- | ---------------------------------------------- |
+| `{input_path}`  | Path to the temp UTF-8 text file Hermes wrote  |
+| `{text_path}`   | Alias for `{input_path}`                       |
+| `{output_path}` | Path the command must write audio to           |
+| `{format}`      | `mp3` / `wav` / `ogg` / `flac`                 |
+| `{voice}`       | `tts.providers.<name>.voice`, empty when unset |
+| `{model}`       | `tts.providers.<name>.model`                   |
+| `{speed}`       | Resolved speed multiplier (provider or global) |
 
 Use `{{` and `}}` for literal braces.
 
 #### Optional keys
 
-| Key                | Default | Meaning                                                                                                    |
-|--------------------|---------|------------------------------------------------------------------------------------------------------------|
-| `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
-| `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
-| `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
-| `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
-| `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
+| Key                | Default | Meaning                                                                                                |
+| ------------------ | ------- | ------------------------------------------------------------------------------------------------------ |
+| `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                  |
+| `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path. |
+| `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble. |
+| `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                        |
+| `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                      |
 
 #### Behavior notes
 
@@ -227,11 +301,11 @@ Command-type providers run whatever shell command you configure, with your user'
 
 Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
 
-| Provider | Quality | Cost | API Key |
-|----------|---------|------|---------| 
-| **Local Whisper** (default) | Good | Free | None needed |
-| **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
-| **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
+| Provider                    | Quality   | Cost      | API Key                                      |
+| --------------------------- | --------- | --------- | -------------------------------------------- |
+| **Local Whisper** (default) | Good      | Free      | None needed                                  |
+| **Groq Whisper API**        | Good–Best | Free tier | `GROQ_API_KEY`                               |
+| **OpenAI Whisper API**      | Good–Best | Paid      | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
 
 :::info Zero Config
 Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.
@@ -257,13 +331,13 @@ stt:
 
 **Local (faster-whisper)** — Runs Whisper locally via [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Uses CPU by default, GPU if available. Model sizes:
 
-| Model | Size | Speed | Quality |
-|-------|------|-------|---------|
-| `tiny` | ~75 MB | Fastest | Basic |
-| `base` | ~150 MB | Fast | Good (default) |
-| `small` | ~500 MB | Medium | Better |
-| `medium` | ~1.5 GB | Slower | Great |
-| `large-v3` | ~3 GB | Slowest | Best |
+| Model      | Size    | Speed   | Quality        |
+| ---------- | ------- | ------- | -------------- |
+| `tiny`     | ~75 MB  | Fastest | Basic          |
+| `base`     | ~150 MB | Fast    | Good (default) |
+| `small`    | ~500 MB | Medium  | Better         |
+| `medium`   | ~1.5 GB | Slower  | Great          |
+| `large-v3` | ~3 GB   | Slowest | Best           |
 
 **Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option.
 
@@ -273,7 +347,25 @@ stt:
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
 
-**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders.
+**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
+
+#### Example: Doubao / Volcengine ASR
+
+If you use [`doubao-speech`](https://pypi.org/project/doubao-speech/) for Doubao TTS (see [above](#example-doubao-chinese-seed-tts-20)), the same package handles speech-to-text via the local-command STT surface:
+
+```bash
+pip install doubao-speech
+export VOLCENGINE_APP_ID="your-app-id"
+export VOLCENGINE_ACCESS_TOKEN="your-access-token"
+export HERMES_LOCAL_STT_COMMAND='doubao-speech transcribe {input_path} --out {output_dir}/transcript.txt'
+```
+
+```yaml
+stt:
+  provider: local_command
+```
+
+Hermes writes the incoming voice message to `{input_path}`, runs the command, and reads the `.txt` file produced under `{output_dir}`. Language is auto-detected by the Volcengine bigmodel endpoint.
 
 ### Fallback Behavior
 

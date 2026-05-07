@@ -18,62 +18,64 @@ hermes [global-options] <command> [subcommand/options]
 
 ### Global options
 
-| Option | Description |
-|--------|-------------|
-| `--version`, `-V` | Show version and exit. |
-| `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
-| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
-| `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
-| `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
-| `--yolo` | Bypass dangerous-command approval prompts. |
-| `--pass-session-id` | Include the session ID in the agent's system prompt. |
-| `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
-| `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. |
-| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. |
-| `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
+| Option                               | Description                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `--version`, `-V`                    | Show version and exit.                                                                                             |
+| `--profile <name>`, `-p <name>`      | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`.  |
+| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title.                                                                          |
+| `--continue [name]`, `-c [name]`     | Resume the most recent session, or the most recent session matching a title.                                       |
+| `--worktree`, `-w`                   | Start in an isolated git worktree for parallel-agent workflows.                                                    |
+| `--yolo`                             | Bypass dangerous-command approval prompts.                                                                         |
+| `--pass-session-id`                  | Include the session ID in the agent's system prompt.                                                               |
+| `--ignore-user-config`               | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded.         |
+| `--ignore-rules`                     | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills.                       |
+| `--tui`                              | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`.                   |
+| `--dev`                              | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
 ## Top-level commands
 
-| Command | Purpose |
-|---------|---------|
-| `hermes chat` | Interactive or one-shot chat with the agent. |
-| `hermes model` | Interactively choose the default provider and model. |
-| `hermes fallback` | Manage fallback providers tried when the primary model errors. |
-| `hermes gateway` | Run or manage the messaging gateway service. |
-| `hermes setup` | Interactive setup wizard for all or part of the configuration. |
-| `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
-| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
-| `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
-| `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
-| `hermes status` | Show agent, auth, and platform status. |
-| `hermes cron` | Inspect and tick the cron scheduler. |
-| `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
-| `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
-| `hermes doctor` | Diagnose config and dependency issues. |
-| `hermes dump` | Copy-pasteable setup summary for support/debugging. |
-| `hermes debug` | Debug tools — upload logs and system info for support. |
-| `hermes backup` | Back up Hermes home directory to a zip file. |
-| `hermes import` | Restore a Hermes backup from a zip file. |
-| `hermes logs` | View, tail, and filter agent/gateway/error log files. |
-| `hermes config` | Show, edit, migrate, and query configuration files. |
-| `hermes pairing` | Approve or revoke messaging pairing codes. |
-| `hermes skills` | Browse, install, publish, audit, and configure skills. |
-| `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
-| `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
-| `hermes acp` | Run Hermes as an ACP server for editor integration. |
-| `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
-| `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
-| `hermes tools` | Configure enabled tools per platform. |
-| `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
-| `hermes insights` | Show token/cost/activity analytics. |
-| `hermes fallback` | Interactive manager for the fallback provider chain. |
-| `hermes claw` | OpenClaw migration helpers. |
-| `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
-| `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
-| `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
-| `hermes version` | Show version information. |
-| `hermes update` | Pull latest code and reinstall dependencies. `--check` prints commit diff without pulling; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
-| `hermes uninstall` | Remove Hermes from the system. |
+| Command                   | Purpose                                                                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hermes chat`             | Interactive or one-shot chat with the agent.                                                                                                   |
+| `hermes model`            | Interactively choose the default provider and model.                                                                                           |
+| `hermes fallback`         | Manage fallback providers tried when the primary model errors.                                                                                 |
+| `hermes gateway`          | Run or manage the messaging gateway service.                                                                                                   |
+| `hermes setup`            | Interactive setup wizard for all or part of the configuration.                                                                                 |
+| `hermes whatsapp`         | Configure and pair the WhatsApp bridge.                                                                                                        |
+| `hermes slack`            | Slack helpers (currently: generate the app manifest with every command as a native slash).                                                     |
+| `hermes auth`             | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic.                                     |
+| `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead.                                                                                                    |
+| `hermes status`           | Show agent, auth, and platform status.                                                                                                         |
+| `hermes cron`             | Inspect and tick the cron scheduler.                                                                                                           |
+| `hermes kanban`           | Multi-profile collaboration board (tasks, links, dispatcher).                                                                                  |
+| `hermes webhook`          | Manage dynamic webhook subscriptions for event-driven activation.                                                                              |
+| `hermes hooks`            | Inspect, approve, or remove shell-script hooks declared in `config.yaml`.                                                                      |
+| `hermes doctor`           | Diagnose config and dependency issues.                                                                                                         |
+| `hermes dump`             | Copy-pasteable setup summary for support/debugging.                                                                                            |
+| `hermes debug`            | Debug tools — upload logs and system info for support.                                                                                         |
+| `hermes backup`           | Back up Hermes home directory to a zip file.                                                                                                   |
+| `hermes checkpoints`      | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview.               |
+| `hermes import`           | Restore a Hermes backup from a zip file.                                                                                                       |
+| `hermes logs`             | View, tail, and filter agent/gateway/error log files.                                                                                          |
+| `hermes config`           | Show, edit, migrate, and query configuration files.                                                                                            |
+| `hermes pairing`          | Approve or revoke messaging pairing codes.                                                                                                     |
+| `hermes skills`           | Browse, install, publish, audit, and configure skills.                                                                                         |
+| `hermes curator`          | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md).                                      |
+| `hermes memory`           | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active.   |
+| `hermes acp`              | Run Hermes as an ACP server for editor integration.                                                                                            |
+| `hermes mcp`              | Manage MCP server configurations and run Hermes as an MCP server.                                                                              |
+| `hermes plugins`          | Manage Hermes Agent plugins (install, enable, disable, remove).                                                                                |
+| `hermes tools`            | Configure enabled tools per platform.                                                                                                          |
+| `hermes sessions`         | Browse, export, prune, rename, and delete sessions.                                                                                            |
+| `hermes insights`         | Show token/cost/activity analytics.                                                                                                            |
+| `hermes fallback`         | Interactive manager for the fallback provider chain.                                                                                           |
+| `hermes claw`             | OpenClaw migration helpers.                                                                                                                    |
+| `hermes dashboard`        | Launch the web dashboard for managing config, API keys, and sessions.                                                                          |
+| `hermes profile`          | Manage profiles — multiple isolated Hermes instances.                                                                                          |
+| `hermes completion`       | Print shell completion scripts (bash/zsh/fish).                                                                                                |
+| `hermes version`          | Show version information.                                                                                                                      |
+| `hermes update`           | Pull latest code and reinstall dependencies. `--check` prints commit diff without pulling; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
+| `hermes uninstall`        | Remove Hermes from the system.                                                                                                                 |
 
 ## `hermes chat`
 
@@ -83,25 +85,25 @@ hermes chat [options]
 
 Common options:
 
-| Option | Description |
-|--------|-------------|
-| `-q`, `--query "..."` | One-shot, non-interactive prompt. |
-| `-m`, `--model <model>` | Override the model for this run. |
-| `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `google-gemini-cli`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
-| `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
-| `-v`, `--verbose` | Verbose output. |
-| `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
-| `--image <path>` | Attach a local image to a single query. |
-| `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
-| `--worktree` | Create an isolated git worktree for this run. |
-| `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
-| `--yolo` | Skip approval prompts. |
-| `--pass-session-id` | Pass the session ID into the system prompt. |
-| `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
-| `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
-| `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
-| `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
+| Option                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-q`, `--query "..."`                      | One-shot, non-interactive prompt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `-m`, `--model <model>`                    | Override the model for this run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `-t`, `--toolsets <csv>`                   | Enable a comma-separated set of toolsets.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `--provider <provider>`                    | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `google-gemini-cli`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
+| `-s`, `--skills <name>`                    | Preload one or more skills for the session (can be repeated or comma-separated).                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `-v`, `--verbose`                          | Verbose output.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `-Q`, `--quiet`                            | Programmatic mode: suppress banner/spinner/tool previews.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `--image <path>`                           | Attach a local image to a single query.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--worktree`                               | Create an isolated git worktree for this run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `--checkpoints`                            | Enable filesystem checkpoints before destructive file changes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `--yolo`                                   | Skip approval prompts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--pass-session-id`                        | Pass the session ID into the system prompt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `--ignore-user-config`                     | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations.                                                                                                                                                                                                                                                                                                                                                       |
+| `--ignore-rules`                           | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run.                                                                                                                                                                                                                                                                                                                                                                        |
+| `--source <tag>`                           | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `--max-turns <N>`                          | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config).                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Examples:
 
@@ -129,10 +131,10 @@ answer=$(hermes -z "summarize this" < /path/to/file.txt)
 
 Per-run overrides (no mutation to `~/.hermes/config.yaml`):
 
-| Flag | Equivalent env var | Purpose |
-|---|---|---|
-| `-m` / `--model <model>` | `HERMES_INFERENCE_MODEL` | Override the model for this run |
-| `--provider <provider>` | `HERMES_INFERENCE_PROVIDER` | Override the provider for this run |
+| Flag                     | Equivalent env var          | Purpose                            |
+| ------------------------ | --------------------------- | ---------------------------------- |
+| `-m` / `--model <model>` | `HERMES_INFERENCE_MODEL`    | Override the model for this run    |
+| `--provider <provider>`  | `HERMES_INFERENCE_PROVIDER` | Override the provider for this run |
 
 ```bash
 hermes -z "…" --provider openrouter --model openai/gpt-5.5
@@ -200,21 +202,21 @@ hermes gateway <subcommand>
 
 Subcommands:
 
-| Subcommand | Description |
-|------------|-------------|
-| `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
-| `start` | Start the installed systemd/launchd background service. |
-| `stop` | Stop the service (or foreground process). |
-| `restart` | Restart the service. |
-| `status` | Show service status. |
-| `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
-| `uninstall` | Remove the installed service. |
-| `setup` | Interactive messaging-platform setup. |
+| Subcommand  | Description                                                                 |
+| ----------- | --------------------------------------------------------------------------- |
+| `run`       | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
+| `start`     | Start the installed systemd/launchd background service.                     |
+| `stop`      | Stop the service (or foreground process).                                   |
+| `restart`   | Restart the service.                                                        |
+| `status`    | Show service status.                                                        |
+| `install`   | Install as a systemd (Linux) or launchd (macOS) background service.         |
+| `uninstall` | Remove the installed service.                                               |
+| `setup`     | Interactive messaging-platform setup.                                       |
 
 Options:
 
-| Option | Description |
-|--------|-------------|
+| Option  | Description                                                                                                                                                                                                  |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--all` | On `start` / `restart` / `stop`: act on **every profile's** gateway, not just the active `HERMES_HOME`. Useful if you run multiple profiles side-by-side and want to restart them all after `hermes update`. |
 
 :::tip WSL users
@@ -233,22 +235,22 @@ hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--res
 
 Jump into one section instead of the full wizard:
 
-| Section | Description |
-|---------|-------------|
-| `model` | Provider and model setup. |
+| Section    | Description                         |
+| ---------- | ----------------------------------- |
+| `model`    | Provider and model setup.           |
 | `terminal` | Terminal backend and sandbox setup. |
-| `gateway` | Messaging platform setup. |
-| `tools` | Enable/disable tools per platform. |
-| `agent` | Agent behavior settings. |
+| `gateway`  | Messaging platform setup.           |
+| `tools`    | Enable/disable tools per platform.  |
+| `agent`    | Agent behavior settings.            |
 
 Options:
 
-| Option | Description |
-|--------|-------------|
-| `--quick` | On returning-user runs: only prompt for items that are missing or unset. Skip items you already have configured. |
-| `--non-interactive` | Use defaults / environment values without prompts. |
-| `--reset` | Reset configuration to defaults before setup. |
-| `--reconfigure` | Backwards-compat alias — bare `hermes setup` on an existing install now does this by default. |
+| Option              | Description                                                                                                      |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `--quick`           | On returning-user runs: only prompt for items that are missing or unset. Skip items you already have configured. |
+| `--non-interactive` | Use defaults / environment values without prompts.                                                               |
+| `--reset`           | Reset configuration to defaults before setup.                                                                    |
+| `--reconfigure`     | Backwards-compat alias — bare `hermes setup` on an existing install now does this by default.                    |
 
 ## `hermes whatsapp`
 
@@ -274,12 +276,12 @@ output into your Slack app config at
 **Features → App Manifest → Edit**, then **Save**. Slack prompts for
 reinstall if scopes or slash commands changed.
 
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--write [PATH]` | stdout | Write to a file instead of stdout. Bare `--write` writes `$HERMES_HOME/slack-manifest.json`. |
-| `--name NAME` | `Hermes` | Bot display name in Slack. |
-| `--description DESC` | default blurb | Bot description shown in the Slack app directory. |
-| `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
+| Flag                 | Default       | Purpose                                                                                      |
+| -------------------- | ------------- | -------------------------------------------------------------------------------------------- |
+| `--write [PATH]`     | stdout        | Write to a file instead of stdout. Bare `--write` writes `$HERMES_HOME/slack-manifest.json`. |
+| `--name NAME`        | `Hermes`      | Bot display name in Slack.                                                                   |
+| `--description DESC` | default blurb | Bot description shown in the Slack app directory.                                            |
+| `--slashes-only`     | off           | Emit only `features.slash_commands` for merging into a manually-maintained manifest.         |
 
 Run `hermes slack manifest --write` again after `hermes update` to pick
 up any new commands.
@@ -313,10 +315,10 @@ Subcommands: `add`, `list`, `remove`, `reset`. When called with no subcommand, l
 hermes status [--all] [--deep]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--all` | Show all details in a shareable redacted format. |
-| `--deep` | Run deeper checks that may take longer. |
+| Option   | Description                                      |
+| -------- | ------------------------------------------------ |
+| `--all`  | Show all details in a shareable redacted format. |
+| `--deep` | Run deeper checks that may take longer.          |
 
 ## `hermes cron`
 
@@ -324,17 +326,81 @@ hermes status [--all] [--deep]
 hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 ```
 
-| Subcommand | Description |
-|------------|-------------|
-| `list` | Show scheduled jobs. |
-| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`. |
-| `edit` | Update a job's schedule, prompt, name, delivery, repeat count, or attached skills. Supports `--clear-skills`, `--add-skill`, and `--remove-skill`. |
-| `pause` | Pause a job without deleting it. |
-| `resume` | Resume a paused job and compute its next future run. |
-| `run` | Trigger a job on the next scheduler tick. |
-| `remove` | Delete a scheduled job. |
-| `status` | Check whether the cron scheduler is running. |
-| `tick` | Run due jobs once and exit. |
+| Subcommand       | Description                                                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`           | Show scheduled jobs.                                                                                                                               |
+| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`.                                              |
+| `edit`           | Update a job's schedule, prompt, name, delivery, repeat count, or attached skills. Supports `--clear-skills`, `--add-skill`, and `--remove-skill`. |
+| `pause`          | Pause a job without deleting it.                                                                                                                   |
+| `resume`         | Resume a paused job and compute its next future run.                                                                                               |
+| `run`            | Trigger a job on the next scheduler tick.                                                                                                          |
+| `remove`         | Delete a scheduled job.                                                                                                                            |
+| `status`         | Check whether the cron scheduler is running.                                                                                                       |
+| `tick`           | Run due jobs once and exit.                                                                                                                        |
+
+## `hermes kanban`
+
+```bash
+hermes kanban [--board <slug>] <action> [options]
+```
+
+Multi-profile, multi-project collaboration board. Each install can host many boards (one per project, repo, or domain); each board is a standalone queue with its own SQLite DB and dispatcher scope. New installs start with one board called `default`, whose DB is `~/.hermes/kanban.db` for back-compat; additional boards live at `~/.hermes/kanban/boards/<slug>/kanban.db`. The gateway-embedded dispatcher sweeps every board per tick.
+
+**Global flags (apply to every action below):**
+
+| Flag             | Purpose                                                                                                                                              |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
+
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/docs/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+
+| Action                                | Purpose                                                                                                                                                                                                                                         |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`                                | Create `kanban.db` if missing. Idempotent.                                                                                                                                                                                                      |
+| `boards list` / `boards ls`           | List all boards with task counts. `--json`, `--all` (include archived).                                                                                                                                                                         |
+| `boards create <slug>`                | Create a new board. Flags: `--name`, `--description`, `--icon`, `--color`, `--switch` (make active). Slug is kebab-case, auto-downcased.                                                                                                        |
+| `boards switch <slug>` / `boards use` | Persist `<slug>` as the active board (writes `~/.hermes/kanban/current`).                                                                                                                                                                       |
+| `boards show` / `boards current`      | Print the currently-active board's name, DB path, and task counts.                                                                                                                                                                              |
+| `boards rename <slug> "<name>"`       | Change a board's display name. Slug is immutable.                                                                                                                                                                                               |
+| `boards rm <slug>`                    | Archive (default) or hard-delete a board. `--delete` skips the archive step. Archived boards move to `boards/_archived/<slug>-<ts>/`. Refused for `default`.                                                                                    |
+| `create "<title>"`                    | Create a new task on the active board. Flags: `--body`, `--assignee`, `--parent` (repeatable), `--workspace scratch\|worktree\|dir:<path>`, `--tenant`, `--priority`, `--triage`, `--idempotency-key`, `--max-runtime`, `--skill` (repeatable). |
+| `list` / `ls`                         | List tasks on the active board. Filter with `--mine`, `--assignee`, `--status`, `--tenant`, `--archived`, `--json`.                                                                                                                             |
+| `show <id>`                           | Show a task with comments and events. `--json` for machine output.                                                                                                                                                                              |
+| `assign <id> <profile>`               | Assign or reassign. Use `none` to unassign. Refused while task is running.                                                                                                                                                                      |
+| `link <parent> <child>`               | Add a dependency. Cycle-detected. Both tasks must be on the same board.                                                                                                                                                                         |
+| `unlink <parent> <child>`             | Remove a dependency.                                                                                                                                                                                                                            |
+| `claim <id>`                          | Atomically claim a ready task. Prints resolved workspace path.                                                                                                                                                                                  |
+| `comment <id> "<text>"`               | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response.                                                                                                                                        |
+| `complete <id>`                       | Mark task done. Flags: `--result`, `--summary`, `--metadata`.                                                                                                                                                                                   |
+| `block <id> "<reason>"`               | Mark task blocked. Also appends the reason as a comment.                                                                                                                                                                                        |
+| `unblock <id>`                        | Return a blocked task to ready.                                                                                                                                                                                                                 |
+| `archive <id>`                        | Hide from default list. `gc` will remove scratch workspaces.                                                                                                                                                                                    |
+| `tail <id>`                           | Follow a task's event stream.                                                                                                                                                                                                                   |
+| `dispatch`                            | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--json`.                                                                                                                                                               |
+| `context <id>`                        | Print the full context a worker would see (title + body + parent results + comments).                                                                                                                                                           |
+| `gc`                                  | Remove scratch workspaces for archived tasks.                                                                                                                                                                                                   |
+
+Examples:
+
+```bash
+# Create a second board and put a task on it without switching away.
+hermes kanban boards create atm10-server --name "ATM10 Server" --icon 🎮
+hermes kanban --board atm10-server create "Restart server" --assignee ops
+
+# Switch the active board for subsequent calls.
+hermes kanban boards switch atm10-server
+hermes kanban list                  # shows atm10-server tasks
+
+# Archive a board (recoverable) or hard-delete it.
+hermes kanban boards rm atm10-server
+hermes kanban boards rm atm10-server --delete
+```
+
+Board resolution order (highest precedence first): `--board <slug>` flag → `HERMES_KANBAN_BOARD` env var → `~/.hermes/kanban/current` file → `default`.
+
+All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
+
+For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/docs/user-guide/features/kanban).
 
 ## `hermes webhook`
 
@@ -344,12 +410,12 @@ hermes webhook <subscribe|list|remove|test>
 
 Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
 
-| Subcommand | Description |
-|------------|-------------|
+| Subcommand          | Description                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------- |
 | `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
-| `list` / `ls` | Show all agent-created subscriptions. |
-| `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
-| `test` | Send a test POST to verify a subscription is working. |
+| `list` / `ls`       | Show all agent-created subscriptions.                                                 |
+| `remove` / `rm`     | Delete a dynamic subscription. Static routes from config.yaml are not affected.       |
+| `test`              | Send a test POST to verify a subscription is working.                                 |
 
 ### `hermes webhook subscribe`
 
@@ -357,15 +423,16 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 hermes webhook subscribe <name> [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--prompt` | Prompt template with `{dot.notation}` payload references. |
-| `--events` | Comma-separated event types to accept (e.g. `issues,pull_request`). Empty = all. |
-| `--description` | Human-readable description. |
-| `--skills` | Comma-separated skill names to load for the agent run. |
-| `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
-| `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
-| `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+| Option              | Description                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--prompt`          | Prompt template with `{dot.notation}` payload references.                                                                                                          |
+| `--events`          | Comma-separated event types to accept (e.g. `issues,pull_request`). Empty = all.                                                                                   |
+| `--description`     | Human-readable description.                                                                                                                                        |
+| `--skills`          | Comma-separated skill names to load for the agent run.                                                                                                             |
+| `--deliver`         | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`.                                                                                |
+| `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery.                                                                                                                |
+| `--secret`          | Custom HMAC secret. Auto-generated if omitted.                                                                                                                     |
+| `--deliver-only`    | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 
 Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 
@@ -375,8 +442,8 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 hermes doctor [--fix]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option  | Description                               |
+| ------- | ----------------------------------------- |
 | `--fix` | Attempt automatic repairs where possible. |
 
 ## `hermes dump`
@@ -387,24 +454,24 @@ hermes dump [--show-keys]
 
 Outputs a compact, plain-text summary of your entire Hermes setup. Designed to be copy-pasted into Discord, GitHub issues, or Telegram when asking for support — no ANSI colors, no special formatting, just data.
 
-| Option | Description |
-|--------|-------------|
+| Option        | Description                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------------- |
 | `--show-keys` | Show redacted API key prefixes (first and last 4 characters) instead of just `set`/`not set`. |
 
 ### What it includes
 
-| Section | Details |
-|---------|---------|
-| **Header** | Hermes version, release date, git commit hash |
-| **Environment** | OS, Python version, OpenAI SDK version |
-| **Identity** | Active profile name, HERMES_HOME path |
-| **Model** | Configured default model and provider |
-| **Terminal** | Backend type (local, docker, ssh, etc.) |
-| **API keys** | Presence check for all 22 provider/tool API keys |
-| **Features** | Enabled toolsets, MCP server count, memory provider |
-| **Services** | Gateway status, configured messaging platforms |
-| **Workload** | Cron job counts, installed skill count |
-| **Config overrides** | Any config values that differ from defaults |
+| Section              | Details                                             |
+| -------------------- | --------------------------------------------------- |
+| **Header**           | Hermes version, release date, git commit hash       |
+| **Environment**      | OS, Python version, OpenAI SDK version              |
+| **Identity**         | Active profile name, HERMES_HOME path               |
+| **Model**            | Configured default model and provider               |
+| **Terminal**         | Backend type (local, docker, ssh, etc.)             |
+| **API keys**         | Presence check for all 22 provider/tool API keys    |
+| **Features**         | Enabled toolsets, MCP server count, memory provider |
+| **Services**         | Gateway status, configured messaging platforms      |
+| **Workload**         | Cron job counts, installed skill count              |
+| **Config overrides** | Any config values that differ from defaults         |
 
 ### Example output
 
@@ -463,11 +530,11 @@ hermes debug share [options]
 
 Upload a debug report (system info + recent logs) to a paste service and get a shareable URL. Useful for quick support requests — includes everything a helper needs to diagnose your issue.
 
-| Option | Description |
-|--------|-------------|
-| `--lines <N>` | Number of log lines to include per log file (default: 200). |
-| `--expire <days>` | Paste expiry in days (default: 7). |
-| `--local` | Print the report locally instead of uploading. |
+| Option            | Description                                                 |
+| ----------------- | ----------------------------------------------------------- |
+| `--lines <N>`     | Number of log lines to include per log file (default: 200). |
+| `--expire <days>` | Paste expiry in days (default: 7).                          |
+| `--local`         | Print the report locally instead of uploading.              |
 
 The report includes system info (OS, Python version, Hermes version), recent agent and gateway logs (512 KB limit per file), and redacted API key status. Keys are always redacted — no secrets are uploaded.
 
@@ -490,11 +557,11 @@ hermes backup [options]
 
 Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself.
 
-| Option | Description |
-|--------|-------------|
-| `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
-| `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
-| `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| Option                  | Description                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`).                                                |
+| `-q`, `--quick`         | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
+| `-l`, `--label <name>`  | Label for the snapshot (only used with `--quick`).                                                                        |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 
@@ -513,17 +580,65 @@ hermes backup --quick                   # Quick state-only snapshot
 hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
 ```
 
+## `hermes checkpoints`
+
+```bash
+hermes checkpoints [COMMAND]
+```
+
+Inspect and manage the shadow git store at `~/.hermes/checkpoints/` — the storage layer behind the in-session `/rollback` command. Safe to run any time; does not require the agent to be running.
+
+| Subcommand         | Description                                                                                                                       |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `status` (default) | Show total size, project count, and per-project breakdown. Bare `hermes checkpoints` is equivalent.                               |
+| `list`             | Alias for `status`.                                                                                                               |
+| `prune`            | Force a cleanup sweep — delete orphan and stale projects, GC the store, enforce the size cap. Ignores the 24h idempotency marker. |
+| `clear`            | Delete the entire checkpoint base. Irreversible; asks for confirmation unless `-f`.                                               |
+| `clear-legacy`     | Delete only the `legacy-<timestamp>/` archives produced by the v1→v2 migration.                                                   |
+
+### Options
+
+| Option               | Subcommand              | Description                                                                                                  |
+| -------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `--limit N`          | `status`, `list`        | Max projects to list (default 20).                                                                           |
+| `--retention-days N` | `prune`                 | Drop projects whose `last_touch` is older than N days (default 7).                                           |
+| `--max-size-mb N`    | `prune`                 | After the orphan/stale pass, drop the oldest commit per project until total store size ≤ N MB (default 500). |
+| `--keep-orphans`     | `prune`                 | Skip deleting projects whose working directory no longer exists.                                             |
+| `-f`, `--force`      | `clear`, `clear-legacy` | Skip the confirmation prompt.                                                                                |
+
+### Examples
+
+```bash
+hermes checkpoints                                  # status overview
+hermes checkpoints prune --retention-days 3         # aggressive cleanup
+hermes checkpoints prune --max-size-mb 200          # tighten size cap once
+hermes checkpoints clear-legacy -f                  # drop v1 archive dirs
+hermes checkpoints clear -f                         # wipe everything
+```
+
+See [Checkpoints and `/rollback`](../user-guide/checkpoints-and-rollback.md) for the full architecture and the in-session commands.
+
 ## `hermes import`
 
 ```bash
 hermes import <zipfile> [options]
 ```
 
-Restore a previously created Hermes backup into your Hermes home directory.
+Restore a previously created Hermes backup into your Hermes home directory. All files in the archive overwrite existing files in your Hermes home; `--force` only skips the confirmation prompt that fires when the target already has a Hermes installation.
 
-| Option | Description |
-|--------|-------------|
-| `-f`, `--force` | Overwrite existing files without confirmation. |
+| Option          | Description                                         |
+| --------------- | --------------------------------------------------- |
+| `-f`, `--force` | Skip the existing-installation confirmation prompt. |
+
+:::warning
+Stop the gateway before importing to avoid conflicts with running processes.
+:::
+
+### Examples
+```bash
+hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
+hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompting
+```
 
 ## `hermes logs`
 
@@ -535,23 +650,23 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 
 ### Log files
 
-| Name | File | What it captures |
-|------|------|-----------------|
-| `agent` (default) | `agent.log` | All agent activity — API calls, tool dispatch, session lifecycle (INFO and above) |
-| `errors` | `errors.log` | Warnings and errors only — a filtered subset of agent.log |
-| `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
+| Name              | File          | What it captures                                                                    |
+| ----------------- | ------------- | ----------------------------------------------------------------------------------- |
+| `agent` (default) | `agent.log`   | All agent activity — API calls, tool dispatch, session lifecycle (INFO and above)   |
+| `errors`          | `errors.log`  | Warnings and errors only — a filtered subset of agent.log                           |
+| `gateway`         | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
 
 ### Options
 
-| Option | Description |
-|--------|-------------|
-| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, or `list` to show available files with sizes. |
-| `-n`, `--lines <N>` | Number of lines to show (default: 50). |
-| `-f`, `--follow` | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop. |
-| `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
-| `--session <ID>` | Filter lines containing a session ID substring. |
-| `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
-| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
+| Option               | Description                                                                                                                  |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `log_name`           | Which log to view: `agent` (default), `errors`, `gateway`, or `list` to show available files with sizes.                     |
+| `-n`, `--lines <N>`  | Number of lines to show (default: 50).                                                                                       |
+| `-f`, `--follow`     | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop.                                                           |
+| `--level <LEVEL>`    | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.                                                  |
+| `--session <ID>`     | Filter lines containing a session ID substring.                                                                              |
+| `--since <TIME>`     | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
+| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`.                                                             |
 
 ### Examples
 
@@ -601,15 +716,15 @@ hermes config <subcommand>
 
 Subcommands:
 
-| Subcommand | Description |
-|------------|-------------|
-| `show` | Show current config values. |
-| `edit` | Open `config.yaml` in your editor. |
-| `set <key> <value>` | Set a config value. |
-| `path` | Print the config file path. |
-| `env-path` | Print the `.env` file path. |
-| `check` | Check for missing or stale config. |
-| `migrate` | Add newly introduced options interactively. |
+| Subcommand          | Description                                 |
+| ------------------- | ------------------------------------------- |
+| `show`              | Show current config values.                 |
+| `edit`              | Open `config.yaml` in your editor.          |
+| `set <key> <value>` | Set a config value.                         |
+| `path`              | Print the config file path.                 |
+| `env-path`          | Print the `.env` file path.                 |
+| `check`             | Check for missing or stale config.          |
+| `migrate`           | Add newly introduced options interactively. |
 
 ## `hermes pairing`
 
@@ -617,12 +732,12 @@ Subcommands:
 hermes pairing <list|approve|revoke|clear-pending>
 ```
 
-| Subcommand | Description |
-|------------|-------------|
-| `list` | Show pending and approved users. |
-| `approve <platform> <code>` | Approve a pairing code. |
-| `revoke <platform> <user-id>` | Revoke a user's access. |
-| `clear-pending` | Clear pending pairing codes. |
+| Subcommand                    | Description                      |
+| ----------------------------- | -------------------------------- |
+| `list`                        | Show pending and approved users. |
+| `approve <platform> <code>`   | Approve a pairing code.          |
+| `revoke <platform> <user-id>` | Revoke a user's access.          |
+| `clear-pending`               | Clear pending pairing codes.     |
 
 ## `hermes skills`
 
@@ -632,21 +747,22 @@ hermes skills <subcommand>
 
 Subcommands:
 
-| Subcommand | Description |
-|------------|-------------|
-| `browse` | Paginated browser for skill registries. |
-| `search` | Search skill registries. |
-| `install` | Install a skill. |
-| `inspect` | Preview a skill without installing it. |
-| `list` | List installed skills. |
-| `check` | Check installed hub skills for upstream updates. |
-| `update` | Reinstall hub skills with upstream changes when available. |
-| `audit` | Re-scan installed hub skills. |
-| `uninstall` | Remove a hub-installed skill. |
-| `publish` | Publish a skill to a registry. |
-| `snapshot` | Export/import skill configurations. |
-| `tap` | Manage custom skill sources. |
-| `config` | Interactive enable/disable configuration for skills by platform. |
+| Subcommand  | Description                                                                                                                                                 |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browse`    | Paginated browser for skill registries.                                                                                                                     |
+| `search`    | Search skill registries.                                                                                                                                    |
+| `install`   | Install a skill.                                                                                                                                            |
+| `inspect`   | Preview a skill without installing it.                                                                                                                      |
+| `list`      | List installed skills.                                                                                                                                      |
+| `check`     | Check installed hub skills for upstream updates.                                                                                                            |
+| `update`    | Reinstall hub skills with upstream changes when available.                                                                                                  |
+| `audit`     | Re-scan installed hub skills.                                                                                                                               |
+| `uninstall` | Remove a hub-installed skill.                                                                                                                               |
+| `reset`     | Un-stick a bundled skill flagged as `user_modified` by clearing its manifest entry. With `--restore`, also replaces the user copy with the bundled version. |
+| `publish`   | Publish a skill to a registry.                                                                                                                              |
+| `snapshot`  | Export/import skill configurations.                                                                                                                         |
+| `tap`       | Manage custom skill sources.                                                                                                                                |
+| `config`    | Interactive enable/disable configuration for skills by platform.                                                                                            |
 
 Common examples:
 
@@ -664,6 +780,8 @@ hermes skills install https://example.com/SKILL.md --name my-skill        # Over
 hermes skills check
 hermes skills update
 hermes skills config
+hermes skills reset google-workspace
+hermes skills reset google-workspace --restore --yes
 ```
 
 Notes:
@@ -681,15 +799,24 @@ hermes curator <subcommand>
 
 The curator is an auxiliary-model background task that periodically reviews agent-created skills, prunes stale ones, consolidates overlaps, and archives obsolete skills. Bundled and hub-installed skills are never touched. Archives are recoverable; auto-deletion never happens.
 
-| Subcommand | Description |
-|------------|-------------|
-| `status` | Show curator status and skill stats |
-| `run` | Trigger a curator review now |
-| `pause` | Pause the curator until resumed |
-| `resume` | Resume a paused curator |
-| `pin <skill>` | Pin a skill so the curator never auto-transitions it |
-| `unpin <skill>` | Unpin a skill |
-| `restore <skill>` | Restore an archived skill |
+| Subcommand           | Description                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `status`             | Show curator status and skill stats                                                                               |
+| `run`                | Trigger a curator review now                                                                                      |
+| `run --sync`         | Block until the LLM pass finishes                                                                                 |
+| `run --dry-run`      | Preview only — produce the review report with no mutations                                                        |
+| `backup`             | Take a manual tar.gz snapshot of `~/.hermes/skills/` (curator also snapshots automatically before every real run) |
+| `rollback`           | Restore `~/.hermes/skills/` from a snapshot (defaults to newest)                                                  |
+| `rollback --list`    | List available snapshots                                                                                          |
+| `rollback --id <ts>` | Restore a specific snapshot by id                                                                                 |
+| `rollback -y`        | Skip the confirmation prompt                                                                                      |
+| `pause`              | Pause the curator until resumed                                                                                   |
+| `resume`             | Resume a paused curator                                                                                           |
+| `pin <skill>`        | Pin a skill so the curator never auto-transitions it                                                              |
+| `unpin <skill>`      | Unpin a skill                                                                                                     |
+| `restore <skill>`    | Restore an archived skill                                                                                         |
+
+On a fresh install the first scheduled pass is deferred by one full `interval_hours` (7 days by default) — the gateway will not curate immediately on the first tick after `hermes update`. Use `hermes curator run --dry-run` to preview before that happens.
 
 See [Curator](../user-guide/features/curator.md) for behavior and config.
 
@@ -701,12 +828,12 @@ hermes fallback <subcommand>
 
 Manage the fallback provider chain. Fallback providers are tried in order when the primary model fails with rate-limit, overload, or connection errors.
 
-| Subcommand | Description |
-|------------|-------------|
-| `list` (alias: `ls`) | Show the current fallback chain (default when no subcommand) |
-| `add` | Pick a provider + model (same picker as `hermes model`) and append to the chain |
-| `remove` (alias: `rm`) | Pick an entry to delete from the chain |
-| `clear` | Remove all fallback entries |
+| Subcommand             | Description                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| `list` (alias: `ls`)   | Show the current fallback chain (default when no subcommand)                    |
+| `add`                  | Pick a provider + model (same picker as `hermes model`) and append to the chain |
+| `remove` (alias: `rm`) | Pick an entry to delete from the chain                                          |
+| `clear`                | Remove all fallback entries                                                     |
 
 See [Fallback Providers](../user-guide/features/fallback-providers.md).
 
@@ -718,12 +845,12 @@ hermes hooks <subcommand>
 
 Inspect shell-script hooks declared in `~/.hermes/config.yaml`, test them against synthetic payloads, and manage the first-use consent allowlist at `~/.hermes/shell-hooks-allowlist.json`.
 
-| Subcommand | Description |
-|------------|-------------|
-| `list` (alias: `ls`) | List configured hooks with matcher, timeout, and consent status |
-| `test <event>` | Fire every hook matching `<event>` against a synthetic payload |
-| `revoke` (aliases: `remove`, `rm`) | Remove a command's allowlist entries (takes effect on next restart) |
-| `doctor` | Check each configured hook: exec bit, allowlist, mtime drift, JSON validity, and synthetic run timing |
+| Subcommand                         | Description                                                                                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `list` (alias: `ls`)               | List configured hooks with matcher, timeout, and consent status                                       |
+| `test <event>`                     | Fire every hook matching `<event>` against a synthetic payload                                        |
+| `revoke` (aliases: `remove`, `rm`) | Remove a command's allowlist entries (takes effect on next restart)                                   |
+| `doctor`                           | Check each configured hook: exec bit, allowlist, mtime drift, JSON validity, and synthetic run timing |
 
 See [Hooks](../user-guide/features/hooks.md) for event signatures and payload shapes.
 
@@ -737,11 +864,11 @@ Set up and manage external memory provider plugins. Available providers: honcho,
 
 Subcommands:
 
-| Subcommand | Description |
-|------------|-------------|
-| `setup` | Interactive provider selection and configuration. |
-| `status` | Show current memory provider config. |
-| `off` | Disable external provider (built-in only). |
+| Subcommand | Description                                       |
+| ---------- | ------------------------------------------------- |
+| `setup`    | Interactive provider selection and configuration. |
+| `status`   | Show current memory provider config.              |
+| `off`      | Disable external provider (built-in only).        |
 
 :::info Provider-specific subcommands
 When an external memory provider is active, it may register its own top-level `hermes <provider>` command for provider-specific management (e.g. `hermes honcho` when Honcho is active). Inactive providers do not expose their subcommands. Run `hermes --help` to see what's currently wired in.
@@ -778,14 +905,14 @@ hermes mcp <subcommand>
 
 Manage MCP (Model Context Protocol) server configurations and run Hermes as an MCP server.
 
-| Subcommand | Description |
-|------------|-------------|
-| `serve [-v\|--verbose]` | Run Hermes as an MCP server — expose conversations to other agents. |
-| `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add an MCP server with automatic tool discovery. |
-| `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
-| `list` (alias: `ls`) | List configured MCP servers. |
-| `test <name>` | Test connection to an MCP server. |
-| `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
+| Subcommand                                                                   | Description                                                         |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `serve [-v\|--verbose]`                                                      | Run Hermes as an MCP server — expose conversations to other agents. |
+| `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add an MCP server with automatic tool discovery.                    |
+| `remove <name>` (alias: `rm`)                                                | Remove an MCP server from config.                                   |
+| `list` (alias: `ls`)                                                         | List configured MCP servers.                                        |
+| `test <name>`                                                                | Test connection to an MCP server.                                   |
+| `configure <name>` (alias: `config`)                                         | Toggle tool selection for a server.                                 |
 
 See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
 
@@ -800,15 +927,15 @@ Unified plugin management — general plugins, memory providers, and context eng
 - **General Plugins** — multi-select checkboxes to enable/disable installed plugins
 - **Provider Plugins** — single-select configuration for Memory Provider and Context Engine. Press ENTER on a category to open a radio picker.
 
-| Subcommand | Description |
-|------------|-------------|
-| *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
-| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
-| `update <name>` | Pull latest changes for an installed plugin. |
-| `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
-| `enable <name>` | Enable a disabled plugin. |
-| `disable <name>` | Disable a plugin without removing it. |
-| `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+| Subcommand                                   | Description                                                                        |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| *(none)*                                     | Composite interactive UI — general plugin toggles + provider plugin configuration. |
+| `install <identifier> [--force]`             | Install a plugin from a Git URL or `owner/repo`.                                   |
+| `update <name>`                              | Pull latest changes for an installed plugin.                                       |
+| `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin.                                                        |
+| `enable <name>`                              | Enable a disabled plugin.                                                          |
+| `disable <name>`                             | Disable a plugin without removing it.                                              |
+| `list` (alias: `ls`)                         | List installed plugins with enabled/disabled status.                               |
 
 Provider plugin selections are saved to `config.yaml`:
 - `memory.provider` — active memory provider (empty = built-in only)
@@ -824,8 +951,8 @@ See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../
 hermes tools [--summary]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option      | Description                                       |
+| ----------- | ------------------------------------------------- |
 | `--summary` | Print the current enabled-tools summary and exit. |
 
 Without `--summary`, this launches the interactive per-platform tool configuration UI.
@@ -838,15 +965,15 @@ hermes sessions <subcommand>
 
 Subcommands:
 
-| Subcommand | Description |
-|------------|-------------|
-| `list` | List recent sessions. |
-| `browse` | Interactive session picker with search and resume. |
-| `export <output> [--session-id ID]` | Export sessions to JSONL. |
-| `delete <session-id>` | Delete one session. |
-| `prune` | Delete old sessions. |
-| `stats` | Show session-store statistics. |
-| `rename <session-id> <title>` | Set or change a session title. |
+| Subcommand                          | Description                                        |
+| ----------------------------------- | -------------------------------------------------- |
+| `list`                              | List recent sessions.                              |
+| `browse`                            | Interactive session picker with search and resume. |
+| `export <output> [--session-id ID]` | Export sessions to JSONL.                          |
+| `delete <session-id>`               | Delete one session.                                |
+| `prune`                             | Delete old sessions.                               |
+| `stats`                             | Show session-store statistics.                     |
+| `rename <session-id> <title>`       | Set or change a session title.                     |
 
 ## `hermes insights`
 
@@ -854,9 +981,9 @@ Subcommands:
 hermes insights [--days N] [--source platform]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--days <n>` | Analyze the last `n` days (default: 30). |
+| Option                | Description                                               |
+| --------------------- | --------------------------------------------------------- |
+| `--days <n>`          | Analyze the last `n` days (default: 30).                  |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
 
 ## `hermes claw`
@@ -867,17 +994,17 @@ hermes claw migrate [options]
 
 Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moltbot`) and config filenames (`clawdbot.json`, `moltbot.json`).
 
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Preview what would be migrated without writing anything. |
-| `--preset <name>` | Migration preset: `full` (all compatible settings) or `user-data` (excludes infrastructure config). Neither preset imports secrets — pass `--migrate-secrets` explicitly. |
-| `--overwrite` | Overwrite existing Hermes files on conflicts (default: refuse to apply when the plan has conflicts). |
-| `--migrate-secrets` | Include API keys in migration. Required even under `--preset full`. |
-| `--no-backup` | Skip the pre-migration zip snapshot of `~/.hermes/` (by default a single restore-point archive is written to `~/.hermes/backups/pre-migration-*.zip` before apply; restorable with `hermes import`). |
-| `--source <path>` | Custom OpenClaw directory (default: `~/.openclaw`). |
-| `--workspace-target <path>` | Target directory for workspace instructions (AGENTS.md). |
-| `--skill-conflict <mode>` | Handle skill name collisions: `skip` (default), `overwrite`, or `rename`. |
-| `--yes` | Skip the confirmation prompt. |
+| Option                      | Description                                                                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--dry-run`                 | Preview what would be migrated without writing anything.                                                                                                                                             |
+| `--preset <name>`           | Migration preset: `full` (all compatible settings) or `user-data` (excludes infrastructure config). Neither preset imports secrets — pass `--migrate-secrets` explicitly.                            |
+| `--overwrite`               | Overwrite existing Hermes files on conflicts (default: refuse to apply when the plan has conflicts).                                                                                                 |
+| `--migrate-secrets`         | Include API keys in migration. Required even under `--preset full`.                                                                                                                                  |
+| `--no-backup`               | Skip the pre-migration zip snapshot of `~/.hermes/` (by default a single restore-point archive is written to `~/.hermes/backups/pre-migration-*.zip` before apply; restorable with `hermes import`). |
+| `--source <path>`           | Custom OpenClaw directory (default: `~/.openclaw`).                                                                                                                                                  |
+| `--workspace-target <path>` | Target directory for workspace instructions (AGENTS.md).                                                                                                                                             |
+| `--skill-conflict <mode>`   | Handle skill name collisions: `skip` (default), `overwrite`, or `rename`.                                                                                                                            |
+| `--yes`                     | Skip the confirmation prompt.                                                                                                                                                                        |
 
 ### What gets migrated
 
@@ -918,11 +1045,11 @@ hermes dashboard [options]
 
 Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--port` | `9119` | Port to run the web server on |
-| `--host` | `127.0.0.1` | Bind address |
-| `--no-open` | — | Don't auto-open the browser |
+| Option      | Default     | Description                   |
+| ----------- | ----------- | ----------------------------- |
+| `--port`    | `9119`      | Port to run the web server on |
+| `--host`    | `127.0.0.1` | Bind address                  |
+| `--no-open` | —           | Don't auto-open the browser   |
 
 ```bash
 # Default — opens browser to http://127.0.0.1:9119
@@ -940,17 +1067,17 @@ hermes profile <subcommand>
 
 Manage profiles — multiple isolated Hermes instances, each with its own config, sessions, skills, and home directory.
 
-| Subcommand | Description |
-|------------|-------------|
-| `list` | List all profiles. |
-| `use <name>` | Set a sticky default profile. |
+| Subcommand                                                                   | Description                                                                                                                                                              |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `list`                                                                       | List all profiles.                                                                                                                                                       |
+| `use <name>`                                                                 | Set a sticky default profile.                                                                                                                                            |
 | `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, and `SOUL.md` from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile. |
-| `delete <name> [-y]` | Delete a profile. |
-| `show <name>` | Show profile details (home directory, config, etc.). |
-| `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |
-| `rename <old> <new>` | Rename a profile. |
-| `export <name> [-o FILE]` | Export a profile to a `.tar.gz` archive. |
-| `import <archive> [--name NAME]` | Import a profile from a `.tar.gz` archive. |
+| `delete <name> [-y]`                                                         | Delete a profile.                                                                                                                                                        |
+| `show <name>`                                                                | Show profile details (home directory, config, etc.).                                                                                                                     |
+| `alias <name> [--remove] [--name NAME]`                                      | Manage wrapper scripts for quick profile access.                                                                                                                         |
+| `rename <old> <new>`                                                         | Rename a profile.                                                                                                                                                        |
+| `export <name> [-o FILE]`                                                    | Export a profile to a `.tar.gz` archive.                                                                                                                                 |
+| `import <archive> [--name NAME]`                                             | Import a profile from a `.tar.gz` archive.                                                                                                                               |
 
 Examples:
 
@@ -993,11 +1120,11 @@ hermes update [--check] [--backup] [--restart-gateway]
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
 
-| Option | Description |
-|--------|-------------|
-| `--check` | Print the current commit and the latest `origin/main` commit side by side, and exit 0 if in sync or 1 if behind. Does not pull, install, or restart anything. |
-| `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `update.backup: true` in `config.yaml`. |
-| `--restart-gateway` | After a successful update, restart the running gateway service. Implies `--all` semantics if multiple profiles are installed. |
+| Option              | Description                                                                                                                                                                                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--check`           | Print the current commit and the latest `origin/main` commit side by side, and exit 0 if in sync or 1 if behind. Does not pull, install, or restart anything.                                                                                                                                       |
+| `--backup`          | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `update.backup: true` in `config.yaml`. |
+| `--restart-gateway` | After a successful update, restart the running gateway service. Implies `--all` semantics if multiple profiles are installed.                                                                                                                                                                       |
 
 Additional behavior:
 
@@ -1019,16 +1146,16 @@ Typical session:
 2. Use `↑`/`↓` to reorder fallbacks (first-in-list is tried first).
 3. Press `d` to remove one.
 
-All changes persist to `fallback_providers:` under `model:` in `config.yaml`. Interacts with [Credential Pools](/docs/user-guide/features/credential-pools): pools rotate keys *within* a provider, fallbacks switch to a *different* provider entirely.
+All changes persist to the top-level `fallback_providers:` list in `config.yaml`. Interacts with [Credential Pools](/docs/user-guide/features/credential-pools): pools rotate keys *within* a provider, fallbacks switch to a *different* provider entirely.
 
 See [Fallback Providers](/docs/user-guide/features/fallback-providers) for behavior details and interaction with `fallback_model` (legacy single-fallback key).
 
 ## Maintenance commands
 
-| Command | Description |
-|---------|-------------|
-| `hermes version` | Print version information. |
-| `hermes update` | Pull latest changes and reinstall dependencies. |
+| Command                             | Description                                         |
+| ----------------------------------- | --------------------------------------------------- |
+| `hermes version`                    | Print version information.                          |
+| `hermes update`                     | Pull latest changes and reinstall dependencies.     |
 | `hermes uninstall [--full] [--yes]` | Remove Hermes, optionally deleting all config/data. |
 
 ## See also

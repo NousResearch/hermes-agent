@@ -12,35 +12,37 @@ This page covers setting up inference providers for Hermes Agent — from cloud 
 
 You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
 
-| Provider | Setup |
-|----------|-------|
-| **Nous Portal** | `hermes model` (OAuth, subscription-based) |
-| **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
-| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
-| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
-| **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
-| **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
-| **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
-| **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
-| **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
-| **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
-| **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
-| **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
-| **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
-| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
-| **Alibaba Coding Plan** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
-| **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
-| **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
-| **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
-| **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
-| **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
-| **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
-| **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
-| **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
-| **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
-| **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
-| **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
+| Provider                    | Setup                                                                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **Nous Portal**             | `hermes model` (OAuth, subscription-based)                                                                                          |
+| **OpenAI Codex**            | `hermes model` (ChatGPT OAuth, uses Codex models)                                                                                   |
+| **GitHub Copilot**          | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`)                                     |
+| **GitHub Copilot ACP**      | `hermes model` (spawns local `copilot --acp --stdio`)                                                                               |
+| **Anthropic**               | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
+| **OpenRouter**              | `OPENROUTER_API_KEY` in `~/.hermes/.env`                                                                                            |
+| **AI Gateway**              | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`)                                                                   |
+| **z.ai / GLM**              | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`)                                                                                 |
+| **Kimi / Moonshot**         | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`)                                                                        |
+| **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`)                               |
+| **Arcee AI**                | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`)                                           |
+| **GMI Cloud**               | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`)                                               |
+| **MiniMax**                 | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`)                                                                         |
+| **MiniMax China**           | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`)                                                                   |
+| **Alibaba Cloud**           | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`)                                                                       |
+| **Alibaba Coding Plan**     | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint           |
+| **Kilo Code**               | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`)                                                                       |
+| **Xiaomi MiMo**             | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`)                                           |
+| **Tencent TokenHub**        | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`)                |
+| **OpenCode Zen**            | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`)                                                               |
+| **OpenCode Go**             | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`)                                                                 |
+| **DeepSeek**                | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`)                                                                       |
+| **Hugging Face**            | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`)                                                             |
+| **Google / Gemini**         | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`)                                                     |
+| **Google Gemini (OAuth)**   | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login)                   |
+| **LM Studio**               | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`)                                                          |
+| **Custom Endpoint**         | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`)                                                                  |
+
+For the official API-key path, see the dedicated [Google Gemini guide](/docs/guides/google-gemini).
 
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
@@ -88,11 +90,11 @@ need to install `gemini-cli` or register your own GCP OAuth client.
 
 **Tiers & project IDs:**
 
-| Your situation | What to do |
-|---|---|
-| Personal Google account, want free tier | Nothing — sign in, start chatting |
-| Workspace / Standard / Enterprise account | Set `HERMES_GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` to your GCP project ID |
-| VPC-SC-protected org | Hermes detects `SECURITY_POLICY_VIOLATED` and forces `standard-tier` automatically |
+| Your situation                            | What to do                                                                         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| Personal Google account, want free tier   | Nothing — sign in, start chatting                                                  |
+| Workspace / Standard / Enterprise account | Set `HERMES_GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` to your GCP project ID    |
+| VPC-SC-protected org                      | Hermes detects `SECURITY_POLICY_VIOLATED` and forces `standard-tier` automatically |
 
 Free tier auto-provisions a Google-managed project on first use. No GCP setup required.
 
@@ -148,10 +150,10 @@ Paid Nous Portal subscribers also get access to the **[Tool Gateway](/docs/user-
 
 Hermes has **two** model commands that serve different purposes:
 
-| Command | Where to run | What it does |
-|---------|-------------|--------------|
+| Command            | Where to run                        | What it does                                                                      |
+| ------------------ | ----------------------------------- | --------------------------------------------------------------------------------- |
 | **`hermes model`** | Your terminal (outside any session) | Full setup wizard — add providers, run OAuth, enter API keys, configure endpoints |
-| **`/model`** | Inside a Hermes chat session | Quick switch between **already-configured** providers and models |
+| **`/model`**       | Inside a Hermes chat session        | Quick switch between **already-configured** providers and models                  |
 
 If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
 
@@ -217,11 +219,11 @@ If no token is found, `hermes model` offers an **OAuth device code login** — t
 :::warning Token types
 The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
 
-| Type | Prefix | How to get |
-|------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
+| Type             | Prefix        | How to get                                                                                         |
+| ---------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| OAuth token      | `gho_`        | `hermes model` → GitHub Copilot → Login with GitHub                                                |
 | Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
-| GitHub App token | `ghu_` | Via GitHub App installation |
+| GitHub App token | `ghu_`        | Via GitHub App installation                                                                        |
 
 If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
 :::
@@ -254,11 +256,11 @@ model:
   default: "gpt-5.4"
 ```
 
-| Environment variable | Description |
-|---------------------|-------------|
-| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
+| Environment variable         | Description                                               |
+| ---------------------------- | --------------------------------------------------------- |
+| `COPILOT_GITHUB_TOKEN`       | GitHub token for Copilot API (first priority)             |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
-| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+| `HERMES_COPILOT_ACP_ARGS`    | Override ACP args (default: `--acp --stdio`)              |
 
 ### First-Class API-Key Providers
 
@@ -480,6 +482,44 @@ model:
 For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
 :::
 
+### GMI Cloud
+
+Open and reasoning models via [GMI Cloud](https://inference.gmi.ai) — OpenAI-compatible API, API key authentication.
+
+```bash
+# GMI Cloud
+hermes chat --provider gmi --model deepseek-ai/DeepSeek-R1
+# Requires: GMI_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "gmi"
+  default: "deepseek-ai/DeepSeek-R1"
+```
+
+The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi.ai/v1`).
+
+### StepFun
+
+Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compatible API, API key authentication.
+
+```bash
+# StepFun
+hermes chat --provider stepfun --model step-3-mini
+# Requires: STEPFUN_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "stepfun"
+  default: "step-3-mini"
+```
+
+The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
+
 ### Hugging Face Inference Providers
 
 [Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers) routes to 20+ open models through a unified OpenAI-compatible endpoint (`router.huggingface.co/v1`). Requests are automatically routed to the fastest available backend (Groq, Together, SambaNova, etc.) with automatic failover.
@@ -605,11 +645,11 @@ model:
 :::caution Ollama defaults to very low context lengths
 Ollama does **not** use your model's full context window by default. Depending on your VRAM, the default is:
 
-| Available VRAM | Default context |
-|----------------|----------------|
+| Available VRAM  | Default context  |
+| --------------- | ---------------- |
 | Less than 24 GB | **4,096 tokens** |
-| 24–48 GB | 32,768 tokens |
-| 48+ GB | 256,000 tokens |
+| 24–48 GB        | 32,768 tokens    |
+| 48+ GB          | 256,000 tokens   |
 
 For agent use with tools, **you need at least 16k–32k context**. At 4k, the system prompt + tool schemas alone can fill the window, leaving no room for conversation.
 
@@ -673,10 +713,10 @@ hermes model
 
 **Tool calling requires explicit flags:**
 
-| Flag | Purpose |
-|------|---------|
+| Flag                        | Purpose                                                    |
+| --------------------------- | ---------------------------------------------------------- |
 | `--enable-auto-tool-choice` | Required for `tool_choice: "auto"` (the default in Hermes) |
-| `--tool-call-parser <name>` | Parser for the model's tool call format |
+| `--tool-call-parser <name>` | Parser for the model's tool call format                    |
 
 Supported parsers: `hermes` (Qwen 2.5, Hermes 2/3), `llama3_json` (Llama 3.x), `mistral`, `deepseek_v3`, `deepseek_v31`, `xlam`, `pythonic`. Without these flags, tool calls won't work — the model will output tool calls as text.
 
@@ -876,13 +916,13 @@ curl http://$(hostname).local:11434/v1/models
 
 If you're using **Option 2** (NAT mode with the host IP), the model server on Windows must accept connections from outside `127.0.0.1`. By default, most servers only listen on localhost — WSL2 connections in NAT mode come from a different virtual subnet and will be refused. In mirrored mode, `localhost` maps directly so the default `127.0.0.1` binding works fine.
 
-| Server | Default bind | How to fix |
-|--------|-------------|------------|
-| **Ollama** | `127.0.0.1` | Set `OLLAMA_HOST=0.0.0.0` environment variable before starting Ollama (System Settings → Environment Variables on Windows, or edit the Ollama service) |
-| **LM Studio** | `127.0.0.1` | Enable **"Serve on Network"** in the Developer tab → Server settings |
-| **llama-server** | `127.0.0.1` | Add `--host 0.0.0.0` to the startup command |
-| **vLLM** | `0.0.0.0` | Already binds to all interfaces by default |
-| **SGLang** | `127.0.0.1` | Add `--host 0.0.0.0` to the startup command |
+| Server           | Default bind | How to fix                                                                                                                                             |
+| ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Ollama**       | `127.0.0.1`  | Set `OLLAMA_HOST=0.0.0.0` environment variable before starting Ollama (System Settings → Environment Variables on Windows, or edit the Ollama service) |
+| **LM Studio**    | `127.0.0.1`  | Enable **"Serve on Network"** in the Developer tab → Server settings                                                                                   |
+| **llama-server** | `127.0.0.1`  | Add `--host 0.0.0.0` to the startup command                                                                                                            |
+| **vLLM**         | `0.0.0.0`    | Already binds to all interfaces by default                                                                                                             |
+| **SGLang**       | `127.0.0.1`  | Add `--host 0.0.0.0` to the startup command                                                                                                            |
 
 **Ollama on Windows (detailed):** Ollama runs as a Windows service. To set `OLLAMA_HOST`:
 1. Open **System Properties** → **Environment Variables**
@@ -928,13 +968,13 @@ The model outputs something like `{"name": "web_search", "arguments": {...}}` as
 
 **Cause:** Your server doesn't have tool calling enabled, or the model doesn't support it through the server's tool calling implementation.
 
-| Server | Fix |
-|--------|-----|
-| **llama.cpp** | Add `--jinja` to the startup command |
-| **vLLM** | Add `--enable-auto-tool-choice --tool-call-parser hermes` |
-| **SGLang** | Add `--tool-call-parser qwen` (or appropriate parser) |
-| **Ollama** | Tool calling is enabled by default — make sure your model supports it (check with `ollama show model-name`) |
-| **LM Studio** | Update to 0.3.6+ and use a model with native tool support |
+| Server        | Fix                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------- |
+| **llama.cpp** | Add `--jinja` to the startup command                                                                        |
+| **vLLM**      | Add `--enable-auto-tool-choice --tool-call-parser hermes`                                                   |
+| **SGLang**    | Add `--tool-call-parser qwen` (or appropriate parser)                                                       |
+| **Ollama**    | Tool calling is enabled by default — make sure your model supports it (check with `ollama show model-name`) |
+| **LM Studio** | Update to 0.3.6+ and use a model with native tool support                                                   |
 
 #### Model seems to forget context or give incoherent responses
 
@@ -1020,13 +1060,13 @@ npx @blockrun/clawrouter    # Starts on port 8402
 Then configure Hermes with `hermes model` → Custom endpoint → `http://localhost:8402/v1` → model name `blockrun/auto`.
 
 Routing profiles:
-| Profile | Strategy | Savings |
-|---------|----------|---------|
-| `blockrun/auto` | Balanced quality/cost | 74-100% |
-| `blockrun/eco` | Cheapest possible | 95-100% |
-| `blockrun/premium` | Best quality models | 0% |
-| `blockrun/free` | Free models only | 100% |
-| `blockrun/agentic` | Optimized for tool use | varies |
+| Profile            | Strategy               | Savings |
+| ------------------ | ---------------------- | ------- |
+| `blockrun/auto`    | Balanced quality/cost  | 74-100% |
+| `blockrun/eco`     | Cheapest possible      | 95-100% |
+| `blockrun/premium` | Best quality models    | 0%      |
+| `blockrun/free`    | Free models only       | 100%    |
+| `blockrun/agentic` | Optimized for tool use | varies  |
 
 :::note
 ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requests route through BlockRun's backend API. Run `npx @blockrun/clawrouter doctor` to check wallet status.
@@ -1038,19 +1078,19 @@ ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requ
 
 Any service with an OpenAI-compatible API works. Some popular options:
 
-| Provider | Base URL | Notes |
-|----------|----------|-------|
-| [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
-| [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
-| [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
-| [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
-| [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
-| [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
-| [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
-| [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
-| [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |
-| [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |
-| [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models |
+| Provider                                    | Base URL                                | Notes                               |
+| ------------------------------------------- | --------------------------------------- | ----------------------------------- |
+| [Together AI](https://together.ai)          | `https://api.together.xyz/v1`           | Cloud-hosted open models            |
+| [Groq](https://groq.com)                    | `https://api.groq.com/openai/v1`        | Ultra-fast inference                |
+| [DeepSeek](https://deepseek.com)            | `https://api.deepseek.com/v1`           | DeepSeek models                     |
+| [Fireworks AI](https://fireworks.ai)        | `https://api.fireworks.ai/inference/v1` | Fast open model hosting             |
+| [GMI Cloud](https://www.gmicloud.ai/)       | `https://api.gmi-serving.com/v1`        | Managed OpenAI-compatible inference |
+| [Cerebras](https://cerebras.ai)             | `https://api.cerebras.ai/v1`            | Wafer-scale chip inference          |
+| [Mistral AI](https://mistral.ai)            | `https://api.mistral.ai/v1`             | Mistral models                      |
+| [OpenAI](https://openai.com)                | `https://api.openai.com/v1`             | Direct OpenAI access                |
+| [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/`        | Enterprise OpenAI                   |
+| [LocalAI](https://localai.io)               | `http://localhost:8080/v1`              | Self-hosted, multi-model            |
+| [Jan](https://jan.ai)                       | `http://localhost:1337/v1`              | Desktop app with local models       |
 
 Configure any of these with `hermes model` → Custom endpoint, or in `config.yaml`:
 
@@ -1152,19 +1192,126 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ---
 
+### Cookbook: Together AI, Groq, Perplexity
+
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+
+#### Together AI
+
+Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices significantly below first-party APIs. Good default for multi-model fleets.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: together
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+    # api_mode: chat_completions  # default — no need to set
+
+model:
+  default: MiniMaxAI/MiniMax-M2.7   # or any model from together.ai/models
+  provider: custom:together
+```
+
+```bash
+# ~/.hermes/.env
+TOGETHER_API_KEY=your-together-key
+```
+
+Switch models mid-session:
+
+```
+/model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
+/model custom:together:google/gemma-4-31b-it
+/model custom:together:deepseek-ai/DeepSeek-V3
+```
+
+Together's `/v1/models` endpoint works, so `hermes model` can auto-discover available models.
+
+#### Groq
+
+Ultra-fast inference (~500 tok/s on Llama-3.3-70B). Small catalog but strong for latency-sensitive interactive use.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+
+model:
+  default: llama-3.3-70b-versatile
+  provider: custom:groq
+```
+
+```bash
+# ~/.hermes/.env
+GROQ_API_KEY=your-groq-key
+```
+
+#### Perplexity
+
+Useful when you want a model that does live web search and citation automatically. Strict about which models are available — check [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api) for the current list.
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: perplexity
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+
+model:
+  default: sonar
+  provider: custom:perplexity
+```
+
+```bash
+# ~/.hermes/.env
+PERPLEXITY_API_KEY=your-perplexity-key
+```
+
+#### Multiple providers in one config
+
+The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+
+```yaml
+custom_providers:
+  - name: together
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+  - name: perplexity
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+
+model:
+  default: MiniMaxAI/MiniMax-M2.7
+  provider: custom:together      # boot to Together; switch freely after
+```
+
+:::tip Troubleshooting
+- `hermes doctor` should print no `Unknown provider` warnings for any of these names after the CLI validator fixes in #15083.
+- If a provider's `/v1/models` endpoint is unreachable (Perplexity is the common one), `hermes model` will persist the model with a warning rather than hard-reject — see #15136.
+- To skip `custom_providers:` entirely and use bare `provider: custom` with `CUSTOM_BASE_URL` env var, see #15103.
+:::
+
+---
+
 ### Choosing the Right Setup
 
-| Use Case | Recommended |
-|----------|-------------|
-| **Just want it to work** | OpenRouter (default) or Nous Portal |
-| **Local models, easy setup** | Ollama |
-| **Production GPU serving** | vLLM or SGLang |
-| **Mac / no GPU** | Ollama or llama.cpp |
-| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
-| **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
-| **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
-| **Enterprise / Azure** | Azure OpenAI with custom endpoint |
-| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot (`kimi-coding` or `kimi-coding-cn`), MiniMax, Xiaomi MiMo, or Tencent TokenHub (first-class providers) |
+| Use Case                     | Recommended                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Just want it to work**     | OpenRouter (default) or Nous Portal                                                                                              |
+| **Local models, easy setup** | Ollama                                                                                                                           |
+| **Production GPU serving**   | vLLM or SGLang                                                                                                                   |
+| **Mac / no GPU**             | Ollama or llama.cpp                                                                                                              |
+| **Multi-provider routing**   | LiteLLM Proxy or OpenRouter                                                                                                      |
+| **Cost optimization**        | ClawRouter or OpenRouter with `sort: "price"`                                                                                    |
+| **Maximum privacy**          | Ollama, vLLM, or llama.cpp (fully local)                                                                                         |
+| **Enterprise / Azure**       | Azure OpenAI with custom endpoint                                                                                                |
+| **Chinese AI models**        | z.ai (GLM), Kimi/Moonshot (`kimi-coding` or `kimi-coding-cn`), MiniMax, Xiaomi MiMo, or Tencent TokenHub (first-class providers) |
 
 :::tip
 You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.
@@ -1172,17 +1319,17 @@ You can switch between providers at any time with `hermes model` — no restart 
 
 ## Optional API Keys
 
-| Feature | Provider | Env Variable |
-|---------|----------|--------------|
-| Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` |
-| Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
-| Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
-| Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
-| OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
-| Mistral TTS + voice transcription | [Mistral](https://console.mistral.ai/) | `MISTRAL_API_KEY` |
-| RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
-| Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
-| Semantic long-term memory | [Supermemory](https://supermemory.ai) | `SUPERMEMORY_API_KEY` |
+| Feature                           | Provider                                                                           | Env Variable                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Web scraping                      | [Firecrawl](https://firecrawl.dev/)                                                | `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL`        |
+| Browser automation                | [Browserbase](https://browserbase.com/)                                            | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
+| Image generation                  | [FAL](https://fal.ai/)                                                             | `FAL_KEY`                                       |
+| Premium TTS voices                | [ElevenLabs](https://elevenlabs.io/)                                               | `ELEVENLABS_API_KEY`                            |
+| OpenAI TTS + voice transcription  | [OpenAI](https://platform.openai.com/api-keys)                                     | `VOICE_TOOLS_OPENAI_KEY`                        |
+| Mistral TTS + voice transcription | [Mistral](https://console.mistral.ai/)                                             | `MISTRAL_API_KEY`                               |
+| RL Training                       | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY`               |
+| Cross-session user modeling       | [Honcho](https://honcho.dev/)                                                      | `HONCHO_API_KEY`                                |
+| Semantic long-term memory         | [Supermemory](https://supermemory.ai)                                              | `SUPERMEMORY_API_KEY`                           |
 
 ### Self-Hosting Firecrawl
 
@@ -1239,7 +1386,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `alibaba`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

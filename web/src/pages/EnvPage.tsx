@@ -21,7 +21,9 @@ import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
-import { Button, ListItem, Spinner } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   Card,
   CardContent,
@@ -29,7 +31,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
@@ -240,11 +242,10 @@ function EnvVarRow({
       {!isEditing && (
         <div className="flex items-center gap-2">
           <div
-            className={`flex-1 border border-border px-3 py-2 font-mono-ui text-xs ${
-              isRevealed
+            className={`flex-1 border border-border px-3 py-2 font-mono-ui text-xs ${isRevealed
                 ? "bg-background text-foreground select-all"
                 : "bg-muted/30 text-muted-foreground"
-            }`}
+              }`}
           >
             {info.is_set ? displayValue : "---"}
           </div>
@@ -297,9 +298,9 @@ function EnvVarRow({
             placeholder={
               info.is_set
                 ? t.env.replaceCurrentValue.replace(
-                    "{preview}",
-                    info.redacted_value ?? "---",
-                  )
+                  "{preview}",
+                  info.redacted_value ?? "---",
+                )
                 : t.env.enterValue
             }
             className="flex-1 font-mono-ui text-xs"
@@ -496,7 +497,7 @@ export default function EnvPage() {
     api
       .getEnvVars()
       .then(setVars)
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const handleSave = async (key: string) => {
@@ -508,13 +509,13 @@ export default function EnvPage() {
       setVars((prev) =>
         prev
           ? {
-              ...prev,
-              [key]: {
-                ...prev[key],
-                is_set: true,
-                redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
-              },
-            }
+            ...prev,
+            [key]: {
+              ...prev[key],
+              is_set: true,
+              redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
+            },
+          }
           : prev,
       );
       setEdits((prev) => {
@@ -544,9 +545,9 @@ export default function EnvPage() {
           setVars((prev) =>
             prev
               ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
+                ...prev,
+                [key]: { ...prev[key], is_set: false, redacted_value: null },
+              }
               : prev,
           );
           setEdits((prev) => {

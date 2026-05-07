@@ -1,4 +1,6 @@
-import { Button, ListItem, Spinner } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";
@@ -92,9 +94,9 @@ export function ModelPickerDialog(props: Props) {
     const promise = standalone
       ? (loader as () => Promise<ModelOptionsResponse>)()
       : (gw as GatewayClient).request<ModelOptionsResponse>(
-          "model.options",
-          sessionId ? { session_id: sessionId } : {},
-        );
+        "model.options",
+        sessionId ? { session_id: sessionId } : {},
+      );
 
     promise
       .then((r) => {
@@ -151,11 +153,11 @@ export function ModelPickerDialog(props: Props) {
       !needle
         ? providers
         : providers.filter(
-            (p) =>
-              p.name.toLowerCase().includes(needle) ||
-              p.slug.toLowerCase().includes(needle) ||
-              (p.models ?? []).some((m) => m.toLowerCase().includes(needle)),
-          ),
+          (p) =>
+            p.name.toLowerCase().includes(needle) ||
+            p.slug.toLowerCase().includes(needle) ||
+            (p.models ?? []).some((m) => m.toLowerCase().includes(needle)),
+        ),
     [providers, needle],
   );
 
@@ -346,9 +348,8 @@ function ProviderColumn({
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`items-start text-xs border-l-2 ${
-              active ? "border-l-primary" : "border-l-transparent"
-            }`}
+            className={`items-start text-xs border-l-2 ${active ? "border-l-primary" : "border-l-transparent"
+              }`}
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">

@@ -416,7 +416,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -986,7 +986,7 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
-@dataclass 
+@dataclass
 class SendResult:
     """Result of sending a message."""
     success: bool
@@ -994,6 +994,45 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+
+
+class EphemeralReply(str):
+    """System-notice reply that auto-deletes after a TTL.
+
+    Slash-command handlers in ``gateway/run.py`` can return this wrapper
+    instead of a plain string to request that the reply message be deleted
+    after ``ttl_seconds`` on platforms that support ``delete_message``.
+
+    Subclassing ``str`` keeps the wrapper transparent to anything that
+    treats handler return values as text (existing tests use ``in`` /
+    ``startswith`` / equality; the ``_process_message_background`` pipeline
+    extracts attachments from the string content).  ``isinstance(r,
+    EphemeralReply)`` still distinguishes ephemeral replies from plain
+    strings so the send path can schedule deletion.
+
+    Platforms that don't override :meth:`BasePlatformAdapter.delete_message`
+    silently ignore the TTL — the message is sent normally and left in
+    place.  When ``ttl_seconds`` is ``None``, the pipeline uses the
+    configured ``display.ephemeral_system_ttl`` default.  A default of ``0``
+    disables auto-deletion globally, preserving prior behavior.
+    """
+
+    ttl_seconds: Optional[int]
+
+    def __new__(cls, text: str, ttl_seconds: Optional[int] = None):
+        instance = super().__new__(cls, text)
+        instance.ttl_seconds = ttl_seconds
+        return instance
+
+    @property
+    def text(self) -> str:
+        """Return the underlying text.
+
+        Provided for call sites that want an explicit string conversion,
+        though ``str(reply)`` and using ``reply`` directly where a string
+        is expected both work identically.
+        """
+        return str.__str__(self)
 
 
 def merge_pending_message_event(
@@ -1039,6 +1078,11 @@ def merge_pending_message_event(
                     existing.text = event.text
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
+            elif (
+                getattr(existing, "message_type", None) == MessageType.TEXT
+                and event.message_type != MessageType.TEXT
+            ):
+                existing.message_type = event.message_type
             return
 
         if (
@@ -1073,8 +1117,10 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
-# Type for message handlers
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
+# Type for message handlers.  Handlers may return a plain string (normal
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
+# ``None`` when the response was already delivered (e.g. via streaming).
+MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
 def resolve_channel_prompt(
@@ -1459,6 +1505,64 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+    def _get_ephemeral_system_ttl_default(self) -> int:
+        """Read ``display.ephemeral_system_ttl`` from config.
+
+        Returns the TTL in seconds to use when an :class:`EphemeralReply`
+        does not specify one explicitly.  ``0`` (the default) disables
+        auto-deletion.  Non-fatal if config is unreadable.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            return 0
+        try:
+            cfg = _load_config()
+        except Exception:
+            return 0
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(display, dict):
+            return 0
+        raw = display.get("ephemeral_system_ttl", 0)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _schedule_ephemeral_delete(
+        self,
+        chat_id: str,
+        message_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``.
+
+        Best-effort — failures (gateway restart, permission denied, message
+        too old for Telegram's 48h window) are swallowed at debug level.
+        Does not block the caller.
+        """
+
+        async def _run_delete() -> None:
+            try:
+                await asyncio.sleep(max(1, int(ttl_seconds)))
+                await self.delete_message(chat_id=chat_id, message_id=message_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(
+                    "[%s] Ephemeral delete failed for %s/%s: %s",
+                    self.name, chat_id, message_id, e,
+                )
+
+        coro = _run_delete()
+        try:
+            asyncio.create_task(coro)
+        except RuntimeError:
+            # No running loop (e.g. unit tests that never reach the async
+            # path).  Close the coroutine cleanly so Python doesn't warn
+            # about it never being awaited, then drop silently.
+            coro.close()
+
     async def send_slash_confirm(
         self,
         chat_id: str,
@@ -1493,6 +1597,26 @@ class BasePlatformAdapter(ABC):
         route the callback (e.g. Telegram's ``_approval_state`` dict).
         """
         return SendResult(success=False, error="Not supported")
+
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a notice privately when the platform supports it.
+
+        The default implementation falls back to a normal send so callers can
+        use one code path across platforms.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
@@ -2048,6 +2172,28 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
+    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
+        """Unwrap a handler response into (text, ttl_seconds).
+
+        Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
+        Returns ``(text, ttl)`` where ``ttl > 0`` means the caller should
+        schedule a deletion via :meth:`_schedule_ephemeral_delete` after
+        the send succeeds.  ``ttl`` is forced to 0 when the adapter
+        doesn't override :meth:`delete_message` so non-supporting
+        platforms silently degrade to normal sends.
+        """
+        if isinstance(response, EphemeralReply):
+            ttl = response.ttl_seconds
+            if ttl is None:
+                try:
+                    ttl = int(self._get_ephemeral_system_ttl_default())
+                except Exception:
+                    ttl = 0
+            if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
+                ttl = 0
+            return response.text, int(ttl or 0)
+        return response, 0
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -2348,20 +2494,45 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            # Old adapter task (if any) is cancelled AFTER the runner has
-            # fully handled the command — keeps ordering deterministic.
+            _text, _eph_ttl = self._unwrap_ephemeral(response)
+            # Send the response BEFORE cancelling the old task so the send
+            # cannot be affected by task-cancellation side effects (race
+            # condition fix — issue #18912).  Previously the send happened
+            # after cancel_session_processing, which could silently drop the
+            # "/new" confirmation when an agent was actively running.
+            if _text:
+                logger.info(
+                    "[%s] Sending command '/%s' response (%d chars) to %s",
+                    self.name,
+                    cmd,
+                    len(_text),
+                    event.source.chat_id,
+                )
+                _r = await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=_text,
+                    reply_to=(
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU
+                        and event.source.thread_id
+                        and event.reply_to_message_id
+                        else event.message_id
+                    ),
+                    metadata=thread_meta,
+                )
+                if _eph_ttl > 0 and _r.success and _r.message_id:
+                    self._schedule_ephemeral_delete(
+                        chat_id=event.source.chat_id,
+                        message_id=_r.message_id,
+                        ttl_seconds=_eph_ttl,
+                    )
+            # Old adapter task (if any) is cancelled AFTER the response has
+            # been sent — keeps ordering deterministic and avoids the race.
             await self.cancel_session_processing(
                 session_key,
                 release_guard=False,
                 discard_pending=False,
             )
-            if response:
-                await self._send_with_retry(
-                    chat_id=event.source.chat_id,
-                    content=response,
-                    reply_to=event.message_id,
-                    metadata=thread_meta,
-                )
         except Exception:
             # On failure, restore the original guard if one still exists so
             # we don't leave the session in a half-reset state.
@@ -2441,13 +2612,26 @@ class BasePlatformAdapter(ABC):
                 try:
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
                     response = await self._message_handler(event)
-                    if response:
-                        await self._send_with_retry(
+                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text:
+                        _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
-                            content=response,
-                            reply_to=event.message_id,
+                            content=_text,
+                            reply_to=(
+                                event.reply_to_message_id
+                                if event.source.platform == Platform.FEISHU
+                                and event.source.thread_id
+                                and event.reply_to_message_id
+                                else event.message_id
+                            ),
                             metadata=_thread_meta,
                         )
+                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=_r.message_id,
+                                ttl_seconds=_eph_ttl,
+                            )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
@@ -2496,10 +2680,18 @@ class BasePlatformAdapter(ABC):
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0
-        min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
-        max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
         if mode == "natural":
             min_ms, max_ms = 800, 2500
+            return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+        # custom mode — tolerate malformed env vars instead of crashing.
+        try:
+            min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
+        except (TypeError, ValueError):
+            min_ms = 800
+        try:
+            max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
+        except (TypeError, ValueError):
+            max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
@@ -2521,7 +2713,6 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -2554,7 +2745,16 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
-            
+
+            # Slash-command handlers may return an EphemeralReply sentinel to
+            # request that their reply message auto-delete after a TTL (used
+            # for system notices like "✨ New session started!" that the user
+            # doesn't need to keep in the thread).  Unwrap here so all the
+            # downstream extract_media / text-processing logic sees a plain
+            # string, and remember the TTL + platform capability so the
+            # post-send block can schedule the deletion.
+            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
             # when the message was queued behind an active agent.  Log at
@@ -2635,13 +2835,33 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    _reply_anchor = (
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
+                        else event.message_id
+                    )
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
+                        reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+
+                    # Schedule auto-deletion of system-notice replies.
+                    # Detached so the handler returns immediately; errors
+                    # (permission denied, message too old) are swallowed.
+                    if (
+                        _ephemeral_ttl
+                        and _ephemeral_ttl > 0
+                        and result.success
+                        and result.message_id
+                    ):
+                        self._schedule_ephemeral_delete(
+                            chat_id=event.source.chat_id,
+                            message_id=result.message_id,
+                            ttl_seconds=_ephemeral_ttl,
+                        )
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -2820,7 +3040,20 @@ class BasePlatformAdapter(ABC):
         finally:
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
-            _callback_generation = callback_generation
+            #
+            # Snapshot the callback generation HERE (after the agent has run),
+            # not at the top of this task.  _hermes_run_generation is set on
+            # the interrupt event by GatewayRunner._bind_adapter_run_generation
+            # during _handle_message_with_agent — which happens DURING the
+            # self._message_handler(event) await above.  Snapshotting earlier
+            # always captured None, which bypassed the generation-ownership
+            # check in pop_post_delivery_callback and let stale runs fire a
+            # fresher run's callbacks.
+            _callback_generation = getattr(
+                interrupt_event,
+                "_hermes_run_generation",
+                None,
+            )
             if hasattr(self, "pop_post_delivery_callback"):
                 _post_cb = self.pop_post_delivery_callback(
                     session_key,

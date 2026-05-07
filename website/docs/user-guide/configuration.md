@@ -83,12 +83,12 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
   backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
-  cwd: "."          # Working directory ("." = current dir for local, "/root" for containers)
+  cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
@@ -100,15 +100,15 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 
 ### Backend Overview
 
-| Backend | Where commands run | Isolation | Best for |
-|---------|-------------------|-----------|----------|
-| **local** | Your machine directly | None | Development, personal use |
-| **docker** | Docker container | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
-| **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
-| **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
-| **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
-| **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
-| **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| Backend            | Where commands run                                                            | Isolation                   | Best for                                                    |
+| ------------------ | ----------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------------- |
+| **local**          | Your machine directly                                                         | None                        | Development, personal use                                   |
+| **docker**         | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD                                      |
+| **ssh**            | Remote server via SSH                                                         | Network boundary            | Remote dev, powerful hardware                               |
+| **modal**          | Modal cloud sandbox                                                           | Full (cloud VM)             | Ephemeral cloud compute, evals                              |
+| **daytona**        | Daytona workspace                                                             | Full (cloud container)      | Managed cloud dev environments                              |
+| **vercel_sandbox** | Vercel Sandbox                                                                | Full (cloud microVM)        | Cloud execution with snapshot-backed filesystem persistence |
+| **singularity**    | Singularity/Apptainer container                                               | Namespaces (--containall)   | HPC clusters, shared machines                               |
 
 ### Local Backend
 
@@ -126,6 +126,8 @@ The agent has the same filesystem access as your user account. Use `hermes tools
 ### Docker Backend
 
 Runs commands inside a Docker container with security hardening (all capabilities dropped, no privilege escalation, PID limits).
+
+**Single persistent container, not per-command.** Hermes starts ONE long-lived container on first use and routes every terminal, file, and `execute_code` call through `docker exec` into that same container — across sessions, `/new`, `/reset`, and `delegate_task` subagents — for the lifetime of the Hermes process. Working-directory changes, installed packages, and files in `/workspace` carry over from one tool call to the next, just like a local shell. The container is stopped and removed on shutdown. See **Container lifecycle** below for details.
 
 ```yaml
 terminal:
@@ -179,11 +181,11 @@ TERMINAL_SSH_USER=ubuntu
 
 **Optional:**
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TERMINAL_SSH_PORT` | `22` | SSH port |
-| `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
-| `TERMINAL_SSH_PERSISTENT` | `true` | Enable persistent shell |
+| Variable                  | Default          | Description             |
+| ------------------------- | ---------------- | ----------------------- |
+| `TERMINAL_SSH_PORT`       | `22`             | SSH port                |
+| `TERMINAL_SSH_KEY`        | (system default) | Path to SSH private key |
+| `TERMINAL_SSH_PERSISTENT` | `true`           | Enable persistent shell |
 
 **How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`. Persistent shell keeps a single `bash -l` process alive on the remote host, communicating via temporary files. Commands that need `stdin_data` or `sudo` automatically fall back to one-shot mode.
 
@@ -436,11 +438,11 @@ hermes config set terminal.persistent_shell false
 
 **Precedence:**
 
-| Level | Variable | Default |
-|-------|----------|---------|
-| Config | `terminal.persistent_shell` | `true` |
-| SSH override | `TERMINAL_SSH_PERSISTENT` | follows config |
-| Local override | `TERMINAL_LOCAL_PERSISTENT` | `false` |
+| Level          | Variable                    | Default        |
+| -------------- | --------------------------- | -------------- |
+| Config         | `terminal.persistent_shell` | `true`         |
+| SSH override   | `TERMINAL_SSH_PERSISTENT`   | follows config |
+| Local override | `TERMINAL_LOCAL_PERSISTENT` | `false`        |
 
 Per-backend environment variables take highest precedence. If you want persistent shell on the local backend too:
 
@@ -653,11 +655,11 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 
 ### How the three knobs interact
 
-| `auxiliary.compression.provider` | `auxiliary.compression.base_url` | Result |
-|---------------------|---------------------|--------|
-| `auto` (default) | not set | Auto-detect best available provider |
-| `nous` / `openrouter` / etc. | not set | Force that provider, use its auth |
-| any | set | Use the custom endpoint directly (provider ignored) |
+| `auxiliary.compression.provider` | `auxiliary.compression.base_url` | Result                                              |
+| -------------------------------- | -------------------------------- | --------------------------------------------------- |
+| `auto` (default)                 | not set                          | Auto-detect best available provider                 |
+| `nous` / `openrouter` / etc.     | not set                          | Force that provider, use its auth                   |
+| any                              | set                              | Use the custom endpoint directly (provider ignored) |
 
 :::warning Summary model context length requirement
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
@@ -687,10 +689,10 @@ See [Memory Providers](/docs/user-guide/features/memory-providers) for the analo
 
 When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns) without realizing it's running low. Budget pressure automatically warns the model as it approaches the limit:
 
-| Threshold | Level | What the model sees |
-|-----------|-------|---------------------|
-| **70%** | Caution | `[BUDGET: 63/90. 27 iterations left. Start consolidating.]` |
-| **90%** | Warning | `[BUDGET WARNING: 81/90. Only 9 left. Respond NOW.]` |
+| Threshold | Level   | What the model sees                                         |
+| --------- | ------- | ----------------------------------------------------------- |
+| **70%**   | Caution | `[BUDGET: 63/90. 27 iterations left. Start consolidating.]` |
+| **90%**   | Warning | `[BUDGET WARNING: 81/90. Only 9 left. Respond NOW.]`        |
 
 Warnings are injected into the last tool result's JSON (as a `_budget_warning` field) rather than as separate messages — this preserves prompt caching and doesn't disrupt the conversation structure.
 
@@ -710,12 +712,12 @@ When the iteration budget is fully exhausted, the CLI shows a notification to th
 
 Hermes has separate timeout layers for streaming, plus a stale detector for non-streaming calls. The stale detectors auto-adjust for local providers only when you leave them at their implicit defaults.
 
-| Timeout | Default | Local providers | Config / env |
-|---------|---------|----------------|--------------|
-| Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| Stale stream detection | 180s | Auto-disabled | `HERMES_STREAM_STALE_TIMEOUT` |
-| Stale non-stream detection | 300s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
-| API call (non-streaming) | 1800s | Unchanged | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |
+| Timeout                    | Default | Local providers                  | Config / env                                                                         |
+| -------------------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| Socket read timeout        | 120s    | Auto-raised to 1800s             | `HERMES_STREAM_READ_TIMEOUT`                                                         |
+| Stale stream detection     | 180s    | Auto-disabled                    | `HERMES_STREAM_STALE_TIMEOUT`                                                        |
+| Stale non-stream detection | 300s    | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT`            |
+| API call (non-streaming)   | 1800s   | Unchanged                        | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |
 
 The **socket read timeout** controls how long httpx waits for the next chunk of data from the provider. Local LLMs can take minutes for prefill on large contexts before producing the first token, so Hermes raises this to 30 minutes when it detects a local endpoint. If you explicitly set `HERMES_STREAM_READ_TIMEOUT`, that value is always used regardless of endpoint detection.
 
@@ -727,10 +729,10 @@ The **stale non-stream detection** kills non-streaming calls that produce no res
 
 Separate from iteration budget pressure, context pressure tracks how close the conversation is to the **compaction threshold** — the point where context compression fires to summarize older messages. This helps both you and the agent understand when the conversation is getting long.
 
-| Progress | Level | What happens |
-|----------|-------|-------------|
-| **≥ 60%** to threshold | Info | CLI shows a cyan progress bar; gateway sends an informational notice |
-| **≥ 85%** to threshold | Warning | CLI shows a bold yellow bar; gateway warns compaction is imminent |
+| Progress               | Level   | What happens                                                         |
+| ---------------------- | ------- | -------------------------------------------------------------------- |
+| **≥ 60%** to threshold | Info    | CLI shows a cyan progress bar; gateway sends an informational notice |
+| **≥ 85%** to threshold | Warning | CLI shows a bold yellow bar; gateway warns compaction is imminent    |
 
 In the CLI, context pressure appears as a progress bar in the tool output feed:
 
@@ -802,11 +804,11 @@ Select a task, pick a provider (OAuth flows open a browser; API-key providers pr
 
 Every model slot in Hermes — auxiliary tasks, compression, fallback — uses the same three knobs:
 
-| Key | What it does | Default |
-|-----|-------------|---------|
-| `provider` | Which provider to use for auth and routing | `"auto"` |
-| `model` | Which model to request | provider's default |
-| `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
+| Key        | What it does                                           | Default            |
+| ---------- | ------------------------------------------------------ | ------------------ |
+| `provider` | Which provider to use for auth and routing             | `"auto"`           |
+| `model`    | Which model to request                                 | provider's default |
+| `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set            |
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
@@ -936,14 +938,14 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 
 These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`, `fallback_model:`), not to your main `model.provider` setting.
 
-| Provider | Description | Requirements |
-|----------|-------------|-------------|
-| `"auto"` | Best available (default). Vision tries OpenRouter → Nous → Codex. | — |
-| `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
-| `"nous"` | Force Nous Portal | `hermes auth` |
-| `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
-| `"minimax-oauth"` | Force MiniMax OAuth (browser login, no API key). Uses MiniMax-M2.7-highspeed for auxiliary tasks. | `hermes model` → MiniMax (OAuth) |
-| `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
+| Provider          | Description                                                                                                                                                                                                                                                                                 | Requirements                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `"auto"`          | Best available (default). Vision tries OpenRouter → Nous → Codex.                                                                                                                                                                                                                           | —                                      |
+| `"openrouter"`    | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.)                                                                                                                                                                                                                       | `OPENROUTER_API_KEY`                   |
+| `"nous"`          | Force Nous Portal                                                                                                                                                                                                                                                                           | `hermes auth`                          |
+| `"codex"`         | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex).                                                                                                                                                                                                                       | `hermes model` → Codex                 |
+| `"minimax-oauth"` | Force MiniMax OAuth (browser login, no API key). Uses MiniMax-M2.7-highspeed for auxiliary tasks.                                                                                                                                                                                           | `hermes model` → MiniMax (OAuth)       |
+| `"main"`          | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
 Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
 
@@ -1028,16 +1030,16 @@ If you use Codex OAuth as your main model provider, vision works automatically �
 
 Auxiliary models can also be configured via environment variables. However, `config.yaml` is the preferred method — it's easier to manage and supports all options including `base_url` and `api_key`.
 
-| Setting | Environment Variable |
-|---------|---------------------|
-| Vision provider | `AUXILIARY_VISION_PROVIDER` |
-| Vision model | `AUXILIARY_VISION_MODEL` |
-| Vision endpoint | `AUXILIARY_VISION_BASE_URL` |
-| Vision API key | `AUXILIARY_VISION_API_KEY` |
+| Setting              | Environment Variable             |
+| -------------------- | -------------------------------- |
+| Vision provider      | `AUXILIARY_VISION_PROVIDER`      |
+| Vision model         | `AUXILIARY_VISION_MODEL`         |
+| Vision endpoint      | `AUXILIARY_VISION_BASE_URL`      |
+| Vision API key       | `AUXILIARY_VISION_API_KEY`       |
 | Web extract provider | `AUXILIARY_WEB_EXTRACT_PROVIDER` |
-| Web extract model | `AUXILIARY_WEB_EXTRACT_MODEL` |
+| Web extract model    | `AUXILIARY_WEB_EXTRACT_MODEL`    |
 | Web extract endpoint | `AUXILIARY_WEB_EXTRACT_BASE_URL` |
-| Web extract API key | `AUXILIARY_WEB_EXTRACT_API_KEY` |
+| Web extract API key  | `AUXILIARY_WEB_EXTRACT_API_KEY`  |
 
 Compression and fallback model settings are config.yaml-only.
 
@@ -1075,12 +1077,12 @@ agent:
   tool_use_enforcement: "auto"   # "auto" | true | false | ["model-substring", ...]
 ```
 
-| Value | Behavior |
-|-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
-| `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
-| `false` | Always disabled, regardless of model. |
-| `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
+| Value                               | Behavior                                                                                                                        |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `"auto"` (default)                  | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
+| `true`                              | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them.     |
+| `false`                             | Always disabled, regardless of model.                                                                                           |
+| `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive).                                      |
 
 ### What it injects
 
@@ -1165,14 +1167,28 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_metadata_footer: false  # Gateway: append a runtime-context footer to final replies
+  language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | ja | de | es | fr | tr | uk
 ```
 
-| Mode | What you see |
-|------|-------------|
-| `off` | Silent — just the final response |
-| `new` | Tool indicator only when the tool changes |
-| `all` | Every tool call with a short preview (default) |
-| `verbose` | Full args, results, and debug logs |
+### UI language for static messages
+
+The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+
+Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
+
+You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
+
+```yaml
+display:
+  language: zh   # CLI approval prompts appear in Chinese
+```
+
+| Mode      | What you see                                   |
+| --------- | ---------------------------------------------- |
+| `off`     | Silent — just the final response               |
+| `new`     | Tool indicator only when the tool changes      |
+| `all`     | Every tool call with a short preview (default) |
+| `verbose` | Full args, results, and debug logs             |
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
@@ -1222,13 +1238,13 @@ privacy:
 
 When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:
 
-| Field | Treatment |
-|-------|-----------|
-| Phone numbers (user ID on WhatsApp/Signal) | Hashed to `user_<12-char-sha256>` |
-| User IDs | Hashed to `user_<12-char-sha256>` |
-| Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
-| Home channel IDs | Numeric portion hashed |
-| User names / usernames | **Not affected** (user-chosen, publicly visible) |
+| Field                                      | Treatment                                                             |
+| ------------------------------------------ | --------------------------------------------------------------------- |
+| Phone numbers (user ID on WhatsApp/Signal) | Hashed to `user_<12-char-sha256>`                                     |
+| User IDs                                   | Hashed to `user_<12-char-sha256>`                                     |
+| Chat IDs                                   | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
+| Home channel IDs                           | Numeric portion hashed                                                |
+| User names / usernames                     | **Not affected** (user-chosen, publicly visible)                      |
 
 **Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.
 
@@ -1409,23 +1425,30 @@ Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, 
 
 ## Web Search Backends
 
-The `web_search`, `web_extract`, and `web_crawl` tools support four backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search`, `web_extract`, and `web_crawl` tools support five backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa
+
+  # Or use per-capability keys to mix providers (e.g. free search + paid extract):
+  search_backend: "searxng"
+  extract_backend: "firecrawl"
 ```
 
-| Backend | Env Var | Search | Extract | Crawl |
-|---------|---------|--------|---------|-------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| Backend                 | Env Var             | Search | Extract | Crawl |
+| ----------------------- | ------------------- | ------ | ------- | ----- |
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔      | ✔       | ✔     |
+| **SearXNG**             | `SEARXNG_URL`       | ✔      | —       | —     |
+| **Parallel**            | `PARALLEL_API_KEY`  | ✔      | ✔       | —     |
+| **Tavily**              | `TAVILY_API_KEY`    | ✔      | ✔       | ✔     |
+| **Exa**                 | `EXA_API_KEY`       | ✔      | ✔       | —     |
 
-**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
-**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
+**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` and `web_crawl` require a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/docs/user-guide/features/web-search) for Docker setup instructions.
+
+**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
@@ -1546,11 +1569,11 @@ approvals:
   mode: manual   # manual | smart | off
 ```
 
-| Mode | Behavior |
-|------|----------|
-| `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
-| `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
-| `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
+| Mode               | Behavior                                                                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request.                                                |
+| `smart`            | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
+| `off`              | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.**                                                                                                                  |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
@@ -1607,14 +1630,14 @@ clarify:
 
 Hermes uses two different context scopes:
 
-| File | Purpose | Scope |
-|------|---------|-------|
-| `SOUL.md` | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
-| `.hermes.md` / `HERMES.md` | Project-specific instructions (highest priority) | Walks to git root |
-| `AGENTS.md` | Project-specific instructions, coding conventions | Recursive directory walk |
-| `CLAUDE.md` | Claude Code context files (also detected) | Working directory only |
-| `.cursorrules` | Cursor IDE rules (also detected) | Working directory only |
-| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory only |
+| File                       | Purpose                                                                              | Scope                                         |
+| -------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------- |
+| `SOUL.md`                  | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
+| `.hermes.md` / `HERMES.md` | Project-specific instructions (highest priority)                                     | Walks to git root                             |
+| `AGENTS.md`                | Project-specific instructions, coding conventions                                    | Recursive directory walk                      |
+| `CLAUDE.md`                | Claude Code context files (also detected)                                            | Working directory only                        |
+| `.cursorrules`             | Cursor IDE rules (also detected)                                                     | Working directory only                        |
+| `.cursor/rules/*.mdc`      | Cursor rule files (also detected)                                                    | Working directory only                        |
 
 - **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
 - If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
@@ -1629,10 +1652,10 @@ See also:
 
 ## Working Directory
 
-| Context | Default |
-|---------|---------|
-| **CLI (`hermes`)** | Current directory where you run the command |
-| **Messaging gateway** | Home directory `~` (override with `MESSAGING_CWD`) |
+| Context                                | Default                                                      |
+| -------------------------------------- | ------------------------------------------------------------ |
+| **CLI (`hermes`)**                     | Current directory where you run the command                  |
+| **Messaging gateway**                  | Home directory `~` (override with `MESSAGING_CWD`)           |
 | **Docker / Singularity / Modal / SSH** | User's home directory inside the container or remote machine |
 
 Override the working directory:

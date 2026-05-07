@@ -47,16 +47,16 @@ Every auxiliary task defaults to `auto` — meaning Hermes uses your main model 
 
 ### Common override patterns
 
-| Task | When to override |
-|---|---|
-| **Title Gen** | Almost always. A $0.10/M flash model writes session titles as well as Opus. Default config sets this to `google/gemini-3-flash-preview` on OpenRouter. |
-| **Vision** | When your main model is a coding model without vision (e.g. Kimi, DeepSeek). Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
-| **Compression** | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost. |
-| **Session Search** | When recall queries fan out — default max_concurrency is 3. A cheap model keeps the bill predictable. |
-| **Approval** | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
-| **Web Extract** | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning. |
-| **Skills Hub** | `hermes skills search` uses this. Usually fine at `auto`. |
-| **MCP** | MCP tool routing. Usually fine at `auto`. |
+| Task               | When to override                                                                                                                                               |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Title Gen**      | Almost always. A $0.10/M flash model writes session titles as well as Opus. Default config sets this to `google/gemini-3-flash-preview` on OpenRouter.         |
+| **Vision**         | When your main model is a coding model without vision (e.g. Kimi, DeepSeek). Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`.                           |
+| **Compression**    | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost.                                |
+| **Session Search** | When recall queries fan out — default max_concurrency is 3. A cheap model keeps the bill predictable.                                                          |
+| **Approval**       | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
+| **Web Extract**    | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning.                                                          |
+| **Skills Hub**     | `hermes skills search` uses this. Usually fine at `auto`.                                                                                                      |
+| **MCP**            | MCP tool routing. Usually fine at `auto`.                                                                                                                      |
 
 ### Per-task override
 
@@ -160,6 +160,30 @@ Inside any `hermes chat` session:
 ```
 
 `--global` does the same thing the dashboard's **Change** button does, plus it switches the running session in-place.
+
+### Custom aliases
+
+Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform:
+
+```yaml
+# ~/.hermes/config.yaml
+model_aliases:
+  fav:
+    model: claude-sonnet-4.6
+    provider: anthropic
+  grok:
+    model: grok-4
+    provider: x-ai
+```
+
+Or from the shell (short form, `provider/model`):
+
+```bash
+hermes config set model.aliases.fav anthropic/claude-opus-4.6
+hermes config set model.aliases.grok x-ai/grok-4
+```
+
+Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/docs/reference/slash-commands#custom-model-aliases) for the full reference.
 
 ### `hermes model` subcommand
 

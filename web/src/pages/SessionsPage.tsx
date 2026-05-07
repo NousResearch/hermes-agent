@@ -35,8 +35,10 @@ import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
-import { Button, ListItem, Spinner } from "@nous-research/ui";
-import { Badge } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -49,14 +51,14 @@ import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
-  {
-    cli: { icon: Terminal, color: "text-primary" },
-    telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
-    slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    whatsapp: { icon: Globe, color: "text-success" },
-    cron: { icon: Clock, color: "text-warning" },
-  };
+{
+  cli: { icon: Terminal, color: "text-primary" },
+  telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
+  discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
+  slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
+  whatsapp: { icon: Globe, color: "text-success" },
+  cron: { icon: Clock, color: "text-warning" },
+};
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -294,11 +296,10 @@ function SessionRow({
 
   return (
     <div
-      className={`border overflow-hidden transition-colors ${
-        session.is_active
+      className={`border overflow-hidden transition-colors ${session.is_active
           ? "border-success/30 bg-success/[0.03]"
           : "border-border"
-      }`}
+        }`}
     >
       <div
         className="flex items-center justify-between p-3 cursor-pointer hover:bg-secondary/30 transition-colors"
@@ -489,7 +490,7 @@ export default function SessionsPage() {
         setSessions(resp.sessions);
         setTotal(resp.total);
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setLoading(false));
   }, []);
 
@@ -502,11 +503,11 @@ export default function SessionsPage() {
       api
         .getStatus()
         .then(setStatus)
-        .catch(() => {});
+        .catch(() => { });
       api
         .getSessions(50)
         .then((r) => setOverviewSessions(r.sessions))
-        .catch(() => {});
+        .catch(() => { });
     };
     loadOverview();
     const id = setInterval(loadOverview, 5000);

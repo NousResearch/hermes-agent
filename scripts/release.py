@@ -265,6 +265,7 @@ AUTHOR_MAP = {
     "36056348+sirEven@users.noreply.github.com": "sirEven",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "jezzahehn@gmail.com": "JezzaHehn",
+    "barnacleboy.jezzahehn@agentmail.to": "JezzaHehn",
     "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "270082434+crayfish-ai@users.noreply.github.com": "crayfish-ai",

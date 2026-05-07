@@ -560,29 +560,6 @@ MEMORY_SCHEMA = {
             },
         },
         "required": ["action", "target"],
-        "allOf": [
-            {
-                "if": {
-                    "properties": {"action": {"const": "add"}},
-                    "required": ["action"],
-                },
-                "then": {"required": ["content"]},
-            },
-            {
-                "if": {
-                    "properties": {"action": {"const": "replace"}},
-                    "required": ["action"],
-                },
-                "then": {"required": ["old_text", "content"]},
-            },
-            {
-                "if": {
-                    "properties": {"action": {"const": "remove"}},
-                    "required": ["action"],
-                },
-                "then": {"required": ["old_text"]},
-            },
-        ],
     },
 }
 

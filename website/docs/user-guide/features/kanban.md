@@ -403,10 +403,18 @@ kanban_complete(
 )
 ```
 
-Load it into your orchestrator profile:
+`kanban-orchestrator` is a bundled skill. It is synced into each profile during
+install and update, so there is no separate Skills Hub install step. Verify it is
+present in your orchestrator profile:
 
 ```bash
-hermes skills install devops/kanban-orchestrator
+hermes -p orchestrator skills list | grep kanban-orchestrator
+```
+
+If the bundled copy is missing, restore it for that profile:
+
+```bash
+hermes -p orchestrator skills reset kanban-orchestrator --restore
 ```
 
 For best results, pair it with a profile whose toolsets are restricted to board operations (`kanban`, `gateway`, `memory`) so the orchestrator literally cannot execute implementation tasks even if it tries.

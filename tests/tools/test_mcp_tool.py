@@ -1555,6 +1555,37 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_no_initial_retries_on_auth_failure(self):
+        """Interactive auth failures should not reopen the browser in a retry loop."""
+        from tools.mcp_oauth import OAuthNonInteractiveError
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            raise OAuthNonInteractiveError("oauth callback timed out")
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            assert run_count == 1
+            assert isinstance(server._error, OAuthNonInteractiveError)
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # Configurable timeouts

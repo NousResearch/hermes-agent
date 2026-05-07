@@ -11,8 +11,8 @@ which handles discovery, dynamic client registration, PKCE, token exchange,
 refresh, and step-up authorization automatically.
 
 This module provides the glue:
-    - ``HermesTokenStorage``: persists tokens/client-info to disk so they
-      survive across process restarts.
+    - ``HermesTokenStorage``: persists tokens and refresh identity to disk so
+      they survive across process restarts.
     - Callback server: ephemeral localhost HTTP server to capture the OAuth
       redirect with the authorization code.
     - ``build_oauth_auth()``: entry point called by ``mcp_tool.py`` that wires
@@ -42,9 +42,10 @@ import sys
 import threading
 import time
 import webbrowser
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
@@ -172,18 +173,121 @@ def _write_json(path: Path, data: dict) -> None:
         raise
 
 
+@dataclass(frozen=True)
+class HermesOAuthClientIdentity:
+    """Minimal durable client state needed for token refresh across restarts."""
+
+    client_id: str
+    client_secret: str | None = None
+    token_endpoint_auth_method: str | None = None
+    scope: str | None = None
+
+    @classmethod
+    def from_data(cls, data: dict) -> "HermesOAuthClientIdentity":
+        client_id = data.get("client_id")
+        if not isinstance(client_id, str) or not client_id:
+            raise ValueError("client_id missing from stored OAuth client identity")
+        client_secret = data.get("client_secret")
+        token_endpoint_auth_method = data.get("token_endpoint_auth_method")
+        scope = data.get("scope")
+        return cls(
+            client_id=client_id,
+            client_secret=client_secret if isinstance(client_secret, str) else None,
+            token_endpoint_auth_method=(
+                token_endpoint_auth_method
+                if isinstance(token_endpoint_auth_method, str)
+                else None
+            ),
+            scope=scope if isinstance(scope, str) else None,
+        )
+
+    @classmethod
+    def from_legacy_client_info_data(cls, data: dict) -> "HermesOAuthClientIdentity":
+        identity = cls.from_data(data)
+        if identity.client_secret and not identity.token_endpoint_auth_method:
+            identity = cls(
+                client_id=identity.client_id,
+                client_secret=identity.client_secret,
+                token_endpoint_auth_method="client_secret_post",
+                scope=identity.scope,
+            )
+        return identity
+
+    @classmethod
+    def from_client_info(
+        cls,
+        client_info: "OAuthClientInformationFull",
+    ) -> "HermesOAuthClientIdentity":
+        return cls(
+            client_id=client_info.client_id or "",
+            client_secret=client_info.client_secret,
+            token_endpoint_auth_method=client_info.token_endpoint_auth_method,
+            scope=client_info.scope,
+        )
+
+    def resolved_auth_method(
+        self,
+        oauth_metadata: Any | None = None,
+    ) -> str:
+        if self.token_endpoint_auth_method:
+            return self.token_endpoint_auth_method
+        if not self.client_secret:
+            return "none"
+
+        supported = getattr(oauth_metadata, "token_endpoint_auth_methods_supported", None)
+        if isinstance(supported, Sequence):
+            supported_set = {item for item in supported if isinstance(item, str)}
+            if "client_secret_basic" in supported_set and "client_secret_post" not in supported_set:
+                return "client_secret_basic"
+            if "client_secret_post" in supported_set and "client_secret_basic" not in supported_set:
+                return "client_secret_post"
+            if "client_secret_basic" in supported_set and "client_secret_post" in supported_set:
+                return "client_secret_basic"
+
+        return "client_secret_basic"
+
+    def to_storage_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"client_id": self.client_id}
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
+        if self.token_endpoint_auth_method:
+            payload["token_endpoint_auth_method"] = self.token_endpoint_auth_method
+        if self.scope:
+            payload["scope"] = self.scope
+        return payload
+
+    def to_client_info(
+        self,
+        redirect_uri: str,
+        oauth_metadata: Any | None = None,
+    ) -> "OAuthClientInformationFull":
+        payload: dict[str, Any] = {
+            "client_id": self.client_id,
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": self.resolved_auth_method(oauth_metadata),
+        }
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
+        if self.scope:
+            payload["scope"] = self.scope
+        return OAuthClientInformationFull.model_validate(payload)
+
+
 # ---------------------------------------------------------------------------
 # HermesTokenStorage -- persistent token/client-info on disk
 # ---------------------------------------------------------------------------
 
 
 class HermesTokenStorage:
-    """Persist OAuth tokens and client registration to JSON files.
+    """Persist OAuth tokens and refresh identity to JSON files.
 
     File layout::
 
-        HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
-        HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        HERMES_HOME/mcp-tokens/<server_name>.json           -- tokens
+        HERMES_HOME/mcp-tokens/<server_name>.identity.json  -- refresh identity
+        HERMES_HOME/mcp-tokens/<server_name>.client.json    -- legacy registration cache (migration input only)
     """
 
     def __init__(self, server_name: str):
@@ -191,6 +295,9 @@ class HermesTokenStorage:
 
     def _tokens_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.json"
+
+    def _client_identity_path(self) -> Path:
+        return _get_token_dir() / f"{self._server_name}.identity.json"
 
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
@@ -258,25 +365,46 @@ class HermesTokenStorage:
 
     # -- client info -------------------------------------------------------
 
-    async def get_client_info(self) -> "OAuthClientInformationFull | None":
-        data = _read_json(self._client_info_path())
-        if data is None:
+    async def get_client_identity(self) -> "HermesOAuthClientIdentity | None":
+        data = _read_json(self._client_identity_path())
+        if data is not None:
+            try:
+                return HermesOAuthClientIdentity.from_data(data)
+            except (ValueError, TypeError, KeyError) as exc:
+                logger.warning("Corrupt client identity at %s -- ignoring: %s", self._client_identity_path(), exc)
+                return None
+
+        legacy_data = _read_json(self._client_info_path())
+        if legacy_data is None:
             return None
         try:
-            return OAuthClientInformationFull.model_validate(data)
+            identity = HermesOAuthClientIdentity.from_legacy_client_info_data(legacy_data)
+            _write_json(self._client_identity_path(), identity.to_storage_dict())
+            return identity
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
+            return None
+
+    async def get_client_info(self) -> "OAuthClientInformationFull | None":
+        identity = await self.get_client_identity()
+        if identity is None:
+            return None
+        try:
+            return identity.to_client_info("http://127.0.0.1/callback")
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+        identity = HermesOAuthClientIdentity.from_client_info(client_info)
+        _write_json(self._client_identity_path(), identity.to_storage_dict())
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (self._tokens_path(), self._client_info_path()):
+        for p in (self._tokens_path(), self._client_identity_path(), self._client_info_path()):
             p.unlink(missing_ok=True)
 
     def has_cached_tokens(self) -> bool:
@@ -519,7 +647,8 @@ def _maybe_preregister_client(
         info_dict["scope"] = cfg["scope"]
 
     client_info = OAuthClientInformationFull.model_validate(info_dict)
-    _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+    identity = HermesOAuthClientIdentity.from_client_info(client_info)
+    _write_json(storage._client_identity_path(), identity.to_storage_dict())
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 

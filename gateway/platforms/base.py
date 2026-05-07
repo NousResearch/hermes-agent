@@ -1307,8 +1307,8 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to write runtime status (connected) for %s: %s", self.platform.value, exc)
 
     def _mark_disconnected(self) -> None:
         self._running = False
@@ -1317,8 +1317,8 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to write runtime status (disconnected) for %s: %s", self.platform.value, exc)
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
@@ -1333,8 +1333,8 @@ class BasePlatformAdapter(ABC):
                 error_code=code,
                 error_message=message,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to write runtime status (fatal) for %s: %s", self.platform.value, exc)
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler

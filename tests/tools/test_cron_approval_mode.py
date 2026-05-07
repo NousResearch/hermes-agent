@@ -44,6 +44,16 @@ class TestCronApprovalModeParsing:
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"cron_mode": "approve"}}):
             assert _get_cron_approval_mode() == "approve"
 
+    def test_explicit_allowlist(self):
+        from unittest.mock import patch as mock_patch
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"cron_mode": "allowlist"}}):
+            assert _get_cron_approval_mode() == "allowlist"
+
+    def test_allow_list_alias(self):
+        from unittest.mock import patch as mock_patch
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"cron_mode": "allow-list"}}):
+            assert _get_cron_approval_mode() == "allowlist"
+
     def test_off_maps_to_approve(self):
         """'off' is an alias for 'approve' (matches --yolo semantics)."""
         from unittest.mock import patch as mock_patch
@@ -153,6 +163,22 @@ class TestCronDenyMode:
             # Should contain the description of what was flagged
             assert "dangerous" in result["message"].lower() or "delete" in result["message"].lower()
 
+    def test_deny_mode_blocks_even_permanent_allowlist(self, monkeypatch):
+        """cron_mode=deny should remain stricter than command_allowlist."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        _, pattern_key, _ = detect_dangerous_command("rm -rf /tmp/stuff")
+        approval_module.approve_permanent(pattern_key)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            assert not result["approved"]
+            assert "BLOCKED" in result["message"]
+
 
 class TestCronApproveMode:
     """When HERMES_CRON_SESSION is set and cron_mode=approve, dangerous commands pass through."""
@@ -167,6 +193,36 @@ class TestCronApproveMode:
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert result["approved"]
+
+
+class TestCronAllowlistMode:
+    """When cron_mode=allowlist, only command_allowlist entries pass."""
+
+    def test_allowlisted_dangerous_command_allowed(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        _, pattern_key, _ = detect_dangerous_command("rm -rf /tmp/stuff")
+        approval_module.approve_permanent(pattern_key)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="allowlist"):
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            assert result["approved"]
+
+    def test_unlisted_dangerous_command_blocked(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="allowlist"):
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            assert not result["approved"]
+            assert "command_allowlist" in result["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +268,34 @@ class TestCronDenyModeAllGuards:
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert result["approved"]
+
+    def test_combined_guard_allowlist_mode_allows_listed_pattern(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        _, pattern_key, _ = detect_dangerous_command("rm -rf /tmp/stuff")
+        approval_module.approve_permanent(pattern_key)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="allowlist"):
+            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            assert result["approved"]
+
+    def test_combined_guard_allowlist_mode_blocks_unlisted_pattern(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="allowlist"):
+            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            assert not result["approved"]
+            assert "command_allowlist" in result["message"]
 
 
 # ---------------------------------------------------------------------------

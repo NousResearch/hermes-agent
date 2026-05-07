@@ -728,11 +728,13 @@ def _get_approval_timeout() -> int:
 
 
 def _get_cron_approval_mode() -> str:
-    """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    """Read the cron approval mode from config."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
         mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
+        if mode in ("allowlist", "allow-list"):
+            return "allowlist"
         if mode in ("approve", "off", "allow", "yes"):
             return "approve"
         return "deny"
@@ -825,26 +827,39 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
-
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
         if os.getenv("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
+            cron_mode = _get_cron_approval_mode()
+            if cron_mode == "approve":
+                return {"approved": True, "message": None}
+            if cron_mode == "allowlist" and is_approved(session_key, pattern_key):
+                return {"approved": True, "message": None}
+            if cron_mode in ("deny", "allowlist"):
+                allow_hint = (
+                    "Add this command pattern to command_allowlist or rewrite the job "
+                    "to avoid the dangerous command."
+                    if cron_mode == "allowlist"
+                    else (
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    )
+                )
                 return {
                     "approved": False,
                     "message": (
                         f"BLOCKED: Command flagged as dangerous ({description}) "
                         "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
+                        f"{allow_hint}"
                     ),
                 }
+        return {"approved": True, "message": None}
+
+    if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
@@ -954,20 +969,33 @@ def check_all_command_guards(command: str, env_type: str,
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
         if os.getenv("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
-                    return {
-                        "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
-                    }
+            cron_mode = _get_cron_approval_mode()
+            if cron_mode == "approve":
+                return {"approved": True, "message": None}
+            # Run detection to get a description for the block message
+            is_dangerous, pattern_key, description = detect_dangerous_command(command)
+            if is_dangerous:
+                session_key = get_current_session_key()
+                if cron_mode == "allowlist" and is_approved(session_key, pattern_key):
+                    return {"approved": True, "message": None}
+                allow_hint = (
+                    "Add this command pattern to command_allowlist or rewrite the job "
+                    "to avoid the dangerous command."
+                    if cron_mode == "allowlist"
+                    else (
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    )
+                )
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        f"{allow_hint}"
+                    ),
+                }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---

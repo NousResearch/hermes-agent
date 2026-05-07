@@ -1149,6 +1149,7 @@ DEFAULT_CONFIG = {
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
+    #   allowlist — allow only command_allowlist entries, block everything else
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",

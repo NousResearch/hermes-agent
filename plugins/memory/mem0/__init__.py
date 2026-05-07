@@ -228,14 +228,9 @@ class Mem0MemoryProvider(MemoryProvider):
     def get_config_schema(self):
         cfg = _load_config()
         mode = cfg.get("mode", "platform")
-        if mode == "oss":
-            return [
-                {"key": "mode", "description": "Backend mode", "default": "oss"},
-                {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
-                {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-            ]
+        api_key_required = mode != "oss"
         return [
-            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},

@@ -202,8 +202,10 @@
   align-items: center;
   gap: 0.4rem;
   font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  /* Assignee/profile names are case-sensitive. Do not visually uppercase
+   * lane headers, otherwise a valid `analyst` profile appears as `ANALYST`
+   * in the WebUI and users may copy the wrong casing back into edits. */
+  letter-spacing: 0.02em;
   color: var(--color-muted-foreground);
   padding: 0 0.1rem;
 }

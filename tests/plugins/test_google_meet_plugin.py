@@ -971,6 +971,42 @@ def test_enable_captions_js_clicks_caption_button_before_keyboard_fallback():
     assert "KeyC" in js
 
 
+def test_gemini_consent_detection_requires_actionable_modal_buttons():
+    from plugins.google_meet.meet_bot import _gemini_recording_consent_js, _enable_captions_js
+
+    probe = _gemini_recording_consent_js()
+    captions_js = _enable_captions_js()
+
+    # A persistent in-call banner like "Gemini is taking notes" is not enough;
+    # otherwise Meet refuses to enable captions after consent was already accepted.
+    assert "hasAffirmative" in probe
+    assert "hasNegative" in probe
+    assert "Boolean(hasAffirmative && hasNegative)" in probe
+    assert "blocked_gemini_consent" in captions_js
+    assert "Boolean(hasAffirmative && hasNegative)" in captions_js
+
+
+def test_in_call_listen_only_helper_clicks_only_explicit_own_off_controls():
+    from plugins.google_meet.meet_bot import _ensure_in_call_listen_only
+
+    class _FakePage:
+        def __init__(self):
+            self.script = ""
+
+        def evaluate(self, script):
+            self.script = script
+            return []
+
+    page = _FakePage()
+    _ensure_in_call_listen_only(page)
+
+    assert "^turn off microphone" in page.script
+    assert "^turn off camera" in page.script
+    assert "turn on microphone" in page.script
+    assert "\bstay\b" not in page.script.lower()
+    assert "participant" in page.script
+
+
 def test_click_join_noops_when_already_in_call(monkeypatch):
     from plugins.google_meet.meet_bot import _BotState, _click_join
 

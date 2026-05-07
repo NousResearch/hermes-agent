@@ -404,6 +404,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # ephemeral, so long-running tool calls need periodic refreshes until
         # processing completes.
         self._typing_indicator_tasks: Dict[str, asyncio.Task] = {}
+        # Long-running turn progress messages, keyed like typing tasks.  These
+        # provide durable liveness after the native typing bubble reaches its
+        # safety cap.
+        self._progress_indicator_tasks: Dict[str, asyncio.Task] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1567,6 +1571,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
         await self._cancel_all_typing_refresh_tasks()
+        await self._cancel_all_progress_update_tasks()
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
@@ -3787,6 +3792,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
+        # Respect the same Telegram typing gate used by processing-start hooks.
+        # BasePlatformAdapter._keep_typing calls this method directly; without
+        # this guard, setting telegram.typing_indicator=false only disables the
+        # hook-level refresh task, while the base keep-typing loop continues to
+        # send chat_action=typing every few seconds.
+        if not self._typing_indicator_enabled():
+            return
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
@@ -5139,6 +5151,37 @@ class TelegramAdapter(BasePlatformAdapter):
             4.5,
         )
 
+    def _typing_max_duration_seconds(self) -> float | None:
+        """Return native typing-bubble max duration before progress takes over."""
+        value = self._coerce_float_env_or_extra(
+            "TELEGRAM_TYPING_MAX_SECONDS",
+            "typing_max_seconds",
+            300.0,
+        )
+        return value if value > 0 else None
+
+    def _progress_updates_enabled(self) -> bool:
+        """Return whether long-running Telegram turns should send progress updates."""
+        return self._coerce_bool_env_or_extra(
+            "TELEGRAM_PROGRESS_UPDATES",
+            "progress_updates",
+            True,
+        )
+
+    def _progress_initial_delay_seconds(self) -> float:
+        return self._coerce_float_env_or_extra(
+            "TELEGRAM_PROGRESS_INITIAL_DELAY",
+            "progress_initial_delay",
+            60.0,
+        )
+
+    def _progress_interval_seconds(self) -> float:
+        return self._coerce_float_env_or_extra(
+            "TELEGRAM_PROGRESS_INTERVAL",
+            "progress_interval",
+            120.0,
+        )
+
     def _typing_task_key(self, event: MessageEvent) -> str:
         source = getattr(event, "source", None)
         return ":".join(
@@ -5180,9 +5223,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def _typing_refresh_loop(self, event: MessageEvent, interval: float) -> None:
+        max_duration = self._typing_max_duration_seconds()
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
         try:
             while True:
                 await asyncio.sleep(interval)
+                if max_duration and loop.time() - started_at >= max_duration:
+                    return
                 await self._send_typing_action(event)
         except asyncio.CancelledError:
             return
@@ -5213,6 +5261,96 @@ class TelegramAdapter(BasePlatformAdapter):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _progress_tasks(self) -> Dict[str, asyncio.Task]:
+        tasks = getattr(self, "_progress_indicator_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._progress_indicator_tasks = tasks
+        return tasks
+
+    def _progress_text(self, elapsed_seconds: float, update_count: int, *, done: bool = False) -> str:
+        if done:
+            return "✅ 작업 완료. 답변을 정리했어."
+        minutes = max(1, int(round(elapsed_seconds / 60.0)))
+        if update_count <= 1:
+            return f"⏳ 아직 작업 중이야 — {minutes}분째 확인/실행 중. 진행되면 바로 이어서 알려줄게."
+        return f"⏳ 계속 진행 중이야 — 약 {minutes}분 경과. 멈춘 건 아니고, 긴 작업을 이어서 처리하고 있어."
+
+    async def _progress_update_loop(self, event: MessageEvent) -> None:
+        if not self._progress_updates_enabled():
+            return
+        delay = self._progress_initial_delay_seconds()
+        interval = self._progress_interval_seconds()
+        if delay <= 0:
+            delay = 0.1
+        if interval <= 0:
+            interval = 120.0
+        source = getattr(event, "source", None)
+        chat_id = getattr(source, "chat_id", None)
+        if not chat_id:
+            return
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+        message_id: str | None = None
+        update_count = 0
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        try:
+            await asyncio.sleep(delay)
+            while True:
+                update_count += 1
+                content = self._progress_text(loop.time() - started_at, update_count)
+                if message_id:
+                    result = await self.edit_message(chat_id, message_id, content)
+                else:
+                    result = await self.send(
+                        chat_id=chat_id,
+                        content=content,
+                        reply_to=getattr(event, "message_id", None),
+                        metadata=metadata,
+                    )
+                if getattr(result, "success", False) and getattr(result, "message_id", None):
+                    message_id = str(result.message_id)
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            if message_id:
+                try:
+                    await self.edit_message(
+                        chat_id,
+                        message_id,
+                        self._progress_text(loop.time() - started_at, update_count, done=True),
+                        finalize=True,
+                    )
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            logger.debug("[%s] Telegram progress update loop failed: %s", self.name, e, exc_info=True)
+
+    def _start_progress_updates(self, event: MessageEvent) -> None:
+        if not self._progress_updates_enabled():
+            return
+        tasks = self._progress_tasks()
+        key = self._typing_task_key(event)
+        existing = tasks.pop(key, None)
+        if existing and not existing.done():
+            existing.cancel()
+        tasks[key] = asyncio.create_task(self._progress_update_loop(event))
+
+    async def _stop_progress_updates(self, event: MessageEvent) -> None:
+        task = self._progress_tasks().pop(self._typing_task_key(event), None)
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _cancel_all_progress_update_tasks(self) -> None:
+        tasks = list(self._progress_tasks().values())
+        self._progress_tasks().clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
@@ -5232,6 +5370,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Show liveness signals when message processing begins."""
         await self._send_typing_action(event)
         self._start_typing_refresh(event)
+        self._start_progress_updates(event)
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
@@ -5246,6 +5385,7 @@ class TelegramAdapter(BasePlatformAdapter):
         replaces all existing reactions in one call — no remove step needed.
         """
         await self._stop_typing_refresh(event)
+        await self._stop_progress_updates(event)
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

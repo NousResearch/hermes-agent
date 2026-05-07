@@ -403,6 +403,29 @@ _CAPTION_OBSERVER_JS = r"""
 """
 
 
+def _gemini_recording_consent_js() -> str:
+    """Return JS that detects the actionable Gemini recording/notes consent card.
+
+    Meet also leaves non-modal text like "Gemini is taking notes" in the call
+    chrome after the user has already consented. Treating that banner as a
+    blocking consent dialog prevents captions from being enabled. Require the
+    high-signal modal shape instead: Gemini recording/notes text plus both an
+    affirmative Join/Continue action and a negative Leave action.
+    """
+    return r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      if (!/Gemini is (recording|taking notes)|Gemini.*recording|Gemini.*notes/i.test(text)) return false;
+      const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const labelOf = (el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`.replace(/\s+/g, ' ').trim();
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+      const hasAffirmative = buttons.some((button) => /\bjoin now\b|\bcontinue\b|\bstay\b|지금 참여|참여하기|계속/i.test(labelOf(button)));
+      const hasNegative = buttons.some((button) => /\bleave\b|hang up|나가기|퇴장/i.test(labelOf(button)));
+      return Boolean(hasAffirmative && hasNegative);
+    })();
+    """
+
+
 def _enable_captions_js() -> str:
     """Return JS that tries to enable Meet captions.
 
@@ -410,10 +433,12 @@ def _enable_captions_js() -> str:
     can fail in headless/persistent-profile mode when focus is inside Meet's
     call surface or a modal. Keep the ``c`` shortcut as a fallback.
     """
+    consent_probe = _gemini_recording_consent_js().strip()
+    if consent_probe.endswith(";"):
+        consent_probe = consent_probe[:-1]
     return r"""
     (() => {
-      const bodyText = document.body ? document.body.innerText || '' : '';
-      if (/Gemini is (recording|taking notes)|Gemini.*recording|Gemini.*notes/i.test(bodyText)) {
+      if (__HERMES_GEMINI_CONSENT_PROBE__) {
         return 'blocked_gemini_consent';
       }
       const candidates = Array.from(document.querySelectorAll('button,[role="button"]'));
@@ -453,9 +478,7 @@ def _enable_captions_js() -> str:
       document.body.dispatchEvent(ev);
       return 'shortcut';
     })();
-    """
-
-
+    """.replace("__HERMES_GEMINI_CONSENT_PROBE__", consent_probe)
 
 
 def _caption_probe_js() -> str:
@@ -1044,8 +1067,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     # teardown runs in the finally block below.
     stop_flag = {"stop": False}
 
-    def _on_signal(_sig, _frame):
+    def _on_signal(sig, _frame):
         stop_flag["stop"] = True
+        try:
+            state.set(leave_reason=f"signal_{getattr(sig, 'name', sig)}")
+        except Exception:
+            pass
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
@@ -1094,6 +1121,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     chrome_env = os.environ.copy()
     chrome_args = [
         "--use-fake-ui-for-media-stream",
+        "--mute-audio",
         "--disable-blink-features=AutomationControlled",
     ]
     if not rt["enabled"]:
@@ -1154,6 +1182,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             if state.error:
                 state.set(exited=True, leave_reason="join_button_not_found")
                 return 6
+            _ensure_in_call_listen_only(page)
 
             # If a Gemini recording/taking-notes consent card appears right
             # after admission, handle it before any caption/language keyboard
@@ -1222,15 +1251,14 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             last_surface_refresh = 0.0
             alone_since: Optional[float] = None
             alone_grace_s = float(os.environ.get("HERMES_MEET_ALONE_GRACE", "120"))
-            # Companion mode is often a second-screen session for the same
-            # signed-in Google account. Meet may not count the user's primary
-            # tab as "someone else" from that companion session, which makes
-            # our old auto-leave heuristic fire during valid tests. Keep
-            # normal joins protected by default, but do not auto-exit companion
-            # sessions unless explicitly requested.
+            # Same-account joins (normal or companion) can mis-detect the human
+            # user's primary Meet tab as "self"/not-another-participant and
+            # auto-end early even while the real meeting continues. Default this
+            # safety off for transcription reliability; callers can opt in with
+            # HERMES_MEET_ALONE_EXIT=1 for unattended rooms.
             alone_exit_enabled = os.environ.get(
                 "HERMES_MEET_ALONE_EXIT",
-                "0" if join_style == "companion" else "1",
+                "0",
             ).lower() not in ("0", "false", "no", "off")
             while not stop_flag["stop"]:
                 now = time.time()
@@ -1268,6 +1296,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
                 if state.in_call:
                     _dismiss_got_it(page)
+                    _ensure_in_call_listen_only(page)
                     if _try_gemini_recording_join_now(page):
                         time.sleep(0.5)
                         continue
@@ -1623,8 +1652,7 @@ def _detect_denied(page) -> bool:
 
 def _has_gemini_recording_consent(page) -> bool:
     try:
-        text = page.evaluate("() => document.body ? document.body.innerText || '' : ''") or ""
-        return bool(re.search(r"Gemini is (recording|taking notes)|Gemini.*recording|Gemini.*notes", text, re.I))
+        return bool(page.evaluate(_gemini_recording_consent_js()))
     except Exception:
         return False
 
@@ -1821,6 +1849,38 @@ def _ensure_prejoin_listen_only(page) -> None:
                 btn.click(timeout=3_000)
         except Exception:
             pass
+
+
+def _ensure_in_call_listen_only(page) -> None:
+    """Best-effort: turn off this bot tab's mic/camera after admission.
+
+    Prejoin hygiene can miss controls when same-account Meet joins skip the
+    lobby or inherit a current device state. After admission, click only exact
+    own-call controls whose labels explicitly say "Turn off microphone/camera";
+    skip settings, participant menus, and any "Turn on" labels.
+    """
+    script = r"""
+    (() => {
+      const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const labelOf = (el) => `${el.getAttribute('aria-label') || ''} ${el.innerText || el.textContent || ''}`.replace(/\s+/g, ' ').trim();
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+      const clicked = [];
+      for (const button of buttons) {
+        const label = labelOf(button);
+        if (/settings|more options|participant|for Joohyun|설정|옵션/i.test(label)) continue;
+        if (/turn on microphone|turn on camera|마이크 켜|카메라 켜/i.test(label)) continue;
+        if (/^turn off microphone\b|^turn off camera\b|마이크 끄|카메라 끄/i.test(label)) {
+          button.click();
+          clicked.push(label.slice(0, 80));
+        }
+      }
+      return clicked;
+    })();
+    """
+    try:
+        page.evaluate(script)
+    except Exception:
+        pass
 
 
 def _click_join(page, state: _BotState) -> None:

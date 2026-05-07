@@ -2186,9 +2186,26 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        max_duration = None
+        max_duration_fn = getattr(self, "_typing_max_duration_seconds", None)
+        if callable(max_duration_fn):
+            try:
+                max_duration = max_duration_fn()
+            except Exception:
+                max_duration = None
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if max_duration and loop.time() - started_at >= max_duration:
+                    logger.debug(
+                        "[%s] Stopping typing indicator for %s after %.1fs cap",
+                        self.name,
+                        chat_id,
+                        max_duration,
+                    )
                     return
                 if chat_id not in self._typing_paused:
                     try:

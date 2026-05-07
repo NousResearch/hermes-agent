@@ -1,5 +1,6 @@
 """Tests for Telegram message reactions tied to processing lifecycle hooks."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,12 +14,15 @@ from gateway.session import SessionSource
 def _make_adapter(**extra_env):
     from gateway.platforms.telegram import TelegramAdapter
 
+    extra_env.setdefault("progress_updates", False)
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="fake-token", extra=extra_env)
     adapter._bot = AsyncMock()
     adapter._bot.set_message_reaction = AsyncMock()
     adapter._bot.send_chat_action = AsyncMock()
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="999"))
+    adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="999"))
     return adapter
 
 
@@ -146,7 +150,45 @@ async def test_processing_complete_cancels_periodic_typing_refresh(monkeypatch):
     assert getattr(adapter, "_typing_indicator_tasks") == {}
 
 
+@pytest.mark.asyncio
+async def test_send_typing_respects_typing_indicator_disabled(monkeypatch):
+    """telegram.typing_indicator=false should disable both hook and base keep-typing sends."""
+    monkeypatch.delenv("TELEGRAM_TYPING", raising=False)
+    adapter = _make_adapter(typing_indicator=False)
+
+    await adapter.send_typing("123", metadata={"thread_id": "3220"})
+
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_progress_updates_send_then_edit_liveness_message(monkeypatch):
+    """Long-running Telegram turns should send a durable progress message and edit it on completion."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter(
+        typing_refresh=False,
+        progress_updates=True,
+        progress_initial_delay=0.01,
+        progress_interval=30,
+    )
+    event = _make_event(thread_id="3220")
+
+    await adapter.on_processing_start(event)
+    await asyncio.sleep(0.05)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter.send.assert_awaited()
+    send_kwargs = adapter.send.await_args.kwargs
+    assert send_kwargs["chat_id"] == "123"
+    assert send_kwargs["reply_to"] == "456"
+    assert send_kwargs["metadata"] == {"thread_id": "3220"}
+    assert "작업 중" in send_kwargs["content"]
+    adapter.edit_message.assert_awaited()
+    assert getattr(adapter, "_progress_indicator_tasks") == {}
+
+
 # ── _set_reaction ────────────────────────────────────────────────────
+
 
 
 @pytest.mark.asyncio

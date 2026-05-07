@@ -28,6 +28,10 @@ if [ -n "${PYTHONHOME:-}" ]; then
     unset PYTHONHOME
 fi
 
+# Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
+# wrong user's home directory when running under sudo -u <user>.  See #21269.
+export UV_NO_CONFIG=1
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'

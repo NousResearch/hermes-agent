@@ -7691,7 +7691,13 @@ class GatewayRunner:
                         custom_providers=custom_provs,
                         max_models=50,
                     )
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "list_picker_providers failed for gateway /model picker; "
+                        "falling back to text list: %s",
+                        exc,
+                        exc_info=True,
+                    )
                     providers = []
 
                 if providers:

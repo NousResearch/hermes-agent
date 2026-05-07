@@ -1,5 +1,7 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
+import logging
+
 import yaml
 import pytest
 
@@ -61,3 +63,40 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     assert "custom:local-(127.0.0.1:4141)" in result
     assert "rotator-openrouter-coding" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_model_command_logs_picker_provider_failures(
+    tmp_path, monkeypatch, caplog
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-5.4", "provider": "openai"}}),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+    import hermes_cli.model_switch as model_switch
+
+    class PickerAdapter:
+        async def send_model_picker(self, **kwargs):
+            raise AssertionError("send_model_picker should not run after provider load failure")
+
+    def fail_picker_providers(**kwargs):
+        raise TypeError("unexpected picker kwarg")
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr(model_switch, "list_picker_providers", fail_picker_providers)
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **kwargs: [])
+
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: PickerAdapter()}
+    caplog.set_level(logging.WARNING, logger="gateway.run")
+
+    result = await runner._handle_model_command(_make_event())
+
+    assert result is not None
+    assert "Current: `gpt-5.4`" in result
+    assert "falling back to text list" in caplog.text
+    assert "unexpected picker kwarg" in caplog.text

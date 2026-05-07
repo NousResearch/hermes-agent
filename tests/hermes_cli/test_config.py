@@ -634,6 +634,7 @@ class TestInterimAssistantMessageConfig:
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
+        assert DEFAULT_CONFIG["discord"]["channel_routes"] == []
 
     def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
         config_path = tmp_path / "config.yaml"
@@ -650,6 +651,7 @@ class TestDiscordChannelPromptsConfig:
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["discord"]["auto_thread"] is True
         assert raw["discord"]["channel_prompts"] == {}
+        assert raw["discord"]["channel_routes"] == []
 
 
 class TestUserMessagePreviewConfig:

@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+_CHANNEL_ROUTE_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _now() -> datetime:
@@ -595,6 +597,7 @@ def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    agent_id: str = "main",
 ) -> str:
     """Build a deterministic session key from a message source.
 
@@ -620,6 +623,7 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    agent_prefix = f"agent:{agent_id or 'main'}"
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
@@ -627,11 +631,11 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{agent_prefix}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{agent_prefix}:{platform}:dm:{dm_chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{agent_prefix}:{platform}:dm:{source.thread_id}"
+        return f"{agent_prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -639,7 +643,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [agent_prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -657,6 +661,65 @@ def build_session_key(
         key_parts.append(str(participant_id))
 
     return ":".join(key_parts)
+
+
+def resolve_channel_route(source: SessionSource, config: GatewayConfig) -> Dict[str, Any] | None:
+    """Return a platform-specific channel route, if one matches this source.
+
+    Expected config shape (under ``platform.extra``):
+
+    ``channel_routes``:
+      - ``id``: channel/thread identifier to match
+      - ``agent_id`` / ``agentId``: logical route name used in session keys
+      - ``cwd`` / ``workspace``: workspace path for context files and tools
+    """
+    try:
+        platform_cfg = config.platforms.get(source.platform)
+    except Exception:
+        platform_cfg = None
+    if not platform_cfg or not isinstance(getattr(platform_cfg, "extra", None), dict):
+        return None
+
+    routes = platform_cfg.extra.get("channel_routes") or []
+    if not isinstance(routes, list):
+        return None
+
+    ids_to_check = set()
+    if source.chat_id:
+        ids_to_check.add(str(source.chat_id))
+    if source.thread_id:
+        ids_to_check.add(str(source.thread_id))
+
+    for entry in routes:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id", "") or "")
+        if entry_id and entry_id in ids_to_check:
+            route = dict(entry)
+            agent_id = str(route.get("agent_id") or route.get("agentId") or "main")
+            if not _CHANNEL_ROUTE_AGENT_ID_RE.fullmatch(agent_id):
+                logger.warning(
+                    "Ignoring channel route %r with invalid agent_id %r; "
+                    "agent_id may only contain letters, numbers, underscores, and hyphens",
+                    entry_id,
+                    agent_id,
+                )
+                continue
+            route["agent_id"] = agent_id
+            cwd = route.get("cwd") or route.get("workspace")
+            if cwd:
+                cwd_path = Path(str(cwd)).expanduser()
+                if not cwd_path.is_absolute():
+                    logger.warning("Ignoring relative cwd for channel route %r: %r", entry_id, cwd)
+                    cwd = None
+                elif not cwd_path.is_dir():
+                    logger.warning("Ignoring missing/non-directory cwd for channel route %r: %s", entry_id, cwd_path)
+                    cwd = None
+                else:
+                    cwd = str(cwd_path.resolve())
+            route["cwd"] = cwd
+            return route
+    return None
 
 
 class SessionStore:
@@ -737,10 +800,13 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        route = resolve_channel_route(source, self.config)
+        agent_id = (route or {}).get("agent_id") or "main"
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            agent_id=agent_id,
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

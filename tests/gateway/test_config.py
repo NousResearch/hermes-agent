@@ -372,6 +372,31 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+    def test_bridges_discord_channel_routes_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_routes:\n"
+            "    - id: \"123\"\n"
+            "      agent_id: research\n"
+            "      cwd: /tmp/research-workspace\n"
+            "    - id: \"456\"\n"
+            "      agentId: support\n"
+            "      workspace: /tmp/support-workspace\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["channel_routes"] == [
+            {"id": "123", "agent_id": "research", "cwd": "/tmp/research-workspace"},
+            {"id": "456", "agentId": "support", "workspace": "/tmp/support-workspace"},
+        ]
+
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

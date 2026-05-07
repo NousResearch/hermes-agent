@@ -612,7 +612,7 @@ class NativeToolCallingChatClient(
                                                 "trigger",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, notification_posted, calendar_event, location, sensor, logcat_entry, external_trigger, shizuku_available, or shizuku_unavailable. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission. calendar_event can filter by calendar_name, title_contains, description_contains, or location_contains. location can filter by latitude, longitude, radius_meters, location_provider, location_name, or max_accuracy_meters and must be run with run_location_trigger. sensor can filter by sensor_type, sensor_event, value_name, min_value, or max_value and must be run with run_sensor_trigger. logcat_entry can filter by logcat_tag, logcat_message_contains, logcat_level, logcat_pid, logcat_package_name, or trigger_package_name and must be run with run_logcat_entry_trigger. external_trigger requires trigger_id and external_token and must be run with run_external_trigger or the exported Hermes external-trigger broadcast."),
+                                                    .put("description", "Optional trigger for create_*_task or run_trigger: manual, time, boot, power_connected, power_disconnected, battery_low, battery_okay, app_foreground, notification_posted, calendar_event, location, sensor, logcat_entry, external_trigger, shizuku_available, or shizuku_unavailable. interval_minutes creates an interval trigger. time requires a time argument such as 08:30 and can use days_of_week. app_foreground and notification_posted require trigger_package_name and the relevant Android service permission. calendar_event can filter by calendar_name, title_contains, description_contains, or location_contains. location can filter by latitude, longitude, radius_meters, location_provider, location_name, or max_accuracy_meters and must be run with run_location_trigger. sensor can filter by sensor_type, sensor_event, value_name, min_value, or max_value and must be run with run_sensor_trigger. logcat_entry can filter by logcat_tag, logcat_message_contains, logcat_level, logcat_pid, logcat_package_name, or trigger_package_name and must be run with run_logcat_entry_trigger. Shizuku logcat scans expose UID package candidates through logcat_package_candidates. external_trigger requires trigger_id and external_token and must be run with run_external_trigger or the exported Hermes external-trigger broadcast."),
                                             )
                                             .put(
                                                 "trigger_package_name",
@@ -828,7 +828,19 @@ class NativeToolCallingChatClient(
                                                 "logcat_package_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Optional package-name filter or event value for logcat_entry triggers. Runs expose %LOGCAT_PACKAGE."),
+                                                    .put("description", "Optional package-name filter or event value for logcat_entry triggers. Shizuku logcat scans choose a single package when the log line identifies one, otherwise this can contain a comma-separated shared-UID candidate list. Runs expose %LOGCAT_PACKAGE."),
+                                            )
+                                            .put(
+                                                "logcat_package_candidates",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional comma-separated package candidates for run_logcat_entry_trigger. The Shizuku logcat watcher fills this from UID lookup so trigger_package_name and package filters can match shared-UID candidates. Runs expose %LOGCAT_PACKAGE_CANDIDATES."),
+                                            )
+                                            .put(
+                                                "logcat_package_source",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional package attribution source for run_logcat_entry_trigger, such as uid, uid_shared, or message. Runs expose %LOGCAT_PACKAGE_SOURCE."),
                                             )
                                             .put(
                                                 "logcat_timestamp",

@@ -1052,6 +1052,21 @@ object HermesAutomationBridge {
             "app_package",
             allowEmpty = true,
         ).orEmpty().trim()
+        val packageCandidates = stringArgument(
+            arguments,
+            "logcat_package_candidates",
+            "package_candidates",
+            "candidate_packages",
+            "packages",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val packageSource = stringArgument(
+            arguments,
+            "logcat_package_source",
+            "package_source",
+            "packageNameSource",
+            allowEmpty = true,
+        ).orEmpty().trim()
         val timestamp = stringArgument(
             arguments,
             "logcat_timestamp",
@@ -1059,17 +1074,17 @@ object HermesAutomationBridge {
             "time",
             allowEmpty = true,
         ).orEmpty().trim()
-        logcatEventNulError(tag, message, level, pid, packageName, timestamp)?.let { error ->
+        logcatEventNulError(tag, message, level, pid, packageName, packageCandidates, packageSource, timestamp)?.let { error ->
             return errorJson(error)
         }
         val store = HermesAutomationStore(context)
-        setLogcatEventVariables(store, tag, message, level, pid, packageName, timestamp)
+        setLogcatEventVariables(store, tag, message, level, pid, packageName, packageCandidates, packageSource, timestamp)
         val variables = store.listVariables()
         val records = store.list()
             .filter { record ->
                 record.enabled &&
                     record.triggerType == TRIGGER_LOGCAT_ENTRY &&
-                    logcatEntryMatches(record, variables, tag, message, level, pid, packageName)
+                    logcatEntryMatches(record, variables, tag, message, level, pid, packageName, packageCandidates)
             }
         val results = JSONArray()
         records.forEach { record ->
@@ -1083,6 +1098,8 @@ object HermesAutomationBridge {
             .put("logcat_level", level.take(MAX_EVENT_VALUE_CHARS))
             .put("logcat_pid", pid.take(MAX_EVENT_VALUE_CHARS))
             .put("logcat_package_name", packageName.take(MAX_EVENT_VALUE_CHARS))
+            .put("logcat_package_candidates", packageCandidates.take(MAX_EVENT_VALUE_CHARS))
+            .put("logcat_package_source", packageSource.take(MAX_EVENT_VALUE_CHARS))
             .put("logcat_timestamp", timestamp.take(MAX_EVENT_VALUE_CHARS))
             .put("requires_shizuku_for_background_watch", true)
             .put("matched_count", records.size)
@@ -2650,9 +2667,26 @@ object HermesAutomationBridge {
         return TRIGGER_SYNONYMS[normalized] ?: normalized.takeIf { it in AUTOMATION_TRIGGERS }
     }
 
-    private fun triggerPackageMatches(savedPackageName: String, foregroundPackageName: String, variables: JSONObject): Boolean {
+    private fun triggerPackageMatches(
+        savedPackageName: String,
+        foregroundPackageName: String,
+        variables: JSONObject,
+        packageCandidates: String = "",
+    ): Boolean {
         val expanded = expandVariables(savedPackageName, variables).trim()
-        return expanded.isNotBlank() && expanded.equals(foregroundPackageName, ignoreCase = true)
+        return expanded.isNotBlank() &&
+            packageCandidateList(foregroundPackageName, packageCandidates).any { packageName ->
+                expanded.equals(packageName, ignoreCase = true)
+            }
+    }
+
+    private fun packageCandidateList(packageName: String, packageCandidates: String): List<String> {
+        return sequenceOf(packageName, packageCandidates)
+            .flatMap { value -> value.splitToSequence(',', ';', '|', '\n', '\t') }
+            .map { value -> value.trim() }
+            .filter { value -> value.isNotBlank() && value.indexOf('\u0000') < 0 }
+            .distinct()
+            .toList()
     }
 
     private fun calendarEventMatches(
@@ -2756,9 +2790,13 @@ object HermesAutomationBridge {
         level: String,
         pid: String,
         packageName: String,
+        packageCandidates: String,
     ): Boolean {
         val filters = runCatching { JSONObject(record.triggerData.ifBlank { "{}" }) }.getOrDefault(JSONObject())
-        if (record.triggerPackageName.isNotBlank() && !triggerPackageMatches(record.triggerPackageName, packageName, variables)) {
+        if (
+            record.triggerPackageName.isNotBlank() &&
+            !triggerPackageMatches(record.triggerPackageName, packageName, variables, packageCandidates)
+        ) {
             return false
         }
         if (!textFilterMatches(filters.optString("tag"), tag, variables)) {
@@ -2767,7 +2805,11 @@ object HermesAutomationBridge {
         if (!textFilterMatches(filters.optString("message_contains"), message, variables)) {
             return false
         }
-        if (!textFilterMatches(filters.optString("package_name"), packageName, variables)) {
+        val savedPackageFilter = filters.optString("package_name")
+        if (
+            !textFilterMatches(savedPackageFilter, packageName, variables) &&
+            !textFilterMatches(savedPackageFilter, packageCandidates, variables)
+        ) {
             return false
         }
         if (!logcatLevelMatches(filters.optString("level"), level, variables)) {
@@ -2914,6 +2956,8 @@ object HermesAutomationBridge {
         level: String,
         pid: String,
         packageName: String,
+        packageCandidates: String,
+        packageSource: String,
         timestamp: String,
     ): String? {
         return when {
@@ -2922,6 +2966,8 @@ object HermesAutomationBridge {
             level.indexOf('\u0000') >= 0 -> "logcat_level must not contain NUL bytes"
             pid.indexOf('\u0000') >= 0 -> "logcat_pid must not contain NUL bytes"
             packageName.indexOf('\u0000') >= 0 -> "logcat_package_name must not contain NUL bytes"
+            packageCandidates.indexOf('\u0000') >= 0 -> "logcat_package_candidates must not contain NUL bytes"
+            packageSource.indexOf('\u0000') >= 0 -> "logcat_package_source must not contain NUL bytes"
             timestamp.indexOf('\u0000') >= 0 -> "logcat_timestamp must not contain NUL bytes"
             else -> null
         }
@@ -3119,6 +3165,8 @@ object HermesAutomationBridge {
         level: String,
         pid: String,
         packageName: String,
+        packageCandidates: String,
+        packageSource: String,
         timestamp: String,
     ) {
         store.setVariable("LOGCAT_TAG", tag.take(MAX_EVENT_VALUE_CHARS))
@@ -3126,10 +3174,14 @@ object HermesAutomationBridge {
         store.setVariable("LOGCAT_LEVEL", level.take(MAX_EVENT_VALUE_CHARS))
         store.setVariable("LOGCAT_PID", pid.take(MAX_EVENT_VALUE_CHARS))
         store.setVariable("LOGCAT_PACKAGE", packageName.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOGCAT_PACKAGE_CANDIDATES", packageCandidates.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOGCAT_PACKAGE_SOURCE", packageSource.take(MAX_EVENT_VALUE_CHARS))
         store.setVariable("LOGCAT_TIME", timestamp.take(MAX_EVENT_VALUE_CHARS))
         store.setVariable("LOG_TAG", tag.take(MAX_EVENT_VALUE_CHARS))
         store.setVariable("LOG_MESSAGE", message.take(MAX_VARIABLE_VALUE_CHARS))
         store.setVariable("LOG_LEVEL", level.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOG_PACKAGE_CANDIDATES", packageCandidates.take(MAX_EVENT_VALUE_CHARS))
+        store.setVariable("LOG_PACKAGE_SOURCE", packageSource.take(MAX_EVENT_VALUE_CHARS))
     }
 
     private fun setExternalTriggerVariables(

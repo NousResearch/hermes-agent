@@ -13,6 +13,8 @@ import com.nousresearch.hermesagent.device.HermesAutomationWidgetBridge
 import com.nousresearch.hermesagent.device.HermesExternalTriggerReceiver
 import com.nousresearch.hermesagent.device.HermesLauncherShortcutBridge
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
+import com.nousresearch.hermesagent.device.HermesLogcatEvent
+import com.nousresearch.hermesagent.device.HermesLogcatWatcherBridge
 import com.nousresearch.hermesagent.device.HermesNotificationActionBridge
 import com.nousresearch.hermesagent.device.HermesQuickSettingsTileBridge
 import org.json.JSONArray
@@ -1333,6 +1335,74 @@ class HermesAutomationInstrumentedTest {
         assertEquals("error", variables.getString("LOGCAT_LEVEL"))
         assertEquals("4242", variables.getString("LOGCAT_PID"))
         assertEquals("com.example.app", variables.getString("LOGCAT_PACKAGE"))
+    }
+
+    @Test
+    fun logcatEntryTriggerMatchesSharedUidPackageCandidates() {
+        val attributed = HermesLogcatWatcherBridge.attributePackages(
+            HermesLogcatEvent(
+                timestamp = "05-07 12:00:00.000",
+                uid = "1000",
+                pid = "4242",
+                level = "E",
+                tag = "ActivityManager",
+                message = "ANR in com.example.app",
+            ),
+            listOf("android", "com.example.app", "bad package"),
+        )
+        assertEquals("com.example.app", attributed.packageName)
+        assertEquals(listOf("android", "com.example.app"), attributed.packageCandidates)
+        assertEquals("message", attributed.packageNameSource)
+
+        val shared = HermesLogcatWatcherBridge.attributePackages(
+            attributed.copy(message = "Shared uid event", packageName = "", packageCandidates = emptyList(), packageNameSource = ""),
+            listOf("android", "com.example.app"),
+        )
+        assertEquals("android,com.example.app", shared.packageName)
+        assertEquals("uid_shared", shared.packageNameSource)
+
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-logcat-candidates.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Logcat package candidates")
+                    .put("path", "hermes-logcat-candidates.txt")
+                    .put("content", "%LOGCAT_PACKAGE:%LOGCAT_PACKAGE_CANDIDATES:%LOGCAT_PACKAGE_SOURCE")
+                    .put("trigger", "logcat_entry")
+                    .put("trigger_package_name", "com.example.app")
+                    .put("logcat_message_contains", "Shared uid"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+
+        val matched = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_logcat_entry_trigger",
+                JSONObject()
+                    .put("logcat_tag", "ActivityManager")
+                    .put("logcat_message", "Shared uid event")
+                    .put("logcat_level", "W")
+                    .put("logcat_pid", "4242")
+                    .put("logcat_package_name", "android,com.example.app")
+                    .put("logcat_package_candidates", "android,com.example.app")
+                    .put("logcat_package_source", "uid_shared"),
+            ),
+        )
+        assertTrue(matched.toString(), matched.getBoolean("success"))
+        assertEquals(1, matched.getInt("matched_count"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("android,com.example.app:android,com.example.app:uid_shared", target.readText())
+
+        val variables = JSONObject(HermesAutomationBridge.performActionJson(app, "list_variables"))
+            .getJSONObject("variables")
+        assertEquals("android,com.example.app", variables.getString("LOGCAT_PACKAGE_CANDIDATES"))
+        assertEquals("uid_shared", variables.getString("LOGCAT_PACKAGE_SOURCE"))
     }
 
     @Test

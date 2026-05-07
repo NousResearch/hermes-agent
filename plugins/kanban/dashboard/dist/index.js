@@ -112,17 +112,30 @@
 
   function writeSelectedBoard(slug) {
     try {
-      if (slug && slug !== "default") window.localStorage.setItem(LS_BOARD_KEY, slug);
+      // Persist the user's dashboard-side board pin even for "default".
+      // Previously this stripped "default" to keep localStorage empty,
+      // but the fetch layer read that absence as "no opinion" and fell
+      // through to the server-side ``current`` file — which the board
+      // switcher also writes. Result: selecting the default tab after
+      // creating a new board with "switch" checked showed the new
+      // board's (wrong) data because the URL omitted ``?board=`` and
+      // the backend happily returned whichever board was "current".
+      // Persisting every selection keeps the dashboard's board opinion
+      // independent of the CLI's active board, which was the original
+      // design intent. Regression: #20879.
+      if (slug) window.localStorage.setItem(LS_BOARD_KEY, slug);
       else window.localStorage.removeItem(LS_BOARD_KEY);
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
   function withBoard(url, board) {
-    // Append ?board=<slug> when a non-default board is active. Omitted
-    // for default so the URL stays clean and the backend falls through
-    // to its own resolution chain (env var → ``current`` file →
-    // default) which is already correct.
-    if (!board || board === "default") return url;
+    // Always append ?board=<slug> when we have one picked — including
+    // "default". Omitting the param would fall through to the backend's
+    // resolution chain (env var → ``current`` file → default), which
+    // means the dashboard's tab selection gets silently overridden by
+    // whatever board the CLI or "switch" checkbox last activated.
+    // Regression: #20879.
+    if (!board) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
@@ -447,9 +460,11 @@
           token: token,
         };
         // Pin the WS stream to the currently-selected board so events
-        // from other boards don't bleed in. Only set for non-default so
-        // single-board installs keep the cleaner URL.
-        if (board && board !== "default") qsParams.board = board;
+        // from other boards don't bleed in. Includes "default" so the
+        // dashboard's own board pin always wins over the server-side
+        // ``current`` file — same rationale as ``withBoard()`` above.
+        // Regression: #20879.
+        if (board) qsParams.board = board;
         const qs = new URLSearchParams(qsParams);
         const url = `${proto}//${window.location.host}${API}/events?${qs}`;
         let ws;

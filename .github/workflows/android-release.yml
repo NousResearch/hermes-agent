@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     permissions:
       contents: write

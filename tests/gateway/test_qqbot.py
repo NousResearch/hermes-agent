@@ -626,3 +626,352 @@ class TestWaitForReconnection:
         assert not result.success
         assert result.retryable is True
         assert "Not connected" in result.error
+
+
+# ---------------------------------------------------------------------------
+# ChunkedUploader
+# ---------------------------------------------------------------------------
+
+class TestChunkedUploadFormatSize:
+    def test_bytes(self):
+        from gateway.platforms.qqbot.chunked_upload import format_size
+        assert format_size(100) == "100.0 B"
+
+    def test_kilobytes(self):
+        from gateway.platforms.qqbot.chunked_upload import format_size
+        assert format_size(2048) == "2.0 KB"
+
+    def test_megabytes(self):
+        from gateway.platforms.qqbot.chunked_upload import format_size
+        assert format_size(5 * 1024 * 1024) == "5.0 MB"
+
+    def test_gigabytes(self):
+        from gateway.platforms.qqbot.chunked_upload import format_size
+        assert format_size(3 * 1024 ** 3) == "3.0 GB"
+
+
+class TestChunkedUploadErrors:
+    def test_daily_limit_has_human_size(self):
+        from gateway.platforms.qqbot.chunked_upload import UploadDailyLimitExceededError
+        exc = UploadDailyLimitExceededError("demo.mp4", 12_345_678)
+        assert exc.file_name == "demo.mp4"
+        assert exc.file_size == 12_345_678
+        assert "MB" in exc.file_size_human
+        assert "demo.mp4" in str(exc)
+
+    def test_too_large_includes_limit(self):
+        from gateway.platforms.qqbot.chunked_upload import UploadFileTooLargeError
+        exc = UploadFileTooLargeError("huge.bin", 200 * 1024 * 1024, 100 * 1024 * 1024)
+        assert exc.file_name == "huge.bin"
+        assert "MB" in exc.file_size_human
+        assert "MB" in exc.limit_human
+        assert "huge.bin" in str(exc)
+
+    def test_too_large_unknown_limit(self):
+        from gateway.platforms.qqbot.chunked_upload import UploadFileTooLargeError
+        exc = UploadFileTooLargeError("f", 100, 0)
+        assert exc.limit_human == "unknown"
+
+
+class TestChunkedUploadHelpers:
+    def test_read_chunk_exact_bytes(self, tmp_path):
+        from gateway.platforms.qqbot.chunked_upload import _read_file_chunk
+        f = tmp_path / "x.bin"
+        f.write_bytes(b"0123456789abcdef")
+        assert _read_file_chunk(str(f), 2, 4) == b"2345"
+
+    def test_read_chunk_short_read_raises(self, tmp_path):
+        from gateway.platforms.qqbot.chunked_upload import _read_file_chunk
+        f = tmp_path / "x.bin"
+        f.write_bytes(b"hi")
+        with pytest.raises(IOError):
+            _read_file_chunk(str(f), 0, 100)
+
+    def test_compute_hashes_small_file(self, tmp_path):
+        from gateway.platforms.qqbot.chunked_upload import _compute_file_hashes
+        f = tmp_path / "x.bin"
+        f.write_bytes(b"hello world")
+        h = _compute_file_hashes(str(f), 11)
+        assert len(h["md5"]) == 32
+        assert len(h["sha1"]) == 40
+        # For small files md5_10m equals md5.
+        assert h["md5"] == h["md5_10m"]
+
+    def test_compute_hashes_large_file_has_distinct_md5_10m(self, tmp_path):
+        # File > 10,002,432 bytes → md5_10m is truncated, so it differs from full md5.
+        from gateway.platforms.qqbot.chunked_upload import (
+            _compute_file_hashes, _MD5_10M_SIZE,
+        )
+        f = tmp_path / "big.bin"
+        size = _MD5_10M_SIZE + 1024
+        # Two distinct byte values so the extra tail changes the full md5.
+        f.write_bytes(b"A" * _MD5_10M_SIZE + b"B" * 1024)
+        h = _compute_file_hashes(str(f), size)
+        assert h["md5"] != h["md5_10m"]
+
+    def test_parse_prepare_response_wrapped_in_data(self):
+        from gateway.platforms.qqbot.chunked_upload import _parse_prepare_response
+        raw = {
+            "data": {
+                "upload_id": "uid-42",
+                "block_size": 4096,
+                "parts": [
+                    {"part_index": 1, "presigned_url": "https://cos/1", "block_size": 4096},
+                    {"index": 2, "url": "https://cos/2"},
+                ],
+                "concurrency": 3,
+                "retry_timeout": 90,
+            }
+        }
+        r = _parse_prepare_response(raw)
+        assert r.upload_id == "uid-42"
+        assert r.block_size == 4096
+        assert len(r.parts) == 2
+        assert r.parts[0].presigned_url == "https://cos/1"
+        assert r.parts[1].index == 2
+        assert r.concurrency == 3
+        assert r.retry_timeout == 90.0
+
+    def test_parse_prepare_response_missing_upload_id_raises(self):
+        from gateway.platforms.qqbot.chunked_upload import _parse_prepare_response
+        with pytest.raises(ValueError, match="upload_id"):
+            _parse_prepare_response({"block_size": 1024, "parts": [{"index": 1, "url": "x"}]})
+
+    def test_parse_prepare_response_missing_parts_raises(self):
+        from gateway.platforms.qqbot.chunked_upload import _parse_prepare_response
+        with pytest.raises(ValueError, match="parts"):
+            _parse_prepare_response({"upload_id": "uid", "block_size": 1024, "parts": []})
+
+
+class TestChunkedUploaderFlow:
+    """End-to-end prepare / PUT / part_finish / complete flow with mocked HTTP.
+
+    Verifies the state machine matches the QQ v2 contract without hitting the network.
+    """
+
+    @pytest.mark.asyncio
+    async def test_full_upload_two_parts_success(self, tmp_path):
+        from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+
+        # Two-part file.
+        f = tmp_path / "vid.mp4"
+        f.write_bytes(b"A" * 5_000_000 + b"B" * 3_000_000)
+
+        # Mock api_request — handles prepare, part_finish, complete based on URL.
+        api_calls = []
+
+        async def fake_api_request(method, path, *, body=None, timeout=None):
+            api_calls.append((method, path, body))
+            if path.endswith("/upload_prepare"):
+                return {
+                    "upload_id": "uid-xyz",
+                    "block_size": 5_000_000,
+                    "parts": [
+                        {"part_index": 1, "presigned_url": "https://cos.example/p1"},
+                        {"part_index": 2, "presigned_url": "https://cos.example/p2"},
+                    ],
+                    "concurrency": 1,
+                }
+            if path.endswith("/upload_part_finish"):
+                return {}
+            # complete
+            return {"file_info": "FILEINFO_TOKEN", "file_uuid": "u-1"}
+
+        # Mock http_put — always returns 200.
+        put_calls = []
+
+        class _FakeResp:
+            status_code = 200
+            text = ""
+
+        async def fake_put(url, data=None, headers=None):
+            put_calls.append((url, len(data), headers))
+            return _FakeResp()
+
+        uploader = ChunkedUploader(
+            api_request=fake_api_request,
+            http_put=fake_put,
+            log_tag="QQBot:TEST",
+        )
+        result = await uploader.upload(
+            chat_type="c2c",
+            target_id="user-openid-1",
+            file_path=str(f),
+            file_type=2,  # MEDIA_TYPE_VIDEO
+            file_name="vid.mp4",
+        )
+
+        assert result["file_info"] == "FILEINFO_TOKEN"
+        # Two PUTs, one per part.
+        assert len(put_calls) == 2
+        assert put_calls[0][0] == "https://cos.example/p1"
+        assert put_calls[1][0] == "https://cos.example/p2"
+        # Prepare + 2 part_finish + complete = 4 api calls.
+        assert len(api_calls) == 4
+        assert api_calls[0][1].endswith("/upload_prepare")
+        assert api_calls[1][1].endswith("/upload_part_finish")
+        assert api_calls[2][1].endswith("/upload_part_finish")
+        # complete path reuses /files.
+        assert api_calls[3][1].endswith("/files")
+        assert api_calls[3][2] == {"upload_id": "uid-xyz"}
+
+    @pytest.mark.asyncio
+    async def test_group_paths(self, tmp_path):
+        """Group uploads hit /v2/groups/... instead of /v2/users/..."""
+        from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"x" * 100)
+
+        seen_paths = []
+
+        async def fake_api_request(method, path, *, body=None, timeout=None):
+            seen_paths.append(path)
+            if path.endswith("/upload_prepare"):
+                return {
+                    "upload_id": "gid-1",
+                    "block_size": 100,
+                    "parts": [{"part_index": 1, "presigned_url": "https://cos/g1"}],
+                }
+            if path.endswith("/upload_part_finish"):
+                return {}
+            return {"file_info": "GFILE"}
+
+        class _R:
+            status_code = 200
+            text = ""
+
+        async def fake_put(url, data=None, headers=None):
+            return _R()
+
+        u = ChunkedUploader(fake_api_request, fake_put, "QQBot:T")
+        await u.upload(
+            chat_type="group",
+            target_id="grp-openid-1",
+            file_path=str(f),
+            file_type=4,
+            file_name="a.bin",
+        )
+        assert all("/v2/groups/" in p for p in seen_paths)
+        assert any(p.endswith("/upload_prepare") for p in seen_paths)
+        assert any(p.endswith("/files") for p in seen_paths)
+
+    @pytest.mark.asyncio
+    async def test_daily_limit_raises_structured_error(self, tmp_path):
+        from gateway.platforms.qqbot.chunked_upload import (
+            ChunkedUploader, UploadDailyLimitExceededError,
+        )
+
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"x" * 10)
+
+        async def fake_api_request(method, path, *, body=None, timeout=None):
+            # Simulate the adapter's RuntimeError with biz_code 40093002 in the message.
+            raise RuntimeError("QQ Bot API error [200] /v2/users/x/upload_prepare: biz_code=40093002 daily limit exceeded")
+
+        async def fake_put(*a, **kw):
+            raise AssertionError("PUT should not be called if prepare fails")
+
+        u = ChunkedUploader(fake_api_request, fake_put, "T")
+        with pytest.raises(UploadDailyLimitExceededError) as excinfo:
+            await u.upload(
+                chat_type="c2c",
+                target_id="u",
+                file_path=str(f),
+                file_type=4,
+                file_name="a.bin",
+            )
+        assert excinfo.value.file_name == "a.bin"
+
+    @pytest.mark.asyncio
+    async def test_part_finish_retries_on_40093001_then_succeeds(self, tmp_path):
+        """biz_code 40093001 is retryable — finish-with-retry must keep trying."""
+        from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+        import gateway.platforms.qqbot.chunked_upload as cu
+
+        # Make the retry loop fast so the test doesn't take real seconds.
+        orig_interval = cu._PART_FINISH_RETRY_INTERVAL
+        cu._PART_FINISH_RETRY_INTERVAL = 0.01
+
+        try:
+            f = tmp_path / "a.bin"
+            f.write_bytes(b"x" * 50)
+
+            finish_calls = {"n": 0}
+
+            async def fake_api_request(method, path, *, body=None, timeout=None):
+                if path.endswith("/upload_prepare"):
+                    return {
+                        "upload_id": "u",
+                        "block_size": 50,
+                        "parts": [{"part_index": 1, "presigned_url": "https://cos/1"}],
+                    }
+                if path.endswith("/upload_part_finish"):
+                    finish_calls["n"] += 1
+                    if finish_calls["n"] < 3:
+                        raise RuntimeError("biz_code=40093001 transient part finish error")
+                    return {}
+                return {"file_info": "F"}
+
+            class _R:
+                status_code = 200
+                text = ""
+
+            async def fake_put(*a, **kw):
+                return _R()
+
+            u = ChunkedUploader(fake_api_request, fake_put, "T")
+            result = await u.upload(
+                chat_type="c2c",
+                target_id="u",
+                file_path=str(f),
+                file_type=4,
+                file_name="a.bin",
+            )
+            assert result["file_info"] == "F"
+            assert finish_calls["n"] == 3  # 2 transient errors + 1 success
+        finally:
+            cu._PART_FINISH_RETRY_INTERVAL = orig_interval
+
+    @pytest.mark.asyncio
+    async def test_put_retries_transient_failure(self, tmp_path):
+        """COS PUT failures retry up to _PART_UPLOAD_MAX_RETRIES times."""
+        from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"x" * 20)
+
+        async def fake_api_request(method, path, *, body=None, timeout=None):
+            if path.endswith("/upload_prepare"):
+                return {
+                    "upload_id": "u",
+                    "block_size": 20,
+                    "parts": [{"part_index": 1, "presigned_url": "https://cos/1"}],
+                }
+            if path.endswith("/upload_part_finish"):
+                return {}
+            return {"file_info": "F"}
+
+        put_attempts = {"n": 0}
+
+        class _Resp:
+            def __init__(self, status, text=""):
+                self.status_code = status
+                self.text = text
+
+        async def fake_put(url, data=None, headers=None):
+            put_attempts["n"] += 1
+            if put_attempts["n"] < 2:
+                return _Resp(500, "transient")
+            return _Resp(200)
+
+        u = ChunkedUploader(fake_api_request, fake_put, "T")
+        result = await u.upload(
+            chat_type="c2c",
+            target_id="u",
+            file_path=str(f),
+            file_type=4,
+            file_name="a.bin",
+        )
+        assert result["file_info"] == "F"
+        assert put_attempts["n"] == 2

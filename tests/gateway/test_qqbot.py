@@ -1301,3 +1301,220 @@ class TestAdapterInteractionDispatch:
             "user_openid": "u",
             "data": {"resolved": {"button_data": "approve:s:deny"}},
         })
+
+
+# ---------------------------------------------------------------------------
+# Quoted-message handling (message_type=103 → msg_elements)
+# ---------------------------------------------------------------------------
+
+class TestProcessQuotedContext:
+    """Verify the quoted-message pipeline: text + voice STT + images + files."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_non_quote_message_returns_empty(self):
+        adapter = self._make_adapter()
+        d = {"message_type": 0, "content": "hi"}
+        out = await adapter._process_quoted_context(d)
+        assert out == {"quote_block": "", "image_urls": [], "image_media_types": []}
+
+    @pytest.mark.asyncio
+    async def test_quote_type_but_no_elements_returns_empty(self):
+        adapter = self._make_adapter()
+        d = {"message_type": 103}
+        out = await adapter._process_quoted_context(d)
+        assert out["quote_block"] == ""
+
+    @pytest.mark.asyncio
+    async def test_quote_with_text_only(self):
+        adapter = self._make_adapter()
+        # Stub out _process_attachments since there are no attachments anyway.
+        async def fake_process(_a):
+            return {"image_urls": [], "image_media_types": [],
+                    "voice_transcripts": [], "attachment_info": ""}
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        d = {
+            "message_type": 103,
+            "msg_elements": [
+                {"content": "Did you see this file?", "attachments": []},
+            ],
+        }
+        out = await adapter._process_quoted_context(d)
+        assert out["quote_block"].startswith("[Quoted message]:")
+        assert "Did you see this file?" in out["quote_block"]
+        assert out["image_urls"] == []
+
+    @pytest.mark.asyncio
+    async def test_quote_with_voice_attachment_runs_stt(self):
+        adapter = self._make_adapter()
+
+        # Capture what attachments are passed into _process_attachments.
+        captured = []
+
+        async def fake_process(atts):
+            captured.append(atts)
+            return {
+                "image_urls": [],
+                "image_media_types": [],
+                "voice_transcripts": ["[Voice] hello from the quoted audio"],
+                "attachment_info": "",
+            }
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        d = {
+            "message_type": 103,
+            "msg_elements": [{
+                "content": "",
+                "attachments": [
+                    {"content_type": "audio/silk",
+                     "url": "https://qq-cdn/x.silk",
+                     "filename": "rec.silk"}
+                ],
+            }],
+        }
+        out = await adapter._process_quoted_context(d)
+
+        # The quoted voice attachment must actually flow through STT.
+        assert captured and len(captured[0]) == 1
+        assert captured[0][0]["content_type"] == "audio/silk"
+        assert "[Quoted message]:" in out["quote_block"]
+        assert "hello from the quoted audio" in out["quote_block"]
+
+    @pytest.mark.asyncio
+    async def test_quote_with_file_preserves_filename(self):
+        """Quoted file attachments must surface the original filename, not the CDN hash."""
+        adapter = self._make_adapter()
+
+        async def fake_process(atts):
+            # Mirror _process_attachments's behaviour: non-image/voice attachments
+            # show up in attachment_info using the real filename.
+            parts = []
+            for a in atts:
+                fn = a.get("filename") or a.get("content_type", "file")
+                parts.append(f"[Attachment: {fn}]")
+            return {
+                "image_urls": [], "image_media_types": [],
+                "voice_transcripts": [],
+                "attachment_info": "\n".join(parts),
+            }
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        d = {
+            "message_type": 103,
+            "msg_elements": [{
+                "content": "check this",
+                "attachments": [
+                    {"content_type": "application/zip",
+                     "url": "https://qq-cdn/abc123",
+                     "filename": "quarterly-report.zip"},
+                ],
+            }],
+        }
+        out = await adapter._process_quoted_context(d)
+        assert "quarterly-report.zip" in out["quote_block"]
+        assert "check this" in out["quote_block"]
+
+    @pytest.mark.asyncio
+    async def test_quote_with_image_returns_cached_paths(self):
+        adapter = self._make_adapter()
+
+        async def fake_process(atts):
+            return {
+                "image_urls": ["/tmp/cached_q.jpg"],
+                "image_media_types": ["image/jpeg"],
+                "voice_transcripts": [],
+                "attachment_info": "",
+            }
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        d = {
+            "message_type": 103,
+            "msg_elements": [{
+                "content": "look at this",
+                "attachments": [{"content_type": "image/jpeg", "url": "https://x"}],
+            }],
+        }
+        out = await adapter._process_quoted_context(d)
+        assert out["image_urls"] == ["/tmp/cached_q.jpg"]
+        assert out["image_media_types"] == ["image/jpeg"]
+        assert "look at this" in out["quote_block"]
+
+    @pytest.mark.asyncio
+    async def test_quote_with_image_only_no_text(self):
+        """Images-only quote still surfaces a marker so the LLM has context."""
+        adapter = self._make_adapter()
+
+        async def fake_process(atts):
+            return {
+                "image_urls": ["/tmp/only.png"],
+                "image_media_types": ["image/png"],
+                "voice_transcripts": [],
+                "attachment_info": "",
+            }
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        d = {
+            "message_type": 103,
+            "msg_elements": [{
+                "content": "",
+                "attachments": [{"content_type": "image/png", "url": "https://x"}],
+            }],
+        }
+        out = await adapter._process_quoted_context(d)
+        assert out["quote_block"]
+        assert out["image_urls"] == ["/tmp/only.png"]
+
+    @pytest.mark.asyncio
+    async def test_multiple_elements_concatenated(self):
+        adapter = self._make_adapter()
+
+        async def fake_process(atts):
+            assert len(atts) == 2
+            return {
+                "image_urls": [], "image_media_types": [],
+                "voice_transcripts": [], "attachment_info": "",
+            }
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+
+        d = {
+            "message_type": 103,
+            "msg_elements": [
+                {"content": "first", "attachments": [{"content_type": "image/png", "url": "a"}]},
+                {"content": "second", "attachments": [{"content_type": "image/png", "url": "b"}]},
+            ],
+        }
+        out = await adapter._process_quoted_context(d)
+        assert "first" in out["quote_block"]
+        assert "second" in out["quote_block"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_message_type_string_returns_empty(self):
+        adapter = self._make_adapter()
+        out = await adapter._process_quoted_context(
+            {"message_type": "not-a-number", "msg_elements": [{"content": "x"}]}
+        )
+        assert out["quote_block"] == ""
+
+
+class TestMergeQuoteInto:
+    def test_empty_quote_returns_original(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        assert QQAdapter._merge_quote_into("hello", "") == "hello"
+
+    def test_empty_text_returns_only_quote(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        assert QQAdapter._merge_quote_into("", "[Quoted]") == "[Quoted]"
+
+    def test_both_present_joined_with_blank_line(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        merged = QQAdapter._merge_quote_into("hi there", "[Quoted]:\nctx")
+        assert merged == "[Quoted]:\nctx\n\nhi there"

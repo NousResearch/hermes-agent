@@ -1031,6 +1031,13 @@ class QQAdapter(BasePlatformAdapter):
             len(voice_transcripts),
         )
 
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
+
         if not text.strip() and not image_urls:
             return
 
@@ -1088,6 +1095,13 @@ class QQAdapter(BasePlatformAdapter):
                 if text.strip()
                 else attachment_info
             )
+
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
 
         if not text.strip() and not image_urls:
             return
@@ -1156,6 +1170,13 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
+
         if not text.strip() and not image_urls:
             return
 
@@ -1220,6 +1241,13 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
+
         if not text.strip() and not image_urls:
             return
 
@@ -1239,6 +1267,113 @@ class QQAdapter(BasePlatformAdapter):
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Quoted-message handling
+    # ------------------------------------------------------------------
+
+    async def _process_quoted_context(
+            self,
+            d: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Process the quoted message a user is replying to.
+
+        When a user replies while quoting another message, the platform sets
+        ``message_type = 103`` and pushes the referenced message's content and
+        attachments inside ``msg_elements[0]``. The old adapter ignored
+        ``msg_elements`` entirely, so:
+
+        - Quoted text was surfaced only when the user typed something of
+          their own — bare quote-replies showed nothing.
+        - Quoted attachments (images, voice, files) were never downloaded
+          or described.
+        - Quoted voice messages specifically produced no transcript, so the
+          LLM had no way to see what the user was referring to.
+
+        This method parses ``msg_elements`` and runs the quoted attachments
+        through the same :meth:`_process_attachments` pipeline as the main
+        message body, so quoted voice messages get STT transcripts and
+        quoted images are cached identically.
+
+        :param d: Raw inbound message dict (from the WS dispatch payload).
+        :returns: Dict with keys:
+
+            - ``quote_block``: string to prepend to the user's text body
+              (empty when there's nothing quoted).
+            - ``image_urls``: list of cached quoted-image paths.
+            - ``image_media_types``: parallel list of image MIME types.
+        """
+        empty = {
+            "quote_block": "",
+            "image_urls": [],
+            "image_media_types": [],
+        }
+        # Short-circuit: only message_type 103 indicates a quote.
+        try:
+            if int(d.get("message_type", 0) or 0) != 103:
+                return empty
+        except (TypeError, ValueError):
+            return empty
+
+        elements = d.get("msg_elements")
+        if not isinstance(elements, list) or not elements:
+            return empty
+
+        # msg_elements[0] carries the referenced message. Additional elements
+        # (if any) are very rare in practice; we concatenate their text and
+        # union their attachments for completeness.
+        quoted_text_parts: List[str] = []
+        all_attachments: List[Dict[str, Any]] = []
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            etext = str(elem.get("content", "")).strip()
+            if etext:
+                quoted_text_parts.append(etext)
+            eatts = elem.get("attachments")
+            if isinstance(eatts, list):
+                for a in eatts:
+                    if isinstance(a, dict):
+                        all_attachments.append(a)
+
+        att_result = await self._process_attachments(all_attachments)
+        quoted_voice = att_result.get("voice_transcripts") or []
+        quoted_info = att_result.get("attachment_info") or ""
+        quoted_images = att_result.get("image_urls") or []
+        quoted_image_types = att_result.get("image_media_types") or []
+
+        lines: List[str] = []
+        if quoted_text_parts:
+            lines.append(" ".join(quoted_text_parts))
+        for t in quoted_voice:
+            lines.append(t)
+        if quoted_info:
+            lines.append(quoted_info)
+
+        if not lines and not quoted_images:
+            return empty
+
+        if lines:
+            quote_block = "[Quoted message]:\n" + "\n".join(lines)
+        else:
+            # Images-only quote: give the LLM at least a marker so it knows
+            # context was referenced.
+            quote_block = "[Quoted message]: (image)"
+
+        return {
+            "quote_block": quote_block,
+            "image_urls": quoted_images,
+            "image_media_types": quoted_image_types,
+        }
+
+    @staticmethod
+    def _merge_quote_into(text: str, quote_block: str) -> str:
+        """Prepend ``quote_block`` to *text*, separated by a blank line."""
+        if not quote_block:
+            return text
+        if text.strip():
+            return f"{quote_block}\n\n{text}".strip()
+        return quote_block
 
     # ------------------------------------------------------------------
     # Attachment processing

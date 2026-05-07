@@ -136,7 +136,7 @@ def _run_async(coro):
                             asyncio.gather(*pending, return_exceptions=True)
                         )
                 except Exception:
-                    pass
+                    logger.debug("Error during async task cleanup", exc_info=True)
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)

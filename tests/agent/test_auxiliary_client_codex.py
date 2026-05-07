@@ -45,3 +45,21 @@ def test_codex_adapter_flattens_tool_role_messages_for_responses_input():
         "user",
     ]
     assert stream.kwargs["input"][-1]["content"] == "[tool result call_123: tool output]"
+
+
+def test_codex_adapter_flattens_function_role_messages_for_responses_input():
+    stream = _FakeStream()
+    real_client = SimpleNamespace(responses=SimpleNamespace(stream=stream))
+    adapter = _CodexCompletionsAdapter(real_client, "gpt-5.2-codex")
+
+    adapter.create(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "call legacy function"},
+            {"role": "function", "name": "legacy_fn", "content": "legacy output"},
+        ],
+    )
+
+    assert stream.kwargs["instructions"] == "sys"
+    assert [m["role"] for m in stream.kwargs["input"]] == ["user", "user"]
+    assert stream.kwargs["input"][-1]["content"] == "[function result legacy_fn: legacy output]"

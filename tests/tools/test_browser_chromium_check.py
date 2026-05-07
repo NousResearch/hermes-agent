@@ -15,10 +15,16 @@ from tools import browser_tool as bt
 
 
 @pytest.fixture(autouse=True)
-def _reset_chromium_cache():
+def _reset_chromium_cache(monkeypatch):
     bt._cached_chromium_installed = None
+    bt._cached_browser_engine = None
+    bt._browser_engine_resolved = False
+    # Ensure no system Chrome/Chromium leaks through in CI environments.
+    monkeypatch.setattr("shutil.which", lambda cmd, *a, **k: None)
     yield
     bt._cached_chromium_installed = None
+    bt._cached_browser_engine = None
+    bt._browser_engine_resolved = False
 
 
 class TestChromiumSearchRoots:

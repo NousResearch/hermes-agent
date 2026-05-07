@@ -71,3 +71,60 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             from gateway.run import _resolve_runtime_agent_kwargs
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
+
+
+class TestGatewayFallbackEnvExpansion:
+    def test_load_fallback_model_expands_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway fallback loader should expand ${VAR} refs in legacy fallback_model."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_model:\n"
+            "  provider: custom\n"
+            "  model: deepseek-chat\n"
+            "  api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-123")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+
+        fb = GatewayRunner._load_fallback_model()
+
+        assert fb["api_key"] == "secret-123"
+
+    def test_try_resolve_fallback_provider_expands_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway runtime fallback resolution should expand ${VAR} refs before provider lookup."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: deepseek-chat\n"
+            "    base_url: https://example.invalid/v1\n"
+            "    api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-456")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        seen = {}
+
+        def _mock_resolve(**kwargs):
+            seen["explicit_api_key"] = kwargs.get("explicit_api_key")
+            return {
+                "api_key": kwargs.get("explicit_api_key"),
+                "base_url": kwargs.get("base_url"),
+                "provider": kwargs.get("provider"),
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_mock_resolve):
+            from gateway.run import _try_resolve_fallback_provider
+
+            fb = _try_resolve_fallback_provider()
+
+        assert seen["explicit_api_key"] == "secret-456"
+        assert fb["api_key"] == "secret-456"

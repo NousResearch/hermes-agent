@@ -61,6 +61,7 @@ try:
     from mcp.shared.auth import (
         OAuthClientInformationFull,
         OAuthClientMetadata,
+        OAuthMetadata,
         OAuthToken,
     )
 
@@ -212,6 +213,7 @@ class HermesTokenStorage:
 
         HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
         HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        HERMES_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
     """
 
     def __init__(self, server_name: str):
@@ -222,6 +224,9 @@ class HermesTokenStorage:
 
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
+
+    def _meta_path(self) -> Path:
+        return _get_token_dir() / f"{self._server_name}.meta.json"
 
     # -- tokens ------------------------------------------------------------
 
@@ -300,11 +305,33 @@ class HermesTokenStorage:
         _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
+    # -- oauth server metadata --------------------------------------------
+    # The MCP SDK keeps discovered ``OAuthMetadata`` (token endpoint URL,
+    # etc.) in memory only. Persisting it here lets a restarted process
+    # refresh tokens without re-running metadata discovery. Without this,
+    # cold-start refresh requests fall back to the SDK's guessed
+    # ``{server_url}/token`` which returns 404 on most real providers and
+    # forces a full browser re-authorization.
+
+    def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:
+        _write_json(self._meta_path(), metadata.model_dump(exclude_none=True, mode="json"))
+        logger.debug("OAuth metadata saved for %s", self._server_name)
+
+    def load_oauth_metadata(self) -> "OAuthMetadata | None":
+        data = _read_json(self._meta_path())
+        if data is None:
+            return None
+        try:
+            return OAuthMetadata.model_validate(data)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt OAuth metadata at %s -- ignoring: %s", self._meta_path(), exc)
+            return None
+
     # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (self._tokens_path(), self._client_info_path()):
+        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
 
     def has_cached_tokens(self) -> bool:

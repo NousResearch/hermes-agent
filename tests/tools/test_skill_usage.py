@@ -1,10 +1,19 @@
 """Tests for tools/skill_usage.py — sidecar telemetry + provenance filtering."""
 
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 
 import pytest
+
+
+def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
+    os.environ["HERMES_HOME"] = hermes_home
+    from tools.skill_usage import bump_view
+
+    for _ in range(iterations):
+        bump_view(skill_name)
 
 
 @pytest.fixture
@@ -137,6 +146,30 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
     assert get_record("skill-a")["view_count"] == 2
     assert get_record("skill-a")["use_count"] == 0
     assert get_record("skill-b")["use_count"] == 1
+
+
+def test_concurrent_bump_view_preserves_all_updates(skills_home):
+    from tools.skill_usage import get_record
+
+    process_count = 6
+    iterations = 25
+    ctx = mp.get_context("spawn")
+    processes = [
+        ctx.Process(
+            target=_bump_view_many,
+            args=(str(skills_home), "shared-skill", iterations),
+        )
+        for _ in range(process_count)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+
+    for process in processes:
+        assert process.exitcode == 0
+    assert get_record("shared-skill")["view_count"] == process_count * iterations
 
 
 # ---------------------------------------------------------------------------

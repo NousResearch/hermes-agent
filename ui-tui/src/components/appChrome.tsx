@@ -325,6 +325,14 @@ export function StatusRule({
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
           ) : null}
+          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
+            <Text color={t.color.muted}>
+              {' │ '}
+              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
+                cmp {usage.compressions}
+              </Text>
+            </Text>
+          ) : null}
           <SpawnHud t={t} />
           {voiceLabel ? (
             <Text

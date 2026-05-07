@@ -46,6 +46,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("xiaomi/mimo-v2.5-pro",             ""),
     ("xiaomi/mimo-v2.5",                 ""),
     ("tencent/hy3-preview:free",         "free"),
+    ("tencent/hy3-preview",              ""),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-image-preview", ""),
     ("google/gemini-3-flash-preview",   ""),

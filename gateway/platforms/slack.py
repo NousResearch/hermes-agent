@@ -651,6 +651,10 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_channel_created(event, say):
                 await self._handle_channel_created(event)
 
+            @self._app.event("member_joined_channel")
+            async def handle_member_joined_channel(event, say):
+                await self._handle_member_joined_channel(event)
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -876,6 +880,80 @@ class SlackAdapter(BasePlatformAdapter):
                         channel_name, priority_upper)
             self._incident_standby[channel_id] = priority_upper
             await self._post_standby_notice(channel_id, channel_name, priority_upper, client)
+
+    async def _handle_member_joined_channel(self, event: dict) -> None:
+        """Handle member_joined_channel events.
+
+        When the bot itself is added to an existing channel that matches the
+        incident pattern, trigger the same RCA flow as _handle_channel_created.
+        This covers the case where Hermes is manually invited to an incident
+        channel that was created before the gateway started or before the
+        incident_monitor was enabled.
+
+        Flow:
+        1. Check that the joining member is the bot itself (ignore human joins).
+        2. Resolve the channel name via conversations_info.
+        3. Delegate to the shared _handle_channel_created-style logic.
+        """
+        if not self._incident_monitor.enabled or self._incident_pattern is None:
+            return
+
+        # Only act when the bot itself joins
+        bot_user_id = self._bot_user_id or ""
+        joining_user = event.get("user", "")
+        if not bot_user_id or joining_user != bot_user_id:
+            return
+
+        channel_id: str = event.get("channel", "")
+        if not channel_id:
+            return
+
+        # Already processed (joined via channel_created or a previous invite)
+        if channel_id in self._rca_thread_ts or channel_id in self._incident_standby:
+            logger.debug(
+                "[IncidentMonitor] Bot joined #%s but already processed — skipping", channel_id
+            )
+            return
+
+        # Resolve channel name
+        client = self._app.client
+        channel_name = ""
+        try:
+            info_resp = await client.conversations_info(channel=channel_id)
+            if info_resp.get("ok"):
+                ch = info_resp["channel"]
+                channel_name = ch.get("name", "")
+                shared_team = ch.get("shared_team_ids", [])
+                if shared_team:
+                    self._channel_team[channel_id] = shared_team[0]
+        except Exception as exc:
+            logger.warning("[IncidentMonitor] conversations_info failed for %s: %s", channel_id, exc)
+            return
+
+        if not channel_name:
+            return
+
+        if not self._incident_pattern.match(channel_name):
+            logger.debug(
+                "[IncidentMonitor] Bot joined #%s (%s) — no pattern match, skipping",
+                channel_name, channel_id,
+            )
+            return
+
+        logger.info(
+            "[IncidentMonitor] Bot joined existing channel #%s (%s) — running RCA flow",
+            channel_name, channel_id,
+        )
+
+        # Synthesise a channel-created-style event so the shared logic re-uses
+        # the same tier dispatch / RBAC / report path.
+        synthetic_channel_created_event: dict = {
+            "channel": {
+                "id": channel_id,
+                "name": channel_name,
+            }
+        }
+        await self._handle_channel_created(synthetic_channel_created_event)
 
     async def _prefetch_channel_members(self, channel_id: str, client: Any) -> None:
         """Async background task: fetch all members of a channel and cache them."""

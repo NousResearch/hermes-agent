@@ -10949,8 +10949,9 @@ class HermesCLI:
                 except Exception:
                     pass
 
-            # Cost: sum across the entire compaction lineage so the user sees
-            # the true total for this conversation, not just the live tip.
+            # Cost: sum across the entire compaction lineage AND any
+            # delegate_task subagents so the user sees the true total
+            # spend for this conversation, not just the main-agent tip.
             cost_str = None
             sub_breakdown = None
             try:
@@ -10963,9 +10964,22 @@ class HermesCLI:
                         )
                     except Exception:
                         lineage_cost = 0.0
-                # Prefer lineage total when available; fall back to live agent
-                # value (which only covers the current tip's session row).
-                total_cost = lineage_cost if lineage_cost > 0 else live_cost
+                # Subagent (delegate_task) spend, tracked separately on
+                # the parent agent. Counters populated by
+                # tools/delegate_tool.py when children fold their spend
+                # back into the parent.  ``get_lineage_cost_usd`` walks
+                # only compaction edges, NOT delegate edges, so subagent
+                # cost has to be added explicitly here.
+                sub_cost = float(
+                    getattr(self.agent, "session_subagent_cost_usd", 0.0) or 0.0
+                )
+                sub_n = int(
+                    getattr(self.agent, "session_subagent_count", 0) or 0
+                )
+                # Prefer lineage total when available; fall back to live
+                # agent value (which only covers the current tip).
+                main_cost = lineage_cost if lineage_cost > 0 else live_cost
+                total_cost = main_cost + sub_cost
                 if total_cost > 0:
                     if total_cost < 0.01:
                         cost_str = f"${total_cost:.4f}"
@@ -10974,16 +10988,6 @@ class HermesCLI:
                     cost_status = getattr(self.agent, "session_cost_status", "") or ""
                     if cost_status and cost_status != "actual":
                         cost_str = f"{cost_str} ({cost_status})"
-                # Subagent breakdown (delegate_task children).  Counters
-                # populated by tools/delegate_tool.py when children fold their
-                # spend into the parent's session_estimated_cost_usd.  Only
-                # shown if there were children — silent for plain sessions.
-                sub_cost = float(
-                    getattr(self.agent, "session_subagent_cost_usd", 0.0) or 0.0
-                )
-                sub_n = int(
-                    getattr(self.agent, "session_subagent_count", 0) or 0
-                )
                 if sub_cost > 0 and sub_n > 0:
                     sub_in = int(
                         getattr(self.agent, "session_subagent_input_tokens", 0) or 0
@@ -11016,6 +11020,16 @@ class HermesCLI:
                 print(f"Cost:           {cost_str}")
             if sub_breakdown:
                 print(f"  ↳ subagents:  {sub_breakdown}")
+            # Goodbye line — also printed on full session-end summaries,
+            # not just empty ones. Keeps the closing skin-branded sign-off
+            # (e.g. "Power of certainty. ✦") visible after every chat.
+            try:
+                from hermes_cli.skin_engine import get_active_goodbye
+                goodbye = get_active_goodbye("Goodbye! ⚕")
+            except Exception:
+                goodbye = "Goodbye! ⚕"
+            print()
+            print(goodbye)
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye

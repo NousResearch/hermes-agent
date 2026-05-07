@@ -12304,6 +12304,19 @@ class GatewayRunner:
             except Exception:
                 return t("gateway.update.platform_not_messaging")
 
+        inline_update_allowed = is_truthy_value(
+            os.getenv("HERMES_GATEWAY_ALLOW_INLINE_UPDATE"),
+            default=False,
+        )
+        if not inline_update_allowed:
+            return (
+                "✗ Gateway /update is disabled for safety. "
+                "Run the safe update/apply workflow from an out-of-band terminal instead: "
+                "snapshot config/auth/runtime, replay local patches in a worktree, run tests, "
+                "then apply/restart the gateway from outside the gateway session. "
+                "Set HERMES_GATEWAY_ALLOW_INLINE_UPDATE=1 only for an explicitly accepted emergency override."
+            )
+
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
 

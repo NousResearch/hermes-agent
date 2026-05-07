@@ -16,6 +16,12 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _allow_gateway_inline_update(monkeypatch):
+    """Most legacy /update tests cover the opt-in inline gateway path."""
+    monkeypatch.setenv("HERMES_GATEWAY_ALLOW_INLINE_UPDATE", "1")
+
+
 def _make_event(text="/update", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
@@ -45,6 +51,18 @@ def _make_runner():
 
 class TestHandleUpdateCommand:
     """Tests for GatewayRunner._handle_update_command."""
+
+    @pytest.mark.asyncio
+    async def test_gateway_update_disabled_by_default_requires_safe_apply(self, monkeypatch):
+        runner = _make_runner()
+        event = _make_event()
+        monkeypatch.delenv("HERMES_GATEWAY_ALLOW_INLINE_UPDATE", raising=False)
+
+        result = await runner._handle_update_command(event)
+
+        assert "Gateway /update is disabled for safety" in result
+        assert "safe update/apply workflow" in result
+        assert "out-of-band terminal" in result
 
     @pytest.mark.asyncio
     async def test_managed_install_returns_package_manager_guidance(self, monkeypatch):

@@ -653,6 +653,57 @@ def is_connected(config) -> bool:
     return bool(server and channel)
 
 
+def _env_enablement() -> dict | None:
+    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook (landed in the
+    generic-plugin-interface migration) BEFORE adapter construction, so
+    ``gateway status`` and ``get_connected_platforms()`` reflect env-only
+    configuration without instantiating the IRC client.  Returns ``None``
+    when IRC isn't minimally configured; the caller skips auto-enabling.
+
+    The special ``home_channel`` key in the returned dict is handled by
+    the core hook — it becomes a proper ``HomeChannel`` dataclass on the
+    ``PlatformConfig`` rather than being merged into ``extra``.
+    """
+    server = os.getenv("IRC_SERVER", "").strip()
+    channel = os.getenv("IRC_CHANNEL", "").strip()
+    if not (server and channel):
+        return None
+    seed: dict = {
+        "server": server,
+        "channel": channel,
+    }
+    port = os.getenv("IRC_PORT", "").strip()
+    if port:
+        try:
+            seed["port"] = int(port)
+        except ValueError:
+            pass
+    nickname = os.getenv("IRC_NICKNAME", "").strip()
+    if nickname:
+        seed["nickname"] = nickname
+    use_tls = os.getenv("IRC_USE_TLS", "").strip().lower()
+    if use_tls:
+        seed["use_tls"] = use_tls in ("1", "true", "yes")
+    # Passwords live in PlatformConfig.extra as well for back-compat with
+    # existing config.yaml users; env-reads at construct time still win.
+    if os.getenv("IRC_SERVER_PASSWORD"):
+        seed["server_password"] = os.getenv("IRC_SERVER_PASSWORD")
+    if os.getenv("IRC_NICKSERV_PASSWORD"):
+        seed["nickserv_password"] = os.getenv("IRC_NICKSERV_PASSWORD")
+    # Optional home-channel (usually the same as IRC_CHANNEL, but can be a
+    # dedicated reports channel).  Defaults to IRC_CHANNEL so cron jobs
+    # with ``deliver=irc`` have a sensible target without extra config.
+    home = os.getenv("IRC_HOME_CHANNEL") or channel
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("IRC_HOME_CHANNEL_NAME", home),
+        }
+    return seed
+
+
 def register(ctx):
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
@@ -665,6 +716,14 @@ def register(ctx):
         required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
         install_hint="No extra packages needed (stdlib only)",
         setup_fn=interactive_setup,
+        # Env-driven auto-configuration — seeds PlatformConfig.extra with
+        # server/channel/port/tls + home_channel so env-only setups show
+        # up in gateway status without instantiating the adapter.
+        env_enablement_fn=_env_enablement,
+        # Cron home-channel delivery support.  IRC_HOME_CHANNEL defaults to
+        # IRC_CHANNEL (see _env_enablement), so cron jobs with
+        # deliver=irc route to the joined channel by default.
+        cron_deliver_env_var="IRC_HOME_CHANNEL",
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="IRC_ALLOWED_USERS",
         allow_all_env="IRC_ALLOW_ALL_USERS",

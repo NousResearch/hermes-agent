@@ -193,9 +193,10 @@ class TestWebExtractTavily:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        with patch("tools.web_tools._get_extract_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
              patch("tools.web_tools.process_content_with_llm", return_value=None):
             from tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(
@@ -204,6 +205,75 @@ class TestWebExtractTavily:
             assert "results" in result
             assert len(result["results"]) == 1
             assert result["results"][0]["url"] == "https://example.com"
+
+    def test_extract_preserves_compact_normalized_metadata(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "results": [{
+                "url": "https://example.com/final",
+                "raw_content": "Extracted content",
+                "title": "Visible title",
+                "author": "Example Author",
+                "published_at": "2026-05-07T10:00:00Z",
+                "description": "Short summary of the page",
+                "raw_metadata": {"huge": "payload that should not leak"},
+            }]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools._get_extract_backend", return_value="tavily"), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.process_content_with_llm", return_value=None):
+            from tools.web_tools import web_extract_tool
+            result = json.loads(asyncio.get_event_loop().run_until_complete(
+                web_extract_tool(["https://example.com"], use_llm_processing=False)
+            ))
+
+        item = result["results"][0]
+        assert item["metadata"] == {
+            "sourceURL": "https://example.com/final",
+            "title": "Visible title",
+            "description": "Short summary of the page",
+            "author": "Example Author",
+            "publishedAt": "2026-05-07T10:00:00Z",
+        }
+        assert "raw_metadata" not in item
+
+    def test_extract_metadata_drops_nested_values_and_truncates_long_fields(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "results": [{
+                "url": "https://example.com/final",
+                "raw_content": "Extracted content",
+                "title": "T" * 400,
+                "description": {"nested": "ignore"},
+                "author": ["ignore", "lists"],
+                "published_at": "2026-05-07T10:00:00Z",
+                "lang": "en-US",
+            }]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools._get_extract_backend", return_value="tavily"), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.process_content_with_llm", return_value=None):
+            from tools.web_tools import web_extract_tool
+            result = json.loads(asyncio.get_event_loop().run_until_complete(
+                web_extract_tool(["https://example.com"], use_llm_processing=False)
+            ))
+
+        metadata = result["results"][0]["metadata"]
+        assert metadata["sourceURL"] == "https://example.com/final"
+        assert metadata["publishedAt"] == "2026-05-07T10:00:00Z"
+        assert metadata["language"] == "en-US"
+        assert len(metadata["title"]) == 300
+        assert metadata["title"].endswith("...")
+        assert "description" not in metadata
+        assert "author" not in metadata
 
 
 # ─── web_crawl_tool (Tavily dispatch) ─────────────────────────────────────────

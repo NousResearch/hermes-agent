@@ -17,6 +17,80 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
+class TestExtractMetadataNormalization:
+    """Test compact metadata normalization for extract outputs."""
+
+    def test_normalize_extract_metadata_keeps_allowlisted_scalars_only(self):
+        from tools.web_tools import _normalize_extract_metadata
+
+        metadata = _normalize_extract_metadata(
+            {
+                "sourceURL": "https://example.com/final",
+                "title": "Example title",
+                "author": "Alice",
+                "published_at": "2026-05-07",
+                "lang": "en",
+                "description": {"nested": "drop"},
+                "huge_blob": {"ignore": True},
+            }
+        )
+
+        assert metadata == {
+            "sourceURL": "https://example.com/final",
+            "title": "Example title",
+            "author": "Alice",
+            "publishedAt": "2026-05-07",
+            "language": "en",
+        }
+
+    def test_normalize_extract_metadata_uses_fallbacks_and_truncates(self):
+        from tools.web_tools import _normalize_extract_metadata
+
+        metadata = _normalize_extract_metadata(
+            {
+                "title": "T" * 400,
+                "author": ["drop", "list"],
+            },
+            fallback_url="https://example.com/final",
+        )
+
+        assert metadata["sourceURL"] == "https://example.com/final"
+        assert len(metadata["title"]) == 300
+        assert metadata["title"].endswith("...")
+        assert "author" not in metadata
+
+    def test_trim_extract_result_preserves_compact_metadata_only(self):
+        from tools.web_tools import _trim_extract_result
+
+        trimmed = _trim_extract_result(
+            {
+                "url": "https://allowed.test/final",
+                "title": "Example page",
+                "content": "page content",
+                "metadata": {
+                    "sourceURL": "https://allowed.test/final",
+                    "title": "Example page",
+                    "author": "Example Author",
+                    "publishedAt": "2026-05-07",
+                    "headers": {"x-debug": "drop"},
+                },
+            }
+        )
+
+        assert trimmed == {
+            "url": "https://allowed.test/final",
+            "title": "Example page",
+            "content": "page content",
+            "error": None,
+            "metadata": {
+                "sourceURL": "https://allowed.test/final",
+                "title": "Example page",
+                "author": "Example Author",
+                "publishedAt": "2026-05-07",
+            },
+        }
+
+
 class TestFirecrawlClientConfig:
     """Test suite for Firecrawl client initialization."""
 

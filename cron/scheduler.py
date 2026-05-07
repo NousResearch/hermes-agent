@@ -1323,6 +1323,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        # Initialize MCP servers so configured mcp_servers are available to
+        # the agent's tool registry before AIAgent is constructed. Without
+        # this, cron jobs never saw any MCP tools — only the gateway / CLI
+        # paths called discover_mcp_tools() at startup. Idempotent: subsequent
+        # ticks short-circuit on already-connected servers inside
+        # register_mcp_servers(). Non-fatal on failure: a broken MCP server
+        # shouldn't kill an otherwise-working cron job. See #4219.
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            _mcp_tools = discover_mcp_tools()
+            if _mcp_tools:
+                logger.info(
+                    "Job '%s': %d MCP tool(s) available",
+                    job_id, len(_mcp_tools),
+                )
+        except Exception as _mcp_exc:
+            logger.warning(
+                "Job '%s': MCP initialization failed (non-fatal): %s",
+                job_id, _mcp_exc,
+            )
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),

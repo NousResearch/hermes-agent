@@ -585,6 +585,8 @@ def _resolve_openrouter_runtime(
         if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
+        elif requested_norm == "openrouter" and cfg_provider == "openrouter":
+            use_config_base_url = True
         elif requested_norm == "custom" and _config_base_url_trustworthy_for_bare_custom(
             cfg_base_url, cfg_provider
         ):

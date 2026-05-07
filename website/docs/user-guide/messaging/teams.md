@@ -8,6 +8,8 @@ description: "Set up Hermes Agent as a Microsoft Teams bot"
 
 Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Teams delivers messages by calling a **public HTTPS webhook**, so your instance needs a publicly reachable endpoint — either a dev tunnel (local dev) or a real domain (production).
 
+Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](/docs/user-guide/messaging/teams-meetings).
+
 ## How the Bot Responds
 
 | Context | Behavior |
@@ -243,3 +245,8 @@ Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the A
 - Store credentials in `~/.hermes/.env` with permissions `600` (`chmod 600 ~/.hermes/.env`)
 - The bot only accepts messages from users in `TEAMS_ALLOWED_USERS`; unauthorized messages are silently dropped
 - Your public endpoint (`/api/messages`) is authenticated by the Teams Bot Framework — requests without valid JWTs are rejected
+
+## Related Docs
+
+- [Teams Meetings](/docs/user-guide/messaging/teams-meetings)
+- [Operate the Teams Meeting Pipeline](/docs/guides/operate-teams-meeting-pipeline)

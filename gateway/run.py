@@ -561,7 +561,15 @@ def _resolve_runtime_agent_kwargs() -> dict:
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, has_usable_secret
+
+    def _runtime_missing_required_key(runtime: dict) -> bool:
+        api_key = str(runtime.get("api_key") or "").strip()
+        if has_usable_secret(api_key) or api_key == "no-key-required":
+            return False
+        base_url = str(runtime.get("base_url") or "").strip()
+        provider = str(runtime.get("provider") or "").strip().lower()
+        return provider == "openrouter" or base_url_host_matches(base_url, "openrouter.ai")
 
     try:
         runtime = resolve_runtime_provider(
@@ -577,6 +585,21 @@ def _resolve_runtime_agent_kwargs() -> dict:
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    if _runtime_missing_required_key(runtime):
+        logger.warning(
+            "Primary provider resolved without a usable API key "
+            "(provider=%s, base_url=%s) — trying fallback",
+            runtime.get("provider"),
+            runtime.get("base_url"),
+        )
+        fb_config = _try_resolve_fallback_provider()
+        if fb_config is not None:
+            return fb_config
+        raise RuntimeError(
+            "OpenRouter runtime resolved without a usable API key. "
+            "Set OPENROUTER_API_KEY or configure fallback_providers with valid credentials."
+        )
 
     return {
         "api_key": runtime.get("api_key"),

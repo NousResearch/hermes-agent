@@ -802,7 +802,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"count": len(targets), "channels": targets}, indent=2)
 
         channels = []
-        for plat, entries_list in directory.items():
+        for plat, entries_list in directory.get("platforms", {}).items():
             if platform and plat.lower() != platform.lower():
                 continue
             if isinstance(entries_list, list):

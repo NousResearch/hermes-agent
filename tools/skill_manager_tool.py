@@ -282,12 +282,17 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Uses ``iter_skill_index_files`` instead of a bare ``rglob`` so that
+    hidden/internal directories (``.git``, ``.github``, ``.hub``,
+    ``.archive``) are excluded and cyclic symlinks do not cause an
+    infinite loop.  Fixes #18900 and #18809.
     """
-    from agent.skill_utils import get_all_skills_dirs
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for skill_md in skills_dir.rglob("SKILL.md"):
+        for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
     return None

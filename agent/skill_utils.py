@@ -441,9 +441,26 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
     Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+
+    Symlinks are followed (``followlinks=True``) so that external skill
+    directories linked into the skills tree are discovered.  A seen-inode
+    set guards against infinite loops caused by cyclic symlinks -- if a
+    directory's ``(st_dev, st_ino)`` pair has already been visited the
+    subtree is skipped rather than traversed again.  Fixes #18809.
     """
     matches = []
+    seen_inodes: set[tuple[int, int]] = set()
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
+        try:
+            st = os.stat(root)
+            inode_key = (st.st_dev, st.st_ino)
+        except OSError:
+            dirs[:] = []
+            continue
+        if inode_key in seen_inodes:
+            dirs[:] = []  # cycle detected -- prune this subtree
+            continue
+        seen_inodes.add(inode_key)
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         if filename in files:
             matches.append(Path(root) / filename)

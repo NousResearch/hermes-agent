@@ -5466,6 +5466,11 @@ class GatewayRunner:
                 quick_commands = {}
             if command in quick_commands:
                 qcmd = quick_commands[command]
+                if not isinstance(qcmd, dict):
+                    # Gracefully handle misconfigured quick_commands entries
+                    # where the value is a plain string or other non-dict type
+                    # instead of crashing with AttributeError.  Fixes #18816.
+                    return f"Quick command '/{command}' is misconfigured -- expected a dict, got {type(qcmd).__name__}. Check your gateway config."
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:

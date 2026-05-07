@@ -6891,6 +6891,12 @@ class HermesCLI:
             quick_commands = self.config.get("quick_commands", {})
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
+                if not isinstance(qcmd, dict):
+                    # Gracefully handle misconfigured quick_commands entries
+                    # where the value is a plain string or other non-dict type
+                    # instead of crashing with AttributeError.  Fixes #18816.
+                    self._console_print(f"[bold red]Quick command '{base_cmd}' is misconfigured -- expected a dict, got {type(qcmd).__name__}. Check your config.[/]")
+                    return True
                 if qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")

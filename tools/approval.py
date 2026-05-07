@@ -368,6 +368,25 @@ DANGEROUS_PATTERNS = [
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    # Sudo with stdin / askpass / shell / list-privs flags. An LLM-driven
+    # agent has no TTY, so sudo invocations that succeed without human
+    # interaction are those reading the password from stdin (-S/--stdin)
+    # or via an askpass helper (-A/--askpass). The shell-launch (-s) and
+    # list-privileges (-a) flags are also gated since they are
+    # privilege-relevant invocations the agent can chain after acquiring
+    # the password (e.g. read SUDO_PASSWORD from .env -> sudo -S -s ->
+    # root shell). Plain `sudo cmd` (no flag) is TTY-bound and excluded.
+    # `_normalize_command_for_detection` lowercases input before pattern
+    # matching, so case variants of S/s and A/a collapse — both forms
+    # are gated below. Lazy `[^;|&\n]*?` allows flag arguments (e.g.
+    # `sudo -u root -S whoami`) without spanning command separators. See
+    # #17873 category 4.
+    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--stdin\b|-a\b|--askpass\b)',
+     "sudo with privilege flag (stdin/askpass/shell/list)"),
+    # Combined short-flag form: -nS, -ns, -sa, -las — sudo flags packed
+    # into a single -X token. Catches the same threat class.
+    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
+     "sudo with combined-flag privilege escalation"),
 ]
 
 

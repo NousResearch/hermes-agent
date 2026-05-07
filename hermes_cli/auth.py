@@ -1265,6 +1265,61 @@ def deactivate_provider() -> None:
         _save_auth_store(auth_store)
 
 
+def activate_provider(provider_id: str) -> None:
+    """
+    Set active_provider in auth.json without writing any token state.
+
+    Used by ``hermes model`` flows that store credentials elsewhere but still
+    need ``resolve_provider()`` to pick this provider on auto-resolve.
+    """
+    if not provider_id:
+        return
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        _save_auth_store(auth_store)
+
+
+def persist_anthropic_oauth_env_token(access_token: str) -> None:
+    """Persist Hermes-managed Anthropic OAuth token state in auth.json.
+
+    ``hermes model`` stores setup-token OAuth credentials in ``.env`` as
+    ``ANTHROPIC_TOKEN``. Mirror that token into both auth-store surfaces so
+    provider resolution and the credential pool agree immediately, without
+    waiting for a later pool load to seed from env.
+    """
+    token = (access_token or "").strip()
+    if not token:
+        return
+
+    source = "env:ANTHROPIC_TOKEN"
+    state = {
+        "source": source,
+        "auth_type": "oauth",
+        "access_token": token,
+        "base_url": PROVIDER_REGISTRY["anthropic"].inference_base_url,
+    }
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _store_provider_state(auth_store, "anthropic", dict(state), set_active=True)
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            pool = {}
+            auth_store["credential_pool"] = pool
+
+        entries = pool.get("anthropic")
+        if not isinstance(entries, list):
+            entries = []
+        retained = [
+            entry for entry in entries
+            if not (isinstance(entry, dict) and entry.get("source") == source)
+        ]
+        retained.insert(0, dict(state))
+        pool["anthropic"] = retained
+        _save_auth_store(auth_store)
+
+
 # =============================================================================
 # Provider Resolution — picks which provider to use
 # =============================================================================

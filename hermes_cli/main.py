@@ -5069,7 +5069,7 @@ def _model_flow_anthropic(config, current_model=""):
     from hermes_cli.auth import (
         _prompt_model_selection,
         _save_model_choice,
-        deactivate_provider,
+        activate_provider,
     )
     from hermes_cli.config import (
         save_env_value,
@@ -5195,7 +5195,7 @@ def _model_flow_anthropic(config, current_model=""):
         model["provider"] = "anthropic"
         model.pop("base_url", None)
         save_config(cfg)
-        deactivate_provider()
+        activate_provider("anthropic")
 
         print(f"Default model set to: {selected} (via Anthropic)")
     else:

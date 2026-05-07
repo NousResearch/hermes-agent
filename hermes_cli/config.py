@@ -4396,6 +4396,10 @@ def save_anthropic_oauth_token(value: str, save_fn=None):
     writer("ANTHROPIC_TOKEN", value)
     writer("ANTHROPIC_API_KEY", "")
 
+    from hermes_cli.auth import persist_anthropic_oauth_env_token
+
+    persist_anthropic_oauth_env_token(value)
+
 
 def use_anthropic_claude_code_credentials(save_fn=None):
     """Use Claude Code's own credential files instead of persisting env tokens."""

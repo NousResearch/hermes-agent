@@ -38,6 +38,10 @@ object HermesAutomationBridge {
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
             "remove_launcher_shortcut", "delete_launcher_shortcut", "remove_shortcut", "delete_shortcut" -> HermesLauncherShortcutBridge.removeShortcutJson(context, arguments)
+            "set_quick_settings_tile_automation", "set_qs_tile_automation", "configure_quick_settings_tile", "configure_qs_tile" -> HermesQuickSettingsTileBridge.setTileAutomationJson(context, arguments)
+            "get_quick_settings_tile_automation", "get_qs_tile_automation", "quick_settings_tile_status", "qs_tile_status" -> HermesQuickSettingsTileBridge.getTileAutomationJson(context)
+            "clear_quick_settings_tile_automation", "clear_qs_tile_automation" -> HermesQuickSettingsTileBridge.clearTileAutomationJson(context)
+            "run_quick_settings_tile", "run_qs_tile" -> HermesQuickSettingsTileBridge.runConfiguredAutomationJson(context)
             "calculate_sunrise_sunset", "sunrise_sunset", "sun_times", "solar_times" -> calculateSunriseSunsetJson(context, arguments)
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
@@ -3238,6 +3242,10 @@ object HermesAutomationBridge {
         "create_launcher_shortcut",
         "list_launcher_shortcuts",
         "remove_launcher_shortcut",
+        "set_quick_settings_tile_automation",
+        "get_quick_settings_tile_automation",
+        "clear_quick_settings_tile_automation",
+        "run_quick_settings_tile",
         "calculate_sunrise_sunset",
         "export_automations",
         "import_automations",

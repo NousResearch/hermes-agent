@@ -13,6 +13,7 @@ import com.nousresearch.hermesagent.device.HermesExternalTriggerReceiver
 import com.nousresearch.hermesagent.device.HermesLauncherShortcutBridge
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.HermesNotificationActionBridge
+import com.nousresearch.hermesagent.device.HermesQuickSettingsTileBridge
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -374,6 +375,56 @@ class HermesAutomationInstrumentedTest {
             ),
         )
         assertTrue(removed.toString(), removed.getBoolean("success"))
+    }
+
+    @Test
+    fun quickSettingsTileRunsConfiguredSavedAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-quick-settings-tile.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_file_write_task",
+                JSONObject()
+                    .put("label", "Tile smoke")
+                    .put("path", "hermes-quick-settings-tile.txt")
+                    .put("content", "tile-ok")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automationId = created.getJSONObject("automation").getString("id")
+
+        val configured = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_quick_settings_tile_automation",
+                JSONObject()
+                    .put("automation_id", automationId)
+                    .put("label", "Tile smoke"),
+            ),
+        )
+        assertTrue(configured.toString(), configured.getBoolean("success"))
+        assertTrue(configured.getBoolean("configured"))
+        assertEquals(automationId, configured.getString("automation_id"))
+
+        val status = JSONObject(HermesAutomationBridge.performActionJson(app, "get_quick_settings_tile_automation"))
+        assertTrue(status.toString(), status.getBoolean("success"))
+        assertTrue(status.getBoolean("configured"))
+        assertTrue(status.getBoolean("automation_exists"))
+        assertEquals(automationId, status.getString("automation_id"))
+
+        val run = JSONObject(HermesQuickSettingsTileBridge.runConfiguredAutomationJson(app))
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals("quick_settings_tile", run.getString("trigger"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("tile-ok", target.readText())
+
+        val cleared = JSONObject(HermesAutomationBridge.performActionJson(app, "clear_quick_settings_tile_automation"))
+        assertTrue(cleared.toString(), cleared.getBoolean("success"))
+        assertFalse(cleared.getBoolean("configured"))
     }
 
     @Test

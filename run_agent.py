@@ -1866,6 +1866,23 @@ class AIAgent:
             _api_retries = 3
         self._api_max_retries = _api_retries
 
+        # API retry backoff tuning.  Defaults target rate-limit scenarios
+        # (short resets) with sensible growth.  Overridable via config.yaml:
+        #   agent.api_retry_base_delay  (default 2.0 seconds)
+        #   agent.api_retry_max_delay  (default 60.0 seconds)
+        try:
+            self._api_retry_base_delay = float(_agent_section.get("api_retry_base_delay", 2.0))
+            if self._api_retry_base_delay <= 0:
+                self._api_retry_base_delay = 2.0
+        except (TypeError, ValueError):
+            self._api_retry_base_delay = 2.0
+        try:
+            self._api_retry_max_delay = float(_agent_section.get("api_retry_max_delay", 60.0))
+            if self._api_retry_max_delay <= 0:
+                self._api_retry_max_delay = 60.0
+        except (TypeError, ValueError):
+            self._api_retry_max_delay = 60.0
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
@@ -11605,8 +11622,8 @@ class AIAgent:
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Backoff before retry — jittered exponential: 5s base, 120s cap
-                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                        # Backoff before retry — jittered exponential, config-driven
+                        wait_time = jittered_backoff(retry_count, base_delay=self._api_retry_base_delay, max_delay=self._api_retry_max_delay)
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -13030,7 +13047,7 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=self._api_retry_base_delay, max_delay=self._api_retry_max_delay)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:

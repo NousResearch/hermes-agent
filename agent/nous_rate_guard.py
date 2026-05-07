@@ -186,7 +186,9 @@ def format_remaining(seconds: float) -> str:
 # Buckets with reset windows shorter than this are treated as transient
 # (upstream jitter, secondary throttling) rather than a genuine quota
 # exhaustion worth a cross-session breaker trip.
-_MIN_RESET_FOR_BREAKER_SECONDS = 60.0
+# 30s captures per-minute RPM limits that genuinely reset in ~60s or less
+# while still filtering out very short upstream blips.
+_MIN_RESET_FOR_BREAKER_SECONDS = 30.0
 
 
 def is_genuine_nous_rate_limit(
@@ -216,12 +218,12 @@ def is_genuine_nous_rate_limit(
 
       1. The 429 response's own ``x-ratelimit-*`` headers.  Nous emits
          the full suite on every response including 429s.  An exhausted
-         bucket (``remaining == 0`` with a reset window >= 60s) is
+         bucket (``remaining == 0`` with a reset window >= 30s) is
          proof of (a).
       2. The last-known-good rate-limit state captured by
          ``_capture_rate_limits()`` on the previous successful
          response.  If any bucket there was already near-exhausted with
-         a substantial reset window, the current 429 is almost
+         a reset window of 30s or more, the current 429 is almost
          certainly (a) continuing from that condition.
 
     If neither signal fires, we treat the 429 as (b): fail the single

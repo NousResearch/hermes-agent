@@ -1033,6 +1033,11 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Controls autonomous background skill evolution:
+        #   auto     - background review may update skills directly
+        #   confirm  - background review queues changes for `hermes skills review`
+        #   readonly - background review may inspect skills but cannot write them
+        "evolution_mode": "auto",
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

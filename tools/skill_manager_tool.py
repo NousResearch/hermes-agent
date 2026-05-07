@@ -171,6 +171,53 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
+def get_evolution_mode() -> str:
+    """Return the configured background skill-evolution mode.
+
+    Kept as a local wrapper so tests can patch the skill-manager boundary
+    directly while the storage/normalization logic lives in agent.skill_evolution.
+    """
+    try:
+        from agent.skill_evolution import get_evolution_mode as _get_evolution_mode
+        return _get_evolution_mode()
+    except Exception:
+        return "auto"
+
+
+def queue_pending_change(action: str, name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Queue a background-review skill mutation for explicit user review."""
+    from agent.skill_evolution import queue_pending_change as _queue_pending_change
+    return _queue_pending_change(action=action, name=name, payload=payload)
+
+
+def _validate_skill_manage_required_args(
+    action: str,
+    *,
+    content: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+) -> Optional[str]:
+    if action == "create" and not content:
+        return "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body)."
+    if action == "edit" and not content:
+        return "content is required for 'edit'. Provide the full updated SKILL.md text."
+    if action == "patch":
+        if not old_string:
+            return "old_string is required for 'patch'. Provide the text to find."
+        if new_string is None:
+            return "new_string is required for 'patch'. Use empty string to delete matched text."
+    if action == "write_file":
+        if not file_path:
+            return "file_path is required for 'write_file'. Example: 'references/api-guide.md'"
+        if file_content is None:
+            return "file_content is required for 'write_file'."
+    if action == "remove_file" and not file_path:
+        return "file_path is required for 'remove_file'."
+    return None
+
+
 # =============================================================================
 # Validation helpers
 # =============================================================================
@@ -727,36 +774,78 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    valid_actions = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+    if action in valid_actions:
+        required_error = _validate_skill_manage_required_args(
+            action,
+            content=content,
+            file_path=file_path,
+            file_content=file_content,
+            old_string=old_string,
+            new_string=new_string,
+        )
+        if required_error:
+            return tool_error(required_error, success=False)
+        try:
+            from tools.skill_provenance import is_background_review
+            background_review = is_background_review()
+        except Exception:
+            background_review = False
+
+        if background_review:
+            mode = get_evolution_mode()
+            if mode == "readonly":
+                result = {
+                    "success": True,
+                    "skipped": True,
+                    "message": (
+                        f"Skill evolution is readonly; skipped {action} "
+                        f"for skill '{name}' and made no changes."
+                    ),
+                }
+                return json.dumps(result, ensure_ascii=False)
+            if mode == "confirm":
+                payload = {
+                    "content": content,
+                    "category": category,
+                    "file_path": file_path,
+                    "file_content": file_content,
+                    "old_string": old_string,
+                    "new_string": new_string,
+                    "replace_all": replace_all,
+                    "absorbed_into": absorbed_into,
+                }
+                queued = queue_pending_change(action, name, payload)
+                if queued.get("success"):
+                    result = {
+                        "success": True,
+                        "queued": True,
+                        "pending_id": queued.get("id"),
+                        "message": queued.get(
+                            "message",
+                            f"Skill change queued for review: {action} '{name}'.",
+                        ),
+                    }
+                else:
+                    result = queued
+                return json.dumps(result, ensure_ascii=False)
+
     if action == "create":
-        if not content:
-            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
-        if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
         result = _delete_skill(name, absorbed_into=absorbed_into)
 
     elif action == "write_file":
-        if not file_path:
-            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
-        if file_content is None:
-            return tool_error("file_content is required for 'write_file'.", success=False)
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
-        if not file_path:
-            return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
     else:

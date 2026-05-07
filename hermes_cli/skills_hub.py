@@ -142,6 +142,136 @@ def _derive_category_from_install_path(install_path: str) -> str:
     return "" if parent == "." else parent
 
 
+def _skill_evolution_payload(change: Dict[str, Any]) -> Dict[str, Any]:
+    payload = change.get("payload") or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _apply_pending_skill_change(change: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply a pending evolution change without re-entering skill_manage gates."""
+    from tools import skill_manager_tool
+
+    action = change.get("action")
+    name = change.get("name")
+    payload = _skill_evolution_payload(change)
+
+    if action == "create":
+        return skill_manager_tool._create_skill(
+            name,
+            payload.get("content"),
+            payload.get("category") or None,
+        )
+    if action == "edit":
+        return skill_manager_tool._edit_skill(name, payload.get("content"))
+    if action == "patch":
+        return skill_manager_tool._patch_skill(
+            name,
+            payload.get("old_string"),
+            payload.get("new_string"),
+            payload.get("file_path") or None,
+            bool(payload.get("replace_all", False)),
+        )
+    if action == "delete":
+        return skill_manager_tool._delete_skill(
+            name,
+            absorbed_into=payload.get("absorbed_into"),
+        )
+    if action == "write_file":
+        return skill_manager_tool._write_file(
+            name,
+            payload.get("file_path"),
+            payload.get("file_content"),
+        )
+    if action == "remove_file":
+        return skill_manager_tool._remove_file(name, payload.get("file_path"))
+
+    return {
+        "success": False,
+        "error": (
+            f"Unknown pending skill evolution action {action!r}. "
+            "Use: create, edit, patch, delete, write_file, remove_file."
+        ),
+    }
+
+
+def _format_pending_change_detail(change: Dict[str, Any]) -> str:
+    payload = _skill_evolution_payload(change)
+    parts: list[str] = []
+    if change.get("created_at"):
+        parts.append(f"created {change['created_at']}")
+    if payload.get("file_path"):
+        parts.append(f"file {payload['file_path']}")
+    if payload.get("category"):
+        parts.append(f"category {payload['category']}")
+    if payload.get("absorbed_into"):
+        parts.append(f"absorbed into {payload['absorbed_into']}")
+    return ", ".join(parts)
+
+
+def do_review(
+    approve_id: str = "",
+    reject_id: str = "",
+    console: Optional[Console] = None,
+) -> None:
+    """List, approve, or reject pending skill evolution changes."""
+    c = console or _console
+
+    if approve_id and reject_id:
+        c.print("[bold red]Error:[/] Use either --approve or --reject, not both.\n")
+        return
+
+    if approve_id:
+        from agent.skill_evolution import approve_pending_change
+        result = approve_pending_change(approve_id, _apply_pending_skill_change)
+        if isinstance(result, dict) and result.get("success") is False:
+            detail = result.get("error") or result.get("apply_result") or result
+            c.print(
+                f"[bold red]Failed to approve pending skill evolution change {approve_id}:[/] "
+                f"{detail}"
+            )
+            return
+        c.print(f"[green]Approved pending skill evolution change {approve_id}.[/]")
+        return
+
+    if reject_id:
+        from agent.skill_evolution import reject_pending_change
+        result = reject_pending_change(reject_id)
+        if isinstance(result, dict) and result.get("success") is False:
+            c.print(
+                f"[bold red]Failed to reject pending skill evolution change {reject_id}:[/] "
+                f"{result.get('error', result)}"
+            )
+            return
+        c.print(f"[green]Rejected pending skill evolution change {reject_id}.[/]")
+        return
+
+    from agent.skill_evolution import list_pending_changes
+    pending = list_pending_changes()
+    if not pending:
+        c.print("No pending skill evolution changes.")
+        return
+
+    table = Table(title="Pending Skill Evolution Changes")
+    table.add_column("ID", style="bold cyan")
+    table.add_column("Action", style="magenta")
+    table.add_column("Skill", style="green")
+    table.add_column("Details", style="dim")
+
+    for change in pending:
+        table.add_row(
+            str(change.get("id", "")),
+            str(change.get("action", "")),
+            str(change.get("name", "")),
+            _format_pending_change_detail(change),
+        )
+
+    c.print(table)
+    c.print(
+        "[dim]Use `hermes skills review --approve <id>` or "
+        "`hermes skills review --reject <id>`.[/]"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Interactive name/category resolution for URL-installed skills
 # ---------------------------------------------------------------------------
@@ -1340,6 +1470,11 @@ def skills_command(args) -> None:
         do_audit(name=getattr(args, "name", None))
     elif action == "uninstall":
         do_uninstall(args.name)
+    elif action == "review":
+        do_review(
+            approve_id=getattr(args, "approve_id", "") or "",
+            reject_id=getattr(args, "reject_id", "") or "",
+        )
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
@@ -1365,7 +1500,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|review|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1389,6 +1524,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills update
         /skills audit
         /skills audit my-skill
+        /skills review
+        /skills review --approve change-id
+        /skills review --reject change-id
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1506,6 +1644,27 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         name = args[0] if args else None
         do_audit(name=name, console=c)
 
+    elif action == "review":
+        approve_id = ""
+        reject_id = ""
+        i = 0
+        while i < len(args):
+            if args[i] == "--approve" and i + 1 < len(args):
+                approve_id = args[i + 1]
+                i += 2
+            elif args[i] == "--reject" and i + 1 < len(args):
+                reject_id = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        if approve_id and reject_id:
+            c.print("[bold red]Usage:[/] /skills review [--approve <id> | --reject <id>]\n")
+            return
+        if ("--approve" in args and not approve_id) or ("--reject" in args and not reject_id):
+            c.print("[bold red]Usage:[/] /skills review [--approve <id> | --reject <id>]\n")
+            return
+        do_review(approve_id=approve_id, reject_id=reject_id, console=c)
+
     elif action == "uninstall":
         if not args:
             c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
@@ -1585,6 +1744,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]review[/] [--approve|--reject <id>] Review pending skill evolution changes\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"

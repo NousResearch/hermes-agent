@@ -80,3 +80,28 @@ def test_background_review_agent_tools_are_limited():
     assert "delegate_task" not in expected_tools
     assert "web_search" not in expected_tools
     assert "execute_code" not in expected_tools
+
+
+def test_background_review_summary_includes_queued_skill_evolution():
+    """Confirm-mode skill writes should surface as queued review actions."""
+    import json
+    import run_agent
+
+    review_messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "new-tool",
+            "content": json.dumps({
+                "success": True,
+                "queued": True,
+                "message": "Skill change queued for review: create 'demo'.",
+            }),
+        }
+    ]
+
+    actions = run_agent.AIAgent._summarize_background_review_actions(
+        review_messages,
+        prior_snapshot=[],
+    )
+
+    assert actions == ["Skill change queued for review: create 'demo'."]

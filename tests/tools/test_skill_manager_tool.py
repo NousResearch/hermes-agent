@@ -567,6 +567,99 @@ class TestSkillManageDispatcher:
         assert result["success"] is True
         assert usage["review-sediment"]["created_by"] == "agent"
 
+    def test_background_review_confirm_queues_create_without_writing(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        queued = {}
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                mock_queue.return_value = {
+                    "success": True,
+                    "message": "Skill change queued for review: create 'review-sediment'.",
+                    "id": "abc123",
+                }
+                raw = skill_manage(
+                    action="create",
+                    name="review-sediment",
+                    content=VALID_SKILL_CONTENT,
+                )
+                queued["exists"] = (tmp_path / "review-sediment" / "SKILL.md").exists()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["queued"] is True
+        assert result["pending_id"] == "abc123"
+        assert queued["exists"] is False
+        mock_queue.assert_called_once()
+        action, name, payload = mock_queue.call_args.args
+        assert action == "create"
+        assert name == "review-sediment"
+        assert payload["content"] == VALID_SKILL_CONTENT
+
+    def test_background_review_confirm_preserves_required_arg_validation(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                raw = skill_manage(action="patch", name="review-sediment")
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "old_string" in result["error"]
+        mock_queue.assert_not_called()
+
+    def test_background_review_readonly_skips_create_without_queueing(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="readonly"), \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                raw = skill_manage(
+                    action="create",
+                    name="review-sediment",
+                    content=VALID_SKILL_CONTENT,
+                )
+                exists = (tmp_path / "review-sediment" / "SKILL.md").exists()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert "readonly" in result["message"]
+        assert exists is False
+        mock_queue.assert_not_called()
+
+    def test_foreground_create_ignores_confirm_mode(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+             patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+            raw = skill_manage(
+                action="create",
+                name="user-directed",
+                content=VALID_SKILL_CONTENT,
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (tmp_path / "user-directed" / "SKILL.md").exists()
+        mock_queue.assert_not_called()
+
     def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
         # Dispatcher must plumb absorbed_into through to _delete_skill so the
         # validation + message suffix paths are exercised end-to-end.

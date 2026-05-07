@@ -3621,7 +3621,9 @@ class AIAgent:
                 continue
             message = data.get("message", "")
             target = data.get("target", "")
-            if "created" in message.lower():
+            if data.get("queued") or data.get("skipped"):
+                actions.append(message or "Skill evolution change queued for review")
+            elif "created" in message.lower():
                 actions.append(message)
             elif "updated" in message.lower():
                 actions.append(message)

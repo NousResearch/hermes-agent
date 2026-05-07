@@ -9640,6 +9640,25 @@ Examples:
         "name", nargs="?", help="Specific skill to audit (default: all)"
     )
 
+    skills_review = skills_subparsers.add_parser(
+        "review", help="Review pending skill evolution changes"
+    )
+    skills_review_group = skills_review.add_mutually_exclusive_group()
+    skills_review_group.add_argument(
+        "--approve",
+        dest="approve_id",
+        default="",
+        metavar="ID",
+        help="Approve and apply a pending skill evolution change",
+    )
+    skills_review_group.add_argument(
+        "--reject",
+        dest="reject_id",
+        default="",
+        metavar="ID",
+        help="Reject a pending skill evolution change",
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

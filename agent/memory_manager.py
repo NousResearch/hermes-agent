@@ -304,7 +304,8 @@ class MemoryManager:
     @property
     def providers(self) -> List[MemoryProvider]:
         """All registered providers in order."""
-        return list(self._providers)
+        with self._lock:
+            return list(self._providers)
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         """Get a provider by name, or None if not registered."""

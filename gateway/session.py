@@ -242,6 +242,18 @@ def _slack_tools_loaded() -> bool:
         return False
 
 
+def _work_memory_loaded() -> bool:
+    """True iff the structured work memory tool will be available this session."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        enabled = _get_platform_tools(cfg, "slack", include_default_mcp_servers=False)
+        return "work_memory" in enabled
+    except Exception:
+        return False
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -345,6 +357,13 @@ def build_session_context_prompt(
                 lines.append(f"  - Thread: `{src.thread_id}`")
             if src.message_id:
                 lines.append(f"  - Message: `{src.message_id}`")
+            if _work_memory_loaded():
+                lines.append(
+                    "**Workspace intelligence:** Use `work_memory` to store and query curated "
+                    "work-only structured memory: people, projects, decisions, open loops, risks, "
+                    "glossary, processes, and notes. Store distilled facts with source channel/ts "
+                    "provenance; do not dump raw Slack history."
+                )
         else:
             lines.append(
                 "**Platform notes:** You are running inside Slack. "

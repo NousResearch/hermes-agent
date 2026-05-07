@@ -32,6 +32,12 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_work_memory_toolset(self):
+        ts = get_toolset("work_memory")
+        assert ts is not None
+        assert ts["tools"] == ["work_memory"]
+        assert "work_memory" in resolve_toolset("hermes-slack")
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

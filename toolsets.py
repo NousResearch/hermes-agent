@@ -237,6 +237,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "work_memory": {
+        "description": "Structured, profile-scoped work/project memory for workspace intelligence",
+        "tools": ["work_memory"],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
@@ -399,7 +405,7 @@ TOOLSETS = {
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS + ["slack"],
+        "tools": _HERMES_CORE_TOOLS + ["slack", "work_memory"],
         "includes": []
     },
     

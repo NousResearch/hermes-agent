@@ -1,6 +1,8 @@
 """Tests for background skill evolution pending changes."""
 
 import json
+import threading
+import time
 
 
 def test_normalize_evolution_mode_accepts_known_modes_and_defaults_unknown():
@@ -56,6 +58,48 @@ def test_queue_and_list_pending_changes_use_profile_home(tmp_path, monkeypatch):
     persisted = {key: value for key, value in change.items() if key != "success"}
     assert json.loads(queue_path.read_text()) == {"changes": [persisted]}
     assert skill_evolution.list_pending_changes() == [persisted]
+
+
+def test_queue_pending_change_preserves_concurrent_appends(tmp_path, monkeypatch):
+    from agent import skill_evolution
+
+    hermes_home = tmp_path / "profile"
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+
+    original_write_queue = skill_evolution._write_queue
+
+    def slow_write_queue(queue):
+        time.sleep(0.02)
+        original_write_queue(queue)
+
+    monkeypatch.setattr(skill_evolution, "_write_queue", slow_write_queue)
+
+    worker_count = 12
+    start = threading.Barrier(worker_count)
+    results = []
+
+    def enqueue(index):
+        start.wait()
+        results.append(
+            skill_evolution.queue_pending_change(
+                "patch",
+                f"skill-{index}",
+                {"index": index},
+            )
+        )
+
+    threads = [threading.Thread(target=enqueue, args=(index,)) for index in range(worker_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    pending = skill_evolution.list_pending_changes()
+    assert len(results) == worker_count
+    assert len(pending) == worker_count
+    assert {change["name"] for change in pending} == {
+        f"skill-{index}" for index in range(worker_count)
+    }
 
 
 def test_list_pending_changes_treats_missing_or_bad_json_as_empty(tmp_path, monkeypatch):

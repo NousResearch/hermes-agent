@@ -3660,6 +3660,14 @@ def dispatch_once(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 
+    running_count = 0
+    if max_spawn is not None:
+        running_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
@@ -3667,7 +3675,7 @@ def dispatch_once(
     ).fetchall()
     spawned = 0
     for row in ready_rows:
-        if max_spawn is not None and spawned >= max_spawn:
+        if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])

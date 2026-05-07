@@ -84,7 +84,7 @@ JSON object with:
 
 ## Hawaii Price Tracker
 
-Ongoing monitoring for cheap SFO → Hawaii (OGG/HNL/KOA/LIH) round-trip United **first class** fares, **7-day trip**. Sends a daily report to Telegram at 2 PM PT — always, not just on new lows. Reports current best price + all-time low with the exact departure date for each.
+Ongoing monitoring for cheap SFO → Hawaii (OGG/HNL/KOA/LIH) round-trip United **first class** fares, **7-day trip**. Sends a daily report to Telegram at 2 PM PT — always, not just on new lows. Reports all three window prices independently (4w, 8w, 12w). No all-time low tracking.
 
 Script: `/opt/data/scripts/hawaii-price-checker.py`
 Tokens via wrapper: `/opt/data/scripts/hawaii-price-checker-wrapper.py` (reads `/opt/data/.env.tokens` — cron agent has no container env vars, wrapper is mandatory)
@@ -96,14 +96,16 @@ Report format (Markdown, Telegram-native):
 ✈️ *Hawaii First Class — SFO RT (7 days)*
 _May 06_
 
-*Maui (OGG)*: Today $455 (Fri Jun 05) | Low $455 (Fri Jun 05)
-*Honolulu (HNL)*: Today $472 (Fri Jun 05) | Low $472 (Fri Jun 05)
-*Kona (KOA)*: Today $407 (Fri Jun 05) | Low $407 (Fri Jun 05)
-*Kauai (LIH)*: Today $481 (Fri Jun 05) | Low $481 (Fri Jun 05)
+*Maui (OGG)*: 4w $455 (Fri Jun 05) | 8w $460 (Fri Jul 03) | 12w $445 (Fri Jul 31)
+*Honolulu (HNL)*: 4w $472 (Fri Jun 05) | 8w $478 (Fri Jul 03) | 12w $470 (Fri Jul 31)
+*Kona (KOA)*: 4w $407 (Fri Jun 05) | 8w $415 (Fri Jul 03) | 12w $400 (Fri Jul 31)
+*Kauai (LIH)*: 4w $481 (Fri Jun 05) | 8w $490 (Fri Jul 03) | 12w $475 (Fri Jul 31)
 
 _United first class · SFO round-trip · 7-day trip_
-_30/45/60-day departure windows_
+_4/8/12-week departure windows_
 ```
+
+On SerpAPI error, failed windows show `⚠️` and a warning line is prepended to the report. Errors are NOT silently swallowed.
 
 See `references/hawaii-price-tracker-impl.md` for implementation detail.
 

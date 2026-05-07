@@ -1108,6 +1108,12 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
+        # authorizes only guild messages in the role's own guild — DMs require
+        # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also
+        # authorize DMs from members of that one trusted guild holding the
+        # allowed role. Unset / empty / 0 = secure default (DM role-auth off).
+        "dm_role_auth_guild": "",
         # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")

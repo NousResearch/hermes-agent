@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 2,
+  "count": 16,
   "roles": [
     {
       "path": "cheif.md",
@@ -11,6 +11,76 @@
       "path": "psychotherapist.md",
       "title": "心理咨询师",
       "summary": "资深心理咨询师角色，强调中立、证据强度标注和直言分析，擅长亲密关系、创伤整合、依恋模式、认知偏差与风险识别。"
+    },
+    {
+      "path": "tarot_reader.md",
+      "title": "塔罗师",
+      "summary": "用于情感、事业、选择题和阶段趋势的塔罗解读，强调牌意分析、现实映射和行动建议，不把结果说成宿命。"
+    },
+    {
+      "path": "bazi_master.md",
+      "title": "八字命理师",
+      "summary": "基于出生信息讨论性格、关系、事业节奏和阶段运势的命理角色，重视结构解释与现实建议。"
+    },
+    {
+      "path": "astrology_master.md",
+      "title": "星座大师",
+      "summary": "处理太阳星座、月亮星座、上升星座、关系匹配和阶段情绪主题，擅长把星象翻译成生活建议。"
+    },
+    {
+      "path": "divination_master.md",
+      "title": "占卜大师",
+      "summary": "适合咨询近期趋势、情感走向和选择判断的综合占卜角色，输出启示、风险与行动提醒。"
+    },
+    {
+      "path": "fengshui_consultant.md",
+      "title": "风水顾问",
+      "summary": "分析住宅、工位和功能区布局问题，结合传统风水与采光、动线、收纳等现实因素给出调整建议。"
+    },
+    {
+      "path": "naming_consultant.md",
+      "title": "起名顾问",
+      "summary": "用于宝宝、品牌、项目、宠物和账号命名，兼顾含义、读音、辨识度、重名风险和传播性。"
+    },
+    {
+      "path": "career_planner.md",
+      "title": "职业规划师",
+      "summary": "处理求职、转行、晋升、能力盘点和职业决策，强调市场现实、资源约束和执行路径。"
+    },
+    {
+      "path": "finance_advisor.md",
+      "title": "理财顾问",
+      "summary": "用于预算管理、储蓄、负债梳理、保险思路和资产分层，强调现金流、风险控制与执行优先级。"
+    },
+    {
+      "path": "fitness_coach.md",
+      "title": "健身教练",
+      "summary": "面向减脂、增肌、体态改善和居家训练，提供可持续、少受伤的训练安排与执行建议。"
+    },
+    {
+      "path": "nutritionist.md",
+      "title": "营养师",
+      "summary": "处理减脂、增肌、控糖、外食和家庭备餐等饮食问题，强调营养结构、总量控制和现实场景。"
+    },
+    {
+      "path": "organizer.md",
+      "title": "收纳整理师",
+      "summary": "用于衣柜、厨房、书桌、搬家和囤积整理，强调先减量再分区的可维护收纳方案。"
+    },
+    {
+      "path": "travel_planner.md",
+      "title": "旅行规划师",
+      "summary": "适合行程设计、预算控制、住宿区域选择和交通衔接，兼顾体验、体力分配和备选方案。"
+    },
+    {
+      "path": "image_consultant.md",
+      "title": "形象顾问",
+      "summary": "处理穿搭、配色、面试和通勤形象优化，结合体型、场景、预算和现有单品给具体建议。"
+    },
+    {
+      "path": "pet_care_advisor.md",
+      "title": "宠物护理师",
+      "summary": "面向猫狗日常照护、行为习惯、环境布置和新手养宠问题，强调症状边界和就医提示。"
     }
   ]
 }

@@ -2061,6 +2061,7 @@ class TestDashboardPluginManifestExtensions:
 # ---------------------------------------------------------------------------
 
 import sys
+from pathlib import Path
 
 
 skip_on_windows = pytest.mark.skipif(
@@ -2213,6 +2214,45 @@ class TestPtyWebSocket:
                 if b"99" in buf and b"41" in buf:
                     break
             assert b"99" in buf and b"41" in buf
+
+    def test_chat_file_upload_stores_file_and_returns_paste_text(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "get_hermes_home", lambda: tmp_path)
+
+        response = self.client.post(
+            "/api/chat/uploads",
+            headers={"X-Hermes-Session-Token": self.token},
+            files={"file": ("cookies.txt", b"# Netscape HTTP Cookie File\n.example\tTRUE\t/\tFALSE\t0\tsid\tabc")},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        saved = Path(payload["path"])
+        assert saved.parent == tmp_path / "dashboard-uploads"
+        assert saved.name.endswith("-cookies.txt")
+        assert saved.read_bytes().startswith(b"# Netscape HTTP Cookie File")
+        assert "cookies.txt" in payload["paste_text"]
+        assert str(saved) in payload["paste_text"]
+
+    def test_chat_file_upload_requires_session_token(self):
+        response = self.client.post(
+            "/api/chat/uploads",
+            files={"file": ("cookies.txt", b"cookie-data")},
+        )
+
+        assert response.status_code == 401
+
+    def test_chat_file_upload_rejects_oversized_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(self.ws_module, "_DASHBOARD_UPLOAD_MAX_BYTES", 4)
+
+        response = self.client.post(
+            "/api/chat/uploads",
+            headers={"X-Hermes-Session-Token": self.token},
+            files={"file": ("cookies.txt", b"too large")},
+        )
+
+        assert response.status_code == 413
+        assert not list((tmp_path / "dashboard-uploads").glob("*cookies.txt"))
 
     def test_unavailable_platform_closes_with_message(self, monkeypatch):
         from hermes_cli.pty_bridge import PtyUnavailableError

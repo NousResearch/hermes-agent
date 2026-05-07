@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -50,7 +51,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -73,6 +74,9 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_DASHBOARD_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+_DASHBOARD_UPLOAD_DIRNAME = "dashboard-uploads"
+_SAFE_UPLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -134,6 +138,31 @@ def _require_token(request: Request) -> None:
     """Validate the ephemeral session token.  Raises 401 on mismatch."""
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _dashboard_upload_dir() -> Path:
+    """Directory for files the dashboard injects into chat sessions."""
+    path = get_hermes_home() / _DASHBOARD_UPLOAD_DIRNAME
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _sanitize_upload_filename(filename: str) -> str:
+    """Return a safe display/storage filename while preserving useful suffixes."""
+    base = Path(filename or "upload.txt").name.strip().replace("\x00", "")
+    if not base or base in {".", ".."}:
+        base = "upload.txt"
+    base = _SAFE_UPLOAD_NAME_RE.sub("_", base).strip("._")
+    return base[:120] or "upload.txt"
+
+
+def _quote_chat_path(path: Path) -> str:
+    """Single-quote a path for insertion into the TUI prompt."""
+    return "'" + str(path).replace("'", "'\"'\"'") + "'"
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -3126,6 +3155,60 @@ async def get_models_analytics(days: int = 30):
         }
     finally:
         db.close()
+
+
+@app.post("/api/chat/uploads")
+async def upload_chat_file(request: Request, file: UploadFile = File(...)):
+    """Store a dashboard-uploaded file and return paste text for the chat PTY.
+
+    The in-browser chat tab cannot give the PTY a browser File object directly.
+    Instead we save the file under HERMES_HOME and return a short command-like
+    prompt that gets pasted into the TUI input, so the agent sees an ordinary
+    local path it can read with its existing file tools.
+    """
+    _require_token(request)
+
+    safe_name = _sanitize_upload_filename(file.filename or "upload.txt")
+    upload_dir = _dashboard_upload_dir()
+    dest = upload_dir / f"{int(time.time())}-{secrets.token_hex(4)}-{safe_name}"
+    size = 0
+
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _DASHBOARD_UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum upload size is {_DASHBOARD_UPLOAD_MAX_BYTES // (1024 * 1024)} MB.",
+                    )
+                out.write(chunk)
+        try:
+            dest.chmod(0o600)
+        except OSError:
+            pass
+    except HTTPException:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    finally:
+        await file.close()
+
+    prompt = f"Use the uploaded file at {_quote_chat_path(dest)}"
+    if safe_name.lower() == "cookies.txt" or safe_name.lower().endswith("cookies.txt"):
+        prompt = f"Use the uploaded cookies.txt file at {_quote_chat_path(dest)}"
+
+    return {
+        "filename": safe_name,
+        "path": str(dest),
+        "size": size,
+        "paste_text": prompt,
+    }
 
 
 # ---------------------------------------------------------------------------

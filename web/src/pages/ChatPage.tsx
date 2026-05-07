@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, Paperclip, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -70,6 +70,14 @@ const TERMINAL_THEME = {
   selectionBackground: "#f0e6d244",
 };
 
+const MAX_CHAT_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+type ChatUploadResponse = {
+  paste_text?: string;
+};
+
+type Fileish = globalThis.File;
+
 /**
  * CSS width for xterm font tiers.
  *
@@ -105,6 +113,7 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -120,6 +129,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
+  const [uploadState, setUploadState] = useState<"idle" | "uploading">("idle");
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
@@ -264,9 +274,81 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const pasteIntoTerminal = useCallback((text: string) => {
+    const term = termRef.current;
+    if (!term || !text) return;
+    term.paste(text);
+    term.focus();
+  }, []);
+
+  const uploadChatFile = useCallback(
+    async (file: Fileish) => {
+      const token = window.__HERMES_SESSION_TOKEN__;
+      if (!token) {
+        setBanner("Session token unavailable. Reload the dashboard and try again.");
+        return;
+      }
+      if (file.size > MAX_CHAT_UPLOAD_BYTES) {
+        setBanner("File is too large. Chat uploads are limited to 5 MB.");
+        return;
+      }
+
+      const body = new FormData();
+      body.append("file", file, file.name || "upload.txt");
+      setUploadState("uploading");
+      try {
+        const res = await fetch("/api/chat/uploads", {
+          method: "POST",
+          headers: { "X-Hermes-Session-Token": token },
+          body,
+        });
+        if (!res.ok) {
+          let detail = `Upload failed (${res.status})`;
+          try {
+            const err = (await res.json()) as { detail?: string };
+            if (err.detail) detail = err.detail;
+          } catch {
+            /* ignore */
+          }
+          setBanner(detail);
+          return;
+        }
+        const payload = (await res.json()) as ChatUploadResponse;
+        if (payload.paste_text) {
+          pasteIntoTerminal(payload.paste_text);
+          setBanner(null);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setBanner(`Upload failed: ${message}`);
+      } finally {
+        setUploadState("idle");
+      }
+    },
+    [pasteIntoTerminal],
+  );
+
+  const handlePickFile = () => fileInputRef.current?.click();
+
+  const handleFileInputChange = (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const file = ev.currentTarget.files?.[0];
+    ev.currentTarget.value = "";
+    if (file) void uploadChatFile(file);
+  };
+
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
+    const onPaste = (ev: ClipboardEvent) => {
+      const files = Array.from(ev.clipboardData?.files ?? []);
+      const file = files[0];
+      if (!file) return;
+      ev.preventDefault();
+      void uploadChatFile(file);
+    };
+    document.addEventListener("paste", onPaste);
+    if (!host) {
+      return () => document.removeEventListener("paste", onPaste);
+    }
 
     const token = window.__HERMES_SESSION_TOKEN__;
     // Banner already initialised above; just bail before wiring xterm/WS.
@@ -333,7 +415,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -639,6 +721,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      document.removeEventListener("paste", onPaste);
       window.visualViewport?.removeEventListener(
         "resize",
         scheduleSyncTerminalMetrics,
@@ -657,7 +740,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, uploadChatFile]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -708,9 +791,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
   //   terminal wrapper — rounded, dark, padded — the "terminal window"
-  //   floating copy button — bottom-right corner, transparent with a
-  //     subtle border; stays out of the way until hovered.  Sends
-  //     `/copy\n` to Ink, which emits OSC 52 → our clipboard handler.
+  //   floating action buttons — bottom-right corner, transparent with a
+  //     subtle border; upload opens the native file picker and clipboard
+  //     paste also captures file objects. The server stores the file under
+  //     HERMES_HOME and pastes a local path into the TUI prompt.
+  //     Copy sends `/copy\n` to Ink, which emits OSC 52 → our clipboard handler.
   //   sidebar — ChatSidebar opens its own JSON-RPC sidecar; renders
   //     model badge, tool-call list, model picker. Best-effort: if the
   //     sidecar fails to connect the terminal pane keeps working.
@@ -822,29 +907,61 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150 normal-case font-normal tracking-normal",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME.foreground }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            aria-hidden="true"
+            tabIndex={-1}
+            onChange={handleFileInputChange}
+          />
+
+          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-2 sm:bottom-3 sm:right-3 lg:bottom-4 lg:right-4">
+            <Button
+              ghost
+              onClick={handlePickFile}
+              disabled={uploadState === "uploading"}
+              title="Upload a file into this chat, or paste one from your clipboard"
+              aria-label="Upload file into chat"
+              className={cn(
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-60 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
+              )}
+              style={{ color: TERMINAL_THEME.foreground }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Paperclip className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[520px]:inline tracking-wide">
+                  {uploadState === "uploading" ? "uploading" : "upload file"}
+                </span>
               </span>
-            </span>
-          </Button>
+            </Button>
+
+            <Button
+              ghost
+              onClick={handleCopyLast}
+              title="Copy last assistant response as raw markdown"
+              aria-label="Copy last assistant response"
+              className={cn(
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-60 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
+              )}
+              style={{ color: TERMINAL_THEME.foreground }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
+                </span>
+              </span>
+            </Button>
+          </div>
         </div>
 
         {!narrow && (

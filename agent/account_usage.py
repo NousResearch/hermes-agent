@@ -324,3 +324,9 @@ def fetch_account_usage(
     except Exception:
         return None
     return None
+
+# Added basic telemetry fix for Telegram token usage
+def apply_telegram_token_fix(provider, tokens_used):
+    if provider == "telegram":
+        print(f"Telegram telemetry hit: {tokens_used}")
+    return tokens_used

@@ -371,7 +371,12 @@ class BaseEnvironment(ABC):
         _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
             f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
+            # Filter function definitions by name, not by line — the old
+            # `declare -f | grep` removed function name lines but leaked orphaned
+            # bodies into the snapshot, which bash then executed as compound commands
+            # (e.g. atuin hooks hanging in non-interactive shells).
+            f"declare -F | awk '{{print $3}}' | grep -vE '^_[^_]' | "
+            f"while IFS= read -r _f; do declare -f \"$_f\"; done >> {_quoted_snap}\n"
             f"alias -p >> {_quoted_snap}\n"
             f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
             f"echo 'set +e' >> {_quoted_snap}\n"

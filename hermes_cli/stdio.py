@@ -92,6 +92,9 @@ def configure_windows_stdio() -> bool:
 
     Set ``HERMES_DISABLE_WINDOWS_UTF8=1`` in the environment to opt out
     (for diagnosing encoding-related bugs by forcing the old cp1252 path).
+
+    Also sets a sensible default ``EDITOR`` on Windows if none is already
+    set — see :func:`_default_windows_editor`.
     """
     global _CONFIGURED
 
@@ -114,6 +117,16 @@ def configure_windows_stdio() -> bool:
     # (PEP 540).  Again, don't override an explicit setting.
     os.environ.setdefault("PYTHONUTF8", "1")
 
+    # Set EDITOR to a working Windows default if neither EDITOR nor VISUAL
+    # is set.  prompt_toolkit's ``open_in_editor`` falls back to POSIX-only
+    # paths (``/usr/bin/nano``, ``/usr/bin/vi``) that don't exist on
+    # Windows — Ctrl+X Ctrl+E and ``/edit`` silently do nothing there
+    # otherwise.  This happens even with full Git for Windows installed,
+    # so it's not a MinGit-specific issue.
+    _default_editor = _default_windows_editor()
+    if _default_editor and not os.environ.get("EDITOR") and not os.environ.get("VISUAL"):
+        os.environ["EDITOR"] = _default_editor
+
     # Flip the console code page first so that any subprocess that
     # inherits the console (e.g. a launched shell) also sees CP_UTF8.
     _flip_console_code_page_to_utf8()
@@ -132,3 +145,36 @@ def configure_windows_stdio() -> bool:
 
     _CONFIGURED = True
     return True
+
+
+def _default_windows_editor() -> str:
+    """Return a Windows-appropriate default for ``$EDITOR``.
+
+    Priority order, first match wins:
+
+    1. ``notepad`` — ships with every Windows install, no deps, works as a
+       blocking editor (``subprocess.call(["notepad", file])`` blocks until
+       the user closes the window).  This is the "always-works" default.
+
+    The prompt_toolkit buffer's ``open_in_editor`` and Hermes's
+    ``hermes config edit`` both honour ``$EDITOR``.  Users who prefer a
+    different editor can override:
+
+    - VSCode: ``$env:EDITOR = "code --wait"``  (``--wait`` is critical;
+      without it the editor returns immediately and any input is lost)
+    - Notepad++: ``$env:EDITOR = "'C:\\Program Files\\Notepad++\\notepad++.exe' -multiInst -nosession"``
+    - Neovim: ``$env:EDITOR = "nvim"``  (if installed)
+
+    Set this before launching Hermes (User env var in Windows Settings, or
+    export in a PowerShell profile) and Hermes picks it up automatically.
+    """
+    import shutil
+
+    # notepad.exe is always in %SystemRoot%\System32 on Windows, so shutil.which
+    # will reliably find it.  Return the bare name so prompt_toolkit's shlex
+    # split doesn't trip over a path containing spaces.
+    if shutil.which("notepad"):
+        return "notepad"
+    # On the extreme off-chance notepad is missing (WinPE, Nano Server), fall
+    # back to nothing and let prompt_toolkit's silent no-op do its thing.
+    return ""

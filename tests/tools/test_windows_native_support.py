@@ -73,6 +73,8 @@ class TestConfigureWindowsStdio:
         monkeypatch.delenv("PYTHONIOENCODING", raising=False)
         monkeypatch.delenv("PYTHONUTF8", raising=False)
         monkeypatch.delenv("HERMES_DISABLE_WINDOWS_UTF8", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        monkeypatch.delenv("VISUAL", raising=False)
 
         reconfigure_calls = []
 
@@ -86,13 +88,50 @@ class TestConfigureWindowsStdio:
 
         monkeypatch.setattr(stdio, "_reconfigure_stream", fake_reconfigure)
         monkeypatch.setattr(stdio, "_flip_console_code_page_to_utf8", fake_flip)
+        # Pretend notepad.exe is on PATH (it always is on real Windows hosts,
+        # but not on the Linux CI runner — mock it so the editor default
+        # survives).
+        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: "notepad")
 
         result = stdio.configure_windows_stdio()
         assert result is True
         assert os.environ.get("PYTHONIOENCODING") == "utf-8"
         assert os.environ.get("PYTHONUTF8") == "1"
+        # EDITOR must be set so prompt_toolkit's open_in_editor finds
+        # a working program on Windows (it defaults to /usr/bin/nano).
+        assert os.environ.get("EDITOR") == "notepad"
         assert len(cp_calls) == 1  # SetConsoleOutputCP path hit
         assert len(reconfigure_calls) == 3  # stdout, stderr, stdin
+
+    def test_respects_existing_editor_var(self, monkeypatch):
+        """User's explicit EDITOR wins over our default."""
+        from hermes_cli import stdio
+
+        monkeypatch.setattr(stdio, "is_windows", lambda: True)
+        monkeypatch.setenv("EDITOR", "code --wait")
+        monkeypatch.setattr(stdio, "_reconfigure_stream", lambda *a, **kw: None)
+        monkeypatch.setattr(stdio, "_flip_console_code_page_to_utf8", lambda: None)
+        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: "notepad")
+
+        stdio.configure_windows_stdio()
+        assert os.environ["EDITOR"] == "code --wait"
+
+    def test_respects_existing_visual_var(self, monkeypatch):
+        """VISUAL takes precedence over our EDITOR default too."""
+        from hermes_cli import stdio
+
+        monkeypatch.setattr(stdio, "is_windows", lambda: True)
+        monkeypatch.delenv("EDITOR", raising=False)
+        monkeypatch.setenv("VISUAL", "nvim")
+        monkeypatch.setattr(stdio, "_reconfigure_stream", lambda *a, **kw: None)
+        monkeypatch.setattr(stdio, "_flip_console_code_page_to_utf8", lambda: None)
+        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: "notepad")
+
+        stdio.configure_windows_stdio()
+        # EDITOR should NOT be set when VISUAL already is (prompt_toolkit
+        # checks VISUAL first anyway, but we also shouldn't override it).
+        assert os.environ.get("EDITOR", "") != "notepad"
+        assert os.environ["VISUAL"] == "nvim"
 
     def test_respects_existing_env_var(self, monkeypatch):
         """User's explicit PYTHONIOENCODING wins over our default."""

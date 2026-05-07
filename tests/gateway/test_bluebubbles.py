@@ -35,6 +35,7 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
+        assert bc.extra["allowed_users"] == []
 
     def test_home_channel_set_from_env(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -47,6 +48,17 @@ class TestBlueBubblesConfigLoading:
         hc = config.platforms[Platform.BLUEBUBBLES].home_channel
         assert hc is not None
         assert hc.chat_id == "user@example.com"
+
+    def test_allowed_users_set_from_env(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_USERS", "+121****0286,+191****0401")
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        bc = config.platforms[Platform.BLUEBUBBLES]
+        assert bc.extra["allowed_users"] == ["+121****0286", "+191****0401"]
 
     def test_not_connected_without_password(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -124,6 +136,40 @@ class TestBlueBubblesHelpers:
     def test_server_url_adds_scheme(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
+
+
+class TestBlueBubblesAllowlist:
+    def test_init_loads_allowed_users_from_env(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_USERS", "+12129310286,+19178620401")
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.allowed_users == {"+12129310286", "+19178620401"}
+
+    def test_sender_allowed_when_allowlist_empty(self, monkeypatch):
+        monkeypatch.delenv("BLUEBUBBLES_ALLOWED_USERS", raising=False)
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_allowed_sender(
+            sender="+15551234567",
+            chat_identifier="+15551234567",
+            chat_guid="iMessage;-;+15551234567",
+        ) is True
+
+    def test_sender_allowed_when_sender_matches_allowlist(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_USERS", "+12129310286,+19178620401")
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_allowed_sender(
+            sender="+19178620401",
+            chat_identifier="+15551234567",
+            chat_guid="iMessage;-;+15551234567",
+        ) is True
+
+    def test_sender_blocked_when_no_fields_match_allowlist(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_USERS", "+12129310286,+19178620401")
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_allowed_sender(
+            sender="+15551234567",
+            chat_identifier="+15551234567",
+            chat_guid="iMessage;-;+15551234567",
+        ) is False
 
 
 class TestBlueBubblesWebhookParsing:

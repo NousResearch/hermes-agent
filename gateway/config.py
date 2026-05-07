@@ -1551,6 +1551,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_port": int(os.getenv("BLUEBUBBLES_WEBHOOK_PORT", "8645")),
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in ("true", "1", "yes"),
+            "allowed_users": [
+                item.strip()
+                for item in os.getenv("BLUEBUBBLES_ALLOWED_USERS", "").split(",")
+                if item.strip()
+            ],
         })
     bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:

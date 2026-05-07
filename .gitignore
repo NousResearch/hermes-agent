@@ -64,6 +64,10 @@ web/public/ds-assets/
 .release_notes.md
 mini-swe-agent/
 
+# Local Hermes runtime artifacts created during planning/debugging
+.hermes/
+.gitnexus/lbug
+
 # Nix
 .direnv/
 .nix-stamps/

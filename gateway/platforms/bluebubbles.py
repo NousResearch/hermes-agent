@@ -124,6 +124,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        allowed_users_raw = (
+            extra.get("allowed_users")
+            or os.getenv("BLUEBUBBLES_ALLOWED_USERS", "")
+        )
+        if isinstance(allowed_users_raw, str):
+            self.allowed_users = {
+                item.strip() for item in allowed_users_raw.split(",") if item.strip()
+            }
+        else:
+            self.allowed_users = {str(item).strip() for item in (allowed_users_raw or []) if str(item).strip()}
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -765,6 +775,36 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    @staticmethod
+    def _candidate_identifier(value: Optional[str]) -> Optional[str]:
+        candidate = (value or "").strip()
+        if not candidate:
+            return None
+        if ";" in candidate:
+            parts = [part for part in candidate.split(";") if part]
+            if parts:
+                candidate = parts[-1].strip()
+        return candidate or None
+
+    def _is_allowed_sender(
+        self,
+        sender: Optional[str],
+        chat_identifier: Optional[str],
+        chat_guid: Optional[str],
+    ) -> bool:
+        if not self.allowed_users:
+            return True
+        candidates = {
+            normalized
+            for normalized in (
+                self._candidate_identifier(sender),
+                self._candidate_identifier(chat_identifier),
+                self._candidate_identifier(chat_guid),
+            )
+            if normalized
+        }
+        return bool(candidates & self.allowed_users)
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -893,6 +933,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or chat_identifier
             or chat_guid
         )
+        if not self._is_allowed_sender(sender, chat_identifier, chat_guid):
+            logger.info(
+                "[bluebubbles] ignoring unauthorized sender=%s chat=%s",
+                _redact(sender or ""),
+                _redact(chat_identifier or chat_guid or ""),
+            )
+            return web.Response(text="ok")
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
         if not sender or not (chat_guid or chat_identifier) or not text:

@@ -1,0 +1,13 @@
+{
+  "repoPath": "/Users/jarvis/.hermes/hermes-agent",
+  "lastCommit": "edadeaf495c7094a7a9f4934d7df7b1e3fd2259e",
+  "indexedAt": "2026-04-27T04:34:27.889Z",
+  "stats": {
+    "files": 2435,
+    "nodes": 96254,
+    "edges": 137223,
+    "communities": 1129,
+    "processes": 300,
+    "embeddings": 0
+  }
+}

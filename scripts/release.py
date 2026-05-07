@@ -844,6 +844,8 @@ AUTHOR_MAP = {
     "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
     # Debug share upload-time redaction (May 2026)
     "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
+    # Steel cloud browser provider (May 2026)
+    "nikola.balic@gmail.com": "nibzard",  # PR #5555
 }
 
 

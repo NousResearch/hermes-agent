@@ -1905,6 +1905,29 @@
       }).then(function () { load(); props.onRefresh(); });
     };
 
+    // Triage specifier — calls the auxiliary LLM to flesh out a rough
+    // idea in the Triage column into a concrete spec (title + body with
+    // goal, approach, acceptance criteria) and promotes it to todo.
+    // Not a PATCH: runs through a dedicated POST endpoint because the
+    // LLM call can take tens of seconds, and its outcome is richer than
+    // a status flip (may update title AND body AND emit an audit
+    // comment — or fail with a human-readable reason that the UI
+    // surfaces inline without treating it as an HTTP error).
+    const doSpecify = function () {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/specify`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
+    };
+
     const addLink = function (parentId) {
       return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
@@ -1994,6 +2017,7 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          onSpecify: doSpecify,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
@@ -2062,7 +2086,11 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
-      h(StatusActions, { task: t, onPatch: props.onPatch }),
+      h(StatusActions, {
+        task: t,
+        onPatch: props.onPatch,
+        onSpecify: props.onSpecify,
+      }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -2495,6 +2523,8 @@
 
   function StatusActions(props) {
     const t = props.task;
+    const [specifyBusy, setSpecifyBusy] = useState(false);
+    const [specifyMsg, setSpecifyMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
@@ -2502,22 +2532,67 @@
         size: "sm",
       }, label);
     };
-    return h("div", { className: "hermes-kanban-actions" },
-      b("→ triage",  { status: "triage" },   t.status !== "triage"),
-      b("→ ready",   { status: "ready" },    t.status !== "ready"),
-      // No direct → running button: /tasks/:id PATCH rejects status=running
-      // with 400 (issue #19535). Tasks enter running only through the
-      // dispatcher's claim_task path, which atomically creates the run row,
-      // claim lock, and worker process metadata.
-      b("Block",     { status: "blocked" },
-        t.status === "running" || t.status === "ready",
-        DESTRUCTIVE_TRANSITIONS.blocked),
-      b("Unblock",   { status: "ready" },    t.status === "blocked"),
-      b("Complete",  { status: "done" },
-        t.status === "running" || t.status === "ready" || t.status === "blocked",
-        DESTRUCTIVE_TRANSITIONS.done),
-      b("Archive",   { status: "archived" }, t.status !== "archived",
-        DESTRUCTIVE_TRANSITIONS.archived),
+
+    // "Specify" appears only when the task is in the Triage column — the
+    // one column where an auxiliary LLM pass is meaningful. Elsewhere
+    // the backend would return ok:false with "not in triage" anyway,
+    // so hiding the button keeps the action row uncluttered.
+    const specifyButton = (t.status === "triage" && props.onSpecify)
+      ? h(Button, {
+          onClick: function () {
+            if (specifyBusy) return;
+            setSpecifyBusy(true);
+            setSpecifyMsg(null);
+            props.onSpecify().then(function (res) {
+              if (res && res.ok) {
+                const suffix = res.new_title
+                  ? ` — retitled: ${res.new_title}`
+                  : "";
+                setSpecifyMsg({ ok: true, text: `Specified${suffix}` });
+              } else {
+                setSpecifyMsg({
+                  ok: false,
+                  text: "Specify failed: " + ((res && res.reason) || "unknown error"),
+                });
+              }
+            }).catch(function (err) {
+              setSpecifyMsg({
+                ok: false,
+                text: "Specify failed: " + (err.message || String(err)),
+              });
+            }).then(function () {
+              setSpecifyBusy(false);
+            });
+          },
+          disabled: specifyBusy,
+          size: "sm",
+        }, specifyBusy ? "Specifying…" : "✨ Specify")
+      : null;
+
+    return h("div", null,
+      h("div", { className: "hermes-kanban-actions" },
+        specifyButton,
+        b("→ triage",  { status: "triage" },   t.status !== "triage"),
+        b("→ ready",   { status: "ready" },    t.status !== "ready"),
+        // No direct → running button: /tasks/:id PATCH rejects status=running
+        // with 400 (issue #19535). Tasks enter running only through the
+        // dispatcher's claim_task path, which atomically creates the run row,
+        // claim lock, and worker process metadata.
+        b("Block",     { status: "blocked" },
+          t.status === "running" || t.status === "ready",
+          DESTRUCTIVE_TRANSITIONS.blocked),
+        b("Unblock",   { status: "ready" },    t.status === "blocked"),
+        b("Complete",  { status: "done" },
+          t.status === "running" || t.status === "ready" || t.status === "blocked",
+          DESTRUCTIVE_TRANSITIONS.done),
+        b("Archive",   { status: "archived" }, t.status !== "archived",
+          DESTRUCTIVE_TRANSITIONS.archived),
+      ),
+      specifyMsg ? h("div", {
+        className: specifyMsg.ok
+          ? "hermes-kanban-msg-ok"
+          : "hermes-kanban-msg-err",
+      }, specifyMsg.text) : null,
     );
   }
 

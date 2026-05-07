@@ -72,18 +72,33 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """Set directory permissions to 0755 (owner rwx, group/other rx).
+
+    The cron scheduler runs inside the gateway process which may run as a
+    different user (e.g. ``hermes``) than the agent that creates job files
+    (e.g. ``root``).  Using 0o700 prevents the gateway from reading or
+    listing files in the cron directories, making cron jobs invisible in
+    the dashboard UI.  0o755 ensures the gateway can read while only the
+    owner can write.
+    """
     try:
-        os.chmod(path, 0o700)
+        os.chmod(path, 0o755)
     except (OSError, NotImplementedError):
         pass  # Windows or other platforms where chmod is not supported
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file permissions to 0644 (owner r/w, group/other read-only).
+
+    The cron job creation tool runs as the agent user (often ``root`` in
+    Docker), while the gateway process that reads ``jobs.json`` typically
+    runs as a different user (e.g. ``hermes``).  Using 0o600 makes the file
+    unreadable by the gateway, so cron jobs never appear in the dashboard
+    UI.  0o644 ensures the gateway can read while only the owner can write.
+    """
     try:
         if path.exists():
-            os.chmod(path, 0o600)
+            os.chmod(path, 0o644)
     except (OSError, NotImplementedError):
         pass
 

@@ -7683,7 +7683,8 @@ class GatewayRunner:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
+                    providers = await asyncio.to_thread(
+                        list_picker_providers,
                         current_provider=current_provider,
                         current_base_url=current_base_url,
                         current_model=current_model,
@@ -7708,7 +7709,8 @@ class GatewayRunner:
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
-                        result = _switch_model(
+                        result = await asyncio.to_thread(
+                            _switch_model,
                             raw_input=model_id,
                             current_provider=_cur_provider,
                             current_model=_cur_model,
@@ -7816,7 +7818,8 @@ class GatewayRunner:
             lines = [f"Current: `{current_model or 'unknown'}` on {provider_label}", ""]
 
             try:
-                providers = list_authenticated_providers(
+                providers = await asyncio.to_thread(
+                    list_authenticated_providers,
                     current_provider=current_provider,
                     current_base_url=current_base_url,
                     current_model=current_model,
@@ -7843,7 +7846,8 @@ class GatewayRunner:
             return "\n".join(lines)
 
         # Perform the switch
-        result = _switch_model(
+        result = await asyncio.to_thread(
+            _switch_model,
             raw_input=model_input,
             current_provider=current_provider,
             current_model=current_model,

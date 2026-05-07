@@ -66,14 +66,26 @@ Slack, CLI) — Markdown is fine there; ignore this skill.
 | What you want to do                  | How to do it                                                                 |
 |--------------------------------------|------------------------------------------------------------------------------|
 | Send a plain text reply              | Just produce text in your final answer. The gateway sends it via `send_msg`. |
-| Send an image (local file or URL)    | Embed `MEDIA:/abs/path/to/img.png` in your reply. Gateway calls `send_image_file`. |
-| Send voice / video                   | `MEDIA:/abs/path/to/audio.ogg` → `send_voice`; `.mp4` → `send_video`.        |
+| Send an image URL                    | Embed `MEDIA:https://example.com/image.png` in your reply. Gateway calls `send_image_file`. |
+| Send voice / video URL               | `MEDIA:https://example.com/audio.ogg` → `send_voice`; `.mp4` → `send_video`. |
 | Upload a non-media file              | `napcat_call("upload_group_file", {...})` or `upload_private_file`.          |
 | Anything else (recall, kick, like…)  | `napcat_call(action, params)`.                                               |
 
 > Prefer `MEDIA:` tags over raw `napcat_call("send_group_msg", …)` for media —
 > the gateway handles chat-id routing, chunking, captions, and reply threading
 > for you.
+
+### 3.1 Deployment/path rule — Hermes and NapCat are not the same filesystem
+
+Assume Hermes and NapCat may be running on different machines. A local path that
+exists on the Hermes host is not automatically readable by the NapCat/QQ host.
+For outgoing media, prefer `https://...`, `http://...`, `base64://...`, or a
+shared mounted path that NapCat can read on its own machine. Do not invent or
+echo placeholder local paths like `/path/to/...`, `/abs/path/to/...`, or
+`/home/user/cache/...` in final replies.
+
+Only use a local `MEDIA:` path or `file://` URI when you know that exact path
+exists on the NapCat machine, not merely inside the Hermes workspace.
 
 ---
 
@@ -209,12 +221,18 @@ Embed a `MEDIA:` tag in your final reply. The gateway extracts it and calls
 `send_image_file` automatically:
 
 ```
-MEDIA:/home/user/cache/meme.png
+MEDIA:https://example.com/meme.png
 ```
 
 Multiple media in one reply is fine; each one becomes a separate QQ message.
 A short caption written before the tag is sent first as text. Don't wrap
 `MEDIA:` paths in backticks or quotes — the extractor handles bare paths.
+
+If the image was created or downloaded by Hermes on a different machine, first
+make it reachable to NapCat: publish it as an HTTP(S) URL, convert it to
+`base64://...`, or place it in a directory mounted at the same path on the
+NapCat host. Never send a Hermes-only temp/cache path and assume NapCat can
+open it.
 
 If you really need to control the segment array yourself (e.g. inline image +
 text in one bubble), call:
@@ -223,14 +241,14 @@ text in one bubble), call:
 napcat_call("send_group_msg", {
   "group_id": 12345678,
   "message": [
-    {"type": "image", "data": {"file": "file:///home/user/cache/meme.png"}},
+    {"type": "image", "data": {"file": "https://example.com/meme.png"}},
     {"type": "text",  "data": {"text": "看这个"}}
   ]
 })
 ```
 
-Local paths must be passed as absolute paths or `file://` URIs. URLs work
-unchanged.
+Local paths must be absolute paths or `file://` URIs that are valid on the
+NapCat machine. URLs work unchanged.
 
 ---
 
@@ -267,8 +285,9 @@ napcat_call("get_group_msg_history", {"group_id": 12345678, "count": 30})
 
 Reply with a 1–2 line summary in plain text (no Markdown).
 
-**Send a meme to a group**: include `MEDIA:/path/to/meme.png` in your final
-reply. Add a short caption before the tag if it adds context.
+**Send a meme to a group**: include a NapCat-readable URL such as
+`MEDIA:https://example.com/meme.png` in your final reply. Add a short caption
+before the tag if it adds context.
 
 **Recall the bot's last reply** (when the user says “撤回”): grab `message_id`
 from the previous turn (or call `get_msg` if missing), then

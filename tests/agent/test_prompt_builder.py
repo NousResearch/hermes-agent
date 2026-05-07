@@ -1114,6 +1114,22 @@ class TestDeepSeekModelOperationalGuidance:
         assert "backup" in text
         assert "rollback" in text
 
+    def test_guidance_classifies_form_save_as_db_write(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "save button" in text or "admin" in text
+        assert "is a database write" in text
+
+    def test_guidance_requires_dump_precondition(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "mysqldump" in text or "pg_dump" in text
+        assert "binlog" in text
+
+    def test_guidance_covers_skill_safe_targets(self):
+        text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "respect_skill_safe_targets" in text
+        assert "binding" in text
+        assert "test product" in text or "staging" in text
+
     def test_guidance_covers_no_yes_man(self):
         text = DEEPSEEK_MODEL_OPERATIONAL_GUIDANCE.lower()
         assert "no_yes_man" in text

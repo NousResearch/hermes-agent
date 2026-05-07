@@ -374,6 +374,117 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+# SQL write statements (boundary-anchored; case-insensitive at use site).
+_SQL_WRITE_STATEMENT = re.compile(
+    r"\b(?:UPDATE(?=\s+[`\"\w])|INSERT\s+INTO|DELETE\s+FROM|DROP\s+(?:TABLE|DATABASE|INDEX|VIEW|SCHEMA)|TRUNCATE\b|ALTER\s+TABLE|REPLACE\s+INTO|CREATE\s+(?:TABLE|DATABASE|INDEX))",
+    re.IGNORECASE,
+)
+# Read-only / dump commands that DO read the database but don't write.
+# A command beginning with one of these tokens skips the write-guard entirely.
+_DB_READONLY_PROGRAMS = (
+    "mysqldump", "pg_dump", "pg_dumpall", "pg_basebackup",
+    "mongodump", "redis-cli --rdb",
+)
+_DB_BACKUP_DIR = "/home/mat/Storage/Backups"
+_DB_BACKUP_GLOBS = ("*.sql", "*.sql.gz", "*.sql.bz2", "*.sql.zst", "*.dump", "*.dump.gz")
+_DB_BACKUP_RECENCY_SECONDS = 60 * 60  # 60 minutes
+
+
+def _command_starts_with_readonly_program(cmd: str) -> bool:
+    """Return True if the command's leading program is a known DB read/dump tool."""
+    stripped = cmd.lstrip()
+    if not stripped:
+        return False
+    # Accept an env-var prefix like FOO=bar BAR=baz mysqldump ...
+    while True:
+        m = re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\S+\s+", stripped)
+        if not m:
+            break
+        stripped = stripped[m.end():]
+    leading = stripped.split(None, 1)[0] if stripped else ""
+    return any(leading == p.split()[0] for p in _DB_READONLY_PROGRAMS)
+
+
+def _extract_db_write_target(cmd: str) -> str | None:
+    """Return a short label of the detected DB write, or None if no write detected.
+
+    Examples of returned labels: "UPDATE", "INSERT INTO", "DELETE FROM", "DROP TABLE".
+    Returns None for SELECT-only queries, mysqldump/pg_dump, or empty commands.
+    """
+    if not cmd or not cmd.strip():
+        return None
+    if _command_starts_with_readonly_program(cmd):
+        return None
+    m = _SQL_WRITE_STATEMENT.search(cmd)
+    if not m:
+        return None
+    return m.group(0).upper()
+
+
+def _recent_db_dump_exists(backup_dir: str | None = None,
+                           within_seconds: int | None = None) -> bool:
+    """Return True if any recognised dump file under backup_dir was modified within the window.
+
+    Uses module-globals at call time when args omitted, so tests can monkeypatch
+    `_DB_BACKUP_DIR` / `_DB_BACKUP_RECENCY_SECONDS` and have it take effect.
+    """
+    if backup_dir is None:
+        backup_dir = _DB_BACKUP_DIR
+    if within_seconds is None:
+        within_seconds = _DB_BACKUP_RECENCY_SECONDS
+    try:
+        if not os.path.isdir(backup_dir):
+            return False
+        cutoff = time.time() - within_seconds
+        for root, _dirs, files in os.walk(backup_dir):
+            for name in files:
+                lower = name.lower()
+                if not any(lower.endswith(ext.lstrip("*")) for ext in _DB_BACKUP_GLOBS):
+                    continue
+                try:
+                    if os.path.getmtime(os.path.join(root, name)) >= cutoff:
+                        return True
+                except OSError:
+                    continue
+        return False
+    except Exception:
+        # Never let the guard itself crash tool execution.
+        return False
+
+
+def _db_write_backup_guard_message(function_name: str, function_args: dict) -> str | None:
+    """Return a tool-error message if a terminal command would write to the DB
+    without a recent dump; otherwise None.
+
+    Hard-refuses execution. The returned text tells the model exactly which
+    dump command to run before retrying.
+    """
+    if function_name != "terminal":
+        return None
+    cmd = function_args.get("command") or ""
+    if not isinstance(cmd, str):
+        return None
+    target = _extract_db_write_target(cmd)
+    if target is None:
+        return None
+    if _recent_db_dump_exists():
+        return None
+    return (
+        "BACKUP-FIRST GUARD: this command was refused because it contains a "
+        f"database write ({target}) and no dump file under "
+        f"{_DB_BACKUP_DIR} has been modified in the last "
+        f"{_DB_BACKUP_RECENCY_SECONDS // 60} minutes. "
+        "Take a dump first, then retry the write. Example for MySQL:\n"
+        f"  mysqldump --single-transaction <db_name> > "
+        f"{_DB_BACKUP_DIR}/<db_name>_$(date +%Y%m%d_%H%M%S).sql\n"
+        "For PostgreSQL: pg_dump -Fc <db_name> > "
+        f"{_DB_BACKUP_DIR}/<db_name>_$(date +%Y%m%d_%H%M%S).dump\n"
+        "If the action is read-only or the SQL keyword appears inside a "
+        "comment/string and not as a statement, restructure the command so "
+        "the write keyword is not at statement position."
+    )
+
+
 def _should_parallelize_tool_batch(tool_calls) -> bool:
     """Return True when a tool-call batch is safe to run concurrently."""
     if len(tool_calls) <= 1:
@@ -9651,6 +9762,10 @@ class AIAgent:
             except Exception:
                 block_message = None
 
+            if block_message is None:
+                # Backup-first guard: refuse DB-write terminal commands when no recent dump exists.
+                block_message = _db_write_backup_guard_message(function_name, function_args)
+
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
             else:
@@ -10001,6 +10116,10 @@ class AIAgent:
                 )
             except Exception:
                 pass
+
+            # Backup-first guard: refuse DB-write terminal commands when no recent dump exists.
+            if _block_msg is None:
+                _block_msg = _db_write_backup_guard_message(function_name, function_args)
 
             _guardrail_block_decision: ToolGuardrailDecision | None = None
             if _block_msg is None:

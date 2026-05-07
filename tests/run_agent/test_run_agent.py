@@ -52,6 +52,146 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+# ---------------------------------------------------------------------------
+# DB-write backup-first guard
+# ---------------------------------------------------------------------------
+
+
+class TestExtractDbWriteTarget:
+    def test_select_only_returns_none(self):
+        assert run_agent._extract_db_write_target("mysql -e 'SELECT * FROM t'") is None
+
+    def test_update_detected(self):
+        assert run_agent._extract_db_write_target(
+            "mysql -e \"UPDATE products SET price=0 WHERE id=5\""
+        ) == "UPDATE"
+
+    def test_insert_into_detected(self):
+        assert run_agent._extract_db_write_target(
+            "psql -c 'INSERT INTO t VALUES (1)'"
+        ) == "INSERT INTO"
+
+    def test_delete_from_detected(self):
+        assert run_agent._extract_db_write_target(
+            "mysql db -e 'DELETE FROM users WHERE id=1'"
+        ) == "DELETE FROM"
+
+    def test_drop_table_detected(self):
+        assert run_agent._extract_db_write_target("mysql -e 'DROP TABLE x'") == "DROP TABLE"
+
+    def test_truncate_detected(self):
+        assert run_agent._extract_db_write_target("mysql -e 'TRUNCATE foo'") == "TRUNCATE"
+
+    def test_alter_table_detected(self):
+        assert run_agent._extract_db_write_target(
+            "mysql -e 'ALTER TABLE foo ADD COLUMN bar INT'"
+        ) == "ALTER TABLE"
+
+    def test_mysqldump_carve_out(self):
+        assert run_agent._extract_db_write_target(
+            "mysqldump --single-transaction db > /tmp/db.sql"
+        ) is None
+
+    def test_pg_dump_carve_out(self):
+        assert run_agent._extract_db_write_target(
+            "pg_dump -Fc db > /tmp/db.dump"
+        ) is None
+
+    def test_env_prefix_before_mysqldump_carve_out(self):
+        assert run_agent._extract_db_write_target(
+            "MYSQL_PWD=x mysqldump db > /tmp/db.sql"
+        ) is None
+
+    def test_empty_command_returns_none(self):
+        assert run_agent._extract_db_write_target("") is None
+        assert run_agent._extract_db_write_target("   ") is None
+
+    def test_word_in_string_only_does_not_false_positive(self):
+        # 'updates' inside a path/word is not a SQL UPDATE statement.
+        assert run_agent._extract_db_write_target("ls /var/log/updates") is None
+        assert run_agent._extract_db_write_target("echo 'no updates available'") is None
+
+
+class TestRecentDbDumpExists:
+    def test_no_dir_returns_false(self, tmp_path):
+        missing = tmp_path / "does-not-exist"
+        assert run_agent._recent_db_dump_exists(str(missing)) is False
+
+    def test_recent_dump_returns_true(self, tmp_path):
+        dump = tmp_path / "db_20260506.sql"
+        dump.write_text("-- dump")
+        assert run_agent._recent_db_dump_exists(str(tmp_path)) is True
+
+    def test_old_dump_returns_false(self, tmp_path):
+        dump = tmp_path / "db_old.sql"
+        dump.write_text("-- old dump")
+        # Backdate to two hours ago
+        import os, time
+        old = time.time() - 2 * 3600
+        os.utime(dump, (old, old))
+        assert run_agent._recent_db_dump_exists(str(tmp_path)) is False
+
+    def test_finds_dump_in_subdir(self, tmp_path):
+        sub = tmp_path / "mysql"
+        sub.mkdir()
+        (sub / "fresh.sql.gz").write_text("ok")
+        assert run_agent._recent_db_dump_exists(str(tmp_path)) is True
+
+    def test_unrecognised_extension_does_not_count(self, tmp_path):
+        (tmp_path / "fresh.txt").write_text("not a dump")
+        assert run_agent._recent_db_dump_exists(str(tmp_path)) is False
+
+
+class TestDbWriteBackupGuardMessage:
+    def test_non_terminal_tool_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_agent, "_DB_BACKUP_DIR", str(tmp_path))
+        msg = run_agent._db_write_backup_guard_message(
+            "memory", {"action": "add", "content": "UPDATE foo SET x=1"}
+        )
+        assert msg is None
+
+    def test_write_without_dump_blocks(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_agent, "_DB_BACKUP_DIR", str(tmp_path))
+        msg = run_agent._db_write_backup_guard_message(
+            "terminal", {"command": "mysql db -e 'UPDATE t SET x=1'"}
+        )
+        assert msg is not None
+        assert "BACKUP-FIRST GUARD" in msg
+        assert "UPDATE" in msg
+        assert "mysqldump" in msg
+
+    def test_write_with_recent_dump_allows(self, tmp_path, monkeypatch):
+        (tmp_path / "fresh.sql").write_text("-- dump")
+        monkeypatch.setattr(run_agent, "_DB_BACKUP_DIR", str(tmp_path))
+        msg = run_agent._db_write_backup_guard_message(
+            "terminal", {"command": "mysql db -e 'UPDATE t SET x=1'"}
+        )
+        assert msg is None
+
+    def test_select_only_allows(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_agent, "_DB_BACKUP_DIR", str(tmp_path))
+        msg = run_agent._db_write_backup_guard_message(
+            "terminal", {"command": "mysql db -e 'SELECT * FROM t'"}
+        )
+        assert msg is None
+
+    def test_mysqldump_allows_without_recent_dump(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_agent, "_DB_BACKUP_DIR", str(tmp_path))
+        msg = run_agent._db_write_backup_guard_message(
+            "terminal", {"command": "mysqldump db > /tmp/x.sql"}
+        )
+        assert msg is None
+
+    def test_non_string_command_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_agent, "_DB_BACKUP_DIR", str(tmp_path))
+        assert run_agent._db_write_backup_guard_message(
+            "terminal", {"command": None}
+        ) is None
+        assert run_agent._db_write_backup_guard_message(
+            "terminal", {}
+        ) is None
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""

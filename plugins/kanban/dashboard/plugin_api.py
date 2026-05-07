@@ -30,6 +30,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -1009,6 +1010,61 @@ def reclaim_task_endpoint(
         return {"ok": True, "task_id": task_id}
     finally:
         conn.close()
+
+
+class SpecifyBody(BaseModel):
+    """Optional author override. Nothing else is configurable from the
+    dashboard — model + prompt come from ``auxiliary.triage_specifier``
+    in config.yaml, same as the CLI."""
+
+    author: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/specify")
+def specify_task_endpoint(
+    task_id: str,
+    payload: SpecifyBody,
+    board: Optional[str] = Query(None),
+):
+    """Flesh out a triage-column task via the auxiliary LLM and promote
+    it to ``todo``. Maps 1:1 to ``hermes kanban specify <task_id>``.
+
+    Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
+    new_title}``. A non-OK outcome is NOT an HTTP error — the UI renders
+    the reason inline (e.g. "no auxiliary client configured") so the
+    operator knows what to fix, and retries without a page reload.
+
+    This endpoint runs in FastAPI's threadpool (sync ``def``) because
+    the underlying LLM call can take tens of seconds to minutes on
+    reasoning models, which would block the event loop if we used
+    ``async def`` without an explicit ``run_in_executor``.
+    """
+    board = _resolve_board(board)
+    # Pin the board for the duration of this call so the specifier module
+    # (which calls ``kb.connect()`` with no args) hits the right DB.
+    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        # Import lazily so a missing auxiliary client at import time
+        # doesn't break plugin load.
+        from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
+
+        outcome = kanban_specify.specify_task(
+            task_id,
+            author=(payload.author or None),
+        )
+    finally:
+        if prev_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+
+    return {
+        "ok": bool(outcome.ok),
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "new_title": outcome.new_title,
+    }
 
 
 class ReassignBody(BaseModel):

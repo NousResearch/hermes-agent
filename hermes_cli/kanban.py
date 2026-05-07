@@ -570,6 +570,42 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_ctx.add_argument("task_id")
 
+    # --- specify --- (triage → todo via auxiliary LLM)
+    p_specify = sub.add_parser(
+        "specify",
+        help="Flesh out a triage-column task into a concrete spec "
+             "(title + body) and promote it to todo. Uses the auxiliary "
+             "LLM configured under auxiliary.triage_specifier.",
+    )
+    p_specify.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Task id to specify (required unless --all is given)",
+    )
+    p_specify.add_argument(
+        "--all",
+        dest="all_triage",
+        action="store_true",
+        help="Specify every task currently in the triage column",
+    )
+    p_specify.add_argument(
+        "--tenant",
+        default=None,
+        help="When used with --all, restrict the sweep to this tenant",
+    )
+    p_specify.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on the audit comment "
+             "(default: $HERMES_PROFILE or 'specifier')",
+    )
+    p_specify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON object per task on stdout",
+    )
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -684,6 +720,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
         "context":  _cmd_context,
+        "specify":  _cmd_specify,
         "gc":       _cmd_gc,
     }
     handler = handlers.get(action)
@@ -1978,6 +2015,80 @@ def _cmd_context(args: argparse.Namespace) -> int:
         text = kb.build_worker_context(conn, args.task_id)
     print(text)
     return 0
+
+
+def _cmd_specify(args: argparse.Namespace) -> int:
+    """Flesh out a triage task (or all of them) via auxiliary LLM,
+    then promote to todo. Thin wrapper over ``kanban_specify``."""
+    from hermes_cli import kanban_specify as spec
+
+    all_flag = bool(getattr(args, "all_triage", False))
+    tenant = getattr(args, "tenant", None)
+    author = getattr(args, "author", None) or _profile_author()
+    want_json = bool(getattr(args, "json", False))
+
+    if args.task_id and all_flag:
+        print(
+            "kanban: pass either a task id OR --all, not both",
+            file=sys.stderr,
+        )
+        return 2
+
+    if all_flag:
+        ids = spec.list_triage_ids(tenant=tenant)
+        if not ids:
+            msg = (
+                "No triage tasks"
+                + (f" for tenant {tenant!r}" if tenant else "")
+                + "."
+            )
+            if want_json:
+                print(json.dumps({"specified": 0, "total": 0}))
+            else:
+                print(msg)
+            return 0
+    elif args.task_id:
+        ids = [args.task_id]
+    else:
+        print(
+            "kanban: specify requires a task id or --all",
+            file=sys.stderr,
+        )
+        return 2
+
+    ok_count = 0
+    fail_count = 0
+    for tid in ids:
+        outcome = spec.specify_task(tid, author=author)
+        if outcome.ok:
+            ok_count += 1
+        else:
+            fail_count += 1
+        if want_json:
+            print(json.dumps({
+                "task_id": outcome.task_id,
+                "ok": outcome.ok,
+                "reason": outcome.reason,
+                "new_title": outcome.new_title,
+            }))
+        else:
+            if outcome.ok:
+                title_suffix = (
+                    f" — retitled: {outcome.new_title!r}"
+                    if outcome.new_title
+                    else ""
+                )
+                print(f"Specified {outcome.task_id} → todo{title_suffix}")
+            else:
+                print(
+                    f"kanban: specify {outcome.task_id}: {outcome.reason}",
+                    file=sys.stderr,
+                )
+    if not all_flag:
+        return 0 if ok_count == 1 else 1
+    # --all: succeed if at least one promotion landed; exit 1 only when
+    # every candidate failed (honest signal for scripts).
+    return 0 if (ok_count > 0 or not ids) else 1
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:

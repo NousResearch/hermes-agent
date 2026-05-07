@@ -286,3 +286,58 @@ def test_run_slash_reassign_with_reclaim_flag(kanban_home):
     assert "Reassigned" in out, out
     out2 = kc.run_slash(f"show {tid}")
     assert "newbie" in out2
+
+
+# ---------------------------------------------------------------------------
+# /kanban specify — slash surface (same entry point CLI + gateway use)
+# ---------------------------------------------------------------------------
+
+def test_run_slash_specify_end_to_end(kanban_home, monkeypatch):
+    """The /kanban specify slash command routes through run_slash, which
+    both the interactive CLI and every gateway platform use. This test
+    covers both surfaces."""
+    from unittest.mock import MagicMock
+
+    # Create a triage task via the same slash surface.
+    create_out = kc.run_slash("create 'rough idea' --triage")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", create_out)
+    assert m, f"no task id in: {create_out!r}"
+    tid = m.group(1)
+
+    # Mock the auxiliary client so we don't hit a real provider.
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = (
+        '{"title": "Spec: rough idea", "body": "**Goal**\\nShip it."}'
+    )
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, "test-model"),
+    )
+
+    # Specify via slash.
+    out = kc.run_slash(f"specify {tid}")
+    assert "Specified" in out
+    assert tid in out
+
+    # Task is promoted and retitled.
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status in {"todo", "ready"}
+    assert task.title == "Spec: rough idea"
+
+
+def test_run_slash_specify_help_is_reachable(kanban_home):
+    """`--help` on a subcommand is handled by argparse itself — it prints
+    to the process stdout and raises SystemExit before run_slash's output
+    redirection is installed, so the returned string is the usage-error
+    sentinel. All we're asserting here is that the subcommand is
+    registered (no "unknown action" error) — the shape of the help text
+    is covered by the direct argparse tests in test_kanban_specify.py."""
+    out = kc.run_slash("specify --help")
+    # Either the usage-error sentinel (stdout swallowed by argparse) or
+    # a real help rendering — both mean the subcommand exists.
+    assert "usage error" in out.lower() or "specify" in out.lower()

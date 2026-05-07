@@ -51,10 +51,10 @@ If the user has custom profiles, create a mapping in the orchestrator's SOUL.md.
 ```
 | 任务类型 | assignee |
 |---------|----------|
-| 后端/调研 | fullstack_agent |
-| 前端/UI | ui_agent |
-| 测试 | qa_agent |
-| 需求/文档 | pm_agent |
+| 后端/调研 | <your-backend-profile> |
+| 前端/UI | <your-frontend-profile> |
+| 测试 | <your-qa-profile> |
+| 需求/文档 | <your-pm-profile> |
 ```
 
 The generic roles below are for reference only:
@@ -78,11 +78,11 @@ Before planning any tasks, run `ls ~/.hermes/profiles/` to discover which agents
 
 ```
 $ ls ~/.hermes/profiles/
-fullstack_agent  pm_agent  qa_agent  ui_agent
+<profile-1>  <profile-2>  <profile-3>  ...
 ```
 
 Build a mental mapping of task types → available profiles. If a needed capability has no matching profile:
-1. Can an existing profile handle it? (e.g. "research" → fullstack_agent)
+1. Can an existing profile handle it? (e.g. "research" → your backend profile)
 2. If not, tell the user which profile is missing and ask if they want to create one.
 
 **Never use a profile name that doesn't exist.** The dispatcher will silently fail.
@@ -96,10 +96,10 @@ Ask clarifying questions if the goal is ambiguous. Cheap to ask; expensive to sp
 Before creating anything, draft the graph out loud (in your response to the user). Example for "Analyze whether we should migrate to Postgres":
 
 ```
-T1  fullstack_agent   research: Postgres cost vs current
-T2  fullstack_agent   research: Postgres performance vs current
-T3  pm_agent          synthesize migration recommendation       parents: T1, T2
-T4  pm_agent          draft decision memo                       parents: T3
+T1  <backend-profile>   research: Postgres cost vs current
+T2  <backend-profile>   research: Postgres performance vs current
+T3  <pm-profile>          synthesize migration recommendation       parents: T1, T2
+T4  <pm-profile>          draft decision memo                       parents: T3
 ```
 
 Show this to the user. Let them correct it before you create anything.
@@ -111,27 +111,27 @@ Use the profile names from Step 0. Example:
 ```python
 t1 = kanban_create(
     title="research: Postgres cost vs current",
-    assignee="fullstack_agent",
+    assignee="<backend-profile>",
     body="...",
 )[
 ```
 
 t2 = kanban_create(
     title="research: Postgres performance vs current",
-    assignee="fullstack_agent",   # NOT "researcher"
+    assignee="<backend-profile>",   # NOT "researcher"
     body="Compare query latency, throughput, and scaling characteristics at our expected data volume (~500GB, 10k QPS peak). Sources: benchmark papers, public case studies, pgbench results if easy.",
 )["task_id"]
 
 t3 = kanban_create(
     title="synthesize migration recommendation",
-    assignee="pm_agent",          # NOT "analyst"
+    assignee="<pm-profile>",          # NOT "analyst"
     body="Read the findings from T1 (cost) and T2 (performance). Produce a 1-page recommendation with explicit trade-offs and a go/no-go call.",
     parents=[t1, t2],
 )["task_id"]
 
 t4 = kanban_create(
     title="draft decision memo",
-    assignee="pm_agent",          # NOT "writer"
+    assignee="<pm-profile>",          # NOT "writer"
     body="Turn the analyst's recommendation into a 2-page memo for the CTO. Match the tone of previous decision memos in the team's knowledge base.",
     parents=[t3],
 )["task_id"]
@@ -148,10 +148,10 @@ kanban_complete(
     summary="decomposed into T1-T4: 2 research tasks parallel, 1 synthesis, 1 memo",
     metadata={
         "task_graph": {
-            "T1": {"assignee": "fullstack_agent", "parents": []},
-            "T2": {"assignee": "fullstack_agent", "parents": []},
-            "T3": {"assignee": "pm_agent", "parents": ["T1", "T2"]},
-            "T4": {"assignee": "pm_agent", "parents": ["T3"]},
+            "T1": {"assignee": "<backend-profile>", "parents": []},
+            "T2": {"assignee": "<backend-profile>", "parents": []},
+            "T3": {"assignee": "<pm-profile>", "parents": ["T1", "T2"]},
+            "T4": {"assignee": "<pm-profile>", "parents": ["T3"]},
         },
     },
 )
@@ -162,20 +162,20 @@ kanban_complete(
 Tell them what you created in plain prose:
 
 > I've queued 4 tasks:
-> - **T1** (fullstack_agent): cost comparison
-> - **T2** (fullstack_agent): performance comparison, in parallel with T1
-> - **T3** (pm_agent): synthesizes T1 + T2 into a recommendation
-> - **T4** (pm_agent): turns T3 into a CTO memo
+> - **T1** (<backend-profile>): cost comparison
+> - **T2** (<backend-profile>): performance comparison, in parallel with T1
+> - **T3** (<pm-profile>): synthesizes T1 + T2 into a recommendation
+> - **T4** (<pm-profile>): turns T3 into a CTO memo
 >
 > The dispatcher will pick up T1 and T2 now. T3 starts when both finish. You'll get a gateway ping when T4 completes. Use the dashboard or `hermes kanban tail <id>` to follow along.
 
 ## Common patterns
 
-**Fan-out + fan-in (research → synthesize):** N `fullstack_agent` tasks with no parents, one `pm_agent` task with all of them as parents.
+**Fan-out + fan-in (research → synthesize):** N `<backend-profile>` tasks with no parents, one `<pm-profile>` task with all of them as parents.
 
-**Pipeline with gates:** `pm_agent → fullstack_agent → qa_agent`.
+**Pipeline with gates:** `<pm-profile> → <backend-profile> → <qa-profile>`.
 
-**Same-profile queue:** 50 tasks, all assigned to `fullstack_agent`,
+**Same-profile queue:** 50 tasks, all assigned to `<backend-profile>`,
 
 **Human-in-the-loop:** Any task can `kanban_block()` to wait for input. Dispatcher respawns after `/unblock`. The comment thread carries the full context.
 
@@ -194,7 +194,7 @@ model:
 
 **SOUL.md preamble:** Every profile's SOUL.md starts with a ~300-token default English preamble injected by Hermes. For Kanban workers that only need their Chinese role definition, strip this line to save tokens. It's safe to remove — the profile's persona is fully defined by the user's content below it.
 
-**Model tiering by role:** Hermes has no built-in per-task model override. To use cheaper models for low-priority work, create separate profiles (e.g., `qa_agent` with mimo-v2.5 for routine testing, `fullstack_agent` with mimo-v2.5-pro for critical logic). The orchestrator routes by choosing the right `assignee`.
+**Model tiering by role:** Hermes has no built-in per-task model override. To use cheaper models for low-priority work, create separate profiles (e.g., `<qa-profile>` with a cheaper model for routine testing, `<backend-profile>` with a stronger model for critical logic). The orchestrator routes by choosing the right `assignee`.
 
 ## Making Kanban Visible to Humans
 

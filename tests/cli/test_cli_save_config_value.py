@@ -96,3 +96,35 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+    def test_missing_user_config_writes_to_user_home_not_project_fallback(self, tmp_path, monkeypatch):
+        """First-run writes should target ~/.hermes/config.yaml, not repo cli-config.yaml."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        project_config = project_dir / "cli-config.yaml"
+        project_config.write_text(yaml.dump({
+            "model": {"default": "fallback-model", "provider": "openrouter"},
+            "display": {"skin": "default"},
+        }))
+        original_project = project_config.read_text()
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        monkeypatch.setattr(cli, "__file__", str(project_dir / "cli.py"))
+
+        mock_atomic = MagicMock()
+        monkeypatch.setattr("utils.atomic_yaml_write", mock_atomic)
+
+        from cli import save_config_value
+        result = save_config_value("display.skin", "ares")
+
+        assert result is True
+        written_path, written_data = mock_atomic.call_args[0]
+        assert Path(written_path) == hermes_home / "config.yaml"
+        assert written_data["model"]["default"] == "fallback-model"
+        assert written_data["model"]["provider"] == "openrouter"
+        assert written_data["display"]["skin"] == "ares"
+        assert project_config.read_text() == original_project

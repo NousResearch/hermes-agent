@@ -2056,11 +2056,14 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 
 def save_config_value(key_path: str, value: any) -> bool:
     """
-    Save a value to the active config file at the specified key path.
+    Save a value to the user config file at the specified key path.
     
-    Respects the same lookup order as load_cli_config():
+    Respects the same lookup order as load_cli_config() for reads:
     1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
     2. ./cli-config.yaml (project config - fallback)
+
+    User-initiated writes always persist to ~/.hermes/config.yaml so first-run
+    preference changes do not mutate the repo/project fallback config.
     
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
@@ -2069,18 +2072,20 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
+    # Read with the same precedence as load_cli_config, but always persist user
+    # changes to ~/.hermes/config.yaml so project fallback config stays untouched.
     user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
+    source_config_path = user_config_path if user_config_path.exists() else project_config_path
+    config_path = user_config_path
     
     try:
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Load existing config
-        if config_path.exists():
-            with open(config_path, 'r') as f:
+        if source_config_path.exists():
+            with open(source_config_path, 'r') as f:
                 config = yaml.safe_load(f) or {}
         else:
             config = {}

@@ -2765,14 +2765,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_cron_execute(self, request: "web.Request") -> "web.Response":
-        """POST /v1/cron/execute — loop-agent-center triggers a scheduled task.
+        """POST /v1/cron/execute — trigger a scheduled task asynchronously.
 
-        Request:  { "name": "...", "prompt": "...", "skills": ["..."] }
-        Response: { "status": 0, "messages": "...", "content": "..." }
+        Request:  { "name": "...", "prompt": "...", "skills": [...], "callback_url": "..." }
+        Response: { "status": 0, "messages": "发起成功", "task_id": "..." }  (202)
 
-        The endpoint runs the prompt through the agent synchronously and
-        returns the final result.  Clarify / approval are disabled so the
-        agent never blocks waiting for human input.
+        Agent 在后台异步执行，完成后 POST 结果到 callback_url。
         """
         auth_err = self._check_auth(request)
         if auth_err:
@@ -2788,6 +2786,7 @@ class APIServerAdapter(BasePlatformAdapter):
         name = str(body.get("name") or "unnamed").strip()
         prompt = str(body.get("prompt") or "").strip()
         raw_skills = body.get("skills", [])
+        callback_url = str(body.get("callback_url") or "").strip()
 
         if not prompt:
             return web.json_response(
@@ -2802,8 +2801,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     skill_names.append(s.strip())
 
         # Load skill content and build the effective prompt.
-        # Mirrors cron/scheduler.py:_build_job_prompt() — skill_view()
-        # actually fetches the skill body so the agent has its instructions.
         from tools.skills_tool import skill_view
 
         parts: List[str] = []
@@ -2842,57 +2839,93 @@ class APIServerAdapter(BasePlatformAdapter):
 
         effective_prompt = "\n".join(parts)
 
-        # Build ephemeral system prompt with cron execution guidance
+        task_id = f"cron-{name}-{int(time.time())}"
+
+        logger.info("Cron 任务已加入: task_id=%s name=%s callback_url=%s", task_id, name, callback_url or "(无)")
+
+        asyncio.create_task(self._run_cron_job(
+            name=name,
+            task_id=task_id,
+            effective_prompt=effective_prompt,
+            callback_url=callback_url,
+        ))
+
+        return web.json_response(
+            {"status": 0, "messages": "发起成功", "task_id": task_id},
+            status=202,
+        )
+
+    async def _run_cron_job(
+        self,
+        name: str,
+        task_id: str,
+        effective_prompt: str,
+        callback_url: str,
+    ) -> None:
+        """Run a cron task in the background and POST result to callback_url."""
         ephemeral = (
             "[CRON TASK] You are executing a scheduled background task. "
             "Do NOT ask clarifying questions — this is automated and no human is present."
         )
 
-        session_id = f"cron-ext-{name}-{int(time.time())}"
+        logger.info("Cron 任务开始执行: name=%s task_id=%s", name, task_id)
 
         try:
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral,
-                session_id=session_id,
+                session_id=task_id,
             )
-            # Disable tools that require human interaction or would recurse.
-            # Mirrors cron/scheduler.py:run_job().
+            # 将 session 标记为 cron 来源，不在前端会话列表展示
+            try:
+                db = self._ensure_session_db()
+                if db:
+                    db._conn.execute(
+                        "UPDATE sessions SET source = 'cron' WHERE id = ?", (task_id,)
+                    )
+            except Exception:
+                pass
             agent.disabled_toolsets = ["cronjob", "messaging", "clarify"]
+            logger.info("Cron agent 创建完成: name=%s task_id=%s prompt长度=%d", name, task_id, len(effective_prompt))
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: agent.run_conversation(
+                    user_message=effective_prompt,
+                    conversation_history=[],
+                    task_id="default",
+                )
+            )
+
+            content = ""
+            if isinstance(result, dict):
+                content = str(result.get("final_response", ""))
+            elif result is not None:
+                content = str(result)
+
+            status_code = 0
+            message = f"Task '{name}' completed"
+            logger.info("Cron 任务执行完成: name=%s task_id=%s 输出长度=%d", name, task_id, len(content))
         except Exception as exc:
-            logger.error("Cron execute: failed to create agent: %s", exc)
-            return web.json_response(
-                {"status": -1, "messages": f"Agent creation failed: {exc}", "content": ""},
-                status=500,
-            )
+            logger.error("Cron '%s': execution failed: %s", name, exc)
+            content = ""
+            status_code = -1
+            message = f"Task failed: {exc}"
 
-        loop = asyncio.get_running_loop()
-
-        def _run():
-            return agent.run_conversation(
-                user_message=effective_prompt,
-                conversation_history=[],
-                task_id="default",
-            )
-
-        try:
-            result = await loop.run_in_executor(None, _run)
-        except Exception as exc:
-            logger.error("Cron execute '%s': agent run failed: %s", name, exc)
-            return web.json_response(
-                {"status": -1, "messages": f"Task execution failed: {exc}", "content": ""},
-                status=500,
-            )
-
-        content = ""
-        if isinstance(result, dict):
-            content = str(result.get("final_response", ""))
-        elif result is not None:
-            content = str(result)
-
-        logger.info("Cron execute '%s': completed, output length=%d", name, len(content))
-        return web.json_response(
-            {"status": 0, "messages": f"Task '{name}' completed", "content": content},
-        )
+        # POST result to callback_url
+        if callback_url:
+            logger.info("Cron 开始发送回调: name=%s url=%s status=%d", name, callback_url, status_code)
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                    await session.post(callback_url, json={
+                        "task_id": task_id,
+                        "status": status_code,
+                        "messages": message,
+                        "content": content,
+                    })
+                logger.info("Cron 回调发送成功: name=%s", name)
+            except Exception as exc:
+                logger.error("Cron 回调发送失败: name=%s url=%s error=%s", name, callback_url, exc)
 
     # ------------------------------------------------------------------
     # Output extraction helper
@@ -3558,14 +3591,14 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = (page - 1) * page_size
 
         try:
-            # Total count
-            total_row = db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            # Total count (exclude cron sessions)
+            total_row = db._conn.execute("SELECT COUNT(*) FROM sessions WHERE source != 'cron'").fetchone()
             total = total_row[0] if total_row else 0
 
-            # Paginated query
+            # Paginated query (exclude cron sessions)
             cursor = db._conn.execute(
                 "SELECT id, title, model, started_at, message_count "
-                "FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                "FROM sessions WHERE source != 'cron' ORDER BY started_at DESC LIMIT ? OFFSET ?",
                 (page_size, offset),
             )
             rows = cursor.fetchall()

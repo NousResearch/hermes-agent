@@ -505,6 +505,7 @@ async def vision_analyze_tool(
             await _download_image(image_url, temp_image_path)
             should_cleanup = True
         else:
+            logger.error("无法识别的图片来源: image_url=%s (前200字符)", str(image_url)[:200])
             raise ValueError(
                 "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
             )

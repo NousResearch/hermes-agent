@@ -24,9 +24,15 @@ Open PowerShell and run:
 irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
 ```
 
-The native Windows installer provisions `uv`, Python 3.11, Node.js 22, `ripgrep`, and `ffmpeg`, clones the repo under `%LOCALAPPDATA%\hermes\hermes-agent`, creates a virtualenv, and adds `hermes` to your **User PATH**.  Restart your terminal (or open a new PowerShell window) after the install so PATH picks up.
+The installer handles **everything**: `uv`, Python 3.11, Node.js 22, `ripgrep`, `ffmpeg`, **and a portable Git Bash** (MinGit — a slim, self-contained Git for Windows distribution that Hermes uses for shell commands).  It clones the repo under `%LOCALAPPDATA%\hermes\hermes-agent`, creates a virtualenv, and adds `hermes` to your **User PATH**.  Restart your terminal (or open a new PowerShell window) after the install so PATH picks up.
 
-**Prerequisite:** Install [Git for Windows](https://git-scm.com/download/win) first.  Hermes uses the bundled Git Bash to execute terminal commands — the same approach Claude Code and other coding agents take on Windows.  If you install Git to a non-default location, set `HERMES_GIT_BASH_PATH` in your environment to point at `bash.exe`.
+**How Git is handled:**
+1. If `git` is already on your PATH, the installer uses your existing install.
+2. Otherwise it downloads portable **MinGit** (~45MB, from the official `git-for-windows` GitHub release) and unpacks it to `%LOCALAPPDATA%\hermes\git`.  No admin rights required.  Completely isolated — it won't interfere with any system Git install, broken or otherwise.
+
+**Why not use winget?**  Earlier designs auto-installed Git via `winget install Git.Git`, but winget fails badly when a system Git install is in a partial or broken state (exactly when users need the installer to just work).  The portable MinGit approach sidesteps winget, the Windows installer registry, and any existing system Git entirely.  If the Hermes Git install itself ever breaks, `Remove-Item %LOCALAPPDATA%\hermes\git` and re-run the installer — no system impact, no uninstall drama.
+
+The installer also sets `HERMES_GIT_BASH_PATH` to the located `bash.exe` so Hermes resolves it deterministically in fresh shells.
 
 If you prefer WSL2, the Linux installer above works inside it; both native and WSL installs can coexist without conflict (native data lives under `%LOCALAPPDATA%\hermes`, WSL data lives under `~/.hermes`).
 

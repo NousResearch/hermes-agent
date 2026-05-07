@@ -2,6 +2,8 @@
 
 import json
 import os
+import stat
+import sys
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -49,6 +51,37 @@ class TestHermesTokenStorage:
         assert token_path.exists()
         data = json.loads(token_path.read_text())
         assert data["access_token"] == "abc123"
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_token_file_created_with_0o600(self, tmp_path, monkeypatch):
+        """Tokens must land on disk at 0o600 with no umask-default exposure window.
+
+        Regression for the TOCTOU race where ``write_text`` + post-write
+        ``chmod`` briefly left credentials at the process umask (commonly
+        0o644 = world-readable) before tightening to owner-only. Mirrors
+        the fix shipped for ``agent/google_oauth.py`` in #19673.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("perm-test-server")
+
+        import asyncio
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "secret-abc",
+            "token_type": "Bearer",
+            "refresh_token": "secret-ref",
+        }
+        asyncio.run(storage.set_tokens(mock_token))
+
+        token_path = tmp_path / "mcp-tokens" / "perm-test-server.json"
+        assert token_path.exists()
+        mode = stat.S_IMODE(token_path.stat().st_mode)
+        assert mode == 0o600, f"token file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
+
+        parent_mode = stat.S_IMODE(token_path.parent.stat().st_mode)
+        assert parent_mode == 0o700, (
+            f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
+        )
 
     def test_roundtrip_client_info(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -22,7 +22,8 @@ We value contributions in this order:
 
 ## Common contribution paths
 
-- Building a new tool? Start with [Adding Tools](./adding-tools.md)
+- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md)
+- Building a new built-in core tool for Hermes itself? Start with [Adding Tools](./adding-tools.md)
 - Building a new skill? Start with [Creating Skills](./creating-skills.md)
 - Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
 
@@ -47,8 +48,10 @@ cd hermes-agent
 uv venv venv --python 3.11
 export VIRTUAL_ENV="$(pwd)/venv"
 
-# Install with all extras (messaging, cron, CLI menus, dev tools)
+# Install with all core extras plus dev tools (messaging, cron, CLI menus, tests)
 uv pip install -e ".[all,dev]"
+
+# Optional: RL/Tinker environments only when you work on Atropos/Tinker training
 uv pip install -e "./tinker-atropos"
 
 # Optional: browser tools
@@ -80,8 +83,17 @@ hermes chat -q "Hello"
 
 ### Run Tests
 
+Use the repository wrapper for CI-parity runs. It normalizes environment variables, locale/timezone, and worker count before invoking pytest:
+
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh tests/ -v
+```
+
+If you cannot use the wrapper (for example, an IDE or a platform without the shell script), activate the venv and use pytest as a fallback:
+
+```bash
+source venv/bin/activate
+python -m pytest tests/ -q -n 4
 ```
 
 ## Code Style
@@ -94,7 +106,17 @@ pytest tests/ -v
 
 ## Cross-Platform Compatibility
 
-Hermes officially supports Linux, macOS, and WSL2. Native Windows is **not supported**, but the codebase includes some defensive coding patterns to avoid hard crashes in edge cases. Key rules:
+Hermes officially supports **Linux, macOS, WSL2, and native Windows (early beta — via PowerShell install)**.  Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands.  A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) is WSL2-only. The native-Windows path is new and moves fast — if you're doing Windows-heavy dev, expect to hit and fix rough edges.
+
+When contributing code, keep these rules in mind:
+
+- **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows.  Either route through `gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
+- **Catch `OSError` alongside `ProcessLookupError` on `os.kill(pid, 0)` probes.** Windows raises `OSError` (WinError 87, "parameter is incorrect") for an already-gone PID instead of `ProcessLookupError`.
+- **Don't force the terminal to POSIX semantics.** `os.setsid`, `os.killpg`, `os.getpgid`, `os.fork` all raise on Windows — gate them with `if sys.platform != "win32":` or `if os.name != "nt":`.
+- **Open files with an explicit `encoding="utf-8"`.** The Python default on Windows is the system locale (often cp1252), which mojibakes or crashes on non-Latin text.
+- **Use `pathlib.Path` / `os.path.join` — never manually concat with `/`.** This matters less for strings the OS gives us back and more for strings we construct to hand to subprocesses.
+
+Key patterns:
 
 ### 1. `termios` and `fcntl` are Unix-only
 
@@ -175,7 +197,7 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: `scripts/run_tests.sh tests/ -v` for CI-parity; use `python -m pytest tests/ -q -n 4` only as a fallback when the wrapper is unavailable
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS and different Linux distros
 4. **Keep PRs focused**: One logical change per PR

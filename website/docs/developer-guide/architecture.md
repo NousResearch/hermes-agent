@@ -32,8 +32,8 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 │  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐               │
 │  │ Compression  │  │ 3 API Modes  │  │ Tool Registry│               │
 │  │ & Caching    │  │ chat_compl.  │  │ (registry.py)│               │
-│  │              │  │ codex_resp.  │  │ 61 tools     │               │
-│  │              │  │ anthropic    │  │ 52 toolsets  │               │
+│  │              │  │ codex_resp.  │  │ dynamic tools│               │
+│  │              │  │ anthropic    │  │ + toolsets   │               │
 │  └──────────────┘  └──────────────┘  └──────────────┘               │
 └─────────┴─────────────────┴─────────────────┴───────────────────────┘
            │                                    │
@@ -213,7 +213,7 @@ A shared runtime resolver used by CLI, gateway, cron, ACP, and auxiliary calls. 
 
 ### Tool System
 
-Central tool registry (`tools/registry.py`) with 61 registered tools across 52 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 7 backends (local, Docker, SSH, Daytona, Modal, Singularity, Vercel Sandbox).
+Central tool registry (`tools/registry.py`) with dynamically discovered tools grouped into configured toolsets. Counts change as built-ins, plugins, and MCP-provided tools evolve, so treat the filesystem and `hermes tools list` as canonical. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 7 backends (local, Docker, SSH, Singularity, Modal, Daytona, Vercel Sandbox).
 
 → [Tools Runtime](./tools-runtime.md)
 

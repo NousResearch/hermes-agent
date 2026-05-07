@@ -107,7 +107,7 @@ Compare against the latest release at the [GitHub releases page](https://github.
 
 ### Updating from Messaging Platforms
 
-You can also update directly from Telegram, Discord, Slack, or WhatsApp by sending:
+You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams by sending:
 
 ```
 /update
@@ -127,8 +127,10 @@ export VIRTUAL_ENV="$(pwd)/venv"
 git pull origin main
 git submodule update --init --recursive
 
-# Reinstall (picks up new dependencies)
+# Reinstall (picks up new core dependencies)
 uv pip install -e ".[all]"
+
+# Optional: only when you work on RL/Tinker environments
 uv pip install -e "./tinker-atropos"
 
 # Check for new config options

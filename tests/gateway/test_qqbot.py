@@ -1287,14 +1287,16 @@ class TestAdapterInteractionDispatch:
         })
 
     @pytest.mark.asyncio
-    async def test_no_callback_is_harmless(self):
+    async def test_explicit_no_callback_is_harmless(self):
         adapter = self._make_adapter()
 
         async def fake_ack(interaction_id, code=0):
             pass
 
         adapter._acknowledge_interaction = fake_ack  # type: ignore[assignment]
-        # No callback set — default None.
+        # Explicitly clear the default callback. With no callback set,
+        # _on_interaction should still ACK and not raise.
+        adapter.set_interaction_callback(None)
         await adapter._on_interaction({
             "id": "i-3",
             "chat_type": 2,
@@ -1518,3 +1520,290 @@ class TestMergeQuoteInto:
         from gateway.platforms.qqbot.adapter import QQAdapter
         merged = QQAdapter._merge_quote_into("hi there", "[Quoted]:\nctx")
         assert merged == "[Quoted]:\nctx\n\nhi there"
+
+
+# ---------------------------------------------------------------------------
+# Gateway-contract approval UX — send_exec_approval + default dispatcher
+# ---------------------------------------------------------------------------
+
+class TestDefaultInteractionDispatch:
+    """Verify the adapter's default INTERACTION_CREATE router."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def test_default_callback_installed_on_init(self):
+        """Fresh adapter has a working default interaction callback."""
+        adapter = self._make_adapter()
+        assert adapter._interaction_callback is not None
+        assert adapter._interaction_callback == adapter._default_interaction_dispatch
+
+    def test_send_exec_approval_is_a_class_method(self):
+        """gateway/run.py uses ``type(adapter).send_exec_approval`` to detect support."""
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        assert getattr(QQAdapter, "send_exec_approval", None) is not None
+        assert getattr(QQAdapter, "send_update_prompt", None) is not None
+
+    @pytest.mark.asyncio
+    async def test_approval_click_once_maps_to_once(self):
+        """'allow-once' button → resolve_gateway_approval(session, 'once')."""
+        adapter = self._make_adapter()
+
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        # Patch the *module-level* function that _default_interaction_dispatch
+        # imports lazily.
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "u-42",
+                "data": {"resolved": {"button_data": "approve:sess-abc:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("sess-abc", "once", False)]
+
+    @pytest.mark.asyncio
+    async def test_approval_click_always_maps_to_always(self):
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 2, "user_openid": "u",
+                "data": {"resolved": {"button_data": "approve:s:allow-always"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("s", "always", False)]
+
+    @pytest.mark.asyncio
+    async def test_approval_click_deny_maps_to_deny(self):
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 2, "user_openid": "u",
+                "data": {"resolved": {"button_data": "approve:s:deny"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("s", "deny", False)]
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_click_writes_response_file(self, tmp_path, monkeypatch):
+        """update_prompt:y click writes 'y' to ~/.hermes/.update_response."""
+        adapter = self._make_adapter()
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: hermes_home,
+        )
+
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 2, "user_openid": "u-1",
+            "data": {"resolved": {"button_data": "update_prompt:y"}},
+        })
+        await adapter._default_interaction_dispatch(event)
+
+        response = hermes_home / ".update_response"
+        assert response.exists()
+        assert response.read_text() == "y"
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_click_no_writes_n(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter()
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: hermes_home,
+        )
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 2, "user_openid": "u",
+            "data": {"resolved": {"button_data": "update_prompt:n"}},
+        })
+        await adapter._default_interaction_dispatch(event)
+        response = hermes_home / ".update_response"
+        assert response.read_text() == "n"
+
+    @pytest.mark.asyncio
+    async def test_unknown_button_data_is_harmless(self):
+        """Unrecognised button_data is logged and dropped — no exception."""
+        adapter = self._make_adapter()
+
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 2, "user_openid": "u",
+            "data": {"resolved": {"button_data": "some:unknown:format"}},
+        })
+        # Must not raise.
+        await adapter._default_interaction_dispatch(event)
+
+    @pytest.mark.asyncio
+    async def test_empty_button_data_is_harmless(self):
+        adapter = self._make_adapter()
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+        await adapter._default_interaction_dispatch(InteractionEvent(id="i"))
+
+    @pytest.mark.asyncio
+    async def test_resolve_exception_is_swallowed(self):
+        """If resolve_gateway_approval raises, we log but don't propagate."""
+        adapter = self._make_adapter()
+
+        def bad_resolve(session_key, choice, resolve_all=False):
+            raise RuntimeError("boom")
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = bad_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 2, "user_openid": "u",
+                "data": {"resolved": {"button_data": "approve:s:deny"}},
+            })
+            # Must not raise.
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+
+class TestSendExecApproval:
+    """Verify the gateway contract: QQAdapter.send_exec_approval(...)."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_send_approval_request(self):
+        adapter = self._make_adapter()
+
+        calls = []
+
+        async def fake_send_approval(chat_id, req, reply_to=None):
+            from gateway.platforms.base import SendResult
+            calls.append({"chat_id": chat_id, "req": req, "reply_to": reply_to})
+            return SendResult(success=True, message_id="m-1")
+
+        adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
+        # Seed last-msg-id so the reply_to path is exercised.
+        adapter._last_msg_id["user-1"] = "inbound-42"
+
+        result = await adapter.send_exec_approval(
+            chat_id="user-1",
+            command="rm -rf /tmp/demo",
+            session_key="sess:abc",
+            description="delete temp dir",
+        )
+        assert result.success
+        assert len(calls) == 1
+        req = calls[0]["req"]
+        assert req.session_key == "sess:abc"
+        assert req.command_preview == "rm -rf /tmp/demo"
+        assert req.description == "delete temp dir"
+        assert calls[0]["reply_to"] == "inbound-42"
+
+    @pytest.mark.asyncio
+    async def test_accepts_metadata_arg(self):
+        """Gateway always passes metadata=…; the adapter must accept + ignore it."""
+        adapter = self._make_adapter()
+
+        async def fake_send_approval(chat_id, req, reply_to=None):
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True)
+
+        adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
+
+        # Should not raise even when metadata is a dict with unknown keys.
+        await adapter.send_exec_approval(
+            chat_id="u", command="ls", session_key="s",
+            metadata={"thread_id": "ignored", "anything": "else"},
+        )
+
+
+class TestSendUpdatePrompt:
+    """Verify the cross-adapter send_update_prompt signature + behaviour."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_send_with_keyboard(self):
+        adapter = self._make_adapter()
+
+        captured = {}
+
+        async def fake_swk(chat_id, content, keyboard, reply_to=None):
+            from gateway.platforms.base import SendResult
+            captured["chat_id"] = chat_id
+            captured["content"] = content
+            captured["keyboard"] = keyboard
+            captured["reply_to"] = reply_to
+            return SendResult(success=True, message_id="mid")
+
+        adapter.send_with_keyboard = fake_swk  # type: ignore[assignment]
+        adapter._last_msg_id["u1"] = "prev-msg"
+
+        result = await adapter.send_update_prompt(
+            chat_id="u1", prompt="Continue with update?",
+            default="y", session_key="ignored", metadata={"x": 1},
+        )
+        assert result.success
+        assert "Continue with update?" in captured["content"]
+        assert "default: y" in captured["content"]
+        assert captured["reply_to"] == "prev-msg"
+        # Keyboard has the Yes/No buttons.
+        dd = captured["keyboard"].to_dict()
+        datas = [b["action"]["data"] for b in dd["content"]["rows"][0]["buttons"]]
+        assert datas == ["update_prompt:y", "update_prompt:n"]
+
+    @pytest.mark.asyncio
+    async def test_empty_default_has_no_hint(self):
+        adapter = self._make_adapter()
+
+        async def fake_swk(chat_id, content, keyboard, reply_to=None):
+            from gateway.platforms.base import SendResult
+            assert "default:" not in content
+            return SendResult(success=True)
+
+        adapter.send_with_keyboard = fake_swk  # type: ignore[assignment]
+        await adapter.send_update_prompt(chat_id="u", prompt="ok?")

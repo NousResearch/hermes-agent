@@ -52,6 +52,22 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+
+def _safe_run(args, timeout=300, **kwargs):
+    """subprocess.run wrapper with unified timeout, output capture, and logging."""
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        _logger.warning("subprocess timed out after %ds: %s", timeout, args[:3])
+        return subprocess.CompletedProcess(args, returncode=124,
+            stdout="", stderr=f"Command timed out after {timeout}s")
+    except Exception as exc:
+        _logger.error("subprocess failed: %s — %s", args[:3], exc)
+        return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr=str(exc))
+
+
 def _add_accept_hooks_flag(parser) -> None:
     """Attach the ``--accept-hooks`` flag.  Shared across every agent
     subparser so the flag works regardless of CLI position."""
@@ -5347,24 +5363,20 @@ def _run_npm_install_deterministic(
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
-        ci_result = subprocess.run(
+        ci_result = _safe_run(
             ci_cmd,
             cwd=cwd,
-            capture_output=capture_output,
-            text=True,
-            check=False,
+            timeout=300,
         )
         if ci_result.returncode == 0:
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
     install_cmd = [npm, "install", *extra_args]
-    return subprocess.run(
+    return _safe_run(
         install_cmd,
         cwd=cwd,
-        capture_output=capture_output,
-        text=True,
-        check=False,
+        timeout=300,
     )
 
 
@@ -5400,7 +5412,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
-    r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
+    r2 = _safe_run([npm, "run", "build"], cwd=web_dir, timeout=300)
     if r2.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
@@ -5815,10 +5827,10 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
-    subprocess.run(
+    stash_result = _safe_run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
-        check=True,
+        timeout=60,
     )
     stash_ref = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
@@ -6144,14 +6156,12 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     # Fetch upstream
     print()
     print("→ Fetching upstream...")
-    try:
-        subprocess.run(
-            git_cmd + ["fetch", "upstream", "--quiet"],
-            cwd=cwd,
-            capture_output=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
+    fetch_result = _safe_run(
+        git_cmd + ["fetch", "upstream", "--quiet"],
+        cwd=cwd,
+        timeout=120,
+    )
+    if fetch_result.returncode != 0:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return
 
@@ -6184,13 +6194,12 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
     print("→ Pulling from upstream...")
 
-    try:
-        subprocess.run(
-            git_cmd + ["pull", "--ff-only", "upstream", "main"],
-            cwd=cwd,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
+    pull_result = _safe_run(
+        git_cmd + ["pull", "--ff-only", "upstream", "main"],
+        cwd=cwd,
+        timeout=120,
+    )
+    if pull_result.returncode != 0:
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
         )
@@ -6276,18 +6285,17 @@ def _install_python_dependencies_with_optional_fallback(
     env: dict[str, str] | None = None,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports."""
-    try:
-        subprocess.run(
-            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
-            cwd=PROJECT_ROOT,
-            check=True,
-            env=env,
-        )
+    result = _safe_run(
+        install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
+        cwd=PROJECT_ROOT,
+        timeout=300,
+        env=env,
+    )
+    if result.returncode == 0:
         return
-    except subprocess.CalledProcessError:
-        print(
-            "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
-        )
+    print(
+        "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
+    )
 
     subprocess.run(
         install_cmd_prefix + ["install", "-e", ".", "--quiet"],
@@ -6541,20 +6549,18 @@ def _cmd_update_check():
 
     # Fetch both origin and upstream; prefer upstream as the canonical reference
     print("→ Fetching from upstream...")
-    fetch_result = subprocess.run(
+    fetch_result = _safe_run(
         git_cmd + ["fetch", "upstream"],
         cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
+        timeout=120,
     )
     if fetch_result.returncode != 0:
         # Fallback to origin if upstream doesn't exist
         print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
+        fetch_result = _safe_run(
             git_cmd + ["fetch", "origin"],
             cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+            timeout=120,
         )
         upstream_exists = False
         compare_branch = "origin/main"
@@ -6866,11 +6872,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     try:
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
+        fetch_result = _safe_run(
             git_cmd + ["fetch", "origin"],
             cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+            timeout=120,
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
@@ -6981,11 +6986,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("→ Pulling updates...")
         update_succeeded = False
         try:
-            pull_result = subprocess.run(
+            pull_result = _safe_run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
                 cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
+                timeout=120,
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
@@ -6994,11 +6998,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
-                reset_result = subprocess.run(
+                reset_result = _safe_run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
+                    timeout=60,
                 )
                 if reset_result.returncode != 0:
                     print(f"✗ Failed to reset to origin/{branch}.")

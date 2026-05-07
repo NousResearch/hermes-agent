@@ -873,6 +873,7 @@ AUTHOR_MAP = {
     "shashwatgokhe2@gmail.com": "shashwatgokhe",  # PR #19196
     "stevenchou.ai@gmail.com": "stevenchouai",  # PR #19221
     "leo.gong@phizchat.com": "agilejava",  # PR #19346
+    "acc001k@pm.me": "acc001k",  # PR #19358
     "lxl694522264@gmail.com": "EvilDrag0n",  # PR #20651
 }
 

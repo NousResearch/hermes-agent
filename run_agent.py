@@ -10068,6 +10068,17 @@ class AIAgent:
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
+                # Warm-tier args — must be forwarded so recall / recall_related
+                # / read / replace / remove / feedback / promote / demote work.
+                # Without these the warm dispatcher in tools/memory_tool.py
+                # rejects valid calls with "query is required for recall." etc.
+                tier=function_args.get("tier", "hot"),
+                query=function_args.get("query"),
+                top_k=function_args.get("top_k"),
+                category=function_args.get("category"),
+                tags=function_args.get("tags"),
+                fact_id=function_args.get("fact_id"),
+                helpful=function_args.get("helpful"),
             )
             # Bridge: notify external memory provider of built-in memory writes
             if self._memory_manager and function_args.get("action") in ("add", "replace"):
@@ -10691,6 +10702,15 @@ class AIAgent:
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
+                    # Warm-tier args — see the parallel bypass above for why
+                    # these must be forwarded explicitly.
+                    tier=function_args.get("tier", "hot"),
+                    query=function_args.get("query"),
+                    top_k=function_args.get("top_k"),
+                    category=function_args.get("category"),
+                    tags=function_args.get("tags"),
+                    fact_id=function_args.get("fact_id"),
+                    helpful=function_args.get("helpful"),
                 )
                 # Bridge: notify external memory provider of built-in memory writes
                 if self._memory_manager and function_args.get("action") in ("add", "replace"):

@@ -5707,6 +5707,13 @@ class GatewayRunner:
                         pending_native = {}
                         self._pending_native_image_paths_by_session = pending_native
                     pending_native[session_key] = list(image_paths)
+                    path_lines = "\n".join(f"- {path}" for path in image_paths)
+                    attachment_note = (
+                        "[The user sent image attachment(s). They are attached "
+                        "to this turn for vision, and cached locally for tools "
+                        f"at:\n{path_lines}]"
+                    )
+                    message_text = f"{attachment_note}\n\n{message_text}" if message_text else attachment_note
                     logger.info(
                         "Image routing: native (model supports vision). %d image(s) will be attached inline.",
                         len(image_paths),

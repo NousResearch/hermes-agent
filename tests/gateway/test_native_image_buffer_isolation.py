@@ -59,6 +59,22 @@ async def test_native_image_buffer_isolated_per_session():
 
 
 @pytest.mark.asyncio
+async def test_native_image_context_includes_tool_visible_cached_path():
+    runner = _make_runner()
+    source = _source("chat-a")
+
+    message = await runner._prepare_inbound_message_text(
+        event=_image_event(source, "/tmp/a.png"),
+        source=source,
+        history=[],
+    )
+
+    assert "cached locally for tools" in message
+    assert "/tmp/a.png" in message
+    assert "see image" in message
+
+
+@pytest.mark.asyncio
 async def test_native_image_buffer_not_cleared_by_other_sessions_without_images():
     runner = _make_runner()
     source_a = _source("chat-a")

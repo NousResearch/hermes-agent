@@ -17,7 +17,7 @@ export function completionRequestForInput(
   const isSlashCommand = looksLikeSlashCommand(input)
   const pathWord = isSlashCommand ? null : (input.match(TAB_PATH_RE)?.[1] ?? null)
 
-  if (!isSlashCommand && !pathWord) {
+  if (!isSlashCommand && (!pathWord || pathWord === '@')) {
     return null
   }
 

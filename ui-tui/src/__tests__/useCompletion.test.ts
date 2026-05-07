@@ -29,6 +29,18 @@ describe('completionRequestForInput', () => {
     })
   })
 
+  it('skips completion for a bare context marker', () => {
+    expect(completionRequestForInput('@')).toBeNull()
+  })
+
+  it('still keeps context-path completion for real context queries', () => {
+    expect(completionRequestForInput('@appChrome')).toMatchObject({
+      method: 'complete.path',
+      params: { word: '@appChrome' },
+      replaceFrom: 0
+    })
+  })
+
   it('leaves plain text alone', () => {
     expect(completionRequestForInput('hello there')).toBeNull()
   })

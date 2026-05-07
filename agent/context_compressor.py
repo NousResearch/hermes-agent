@@ -4641,6 +4641,33 @@ Write only the summary body. Do not include any preamble or prefix."""
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
             )
             return messages
+# Size-efficiency guard: skip compression when the LLM summary
+        # would be larger than the content it replaces.
+        #
+        # The structured template has a _MIN_SUMMARY_TOKENS floor of 2,000
+        # plus ~500 tokens of overhead (headers, instructions, separators).
+        # When the compressible window is small (few messages or short
+        # turns), the summary can be BIGGER than the raw messages it
+        # replaces, causing rapid re-compression (#22037).
+        #
+        # Only apply this guard when the session is genuinely at or above
+        # the compression threshold — unit tests call compress() directly
+        # on tiny transcripts and must still exercise the code path.
+        compressible_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        summary_budget = self._compute_summary_budget(turns_to_summarize)
+        min_overhead = 500  # rough template + framing overhead, in tokens
+        if (
+            display_tokens >= self.threshold_tokens
+            and compressible_tokens <= summary_budget + min_overhead
+        ):
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression skipped: compressible window (~%d tokens) not "
+                    "larger than summary budget (%d tokens)",
+                    compressible_tokens,
+                    summary_budget + min_overhead,
+                )
+            return messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

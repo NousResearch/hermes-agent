@@ -91,6 +91,17 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name=".device.HermesQuickSettingsTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_nav_hermes"
+            android:label="@string/hermes_quick_settings_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".device.HermesAutomationReceiver"
             android:enabled="true"

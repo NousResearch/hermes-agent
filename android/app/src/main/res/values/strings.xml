@@ -5,4 +5,5 @@
     <string name="hermes_accessibility_service_description">Lets Hermes perform high-level phone actions such as Home, Back, Recents, Notifications, and Quick settings after you enable the service.</string>
     <string name="hermes_notification_listener_service_label">Hermes notification automations</string>
     <string name="hermes_notification_listener_service_description">Lets Hermes run saved automations when selected apps post notifications after you enable notification access.</string>
+    <string name="hermes_quick_settings_tile_label">Hermes task</string>
 </resources>

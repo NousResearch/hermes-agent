@@ -3229,6 +3229,82 @@ class TestRunConversation:
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
+    def test_truncated_tool_call_second_retry_injects_hint_and_succeeds(self, agent):
+        """A second truncated tool-call retry should ask for smaller arguments."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        truncated_resp = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"small chunk"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="stop", tool_calls=[good_tc],
+        )
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+        responses = iter([truncated_resp, truncated_resp, good_resp, final_resp])
+        captured_messages = []
+
+        def _create_with_snapshot(**kwargs):
+            captured_messages.append([dict(message) for message in kwargs["messages"]])
+            return next(responses)
+
+        agent.client.chat.completions.create.side_effect = _create_with_snapshot
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
+        hinted_retry_messages = captured_messages[2]
+        assert hinted_retry_messages[-1]["role"] == "user"
+        assert "tool call arguments were truncated" in hinted_retry_messages[-1]["content"]
+        assert "split it into smaller tool calls" in hinted_retry_messages[-1]["content"]
+
+    def test_truncated_tool_call_gives_up_after_two_retries(self, agent):
+        """If the hinted retry also truncates, the partial tool is refused."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        truncated_resp = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        agent.client.chat.completions.create.side_effect = [
+            truncated_resp, truncated_resp, truncated_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "truncated due to output length limit" in result["error"]
+        assert agent.client.chat.completions.create.call_count == 3
+        mock_handle_function_call.assert_not_called()
+
     def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
         """When a router rewrites finish_reason from 'length' to 'tool_calls',
         truncated JSON arguments should still be detected and refused rather

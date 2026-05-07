@@ -11266,6 +11266,7 @@ class AIAgent:
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
+            restart_with_truncated_tool_call_hint = False
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
@@ -11797,18 +11798,37 @@ class AIAgent:
                         if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
                             assistant_message = _trunc_msg
                             if assistant_message is not None and _trunc_has_tool_calls:
-                                if truncated_tool_call_retries < 1:
+                                if truncated_tool_call_retries < 2:
                                     truncated_tool_call_retries += 1
-                                    self._vprint(
-                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
-                                        force=True,
-                                    )
-                                    # Don't append the broken response to messages;
-                                    # just re-run the same API call from the current
-                                    # message state, giving the model another chance.
+                                    if truncated_tool_call_retries == 1:
+                                        self._vprint(
+                                            f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
+                                            force=True,
+                                        )
+                                        # Don't append the broken response to messages;
+                                        # just re-run the same API call from the current
+                                        # message state, giving the model another chance.
+                                    else:
+                                        self._vprint(
+                                            f"{self.log_prefix}⚠️  Truncated tool call detected again — requesting concise arguments...",
+                                            force=True,
+                                        )
+                                        messages.append({
+                                            "role": "user",
+                                            "content": (
+                                                "[System: Your previous tool call arguments were truncated by the "
+                                                "output length limit. Retry the tool call with concise arguments. "
+                                                "If content is large, split it into smaller tool calls instead of "
+                                                "placing everything in one argument.]"
+                                            ),
+                                        })
+                                        self._session_messages = messages
+                                        self._save_session_log(messages)
+                                        restart_with_truncated_tool_call_hint = True
+                                        break
                                     continue
                                 self._vprint(
-                                    f"{self.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
+                                    f"{self.log_prefix}⚠️  Truncated tool call response remained truncated — refusing to execute incomplete tool arguments.",
                                     force=True,
                                 )
                                 self._cleanup_task_resources(effective_task_id)
@@ -13088,6 +13108,9 @@ class AIAgent:
                 _boost_base = self.max_tokens if self.max_tokens else 4096
                 _boost = _boost_base * (length_continue_retries + 1)
                 self._ephemeral_max_output_tokens = min(_boost, 32768)
+                continue
+
+            if restart_with_truncated_tool_call_hint:
                 continue
 
             # Guard: if all retries exhausted without a successful response

@@ -41,6 +41,20 @@ from .chunked_upload import (  # noqa: F401
     UploadFileTooLargeError,
 )
 
+# -- Inline keyboards ------------------------------------------------------
+from .keyboards import (  # noqa: F401
+    ApprovalRequest,
+    ApprovalSender,
+    InlineKeyboard,
+    InteractionEvent,
+    build_approval_keyboard,
+    build_approval_text,
+    build_update_prompt_keyboard,
+    parse_approval_button_data,
+    parse_interaction_event,
+    parse_update_prompt_button_data,
+)
+
 __all__ = [
     # adapter
     "QQAdapter",
@@ -63,4 +77,15 @@ __all__ = [
     "ChunkedUploader",
     "UploadDailyLimitExceededError",
     "UploadFileTooLargeError",
+    # keyboards
+    "ApprovalRequest",
+    "ApprovalSender",
+    "InlineKeyboard",
+    "InteractionEvent",
+    "build_approval_keyboard",
+    "build_approval_text",
+    "build_update_prompt_keyboard",
+    "parse_approval_button_data",
+    "parse_interaction_event",
+    "parse_update_prompt_button_data",
 ]

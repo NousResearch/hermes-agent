@@ -24,4 +24,3 @@ def test_stop_command_cleans_terminal_environments_without_background_processes(
     output = capsys.readouterr().out
     assert "Cleaned up 2 terminal environment(s)." in output
     assert "No running background processes." not in output
-

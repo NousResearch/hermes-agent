@@ -300,6 +300,48 @@ class TestExtractMedia:
         _, cleaned = BasePlatformAdapter.extract_media(content)
         assert "\n\n\n" not in cleaned
 
+    def test_media_tag_ignores_placeholder_paths(self):
+        """Documentation examples must not be treated as real attachments.
+
+        NapCat skill examples include concrete placeholder filenames like
+        MEDIA:/abs/path/to/img.png and MEDIA:/home/user/cache/meme.png. If a
+        model echoes those examples, the gateway must leave the text alone
+        rather than asking NapCat to open impossible local files and emit
+        图片/语音发送失败 noise.
+        """
+        content = (
+            "Examples:\n"
+            "MEDIA:/abs/path/to/img.png\n"
+            "MEDIA:/path/to/meme.png\n"
+            "MEDIA:/home/user/cache/meme.png\n"
+            "[[audio_as_voice]]\nMEDIA:abs/path/to/audio.ogg"
+        )
+
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == []
+        assert "MEDIA:/abs/path/to/img.png" in cleaned
+        assert "MEDIA:/path/to/meme.png" in cleaned
+        assert "MEDIA:/home/user/cache/meme.png" in cleaned
+        assert "MEDIA:abs/path/to/audio.ogg" in cleaned
+
+    def test_media_tag_does_not_blanket_ignore_path_to_directories(self):
+        """Keep legacy /path/to/... support except known doc examples."""
+        content = "MEDIA:/path/to/audio.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == [("/path/to/audio.ogg", False)]
+        assert cleaned == ""
+
+    def test_media_tag_keeps_existing_local_file(self, tmp_path):
+        image = tmp_path / "real.png"
+        image.write_bytes(b"not really a png but path exists")
+
+        media, cleaned = BasePlatformAdapter.extract_media(f"Here\nMEDIA:{image}")
+
+        assert media == [(str(image), False)]
+        assert cleaned == "Here"
+
     def test_media_tag_allows_optional_whitespace_after_colon(self):
         content = "MEDIA: /path/to/audio.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)

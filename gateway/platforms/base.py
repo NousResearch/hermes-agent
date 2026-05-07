@@ -1871,6 +1871,48 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
     @staticmethod
+    def _looks_like_placeholder_media_path(path: str) -> bool:
+        """Return True for documentation/example paths that must not send.
+
+        Skills and system prompts describe media delivery with examples such as
+        ``MEDIA:/path/to/meme.png``.  Small models sometimes echo those examples
+        verbatim; treating them as real attachments makes platform adapters
+        attempt impossible file reads (NapCat reports ENOENT and sends
+        "图片发送失败").  Keep this intentionally narrow so genuine local paths,
+        URLs, and tool-produced cache paths still work.
+        """
+        raw = (path or "").strip().strip("`\"'")
+        if not raw:
+            return False
+        lowered = raw.replace("\\", "/").lower()
+        if lowered.startswith(("http://", "https://", "base64://", "data:")):
+            return False
+        if lowered.startswith("file://"):
+            lowered = lowered[7:]
+
+        placeholder_examples = {
+            "path/to/meme.png",
+            "abs/path/to/img.png",
+            "abs/path/to/audio.ogg",
+            "absolute/path/to/img.png",
+            "absolute/path/to/audio.ogg",
+            "home/user/cache/meme.png",
+        }
+        normalized = lowered.lstrip("/")
+        if normalized in placeholder_examples:
+            return True
+
+        placeholder_markers = (
+            "/path/to/meme.png",
+            "/abs/path/to/img.png",
+            "/abs/path/to/audio.ogg",
+            "/absolute/path/to/img.png",
+            "/absolute/path/to/audio.ogg",
+            "/home/user/cache/meme.png",
+        )
+        return any(marker in lowered for marker in placeholder_markers)
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -1886,29 +1928,42 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
         media = []
-        cleaned = content
         
         # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
-        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        accepted_spans = set()
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if BasePlatformAdapter._looks_like_placeholder_media_path(path):
+                continue
             if path:
                 media.append((os.path.expanduser(path), has_voice_tag))
+                accepted_spans.add(match.span())
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        # Remove only accepted MEDIA tags from content.  Placeholder/example
+        # tags are preserved as plain text so they do not silently disappear
+        # when a response mixes one real attachment with documentation prose.
+        if accepted_spans:
+            def _remove_accepted(match):
+                return '' if match.span() in accepted_spans else match.group(0)
+            cleaned = media_pattern.sub(_remove_accepted, content)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        else:
+            cleaned = content
+
+        # Strip the internal voice directive from visible text even if the
+        # following MEDIA tag was ignored as a placeholder.
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
 

@@ -416,6 +416,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     })
 
+    if (isVoiceToggleKey(key, ch, voice.recordKey)) {
+      return voiceRecordToggle()
+    }
+
     if (shortcut.type === 'paste') {
       return
     }
@@ -426,7 +430,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       if (inputSel && inputSel.end > inputSel.start) {
-        inputSel.clear()
+        return
       }
 
       return
@@ -468,10 +472,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       forceRedraw(terminal.stdout ?? process.stdout)
 
       return
-    }
-
-    if (isVoiceToggleKey(key, ch, voice.recordKey)) {
-      return voiceRecordToggle()
     }
 
     // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the

@@ -684,7 +684,11 @@ export function TextInput({
     const normalized = selRange()
 
     if (isMac && normalized) {
-      void writeClipboardSmart(vRef.current.slice(normalized.start, normalized.end), undefined, stdout)
+      void writeClipboardSmart(
+        vRef.current.slice(normalized.start, normalized.end),
+        undefined,
+        stdout ?? process.stdout
+      )
     }
   }
 
@@ -748,13 +752,16 @@ export function TextInput({
         if (range) {
           const text = vRef.current.slice(range.start, range.end)
 
-          void writeClipboardSmart(text, undefined, stdout)
+          void writeClipboardSmart(text, undefined, stdout ?? process.stdout)
         }
 
         return
       }
 
-      if (shortcut.type === 'interrupt' || (shortcut.type === 'noop' && inp.length > 0 && (k.ctrl || k.meta || k.super))) {
+      if (
+        shortcut.type === 'interrupt' ||
+        (shortcut.type === 'noop' && inp.length > 0 && (k.ctrl || k.meta || k.super))
+      ) {
         return
       }
 

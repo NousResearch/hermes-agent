@@ -3100,16 +3100,21 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     taps_mgr = TapsManager()
     extra_taps = taps_mgr.list_taps()
 
+    # Skill registry policy: local + explicit-URL only.
+    # All third-party / network-fetching sources are disabled. Skills must
+    # come from the bundled optional-skills/ directory or a URL the user
+    # explicitly provides. Re-enable individual sources only after
+    # verifying their endpoint and trust posture.
     sources: List[SkillSource] = [
-        OptionalSkillSource(),        # Official optional skills (highest priority)
-        HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
-        SkillsShSource(auth=auth),
-        WellKnownSkillSource(),
-        UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
-        GitHubSource(auth=auth, extra_taps=extra_taps),
-        ClawHubSource(),
-        ClaudeMarketplaceSource(auth=auth),
-        LobeHubSource(),
+        OptionalSkillSource(),        # Local: optional-skills/ in this repo
+        UrlSource(),                  # Explicit: user-provided HTTP(S) URL only
+        # HermesIndexSource — disabled: phones home to hermes-agent.nousresearch.com
+        # SkillsShSource — disabled: third-party registry (skills.sh)
+        # WellKnownSkillSource — disabled: fetches /.well-known/skills/ from arbitrary domains
+        # GitHubSource — disabled: fetches arbitrary GitHub repos via api.github.com
+        # ClawHubSource — disabled: third-party registry (clawhub.ai)
+        # ClaudeMarketplaceSource — disabled: pulls from anthropics/skills + aiskillstore/marketplace via GitHub
+        # LobeHubSource — disabled: third-party registry (lobehub.com)
     ]
 
     return sources

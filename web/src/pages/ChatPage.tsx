@@ -552,7 +552,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeId, channel);
+    const url = buildWsUrl(token, resumeParam, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -657,7 +657,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeId]);
+  }, [channel, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

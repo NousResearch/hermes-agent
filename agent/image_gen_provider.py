@@ -191,6 +191,59 @@ def save_b64_image(
     return path
 
 
+_REFERENCE_IMAGE_MIME_BY_SUFFIX: Dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+
+
+def normalize_reference_image(value: Any) -> Optional[Dict[str, str]]:
+    """Convert a reference-image input into an OpenAI Responses ``input_image`` block.
+
+    Accepts:
+
+    * ``str`` or :class:`Path` pointing to an existing image file → read,
+      base64-encode, wrap as a ``data:`` URL.
+    * ``str`` already in ``data:image/...;base64,...`` form → passed through.
+    * ``str`` HTTP(S) URL → passed through (the API fetches it server-side).
+
+    Returns ``None`` (with a warning logged) for missing files, empty values,
+    or unrecognised types so callers can fold the result into a content array
+    without raising.
+
+    Result shape::
+
+        {"type": "input_image", "image_url": "<data-url-or-http-url>"}
+    """
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        s = str(value)
+    elif isinstance(value, str):
+        s = value.strip()
+    else:
+        logger.warning(
+            "Unsupported reference_image type %s — expected str or Path",
+            type(value).__name__,
+        )
+        return None
+    if not s:
+        return None
+    if s.startswith(("data:", "http://", "https://")):
+        return {"type": "input_image", "image_url": s}
+    p = Path(s).expanduser()
+    if not p.is_file():
+        logger.warning("reference_image not found on disk: %s", p)
+        return None
+    suffix = p.suffix.lower().lstrip(".")
+    mime = _REFERENCE_IMAGE_MIME_BY_SUFFIX.get(suffix, "image/png")
+    encoded = base64.b64encode(p.read_bytes()).decode()
+    return {"type": "input_image", "image_url": f"data:{mime};base64,{encoded}"}
+
+
 def success_response(
     *,
     image: str,

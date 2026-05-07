@@ -97,3 +97,100 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_dispatch_forwards_reference_images_to_provider(self, monkeypatch, tmp_path):
+        """When the schema-level ``reference_images`` arg is non-empty, it must
+        flow through the dispatcher and land in the provider's ``generate()``
+        kwargs. Providers that do not implement reference-image support absorb
+        the kwarg via ``**kwargs`` — this test asserts the wiring, not the
+        downstream behavior.
+        """
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        captured = {}
+
+        class _CaptureProvider(ImageGenProvider):
+            @property
+            def name(self) -> str:
+                return "capture"
+
+            def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+                captured.update({"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs})
+                return {
+                    "success": True,
+                    "image": "/tmp/capture.png",
+                    "model": "test-model",
+                    "prompt": prompt,
+                    "aspect_ratio": aspect_ratio,
+                    "provider": "capture",
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: capture\n")
+        image_gen_registry.register_provider(_CaptureProvider())
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "capture")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            registry_module, "get_provider",
+            lambda name: _CaptureProvider() if name == "capture" else None,
+        )
+
+        refs = ["/tmp/source-a.png", "https://example.com/source-b.png"]
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "blend these",
+            "square",
+            reference_images=refs,
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert captured["reference_images"] == refs
+
+    def test_dispatch_omits_reference_images_kwarg_when_none(self, monkeypatch, tmp_path):
+        """An empty ``reference_images`` list should not appear in the
+        provider call kwargs at all — keeping the call shape identical to
+        the pre-PR behavior for plain text-to-image."""
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        captured = {}
+
+        class _CaptureProvider(ImageGenProvider):
+            @property
+            def name(self) -> str:
+                return "capture"
+
+            def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+                captured.update({"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs})
+                return {
+                    "success": True,
+                    "image": "/tmp/capture.png",
+                    "model": "test-model",
+                    "prompt": prompt,
+                    "aspect_ratio": aspect_ratio,
+                    "provider": "capture",
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: capture\n")
+        image_gen_registry.register_provider(_CaptureProvider())
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "capture")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            registry_module, "get_provider",
+            lambda name: _CaptureProvider() if name == "capture" else None,
+        )
+
+        image_generation_tool._dispatch_to_plugin_provider("just text", "landscape")
+        assert "reference_images" not in captured
+
+        captured.clear()
+        image_generation_tool._dispatch_to_plugin_provider(
+            "still just text",
+            "landscape",
+            reference_images=[],
+        )
+        assert "reference_images" not in captured

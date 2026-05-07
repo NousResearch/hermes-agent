@@ -283,6 +283,108 @@ class TestGenerate:
         assert "cloudflare 403" in result["error"]
 
 
+# ── Reference images (image-to-image) ──────────────────────────────────────
+
+
+class TestReferenceImages:
+    """Cover the ``reference_images`` kwarg path: extra ``input_image`` blocks
+    appended to the user content alongside the text prompt.
+    """
+
+    def _setup_capture(self, monkeypatch):
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        return captured
+
+    def test_no_reference_images_keeps_text_only_content(self, provider, monkeypatch):
+        captured = self._setup_capture(monkeypatch)
+        result = provider.generate("a cat")
+        assert result["success"] is True
+
+        content = captured["input"][0]["content"]
+        assert len(content) == 1
+        assert content[0] == {"type": "input_text", "text": "a cat"}
+
+    def test_reference_image_data_url_appended_as_input_image(self, provider, monkeypatch):
+        captured = self._setup_capture(monkeypatch)
+        ref = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        result = provider.generate("modify it", reference_images=[ref])
+        assert result["success"] is True
+
+        content = captured["input"][0]["content"]
+        assert len(content) == 2
+        assert content[0]["type"] == "input_text"
+        assert content[1] == {"type": "input_image", "image_url": ref}
+
+    def test_reference_image_file_path_encoded_to_data_url(
+        self, provider, monkeypatch, tmp_path
+    ):
+        f = tmp_path / "ref.png"
+        f.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = self._setup_capture(monkeypatch)
+
+        result = provider.generate("change the bg", reference_images=[str(f)])
+        assert result["success"] is True
+
+        content = captured["input"][0]["content"]
+        assert len(content) == 2
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+    def test_multiple_reference_images_all_attached_in_order(
+        self, provider, monkeypatch, tmp_path
+    ):
+        f1 = tmp_path / "a.png"
+        f1.write_bytes(bytes.fromhex(_PNG_HEX))
+        f2 = tmp_path / "b.jpg"
+        f2.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = self._setup_capture(monkeypatch)
+
+        result = provider.generate(
+            "blend these",
+            reference_images=[str(f1), "https://example.com/c.png", str(f2)],
+        )
+        assert result["success"] is True
+
+        content = captured["input"][0]["content"]
+        assert len(content) == 4
+        assert content[0]["type"] == "input_text"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+        assert content[2]["image_url"] == "https://example.com/c.png"
+        assert content[3]["image_url"].startswith("data:image/jpeg;base64,")
+
+    def test_unrecognised_reference_entries_are_skipped_not_fatal(
+        self, provider, monkeypatch
+    ):
+        captured = self._setup_capture(monkeypatch)
+        # Mix of one bad path and one good URL — call should succeed and only
+        # the good entry should appear in content.
+        result = provider.generate(
+            "edit",
+            reference_images=["/no/such/file/at/all.png", "https://example.com/x.png"],
+        )
+        assert result["success"] is True
+
+        content = captured["input"][0]["content"]
+        assert len(content) == 2
+        assert content[1]["image_url"] == "https://example.com/x.png"
+
+
 # ── Plugin entry point ──────────────────────────────────────────────────────
 
 

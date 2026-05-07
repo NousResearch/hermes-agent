@@ -15,6 +15,15 @@ Selection precedence for the tier (first hit wins):
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
 Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
+
+Reference images
+----------------
+``generate(..., reference_images=[...])`` attaches one or more source images
+to the request as ``input_image`` content blocks alongside the text prompt.
+The Responses ``image_generation`` tool then conditions on those images,
+producing a true image-to-image edit rather than a fresh text-to-image
+generation. Each entry may be a file path, an existing ``data:image/...;base64,...``
+URL, or an ``http(s)://`` URL — see :func:`agent.image_gen_provider.normalize_reference_image`.
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_reference_image,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -161,7 +171,30 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _build_user_content(prompt: str, reference_images: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    """Assemble the Responses ``content`` array for the user message.
+
+    The text prompt comes first; each successfully-normalised reference image
+    is appended as an ``input_image`` block. Unrecognised entries are skipped
+    (the helper logs a warning), so a partly-bad list still produces a usable
+    request rather than failing the whole call.
+    """
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    for ref in reference_images or []:
+        block = normalize_reference_image(ref)
+        if block is not None:
+            content.append(block)
+    return content
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[List[Any]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
 
@@ -172,7 +205,7 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": _build_user_content(prompt, reference_images),
         }],
         tools=[{
             "type": "image_generation",
@@ -274,6 +307,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+        reference_images = kwargs.get("reference_images") or []
 
         if not prompt:
             return error_response(
@@ -324,6 +358,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=reference_images,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)

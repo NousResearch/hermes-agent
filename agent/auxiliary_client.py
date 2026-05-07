@@ -2720,6 +2720,17 @@ def get_available_vision_backends() -> List[str]:
     return available
 
 
+_vision_resolution_cache: Dict[tuple, Tuple[Optional[str], Optional[Any], Optional[str]]] = {}
+
+
+def _clear_vision_resolution_cache() -> None:
+    """Drop the per-process vision client cache.  Used by tests and by
+    code paths that intentionally reconfigure the vision provider mid-run
+    (model switch, oauth re-link, env var change) so the next call
+    re-resolves rather than hitting a stale entry."""
+    _vision_resolution_cache.clear()
+
+
 def resolve_vision_provider_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
@@ -2729,6 +2740,36 @@ def resolve_vision_provider_client(
     async_mode: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
+
+    Memoized per-process: ``_toolset_has_keys('vision')`` runs on every
+    toolset that registers a vision dependency (5+ call sites in
+    tools_config.py / web_server.py), each with identical default args.
+    Without the cache that's 5 redundant network probes / OAuth
+    resolutions on every ``hermes chat`` startup. Call
+    ``_clear_vision_resolution_cache()`` after a config or auth change
+    to force re-resolution.
+    """
+    cache_key = (provider, model, base_url, api_key, async_mode)
+    cached = _vision_resolution_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = _resolve_vision_provider_client_impl(
+        provider, model,
+        base_url=base_url, api_key=api_key, async_mode=async_mode,
+    )
+    _vision_resolution_cache[cache_key] = result
+    return result
+
+
+def _resolve_vision_provider_client_impl(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    async_mode: bool = False,
+) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
+    """Uncached body of ``resolve_vision_provider_client``.
 
     Direct endpoint overrides take precedence over provider selection. Explicit
     provider overrides still use the generic provider router for non-standard

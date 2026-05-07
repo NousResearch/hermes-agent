@@ -113,7 +113,19 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text().split()[21])
+        # Note: The stat file format is delimited by spaces, but the comm field
+        # (field 2) can contain spaces if wrapped in parentheses. We must parse
+        # from the last ')' to find field boundaries reliably.
+        stat_text = stat_path.read_text()
+        # Find the closing paren of the comm field — fields after are fixed
+        paren_idx = stat_text.rfind(')')
+        if paren_idx < 0:
+            return None
+        # Fields after the comm: 3:state, 4:ppid, ..., 22:starttime (0-indexed from after paren)
+        fields_after_comm = stat_text[paren_idx + 1:].split()
+        if len(fields_after_comm) < 20:  # We need field [19] (0-indexed after paren)
+            return None
+        return int(fields_after_comm[19])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         return None
 

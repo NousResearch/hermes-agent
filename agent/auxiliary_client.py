@@ -1656,11 +1656,46 @@ _AUTO_PROVIDER_LABELS = {
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
 
 
-def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
+def _normalize_header_dict(headers: Any) -> Dict[str, str]:
+    if not isinstance(headers, dict):
+        return {}
+    cleaned: Dict[str, str] = {}
+    for key, value in headers.items():
+        key_str = str(key or "").strip()
+        value_str = str(value or "").strip()
+        if key_str and value_str:
+            cleaned[key_str] = value_str
+    if not cleaned:
+        return {}
+    try:
+        from hermes_cli.runtime_provider import _resolve_env_var_headers
+
+        return _resolve_env_var_headers(cleaned)
+    except Exception:
+        return cleaned
+
+
+def _runtime_provider_headers(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    runtime = main_runtime if isinstance(main_runtime, dict) else {}
+    return _normalize_header_dict(
+        runtime.get("provider_headers") or runtime.get("headers")
+    )
+
+
+def _merge_default_headers(extra: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    if not headers:
+        return extra
+    merged = dict(extra.get("default_headers") or {})
+    merged.update(headers)
+    extra["default_headers"] = merged
+    return extra
+
+
+def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return a sanitized copy of a live main-runtime override."""
     if not isinstance(main_runtime, dict):
         return {}
-    normalized: Dict[str, str] = {}
+    normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_FIELDS:
         value = main_runtime.get(field)
         if isinstance(value, str) and value.strip():
@@ -1668,6 +1703,9 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     provider = normalized.get("provider")
     if provider:
         normalized["provider"] = provider.lower()
+    headers = _runtime_provider_headers(main_runtime)
+    if headers:
+        normalized["provider_headers"] = headers
     return normalized
 
 
@@ -1998,6 +2036,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             explicit_base_url=explicit_base_url,
             explicit_api_key=explicit_api_key,
             api_mode=runtime_api_mode or None,
+            main_runtime=runtime,
         )
         if client is not None:
             logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -2304,6 +2343,7 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            _merge_default_headers(extra, _runtime_provider_headers(main_runtime))
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -2369,6 +2409,8 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _entry_headers = _normalize_header_dict(custom_entry.get("headers"))
+                _merge_default_headers(_extra2, _entry_headers)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -2391,6 +2433,7 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        _merge_default_headers(_fb_extra, _entry_headers)
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
@@ -2904,7 +2947,13 @@ def _client_cache_key(
     is_vision: bool = False,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    if provider == "auto":
+        header_key = tuple(sorted((runtime.get("provider_headers") or {}).items()))
+        runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) + (
+            header_key,
+        )
+    else:
+        runtime_key = ()
     return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision)
 
 

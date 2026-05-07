@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
-_tool_loop = None          # persistent loop for the main (CLI) thread
+_tool_loop = None  # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
 
@@ -71,7 +71,7 @@ def _get_worker_loop():
     By keeping the loop alive for the thread's lifetime, cached clients
     stay valid and their cleanup runs on a live loop.
     """
-    loop = getattr(_worker_thread_local, 'loop', None)
+    loop = getattr(_worker_thread_local, "loop", None)
     if loop is None or loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -195,6 +195,7 @@ discover_builtin_tools()
 # Plugin tool discovery (user/project/pip plugins)
 try:
     from hermes_cli.plugins import discover_plugins
+
     discover_plugins()
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
@@ -225,18 +226,29 @@ _LEGACY_TOOLSET_MAP = {
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
-        "browser_navigate", "browser_snapshot", "browser_click",
-        "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_get_images",
-        "browser_vision", "browser_console"
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_back",
+        "browser_press",
+        "browser_get_images",
+        "browser_vision",
+        "browser_console",
     ],
     "cronjob_tools": ["cronjob"],
     "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
+        "rl_list_environments",
+        "rl_select_environment",
+        "rl_get_current_config",
+        "rl_edit_config",
+        "rl_start_training",
+        "rl_check_status",
+        "rl_stop_training",
+        "rl_get_results",
+        "rl_list_runs",
+        "rl_test_inference",
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
@@ -297,6 +309,7 @@ def get_tool_definitions(
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
+
             cfg_path = get_config_path()
             cfg_stat = cfg_path.stat()
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
@@ -347,18 +360,23 @@ def _compute_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
                 if not quiet_mode:
-                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    print(
+                        f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}"
+                    )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    print(
+                        f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}"
+                    )
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -372,12 +390,16 @@ def _compute_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.difference_update(resolved)
                 if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    print(
+                        f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}"
+                    )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    print(
+                        f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}"
+                    )
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
@@ -402,9 +424,16 @@ def _compute_tool_definitions(
     # execute_code" even when the API key isn't configured or the toolset is
     # disabled (#560-discord).
     if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
+        from tools.code_execution_tool import (
+            SANDBOX_ALLOWED_TOOLS,
+            build_execute_code_schema,
+            _get_execution_mode,
+        )
+
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
+        dynamic_schema = build_execute_code_schema(
+            sandbox_enabled, mode=_get_execution_mode()
+        )
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
@@ -423,13 +452,15 @@ def _compute_tool_definitions(
         if discord_tool_name in available_tool_names:
             try:
                 from tools import discord_tool as _dt
+
                 schema_fn = getattr(_dt, _discord_schema_fns[discord_tool_name])
                 dynamic = schema_fn()
             except Exception:
                 dynamic = None
             if dynamic is None:
                 filtered_tools = [
-                    t for t in filtered_tools
+                    t
+                    for t in filtered_tools
                     if t.get("function", {}).get("name") != discord_tool_name
                 ]
                 available_tool_names.discard(discord_tool_name)
@@ -438,6 +469,47 @@ def _compute_tool_definitions(
                     if td.get("function", {}).get("name") == discord_tool_name:
                         filtered_tools[i] = {"type": "function", "function": dynamic}
                         break
+
+    # When CodeAct mode is active (run_code available) and the scrapling
+    # optional-skill is installed, append a fallback hint to web_extract so
+    # the model knows it can use Scrapling's StealthyFetcher for
+    # bot-protected pages that web_extract/Firecrawl can't reach.
+    if "run_code" in available_tool_names and "web_extract" in available_tool_names:
+        try:
+            from hermes_constants import get_hermes_home
+            from pathlib import Path as _Path
+
+            _scrapling_skill = (
+                _Path(get_hermes_home()) / "skills" / "scrapling" / "SKILL.md"
+            )
+            # Also check optional-skills shipped in the repo
+            _repo_optional = (
+                _Path(__file__).resolve().parent
+                / "optional-skills"
+                / "research"
+                / "scrapling"
+                / "SKILL.md"
+            )
+            if _scrapling_skill.exists() or _repo_optional.exists():
+                for i, td in enumerate(filtered_tools):
+                    if td.get("function", {}).get("name") == "web_extract":
+                        desc = td["function"].get("description", "")
+                        _hint = (
+                            " If a page is blocked by bot detection or Cloudflare,"
+                            " you can use Scrapling's StealthyFetcher in run_code"
+                            " as a fallback (see the scrapling skill docs)."
+                        )
+                        if _hint.strip() not in desc:
+                            filtered_tools[i] = {
+                                "type": "function",
+                                "function": {
+                                    **td["function"],
+                                    "description": desc + _hint,
+                                },
+                            }
+                        break
+        except Exception:
+            pass  # best-effort; never block tool generation
 
     # Strip web tool cross-references from browser_navigate description when
     # web_search / web_extract are not available.  The static schema says
@@ -462,7 +534,9 @@ def _compute_tool_definitions(
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
-            print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+            print(
+                f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}"
+            )
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
@@ -477,6 +551,7 @@ def _compute_tool_definitions(
     # is a no-op for schemas that are already well-formed.
     try:
         from tools.schema_sanitizer import sanitize_tool_schemas
+
         filtered_tools = sanitize_tool_schemas(filtered_tools)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
@@ -499,6 +574,7 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 # =========================================================================
 # Tool argument type coercion
 # =========================================================================
+
 
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
@@ -707,7 +783,9 @@ def handle_function_call(
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
-            return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+            return json.dumps(
+                {"error": f"{function_name} must be handled by the agent loop"}
+            )
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to
@@ -723,6 +801,7 @@ def handle_function_call(
             block_message: Optional[str] = None
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
+
                 block_message = get_pre_tool_call_block_message(
                     function_name,
                     function_args,
@@ -741,6 +820,7 @@ def handle_function_call(
         if function_name not in _READ_SEARCH_TOOLS:
             try:
                 from tools.file_tools import notify_other_tool_call
+
                 notify_other_tool_call(task_id or "default")
             except Exception:
                 pass  # file_tools may not be loaded yet
@@ -756,15 +836,28 @@ def handle_function_call(
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            sandbox_enabled = (
+                enabled_tools
+                if enabled_tools is not None
+                else _last_resolved_tool_names
+            )
             result = registry.dispatch(
-                function_name, function_args,
+                function_name,
+                function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
             )
+        elif function_name == "run_code":
+            result = registry.dispatch(
+                function_name,
+                function_args,
+                task_id=task_id,
+                session_id=session_id or "",
+            )
         else:
             result = registry.dispatch(
-                function_name, function_args,
+                function_name,
+                function_args,
                 task_id=task_id,
                 user_task=user_task,
             )
@@ -772,6 +865,7 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
+
             invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
@@ -793,6 +887,7 @@ def handle_function_call(
         # valid string return wins; non-string returns are ignored.
         try:
             from hermes_cli.plugins import invoke_hook
+
             hook_results = invoke_hook(
                 "transform_tool_result",
                 tool_name=function_name,
@@ -822,6 +917,7 @@ def handle_function_call(
 # Backward-compat wrapper functions
 # =============================================================================
 
+
 def get_all_tool_names() -> List[str]:
     """Return all registered tool names."""
     return registry.get_all_tool_names()
@@ -845,3 +941,51 @@ def check_toolset_requirements() -> Dict[str, bool]:
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)
+
+
+# =============================================================================
+# CodeAct mode — single-tool schema builder
+# =============================================================================
+
+
+def build_codeact_tool_schema(
+    enabled_tool_names: set | None = None,
+    envelope_mode: bool = False,
+) -> dict:
+    """Return the single ``run_code`` OpenAI-format tool definition for CodeAct mode.
+
+    This replaces the full list returned by ``get_tool_definitions()`` when
+    ``codeact_mode`` is active for the current model profile.
+
+    Parameters
+    ----------
+    enabled_tool_names:
+        Set of tool names currently enabled for this session.  Passed through
+        to the namespace builder so the catalogue only lists usable tools.
+        When None, all non-excluded tools are listed.
+    envelope_mode:
+        When True, the schema description includes an explicit JSON format
+        instruction.  Set from the model profile's ``structured_envelope`` flag.
+    """
+    from agent.codeact_namespace import (
+        build_codeact_workflow_guidance,
+        build_compact_tool_catalogue,
+    )
+    from agent.codeact_recipes import build_recipe_catalogue
+    from agent.codeact_tool import build_run_code_schema
+
+    compact_catalogue = build_compact_tool_catalogue(registry, enabled_tool_names)
+    workflow_guidance = build_codeact_workflow_guidance(registry, enabled_tool_names)
+    recipe_tool_names = (
+        enabled_tool_names
+        if enabled_tool_names is not None
+        else {entry.name for entry in registry._snapshot_entries()}
+    )
+    recipe_catalogue = build_recipe_catalogue(recipe_tool_names)
+    schema = build_run_code_schema(
+        compact_catalogue,
+        envelope_mode=envelope_mode,
+        workflow_guidance=workflow_guidance,
+        recipe_catalogue=recipe_catalogue,
+    )
+    return {"type": "function", "function": schema}

@@ -1092,6 +1092,80 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_agent_uses_provider_codeact_capability(self, monkeypatch):
+        cfg = {
+            "providers": {
+                "local": {
+                    "name": "local",
+                    "base_url": "https://llm.example.invalid/v1",
+                    "api_key": "not-needed",
+                    "codeact": {
+                        "enabled": True,
+                        "structured_envelope": True,
+                        "envelope_enforcement": "grammar",
+                    },
+                    "models": {"local-model": {}},
+                }
+            },
+            "codeact": {"enabled": "auto"},
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+        with (
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch.object(AIAgent, "_init_codeact_kernel", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                model="local-model",
+                provider="custom",
+                base_url="https://llm.example.invalid/v1",
+                api_key="not-needed",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._codeact_profile == {
+            "codeact_mode": True,
+            "structured_envelope": True,
+            "envelope_enforcement": "grammar",
+        }
+        assert agent.valid_tool_names == {"run_code"}
+
+    def test_codeact_requires_tool_before_first_tool_result(self, agent):
+        agent._codeact_kernel = MagicMock()
+        agent.tools = _make_tool_defs("run_code")
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["tool_choice"] == "required"
+
+    def test_codeact_relaxes_tool_choice_after_tool_result(self, agent):
+        agent._codeact_kernel = MagicMock()
+        agent.tools = _make_tool_defs("run_code")
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {
+                            "name": "run_code",
+                            "arguments": "{\"thoughts\":\"search\",\"code\":\"result = web_search(query='x')\"}",
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "search results"},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["tool_choice"] == "auto"
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 
@@ -5106,3 +5180,37 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestCodeActRunCodeExecution:
+    def test_sequential_run_code_executes_directly(self, agent):
+        agent._codeact_kernel = MagicMock()
+        agent._codeact_kernel.execute.return_value = "Detroit Pistons Starting 5"
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[
+                _mock_tool_call(
+                    name="run_code",
+                    arguments=json.dumps(
+                        {
+                            "thoughts": "I already have the answer.",
+                            "code": "print('Detroit Pistons Starting 5')",
+                        }
+                    ),
+                    call_id="tc_run_code_1",
+                )
+            ],
+        )
+
+        messages = []
+        agent._execute_tool_calls_sequential(
+            assistant_message,
+            messages,
+            effective_task_id="task-1",
+        )
+
+        agent._codeact_kernel.execute.assert_called_once_with(
+            "print('Detroit Pistons Starting 5')"
+        )
+        assert messages[-1]["role"] == "tool"
+        assert messages[-1]["content"] == "Detroit Pistons Starting 5"

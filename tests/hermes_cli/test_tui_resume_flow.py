@@ -330,6 +330,58 @@ def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
     assert "nope" in capsys.readouterr().err
 
 
+def test_oneshot_passes_provider_headers_to_agent(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import run_oneshot
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "not-needed",
+            "base_url": "https://llm.fumetodev.com/v1",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "headers": {
+                "CF-Access-Client-Id": "client-id",
+                "CF-Access-Client-Secret": "client-secret",
+            },
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "fumetodev", "default": "qwen3.6-27b-q5km-tcq4"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda *_args, **_kwargs: {"web"},
+    )
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = None
+            self.tool_gen_callback = None
+
+        def chat(self, prompt):
+            return f"ok:{prompt}"
+
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+    result = run_oneshot("hello")
+    out = capsys.readouterr().out
+
+    assert result == 0
+    assert out == "ok:hello\n"
+    assert captured["provider_headers"] == {
+        "CF-Access-Client-Id": "client-id",
+        "CF-Access-Client-Secret": "client-secret",
+    }
+
+
 def test_oneshot_all_toolsets_means_all_not_configured_cli():
     from hermes_cli.oneshot import _validate_explicit_toolsets
 

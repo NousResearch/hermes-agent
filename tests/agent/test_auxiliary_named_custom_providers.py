@@ -174,6 +174,63 @@ class TestResolveProviderClientNamedCustom:
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
 
+    def test_named_custom_provider_merges_cloudflare_access_headers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "cf-id")
+        monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "cf-secret")
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "fumetodev",
+                    "base_url": "https://llm.fumetodev.com/v1",
+                    "api_key": "local-key",
+                    "headers": {
+                        "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
+                        "CF-Access-Client-Secret": "${CF_ACCESS_CLIENT_SECRET}",
+                    },
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("fumetodev", "qwen3")
+
+        assert client is not None
+        assert model == "qwen3"
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        assert headers["CF-Access-Client-Id"] == "cf-id"
+        assert headers["CF-Access-Client-Secret"] == "cf-secret"
+
+    def test_auto_custom_main_runtime_merges_provider_headers(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "qwen3", "provider": "custom"},
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "auto",
+                main_runtime={
+                    "provider": "custom",
+                    "model": "qwen3",
+                    "base_url": "https://llm.fumetodev.com/v1",
+                    "api_key": "local-key",
+                    "provider_headers": {
+                        "CF-Access-Client-Id": "cf-id",
+                        "CF-Access-Client-Secret": "cf-secret",
+                    },
+                },
+            )
+
+        assert client is not None
+        assert model == "qwen3"
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        assert headers["CF-Access-Client-Id"] == "cf-id"
+        assert headers["CF-Access-Client-Secret"] == "cf-secret"
+
 
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""

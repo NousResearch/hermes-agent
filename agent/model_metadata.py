@@ -1481,3 +1481,67 @@ def estimate_request_tokens_rough(
     if tools:
         total_chars += len(str(tools))
     return (total_chars + 3) // 4
+
+
+# =============================================================================
+# CodeAct capability profiles
+# =============================================================================
+#
+# CodeAct is intentionally capability-driven, not model-name-driven. A model
+# only enters CodeAct mode when the active provider endpoint explicitly declares
+# support in config.yaml, e.g.:
+#
+# providers:
+#   local:
+#     base_url: http://127.0.0.1:8081/v1
+#     codeact:
+#       enabled: true
+#       structured_envelope: true
+#       envelope_enforcement: grammar
+#
+# Model-level providers.<name>.models.<id>.codeact values override provider-level
+# defaults. This avoids assuming that every endpoint serving a "qwen" or "gemma"
+# string supports the same tool-choice / grammar behavior.
+
+_CODEACT_DEFAULTS: dict = {
+    "codeact_mode": False,
+    "structured_envelope": False,
+    "envelope_enforcement": "none",
+}
+
+
+def get_codeact_profile(
+    model_name: str,
+    base_url: str = "",
+    provider: str = "",
+    custom_providers: list | None = None,
+    config: dict | None = None,
+) -> dict:
+    """Return the explicit CodeAct capability profile for a runtime route.
+
+    The returned dict always contains ``codeact_mode``,
+    ``structured_envelope``, and ``envelope_enforcement``. With no explicit
+    provider/model capability declaration, all values remain disabled.
+    """
+    profile = dict(_CODEACT_DEFAULTS)
+    if not model_name or not base_url:
+        return profile
+
+    try:
+        from hermes_cli.config import get_custom_provider_codeact_profile
+
+        resolved = get_custom_provider_codeact_profile(
+            model=model_name,
+            base_url=base_url,
+            custom_providers=custom_providers,
+            config=config,
+        )
+    except Exception:
+        resolved = None
+
+    if isinstance(resolved, dict):
+        profile.update(
+            {k: v for k, v in resolved.items() if k in _CODEACT_DEFAULTS}
+        )
+
+    return profile

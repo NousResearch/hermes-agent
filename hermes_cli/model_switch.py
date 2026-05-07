@@ -858,6 +858,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    provider_headers = None
 
     if provider_changed or explicit_provider:
         try:
@@ -868,6 +869,7 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            provider_headers = runtime.get("headers")
         except Exception as e:
             return ModelSwitchResult(
                 success=False,
@@ -893,6 +895,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                provider_headers = runtime.get("headers")
         except Exception:
             pass
 
@@ -917,6 +920,7 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
             api_mode=api_mode or None,
+            extra_headers=provider_headers,
         )
     except Exception as e:
         validation = {
@@ -1519,7 +1523,15 @@ def list_authenticated_providers(
             if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
+                    from hermes_cli.runtime_provider import _resolve_env_var_headers
+
+                    fetch_kwargs = {}
+                    raw_headers = ep_cfg.get("headers")
+                    if isinstance(raw_headers, dict) and raw_headers:
+                        fetch_kwargs["extra_headers"] = _resolve_env_var_headers(
+                            raw_headers
+                        )
+                    live_models = fetch_api_models(api_key, api_url, **fetch_kwargs)
                     if live_models:
                         models_list = live_models
                 except Exception:

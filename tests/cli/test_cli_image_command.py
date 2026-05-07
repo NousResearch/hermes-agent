@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from cli import (
     HermesCLI,
+    _collect_inline_image_paths,
     _collect_query_images,
     _format_image_attachment_badges,
     _termux_example_image_path,
@@ -78,6 +79,31 @@ class TestCollectQueryImages:
         message, images = _collect_query_images("describe this", "~/storage/shared/Pictures/cat.png")
 
         assert message == "describe this"
+        assert images == [img]
+
+    def test_collect_query_images_extracts_inline_image_reference(self, tmp_path):
+        img = _make_image(tmp_path / "page.jpg")
+        prompt = f"Translate the manga page from Japanese to English: {img}"
+
+        message, images = _collect_query_images(prompt)
+
+        assert message == prompt
+        assert images == [img]
+
+
+class TestCollectInlineImagePaths:
+    def test_collect_inline_image_paths_accepts_quoted_path(self, tmp_path):
+        img = _make_image(tmp_path / "manga page.png")
+
+        images = _collect_inline_image_paths(f'Translate "{img}" please')
+
+        assert images == [img]
+
+    def test_collect_inline_image_paths_dedupes_references(self, tmp_path):
+        img = _make_image(tmp_path / "panel.webp")
+
+        images = _collect_inline_image_paths(f"{img} and again {img}")
+
         assert images == [img]
 
 

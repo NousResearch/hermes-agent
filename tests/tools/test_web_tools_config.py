@@ -40,6 +40,7 @@ class TestFirecrawlClientConfig:
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            patch("tools.web_tools._is_searxng_available", return_value=False),
         ]
         for p in self._managed_patchers:
             p.start()
@@ -312,6 +313,35 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "tavily"
 
+    def test_config_searxng_uses_reachable_local_backend(self):
+        """web.backend=searxng uses the local search backend when reachable."""
+        from tools.web_tools import _get_backend
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={"backend": "searxng", "searxng": {"safe_fallback": True}},
+        ), patch("tools.web_tools._is_searxng_available", return_value=True):
+            assert _get_backend() == "searxng"
+
+    def test_config_searxng_safe_fallback_uses_key_backend_when_unreachable(self):
+        """SearXNG safe_fallback keeps web_search usable if the local service is down."""
+        from tools.web_tools import _get_backend
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={"backend": "searxng", "searxng": {"safe_fallback": True}},
+        ), patch("tools.web_tools._is_searxng_available", return_value=False), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            assert _get_backend() == "parallel"
+
+    def test_auto_prefers_reachable_searxng_over_key_backends(self):
+        """web.backend=auto prefers reachable SearXNG before API-key fallback."""
+        from tools.web_tools import _get_backend
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={"backend": "auto", "searxng": {"enabled": True}},
+        ), patch("tools.web_tools._is_searxng_available", return_value=True), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "searxng"
+
     def test_config_case_insensitive(self):
         """web.backend=Parallel (mixed case) → 'parallel'."""
         from tools.web_tools import _get_backend
@@ -495,6 +525,55 @@ class TestWebSearchSchema:
         assert result == {"success": True, "data": {"web": []}}
         mock_search.assert_called_once_with("docs", 100)
 
+    def test_searxng_search_normalizes_json_results(self):
+        import tools.web_tools
+
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/doc",
+                    "title": "Doc",
+                    "content": "Snippet",
+                    "engine": "duckduckgo",
+                    "score": 3.0,
+                }
+            ]
+        }
+
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={
+                "searxng": {
+                    "enabled": True,
+                    "base_url": "http://127.0.0.1:8080",
+                    "timeout": 10,
+                }
+            },
+        ), patch("tools.web_tools.httpx.get", return_value=response) as mock_get:
+            result = tools.web_tools._searxng_search("docs", 3)
+
+        assert result["success"] is True
+        assert result["data"]["backend"] == "searxng"
+        assert result["data"]["web"][0]["url"] == "https://example.com/doc"
+        assert result["data"]["web"][0]["description"] == "Snippet"
+        mock_get.assert_called_once()
+
+    def test_web_search_dispatches_to_searxng_backend(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._get_backend", return_value="searxng"), \
+             patch("tools.web_tools._searxng_search", return_value={"success": True, "data": {"web": []}}) as mock_search, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=2))
+
+        assert result == {"success": True, "data": {"web": []}}
+        mock_search.assert_called_once_with("docs", 2)
+
 
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
@@ -545,6 +624,7 @@ class TestCheckWebApiKey:
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            patch("tools.web_tools._is_searxng_available", return_value=False),
         ]
         for p in self._managed_patchers:
             p.start()
@@ -619,6 +699,20 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
+
+    def test_configured_searxng_backend_accepts_reachable_endpoint(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch("tools.web_tools._is_searxng_available", return_value=True):
+            from tools.web_tools import check_web_api_key
+
+            assert check_web_api_key() is True
+
+    def test_configured_searxng_backend_rejects_unreachable_endpoint(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch("tools.web_tools._is_searxng_available", return_value=False):
+            from tools.web_tools import check_web_api_key
+
+            assert check_web_api_key() is False
 
 
 def test_web_requires_env_includes_exa_key():

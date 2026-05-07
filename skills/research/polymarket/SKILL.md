@@ -3,6 +3,7 @@ name: polymarket
 description: "Query Polymarket: markets, prices, orderbooks, history."
 version: 1.0.0
 author: Hermes Agent + Teknium
+codeact_fn: polymarket_query
 tags: [polymarket, prediction-markets, market-data, trading]
 ---
 
@@ -49,6 +50,7 @@ When a user asks about prediction market odds:
 ## Presenting Results
 
 Format prices as percentages for readability:
+
 - outcomePrices `["0.652", "0.348"]` becomes "Yes: 65.2%, No: 34.8%"
 - Always show the market question and probability
 - Include volume when available
@@ -64,6 +66,7 @@ inside JSON responses (double-encoded). When processing with Python, parse them 
 ## Rate Limits
 
 Generous — unlikely to hit for normal usage:
+
 - Gamma: 4,000 requests per 10 seconds (general)
 - CLOB: 9,000 requests per 10 seconds (general)
 - Data: 1,000 requests per 10 seconds (general)

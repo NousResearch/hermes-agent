@@ -639,6 +639,46 @@ class TestValidateApiFallback:
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 
+    def test_custom_validation_passes_extra_headers_to_probe(self):
+        calls = []
+
+        def fake_probe(api_key, base_url, **kwargs):
+            calls.append((api_key, base_url, kwargs))
+            return {
+                "models": ["qwen3.6-35b-a3b-q6k"],
+                "probed_url": "https://llm.fumetodev.com/v1/models",
+                "resolved_base_url": "https://llm.fumetodev.com/v1",
+                "suggested_base_url": None,
+                "used_fallback": False,
+            }
+
+        with patch("hermes_cli.models.probe_api_models", side_effect=fake_probe):
+            result = validate_requested_model(
+                "qwen3.6-35b-a3b-q6k",
+                "custom",
+                api_key="not-needed",
+                base_url="https://llm.fumetodev.com/v1",
+                extra_headers={
+                    "CF-Access-Client-Id": "cf-id",
+                    "CF-Access-Client-Secret": "cf-secret",
+                },
+            )
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert calls == [
+            (
+                "not-needed",
+                "https://llm.fumetodev.com/v1",
+                {
+                    "extra_headers": {
+                        "CF-Access-Client-Id": "cf-id",
+                        "CF-Access-Client-Secret": "cf-secret",
+                    }
+                },
+            )
+        ]
+
     def test_fetch_lmstudio_models_filters_embedding_type(self):
         mock_resp = MagicMock()
         mock_resp.__enter__.return_value = mock_resp

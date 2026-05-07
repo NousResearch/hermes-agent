@@ -25,6 +25,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.compaction_result import CompactionResult
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -330,6 +331,14 @@ class ContextCompressor(ContextEngine):
       5. On subsequent compactions, iteratively update the previous summary
     """
 
+    # Operation-key derivation. The key identifies "the resource the call acts on"
+    # so that earlier calls on the same resource can collapse to the latest one.
+    # Mirrors forgecode's `Operation` enum (transformers/trim_context_summary.rs).
+    # Tool names match the Hermes registry verified at this commit:
+    # read_file / write_file / patch in tools/file_tools.py, terminal in
+    # tools/terminal_tool.py. New file ops added later should be added here too.
+    _FILE_OPS = {"read_file", "write_file", "patch"}
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -365,10 +374,7 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        self.threshold_tokens = self._compute_threshold_tokens()
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -391,6 +397,13 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        # ── qwen_aware extensions ────────────────────────────────────────
+        qwen_aware_enabled: bool = False,
+        dedup_operations: bool = False,
+        anchor_first_assistant: bool = False,
+        threshold_absolute_max: int | None = None,
+        message_threshold: int | None = None,
+        turn_threshold: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -403,6 +416,19 @@ class ContextCompressor(ContextEngine):
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
 
+        # qwen_aware extensions (must precede self.threshold_tokens calculation)
+        self.qwen_aware_enabled = qwen_aware_enabled
+        self.dedup_operations = dedup_operations
+        self.anchor_first_assistant = anchor_first_assistant
+        self.threshold_absolute_max = threshold_absolute_max
+        self.message_threshold = message_threshold
+        self.turn_threshold = turn_threshold
+
+        # Per-event metrics scratch + result handle
+        self.last_compaction_result: "CompactionResult | None" = None
+        self._last_trigger: str | None = None
+        self._last_op_deduped: int = 0
+
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
             config_context_length=config_context_length,
@@ -412,10 +438,7 @@ class ContextCompressor(ContextEngine):
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        self.threshold_tokens = self._compute_threshold_tokens()
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -466,27 +489,66 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if context exceeds the compression threshold.
+    def _compute_threshold_tokens(self) -> int:
+        """Compute the token threshold honoring both percentage and absolute cap.
 
-        Includes anti-thrashing protection: if the last two compressions
-        each saved less than 10%, skip compression to avoid infinite loops
-        where each pass removes only 1-2 messages.
+        Formula: max(MINIMUM_CONTEXT_LENGTH, min(absolute_max, ctx * pct)).
+
+        The absolute cap is opt-in. When unset (default), behavior is identical
+        to the prior ``max(int(ctx * pct), MINIMUM_CONTEXT_LENGTH)`` formula.
         """
+        base = int(self.context_length * self.threshold_percent)
+        cap = getattr(self, "threshold_absolute_max", None)
+        if isinstance(cap, int) and cap > 0:
+            base = min(base, cap)
+        return max(base, MINIMUM_CONTEXT_LENGTH)
+
+    def should_compress(
+        self,
+        prompt_tokens: int = None,
+        messages: List[Dict[str, Any]] | None = None,
+    ) -> bool:
+        """Multi-trigger compaction check.
+
+        Triggers (any one fires; order = priority):
+        - token: prompt_tokens >= threshold_tokens
+        - message: len(messages) >= message_threshold (if set)
+        - turn: count of user messages >= turn_threshold (if set)
+
+        Anti-thrashing back-off still applies after any trigger fires.
+        Records which trigger fired in ``self._last_trigger`` so callers
+        (CompactionResult) can attribute cause.
+        """
+        self._last_trigger = None
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        if tokens >= self.threshold_tokens:
+            self._last_trigger = "token"
+        elif messages is not None and self._fires_message_threshold(messages):
+            self._last_trigger = "message"
+        elif messages is not None and self._fires_turn_threshold(messages):
+            self._last_trigger = "turn"
+        if self._last_trigger is None:
             return False
-        # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
+                    "Compression skipped — last %d compressions saved <10%% each.",
                     self._ineffective_compression_count,
                 )
+            self._last_trigger = None
             return False
         return True
+
+    def _fires_message_threshold(self, messages: List[Dict[str, Any]]) -> bool:
+        threshold = getattr(self, "message_threshold", None)
+        return isinstance(threshold, int) and len(messages) >= threshold
+
+    def _fires_turn_threshold(self, messages: List[Dict[str, Any]]) -> bool:
+        threshold = getattr(self, "turn_threshold", None)
+        if not isinstance(threshold, int):
+            return False
+        user_count = sum(1 for m in messages if m.get("role") == "user")
+        return user_count >= threshold
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -594,6 +656,17 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
+        # Pass 1.5: operation-keyed dedup (qwen_aware extension)
+        if getattr(self, "dedup_operations", False):
+            result, op_deduped = self._dedup_by_operation(result)
+            pruned += op_deduped
+            # Track separately so CompactionResult.operations_deduped (Task 6)
+            # reports only this pass, not Pass 1's content-hash dedup or Pass 2's
+            # summarize-pass.
+            self._last_op_deduped = op_deduped
+        else:
+            self._last_op_deduped = 0
+
         # Pass 2: Replace old tool results with informative summaries
         for i in range(prune_boundary):
             msg = result[i]
@@ -645,6 +718,128 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
+
+    @staticmethod
+    def _operation_key(tool_name: str, args_json: str) -> "tuple[str, str] | None":
+        """Return ``(category, identifier)`` for a tool call, or ``None`` if not dedupable.
+
+        File ops on the same path share a key (read/write/patch all collapse).
+        Terminal commands key on the command string. Anything else returns
+        ``None`` and is never deduped — including ``patch`` in V4A multi-file
+        mode (no ``path`` arg) and ``web_extract`` (multi-URL ``urls`` arg).
+        """
+        try:
+            args = json.loads(args_json) if args_json else {}
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(args, dict):
+            return None
+        if tool_name in ContextCompressor._FILE_OPS:
+            path = args.get("path")
+            return ("file", path) if isinstance(path, str) and path else None
+        if tool_name == "terminal":
+            cmd = args.get("command")
+            return ("shell", cmd) if isinstance(cmd, str) and cmd else None
+        return None
+
+    def _dedup_by_operation(
+        self, messages: List[Dict[str, Any]],
+    ) -> "tuple[List[Dict[str, Any]], int]":
+        """Replace earlier tool results from same-key operations with a
+        back-reference, keeping the most recent result intact.
+
+        Semantics match forgecode's TrimContextSummary: read/write/patch on
+        the same path share a key. Walking forward, when we see a tool result
+        whose key matches a prior tool result, the prior one is replaced
+        with a `[Superseded ...]` back-reference. The latest tool result
+        holds the post-state and is what the model needs.
+
+        Already-Pass-1-deduped entries (content starts with ``[Duplicate``)
+        are left alone — they were marked by a different mechanism and
+        re-stamping would double-count.
+
+        Returns ``(new_messages, deduped_count)``.
+        """
+        if not getattr(self, "dedup_operations", False) or not messages:
+            return messages, 0
+
+        result = [m.copy() for m in messages]
+
+        # Build index: tool_call_id -> (tool_name, args_json)
+        # Mirrors the same shape as _prune_old_tool_results' call_id_to_tool index.
+        call_index: Dict[str, tuple] = {}
+        for msg in result:
+            if msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                cid = self._get_tool_call_id(tc)
+                if not cid:
+                    continue
+                if isinstance(tc, dict):
+                    fn = tc.get("function") or {}
+                    name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    args = fn.get("arguments", "") if isinstance(fn, dict) else ""
+                else:
+                    fn = getattr(tc, "function", None)
+                    name = getattr(fn, "name", "") if fn else ""
+                    args = getattr(fn, "arguments", "") if fn else ""
+                call_index[cid] = (name or "", args or "")
+
+        # Walk tool results in order. For each, compute its op key. If we've
+        # seen this key before, supersede the earlier result with a back-ref.
+        deduped = 0
+        last_seen: Dict[tuple, int] = {}  # op_key -> message idx
+
+        for i, msg in enumerate(result):
+            if msg.get("role") != "tool":
+                continue
+            cid = msg.get("tool_call_id") or ""
+            info = call_index.get(cid)
+            if not info:
+                continue
+            tool_name, args_json = info
+            key = self._operation_key(tool_name, args_json)
+            if key is None:
+                continue
+
+            prev_idx = last_seen.get(key)
+            if prev_idx is not None:
+                older = result[prev_idx]
+                older_content = older.get("content")
+                # Defense in depth (vision safety): if the previous tool
+                # result is multimodal (list-of-content-blocks), leave it
+                # alone. Replacing it with a string back-reference would
+                # silently drop image data. Mirrors the
+                # `if isinstance(content, list): continue` skip that
+                # _prune_old_tool_results' Pass 1 and Pass 2 already use.
+                # In practice the operation-key whitelist (file ops +
+                # terminal) makes this unreachable, but the check costs
+                # nothing and prevents future foot-guns when new tools
+                # are added to the whitelist.
+                if isinstance(older_content, list):
+                    last_seen[key] = i
+                    continue
+
+                older_str = older_content or ""
+                # Skip if Pass 1 (content-hash dedup) already marked this,
+                # or if we already superseded it.
+                if not isinstance(older_str, str) or older_str.startswith(
+                    ("[Duplicate tool output", "[Superseded by later")
+                ):
+                    last_seen[key] = i
+                    continue
+
+                result[prev_idx] = {
+                    **older,
+                    "content": (
+                        f"[Superseded by later {tool_name} call on same "
+                        f"{key[0]}={key[1]} — see message {i + 1}]"
+                    ),
+                }
+                deduped += 1
+            last_seen[key] = i
+
+        return result, deduped
 
     # ------------------------------------------------------------------
     # Summarization
@@ -1110,6 +1305,31 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx += 1
         return idx
 
+    def _anchor_to_first_assistant(
+        self,
+        messages: List[Dict[str, Any]],
+        start_idx: int,
+        tail_start: int | None = None,
+    ) -> int:
+        """Slide ``start_idx`` forward to the first assistant message.
+
+        When ``anchor_first_assistant`` is enabled, this preserves the forgecode
+        invariant that the compressed range always begins at an assistant turn.
+        Without the anchor, ``protect_first_n`` (a count) can land mid-user-block
+        and produce a summary that begins with an orphan user message.
+
+        If no assistant exists between ``start_idx`` and ``tail_start``, returns
+        a value at or beyond ``tail_start`` so the caller's "compress_start >=
+        compress_end" guard kicks in and skips compaction.
+        """
+        if not getattr(self, "anchor_first_assistant", False):
+            return start_idx
+        upper = tail_start if tail_start is not None else len(messages)
+        for i in range(start_idx, upper):
+            if messages[i].get("role") == "assistant":
+                return i
+        return upper
+
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
         tool_call / result group.
@@ -1271,6 +1491,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         """
         compress_start = self._align_boundary_forward(messages, self.protect_first_n)
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_start = self._anchor_to_first_assistant(  # ← anchor: slide past orphan user block
+            messages, compress_start, tail_start=compress_end,
+        )
         return compress_start < compress_end
 
     # ------------------------------------------------------------------
@@ -1314,6 +1537,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             return messages
 
+        # Reset per-event metric scratch
+        self._last_op_deduped = 0
+
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
@@ -1330,6 +1556,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_start = self._anchor_to_first_assistant(messages, compress_start, tail_start=compress_end)
 
         if compress_start >= compress_end:
             return messages
@@ -1459,6 +1686,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate
+
+        # Store per-event metrics for gateway/status-line/usage callers.
+        # Note: operations_deduped is the op-keyed dedup count from Pass 1.5
+        # only — NOT total `pruned_count`, which mixes content-hash dedup,
+        # op dedup, summarize-pass, and arg-truncate.
+        self.last_compaction_result = CompactionResult(
+            original_messages=n_messages,
+            compacted_messages=len(compressed),
+            original_tokens=display_tokens,
+            compacted_tokens=new_estimate,
+            operations_deduped=getattr(self, "_last_op_deduped", 0),
+            triggered_by=getattr(self, "_last_trigger", None) or "manual",
+        )
 
         # Anti-thrashing: track compression effectiveness
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0

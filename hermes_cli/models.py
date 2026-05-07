@@ -2831,6 +2831,7 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -2877,6 +2878,14 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
+    if extra_headers:
+        headers.update(
+            {
+                str(key): str(value)
+                for key, value in extra_headers.items()
+                if value is not None and str(value) != ""
+            }
+        )
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
@@ -2939,13 +2948,20 @@ def fetch_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    return probe_api_models(
+        api_key,
+        base_url,
+        timeout=timeout,
+        api_mode=api_mode,
+        extra_headers=extra_headers,
+    ).get("models")
 
 
 # ---------------------------------------------------------------------------
@@ -3088,6 +3104,7 @@ def validate_requested_model(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     api_mode: Optional[str] = None,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
     Validate a ``/model`` value for the active provider.
@@ -3165,9 +3182,18 @@ def validate_requested_model(
     if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
-            probe = probe_api_models(api_key, base_url, api_mode=api_mode)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                extra_headers=extra_headers,
+            )
         else:
-            probe = probe_api_models(api_key, base_url)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                extra_headers=extra_headers,
+            )
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
@@ -3363,7 +3389,12 @@ def validate_requested_model(
     # Anthropic Messages API: many proxies don't implement /v1/models.
     # Try probing with correct auth; if it fails, accept with a warning.
     if api_mode == "anthropic_messages":
-        api_models = fetch_api_models(api_key, base_url, api_mode=api_mode)
+        api_models = fetch_api_models(
+            api_key,
+            base_url,
+            api_mode=api_mode,
+            extra_headers=extra_headers,
+        )
         if api_models is not None:
             if requested_for_lookup in set(api_models):
                 return {
@@ -3396,7 +3427,11 @@ def validate_requested_model(
         }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    api_models = fetch_api_models(
+        api_key,
+        base_url,
+        extra_headers=extra_headers,
+    )
 
     if api_models is not None:
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs

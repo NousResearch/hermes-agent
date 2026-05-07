@@ -70,8 +70,16 @@ class ContextEngine(ABC):
         """
 
     @abstractmethod
-    def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Return True if compaction should fire this turn."""
+    def should_compress(
+        self,
+        prompt_tokens: int = None,
+        messages: List[Dict[str, Any]] | None = None,  # ← NEW
+    ) -> bool:
+        """Return True if compaction should fire this turn.
+
+        Subclasses may ignore ``messages`` if they only key on token count;
+        Hermes' built-in compressor uses it for multi-trigger thresholds.
+        """
 
     @abstractmethod
     def compress(

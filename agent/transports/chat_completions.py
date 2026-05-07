@@ -251,6 +251,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 
+            # tool_choice: caller may supply "required" / "auto" / "none" /
+            # {"type": "function", "function": {"name": "..."}}. Only emit
+            # when tools are present — sending tool_choice without tools is
+            # rejected by most providers.
+            _tool_choice = params.get("tool_choice")
+            if _tool_choice is not None:
+                api_kwargs["tool_choice"] = _tool_choice
+
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
         ephemeral = params.get("ephemeral_max_output_tokens")

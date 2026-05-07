@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+import time
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx
 # NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
@@ -106,6 +107,13 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+_SEARXNG_PROBE_CACHE: dict[str, Any] = {
+    "key": None,
+    "checked_at": 0.0,
+    "available": False,
+}
+_SEARXNG_PROBE_TTL_SECONDS = 30.0
+
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
@@ -118,6 +126,63 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+def _searxng_config(config: dict | None = None) -> dict[str, Any]:
+    """Return normalized SearXNG search configuration."""
+    web_cfg = config if isinstance(config, dict) else _load_web_config()
+    raw = (web_cfg or {}).get("searxng") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    env_base_url = os.getenv("SEARXNG_URL", "").strip()
+    configured_base_url = str(raw.get("base_url") or env_base_url).strip()
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "base_url": configured_base_url.rstrip("/"),
+        "timeout": float(raw.get("timeout") or 10),
+        "safe_fallback": bool(raw.get("safe_fallback", True)),
+        "categories": str(raw.get("categories") or ""),
+        "language": str(raw.get("language") or "auto"),
+        "safesearch": raw.get("safesearch", 0),
+    }
+
+
+def _is_searxng_available(config: dict | None = None, *, use_cache: bool = True) -> bool:
+    """Return True when the configured local SearXNG endpoint is reachable."""
+    cfg = _searxng_config(config)
+    if not cfg["enabled"] or not cfg["base_url"]:
+        return False
+
+    cache_key = (cfg["base_url"], cfg["enabled"])
+    now = time.monotonic()
+    if (
+        use_cache
+        and _SEARXNG_PROBE_CACHE["key"] == cache_key
+        and now - float(_SEARXNG_PROBE_CACHE["checked_at"] or 0.0) < _SEARXNG_PROBE_TTL_SECONDS
+    ):
+        return bool(_SEARXNG_PROBE_CACHE["available"])
+
+    available = False
+    try:
+        response = httpx.get(
+            f"{cfg['base_url']}/search",
+            params={"q": "hermes", "format": "json"},
+            timeout=min(float(cfg["timeout"]), 0.5),
+        )
+        available = response.status_code == 200
+        if available:
+            try:
+                payload = response.json()
+                available = isinstance(payload, dict)
+            except Exception:
+                available = False
+    except Exception:
+        available = False
+
+    _SEARXNG_PROBE_CACHE.update(
+        {"key": cache_key, "checked_at": now, "available": available}
+    )
+    return available
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -125,13 +190,19 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
+    web_cfg = _load_web_config()
+    configured = (web_cfg.get("backend") or "").lower().strip()
+    if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
+    if configured == "searxng":
+        searxng = _searxng_config(web_cfg)
+        if _is_searxng_available(web_cfg) or not searxng["safe_fallback"]:
+            return "searxng"
 
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
+    # Auto/manual/legacy config — prefer a reachable local SearXNG endpoint
+    # when enabled, then fall through to the previous key-based priority.
+    if configured in ("", "auto") and _is_searxng_available(web_cfg):
+        return "searxng"
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -195,7 +266,8 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
     if backend == "searxng":
-        return _has_env("SEARXNG_URL")
+        cfg = _searxng_config()
+        return bool(cfg["enabled"] and cfg["base_url"])
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -400,6 +472,68 @@ def _normalize_tavily_search_results(response: dict) -> dict:
             "position": i + 1,
         })
     return {"success": True, "data": {"web": web_results}}
+
+
+def _searxng_search(query: str, limit: int = 5) -> dict:
+    """Search a configured SearXNG instance and normalize JSON results."""
+    cfg = _searxng_config()
+    if not cfg["enabled"]:
+        raise ValueError("SearXNG web backend is disabled in config.yaml")
+    if not cfg["base_url"]:
+        raise ValueError("SearXNG is not configured. Set web.searxng.base_url in config.yaml or SEARXNG_URL.")
+
+    params: dict[str, Any] = {
+        "q": query,
+        "format": "json",
+    }
+    if cfg["categories"]:
+        params["categories"] = cfg["categories"]
+    if cfg["language"] and cfg["language"].lower() != "auto":
+        params["language"] = cfg["language"]
+    if cfg["safesearch"] not in (None, ""):
+        params["safesearch"] = cfg["safesearch"]
+
+    logger.info("SearXNG search: '%s' (limit=%d)", query, limit)
+    response = httpx.get(
+        f"{cfg['base_url']}/search",
+        params=params,
+        timeout=float(cfg["timeout"]),
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    web_results: list[dict[str, Any]] = []
+    for i, result in enumerate(payload.get("results") or []):
+        if not isinstance(result, dict):
+            continue
+        url = result.get("url") or ""
+        if not url:
+            continue
+        web_results.append(
+            {
+                "url": url,
+                "title": result.get("title") or "",
+                "description": result.get("content") or "",
+                "position": i + 1,
+                "source_backend": "searxng",
+                "engine": result.get("engine") or result.get("engines") or "",
+                "category": result.get("category") or "",
+                "score": result.get("score"),
+                "published_date": result.get("publishedDate")
+                or result.get("published_date")
+                or "",
+            }
+        )
+        if len(web_results) >= limit:
+            break
+
+    return {
+        "success": True,
+        "data": {
+            "web": web_results,
+            "backend": "searxng",
+        },
+    }
 
 
 def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[Dict[str, Any]]:
@@ -1191,8 +1325,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return result_json
 
         if backend == "searxng":
-            from tools.web_providers.searxng import SearXNGSearchProvider
-            response_data = SearXNGSearchProvider().search(query, limit)
+            response_data = _searxng_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -2035,9 +2168,19 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
+    if configured == "searxng":
+        # Preserve legacy env-var semantics: a SEARXNG_URL mirror means the
+        # backend is configured, while config.yaml-only setup gets the stronger
+        # readiness probe used by Hermes' local-stack integration.
+        if _has_env("SEARXNG_URL"):
+            return True
+        return _is_searxng_available()
     if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng"))
+    return any(
+        _is_backend_available(backend)
+        for backend in ("searxng", "exa", "parallel", "firecrawl", "tavily")
+    )
 
 
 def check_auxiliary_model() -> bool:
@@ -2073,7 +2216,7 @@ if __name__ == "__main__":
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
         elif backend == "searxng":
-            print(f"   Using SearXNG (search only): {os.getenv('SEARXNG_URL', '').strip()}")
+            print(f"   Using local SearXNG: {_searxng_config()['base_url']}")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")

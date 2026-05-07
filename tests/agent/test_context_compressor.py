@@ -1509,3 +1509,323 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestDedupByOperation:
+    """Operation-keyed last-wins dedup of same-resource tool calls.
+
+    Mirrors forgecode's TrimContextSummary semantics: reads/writes on the
+    same path share a key, and the LAST call wins regardless of intervening
+    writes. This is intentional — the latest tool result reflects the
+    post-state, so older results are redundant for the model's purposes.
+    """
+
+    def _compressor(self):
+        c = ContextCompressor.__new__(ContextCompressor)
+        c.protect_first_n = 1
+        c.protect_last_n = 2
+        c.tail_token_budget = 5000
+        c.context_length = 200_000
+        c.dedup_operations = True
+        c.quiet_mode = True
+        return c
+
+    def test_consecutive_reads_same_path_collapse_to_last(self):
+        c = self._compressor()
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "v1 contents"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "v2 contents"},
+            {"role": "user", "content": "next"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        # Both tool_calls remain (we don't break tool_call/tool_result pairs)
+        # but the FIRST tool_result is replaced with a back-reference.
+        assert deduped == 1
+        first_tool = next(m for m in out if m.get("tool_call_id") == "1")
+        assert first_tool["content"].startswith("[Superseded by later")
+        last_tool = next(m for m in out if m.get("tool_call_id") == "2")
+        assert last_tool["content"] == "v2 contents"
+
+    def test_read_and_patch_on_same_path_dedup_to_last(self):
+        """Read → patch → read on /a.py: keep only the final read result.
+
+        Matches forgecode's File(path) keying — read/write share a key.
+        Older result becomes a back-reference even though a write
+        happened between them; the latest read is what matters.
+        """
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "before edit"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "patch",
+                 "arguments": '{"mode":"replace","path":"/a.py",'
+                              '"old_string":"x","new_string":"y"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "patched"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "3", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "3", "content": "after edit"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        # Both earlier results superseded → deduped == 2
+        assert deduped == 2
+        first = next(m for m in out if m.get("tool_call_id") == "1")
+        assert first["content"].startswith("[Superseded by later")
+        second = next(m for m in out if m.get("tool_call_id") == "2")
+        assert second["content"].startswith("[Superseded by later")
+        last = next(m for m in out if m.get("tool_call_id") == "3")
+        assert last["content"] == "after edit"
+
+    def test_different_paths_never_dedup(self):
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "a contents"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "read_file",
+                 "arguments": '{"path":"/b.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "b contents"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        assert deduped == 0
+
+    def test_v4a_patch_without_path_is_skipped(self):
+        """Patch in V4A multi-file mode has no `path` arg → return None key → skip."""
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "patch",
+                 "arguments": '{"mode":"patch","patch":"@@ ..."}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "applied"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "patch",
+                 "arguments": '{"mode":"patch","patch":"@@ different"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "applied2"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        assert deduped == 0  # neither call has a `path` → not dedupable
+
+    def test_disabled_when_flag_off(self):
+        c = self._compressor()
+        c.dedup_operations = False
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "v1"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "v2"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        assert out == msgs
+        assert deduped == 0
+
+    def test_terminal_command_dedup_keys_on_command_string(self):
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "terminal",
+                 "arguments": '{"command":"ls -la"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "listing v1"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "terminal",
+                 "arguments": '{"command":"ls -la"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "listing v2"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        assert deduped == 1
+
+    def test_terminal_with_different_command_does_not_dedup(self):
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "terminal",
+                 "arguments": '{"command":"ls"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "out1"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "terminal",
+                 "arguments": '{"command":"pwd"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "out2"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        assert deduped == 0
+
+    def test_multimodal_tool_result_is_never_clobbered(self):
+        """Defense in depth: if the older tool result has list (multimodal)
+        content, the supersession must be skipped to avoid silently dropping
+        image data. The operation-key whitelist already excludes vision
+        tools (vision_analyze, browser_*) so this case is unreachable in
+        practice, but we lock the invariant for future robustness."""
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.png"}'}},
+            ]},
+            # Imagine a future tool that returned multimodal content for a
+            # path-keyed call. The dedup must not stomp on the image part.
+            {"role": "tool", "tool_call_id": "1", "content": [
+                {"type": "text", "text": "An image of a cat."},
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64,..."}},
+            ]},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.png"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "second read text"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        # The multimodal first result was NOT replaced.
+        assert deduped == 0
+        first = next(m for m in out if m.get("tool_call_id") == "1")
+        assert isinstance(first["content"], list)
+        assert any(
+            p.get("type") == "image_url" for p in first["content"]
+        ), "Image part must survive the dedup pass"
+
+    def test_skips_already_pass1_deduped_entries(self):
+        """If Pass 1 (content-hash dedup) already replaced a tool result
+        with `[Duplicate tool output ...]`, Pass 1.5 must not re-stamp it
+        with a `[Superseded ...]` message — that would double-process and
+        confuse the metric counter."""
+        c = self._compressor()
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "1",
+             "content": "[Duplicate tool output — same content as a more recent call]"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "2", "function": {"name": "read_file",
+                 "arguments": '{"path":"/a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "2", "content": "fresh content"},
+        ]
+        out, deduped = c._dedup_by_operation(msgs)
+        assert deduped == 0  # already-Duplicate entry is left alone
+        first = next(m for m in out if m.get("tool_call_id") == "1")
+        assert first["content"].startswith("[Duplicate tool output")
+
+
+class TestThresholdAbsoluteMax:
+    def _make(self, **kw):
+        defaults = dict(
+            threshold_percent=0.50,
+            context_length=262_144,
+            threshold_absolute_max=None,
+        )
+        defaults.update(kw)
+        c = ContextCompressor.__new__(ContextCompressor)
+        for k, v in defaults.items():
+            setattr(c, k, v)
+        return c
+
+    def test_no_cap_uses_pure_percentage(self):
+        c = self._make(threshold_absolute_max=None)
+        # 262144 * 0.50 = 131072
+        assert c._compute_threshold_tokens() == 131_072
+
+    def test_cap_lower_than_percentage_wins(self):
+        c = self._make(threshold_absolute_max=80_000)
+        # min(131072, 80000) = 80000
+        assert c._compute_threshold_tokens() == 80_000
+
+    def test_cap_higher_than_percentage_is_no_op(self):
+        c = self._make(threshold_absolute_max=200_000)
+        # min(131072, 200000) = 131072
+        assert c._compute_threshold_tokens() == 131_072
+
+    def test_cap_below_minimum_floor_is_clamped(self):
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        c = self._make(threshold_absolute_max=10_000)
+        # never go below MINIMUM_CONTEXT_LENGTH
+        assert c._compute_threshold_tokens() == MINIMUM_CONTEXT_LENGTH
+
+
+class TestMultiTriggerThresholds:
+    def _make(self, **kw):
+        c = ContextCompressor.__new__(ContextCompressor)
+        c.threshold_tokens = 100_000
+        c.last_prompt_tokens = 0
+        c._ineffective_compression_count = 0
+        c.message_threshold = None
+        c.turn_threshold = None
+        c.quiet_mode = True
+        c._last_trigger = None
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    def test_token_only_fallback(self):
+        c = self._make(last_prompt_tokens=120_000)
+        assert c.should_compress() is True
+        assert c._last_trigger == "token"
+
+    def test_message_threshold_fires_below_token_threshold(self):
+        c = self._make(message_threshold=200, last_prompt_tokens=10)
+        msgs = [{"role": "user", "content": str(i)} for i in range(200)]
+        assert c.should_compress(messages=msgs) is True
+        assert c._last_trigger == "message"
+
+    def test_turn_threshold_counts_user_messages(self):
+        c = self._make(turn_threshold=30, last_prompt_tokens=10)
+        msgs = (
+            [{"role": "system", "content": "sys"}]
+            + [{"role": "user", "content": "u"} for _ in range(30)]
+            + [{"role": "assistant", "content": "a"} for _ in range(30)]
+        )
+        assert c.should_compress(messages=msgs) is True
+        assert c._last_trigger == "turn"
+
+    def test_token_takes_precedence_when_multiple_fire(self):
+        c = self._make(
+            last_prompt_tokens=120_000,
+            message_threshold=10,
+            turn_threshold=2,
+        )
+        msgs = [{"role": "user", "content": "u"}] * 50
+        assert c.should_compress(messages=msgs) is True
+        # Token threshold checked first → it wins
+        assert c._last_trigger == "token"
+
+    def test_anti_thrashing_clears_trigger(self):
+        c = self._make(last_prompt_tokens=120_000)
+        c._ineffective_compression_count = 2
+        assert c.should_compress() is False
+        assert c._last_trigger is None
+
+    def test_no_trigger_no_fire(self):
+        c = self._make(last_prompt_tokens=10)
+        assert c.should_compress() is False
+        assert c._last_trigger is None

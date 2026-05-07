@@ -1,21 +1,18 @@
 """SearXNG web search provider.
 
 SearXNG is a free, self-hosted, privacy-respecting metasearch engine.
-It implements ``WebSearchProvider`` only — there is no extract capability.
+It implements ``WebSearchProvider`` only; there is no extract capability.
 
-Configuration::
+Configuration lives in ``config.yaml`` because the endpoint URL is not a
+secret::
 
-    # ~/.hermes/config.yaml  (SEARXNG_URL is a URL, not a secret — use config.yaml not .env)
-    SEARXNG_URL: http://localhost:8080
-
-    # Use SearXNG for search, pair with any extract provider:
     web:
       search_backend: "searxng"
       extract_backend: "firecrawl"
+      searxng:
+        base_url: "http://127.0.0.1:8080"
 
-Public SearXNG instances are listed at https://searx.space/ but self-hosting
-is recommended for production use (rate limits and availability vary per
-public instance).
+``SEARXNG_URL`` is still accepted as a backwards-compatible non-secret mirror.
 """
 
 from __future__ import annotations
@@ -29,83 +26,89 @@ from tools.web_providers.base import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 
+def _searxng_config() -> Dict[str, Any]:
+    """Load SearXNG config, with ``SEARXNG_URL`` as a legacy mirror."""
+    try:
+        from hermes_cli.config import load_config
+
+        web_cfg = (load_config() or {}).get("web") or {}
+    except Exception:
+        web_cfg = {}
+    raw = web_cfg.get("searxng") if isinstance(web_cfg, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    env_base_url = os.getenv("SEARXNG_URL", "").strip()
+    configured_base_url = str(raw.get("base_url") or env_base_url).strip()
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "base_url": configured_base_url.rstrip("/"),
+        "timeout": float(raw.get("timeout") or 15),
+        "categories": str(raw.get("categories") or ""),
+        "language": str(raw.get("language") or "auto"),
+        "safesearch": raw.get("safesearch", 0),
+    }
+
+
 class SearXNGSearchProvider(WebSearchProvider):
-    """Search via a SearXNG instance.
-
-    Requires ``SEARXNG_URL`` to be set (e.g. ``http://localhost:8080``).
-    No API key needed — SearXNG is open-source and self-hosted.
-
-    Uses the SearXNG JSON API (``/search?format=json``).  Results are
-    sorted by SearXNG's own score and truncated to *limit*.
-    """
+    """Search via a configured SearXNG instance."""
 
     def provider_name(self) -> str:
         return "searxng"
 
     def is_configured(self) -> bool:
-        """Return True when ``SEARXNG_URL`` is set to a non-empty value."""
-        return bool(os.getenv("SEARXNG_URL", "").strip())
+        cfg = _searxng_config()
+        return bool(cfg["enabled"] and cfg["base_url"])
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a search against the configured SearXNG instance.
-
-        Returns normalized results::
-
-            {
-                "success": True,
-                "data": {
-                    "web": [
-                        {
-                            "title": str,
-                            "url": str,
-                            "description": str,
-                            "position": int,
-                        },
-                        ...
-                    ]
-                }
-            }
-
-        On failure returns ``{"success": False, "error": str}``.
-        """
+        """Execute a search and return normalized ``data.web`` results."""
         import httpx
 
-        base_url = os.getenv("SEARXNG_URL", "").strip().rstrip("/")
-        if not base_url:
-            return {"success": False, "error": "SEARXNG_URL is not set"}
+        cfg = _searxng_config()
+        base_url = str(cfg["base_url"] or "").strip().rstrip("/")
+        if not cfg["enabled"] or not base_url:
+            return {
+                "success": False,
+                "error": "SearXNG is not configured. Set web.searxng.base_url in config.yaml or SEARXNG_URL.",
+            }
 
-        params: Dict[str, Any] = {
-            "q": query,
-            "format": "json",
-            "pageno": 1,
-        }
+        params: Dict[str, Any] = {"q": query, "format": "json", "pageno": 1}
+        if cfg["categories"]:
+            params["categories"] = cfg["categories"]
+        if cfg["language"] and str(cfg["language"]).lower() != "auto":
+            params["language"] = cfg["language"]
+        if cfg["safesearch"] not in (None, ""):
+            params["safesearch"] = cfg["safesearch"]
 
         try:
             resp = httpx.get(
                 f"{base_url}/search",
                 params=params,
-                timeout=15,
+                timeout=float(cfg["timeout"]),
                 headers={"Accept": "application/json"},
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("SearXNG HTTP error: %s", exc)
-            return {"success": False, "error": f"SearXNG returned HTTP {exc.response.status_code}"}
+            return {
+                "success": False,
+                "error": f"SearXNG returned HTTP {exc.response.status_code}",
+            }
         except httpx.RequestError as exc:
             logger.warning("SearXNG request error: %s", exc)
-            return {"success": False, "error": f"Could not reach SearXNG at {base_url}: {exc}"}
+            return {
+                "success": False,
+                "error": f"Could not reach SearXNG at {base_url}: {exc}",
+            }
 
         try:
             data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("SearXNG response parse error: %s", exc)
             return {"success": False, "error": "Could not parse SearXNG response as JSON"}
 
         raw_results = data.get("results", [])
-
-        # SearXNG may return a score field; sort descending and cap to limit.
         sorted_results = sorted(
-            raw_results,
+            [r for r in raw_results if isinstance(r, dict)],
             key=lambda r: float(r.get("score", 0)),
             reverse=True,
         )[:limit]
@@ -116,8 +119,16 @@ class SearXNGSearchProvider(WebSearchProvider):
                 "url": str(r.get("url", "")),
                 "description": str(r.get("content", "")),
                 "position": i + 1,
+                "source_backend": "searxng",
+                "engine": r.get("engine") or r.get("engines") or "",
+                "category": r.get("category") or "",
+                "score": r.get("score"),
+                "published_date": r.get("publishedDate")
+                or r.get("published_date")
+                or "",
             }
             for i, r in enumerate(sorted_results)
+            if r.get("url")
         ]
 
         logger.info(
@@ -128,4 +139,4 @@ class SearXNGSearchProvider(WebSearchProvider):
             limit,
         )
 
-        return {"success": True, "data": {"web": web_results}}
+        return {"success": True, "data": {"web": web_results, "backend": "searxng"}}

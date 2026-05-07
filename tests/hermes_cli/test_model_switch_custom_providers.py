@@ -104,6 +104,63 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_switch_model_passes_runtime_headers_to_validation(monkeypatch):
+    """Cloudflare-protected custom providers should reuse runtime headers for validation."""
+    validation_calls = []
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_key": "not-needed",
+            "base_url": "https://llm.fumetodev.com/v1",
+            "api_mode": "chat_completions",
+            "headers": {
+                "CF-Access-Client-Id": "cf-id",
+                "CF-Access-Client-Secret": "cf-secret",
+            },
+        },
+    )
+
+    def fake_validate(*args, **kwargs):
+        validation_calls.append(kwargs)
+        return _MOCK_VALIDATION
+
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", fake_validate)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="qwen3.6-35b-a3b-q6k",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider="fumetodev",
+        user_providers={
+            "fumetodev": {
+                "name": "fumetodev",
+                "base_url": "https://llm.fumetodev.com/v1",
+                "model": "qwen3.6-35b-a3b-q6k",
+            }
+        },
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert validation_calls == [
+        {
+            "api_key": "not-needed",
+            "base_url": "https://llm.fumetodev.com/v1",
+            "api_mode": "chat_completions",
+            "extra_headers": {
+                "CF-Access-Client-Id": "cf-id",
+                "CF-Access-Client-Secret": "cf-secret",
+            },
+        }
+    ]
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""

@@ -325,6 +325,29 @@ class TestExtractMedia:
         assert "MEDIA:/home/user/cache/meme.png" in cleaned
         assert "MEDIA:abs/path/to/audio.ogg" in cleaned
 
+    def test_media_tag_ignores_generic_placeholders_and_markdown_fragments(self):
+        content = (
+            "不要发送这些示例：\n"
+            "MEDIA:/absolute/path\n"
+            "MEDIA:/absolute/path/to/file\n"
+            "MEDIA:https://example.com/meme.png\\n```\\n\\nMultiple"
+        )
+
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == []
+        assert "MEDIA:/absolute/path" in cleaned
+        assert "MEDIA:/absolute/path/to/file" in cleaned
+        assert "MEDIA:https://example.com/meme.png" in cleaned
+
+    def test_extract_images_ignores_markdown_fragment_after_url(self):
+        content = "示例，不要发送：![meme](https://example.com/meme.png\n```\n\nMultiple)"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert "https://example.com/meme.png" in cleaned
+
     def test_media_tag_does_not_blanket_ignore_path_to_directories(self):
         """Keep legacy /path/to/... support except known doc examples."""
         content = "MEDIA:/path/to/audio.ogg"
@@ -370,6 +393,24 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
+
+
+class TestExtractLocalFiles:
+    def test_ignores_placeholder_absolute_path(self):
+        files, cleaned = BasePlatformAdapter.extract_local_files(
+            "示例路径 /absolute/path/to/file 不要发送"
+        )
+
+        assert files == []
+        assert "/absolute/path/to/file" in cleaned
+
+    def test_ignores_markdown_fragment_that_contains_url(self):
+        files, cleaned = BasePlatformAdapter.extract_local_files(
+            "坏示例 /root/.hermes/hermes-agent/https:/example.com/meme.png\n```\n\nMultiple"
+        )
+
+        assert files == []
+        assert "https:/example.com/meme.png" in cleaned
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,10 @@ QQ does **not** render Markdown. Whatever you type is delivered verbatim. So:
 - **No table syntax** (`|---|`).
 - **No `[label](url)` links** — paste the bare URL.
 - **No HTML / emoji shortcodes** like `:smile:` (real emoji characters are fine).
+- **Do not paste this skill's examples into QQ**. Example paths like
+  `MEDIA:https://example.com/...`, `MEDIA:/absolute/path`, and
+  `/path/to/...` are documentation only; only output `MEDIA:` when you are
+  actually sending a real reachable file/URL.
 
 Length rules:
 

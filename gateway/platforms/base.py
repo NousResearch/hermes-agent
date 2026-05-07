@@ -1751,6 +1751,10 @@ class BasePlatformAdapter(ABC):
         """
         images = []
         cleaned = content
+
+        def _is_malformed_image_url(url: str) -> bool:
+            lowered = (url or "").strip().lower()
+            return "```" in lowered or "\\n" in lowered or "\n" in lowered
         
         # Match markdown images: ![alt](url)
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
@@ -1758,6 +1762,8 @@ class BasePlatformAdapter(ABC):
             alt_text = match.group(1)
             url = match.group(2)
             # Only extract URLs that look like actual images
+            if _is_malformed_image_url(url):
+                continue
             if any(url.lower().endswith(ext) or ext in url.lower() for ext in
                    ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
                 images.append((url, alt_text))
@@ -1766,6 +1772,8 @@ class BasePlatformAdapter(ABC):
         html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
         for match in re.finditer(html_pattern, content):
             url = match.group(1)
+            if _is_malformed_image_url(url):
+                continue
             images.append((url, ""))
         
         # Remove only the matched image tags from content (not all markdown images)
@@ -1890,6 +1898,8 @@ class BasePlatformAdapter(ABC):
             return False
         lowered = raw.replace("\\", "/").lower()
         if lowered.startswith(("http://", "https://", "base64://", "data:")):
+            if "```" in lowered or "\\n" in lowered or "\n" in lowered:
+                return True
             return False
         if lowered.startswith("file://"):
             lowered = lowered[7:]
@@ -1900,6 +1910,8 @@ class BasePlatformAdapter(ABC):
             "abs/path/to/audio.ogg",
             "absolute/path/to/img.png",
             "absolute/path/to/audio.ogg",
+            "absolute/path/to/file",
+            "absolute/path",
             "home/user/cache/meme.png",
         }
         normalized = lowered.lstrip("/")
@@ -1912,9 +1924,16 @@ class BasePlatformAdapter(ABC):
             "/abs/path/to/audio.ogg",
             "/absolute/path/to/img.png",
             "/absolute/path/to/audio.ogg",
+            "/absolute/path/to/file",
             "/home/user/cache/meme.png",
         )
-        return any(marker in lowered for marker in placeholder_markers)
+        if any(marker in lowered for marker in placeholder_markers):
+            return True
+        if re.search(r"(^|/)absolute/path($|/)", lowered):
+            return True
+        if "```" in lowered or "\\n" in lowered:
+            return True
+        return False
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:

@@ -595,6 +595,14 @@ class Task:
     # JSON array of skill names. None = use only the defaults; empty
     # list = explicitly no extra skills.
     skills: Optional[list] = None
+    # Per-task override for the consecutive-failure circuit breaker.
+    # The value is the failure count at which the breaker trips — e.g.
+    # ``max_retries=1`` blocks on the first failure (zero retries),
+    # ``max_retries=3`` blocks on the third (two retries allowed).
+    # ``None`` (the common case) falls through to the dispatcher-level
+    # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
+    # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
+    max_retries: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -656,6 +664,9 @@ class Task:
                 row["current_step_key"] if "current_step_key" in keys else None
             ),
             skills=skills_value,
+            max_retries=(
+                row["max_retries"] if "max_retries" in keys else None
+            ),
         )
 
 
@@ -776,7 +787,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Force-loaded skills for the worker on this task, stored as JSON.
     -- Appended to the dispatcher's built-in `--skills kanban-worker`.
     -- NULL or empty array = no extras.
-    skills               TEXT
+    skills               TEXT,
+    -- Per-task override for the consecutive-failure circuit breaker.
+    -- The value is the failure count at which the breaker trips — e.g.
+    -- ``max_retries=1`` blocks on the first failure. NULL (the common
+    -- case) falls through to the dispatcher-level ``kanban.failure_limit``
+    -- config and then ``DEFAULT_FAILURE_LIMIT``.
+    max_retries          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1008,6 +1025,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # for existing rows.
         conn.execute("ALTER TABLE tasks ADD COLUMN skills TEXT")
 
+    if "max_retries" not in cols:
+        # Per-task override for the consecutive-failure circuit breaker.
+        # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
+        # config, then ``DEFAULT_FAILURE_LIMIT``. Existing rows get NULL,
+        # which is the correct default (they keep the global behaviour
+        # they were getting before the column existed).
+        conn.execute("ALTER TABLE tasks ADD COLUMN max_retries INTEGER")
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -1163,6 +1188,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1276,8 +1302,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        tenant, idempotency_key, max_runtime_seconds, skills
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tenant, idempotency_key, max_runtime_seconds, skills,
+                        max_retries
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1294,6 +1321,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        int(max_retries) if max_retries is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -3149,20 +3177,39 @@ def _record_task_failure(
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
+
+    Resolution order for the effective threshold:
+      1. per-task ``max_retries`` if set (nothing else overrides)
+      2. caller-supplied ``failure_limit`` (gateway passes the config
+         value from ``kanban.failure_limit``; tests pass fixed values)
+      3. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status FROM tasks WHERE id = ?", (task_id,),
+            "SELECT consecutive_failures, status, max_retries "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
 
-        if failures >= failure_limit:
+        # Per-task override wins over both caller-supplied and default
+        # thresholds. None (the common case) falls through.
+        task_override = (
+            row["max_retries"] if "max_retries" in row.keys() else None
+        )
+        if task_override is not None:
+            effective_limit = int(task_override)
+            limit_source = "task"
+        else:
+            effective_limit = int(failure_limit)
+            limit_source = "dispatcher"
+
+        if failures >= effective_limit:
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
@@ -3190,10 +3237,17 @@ def _record_task_failure(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
                     error=error[:500],
-                    metadata={"failures": failures, "trigger_outcome": outcome},
+                    metadata={
+                        "failures": failures,
+                        "trigger_outcome": outcome,
+                        "effective_limit": effective_limit,
+                        "limit_source": limit_source,
+                    },
                 )
             payload = {
                 "failures": failures,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
                 "error": error[:500],
                 "trigger_outcome": outcome,
             }

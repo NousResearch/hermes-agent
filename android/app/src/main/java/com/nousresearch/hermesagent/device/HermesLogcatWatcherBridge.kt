@@ -15,6 +15,8 @@ data class HermesLogcatEvent(
     val tag: String,
     val message: String,
     val packageName: String = "",
+    val packageCandidates: List<String> = emptyList(),
+    val packageNameSource: String = "",
 ) {
     fun toTriggerArguments(): JSONObject {
         return JSONObject()
@@ -25,6 +27,8 @@ data class HermesLogcatEvent(
             .put("logcat_tag", tag)
             .put("logcat_message", message)
             .put("logcat_package_name", packageName)
+            .put("logcat_package_candidates", packageCandidates.joinToString(","))
+            .put("logcat_package_source", packageNameSource)
     }
 
     fun toJson(): JSONObject {
@@ -238,7 +242,7 @@ object HermesLogcatWatcherBridge {
         val results = JSONArray()
         var matchedCount = 0
         events.forEach { event ->
-            val eventWithPackage = event.copy(packageName = packagesByUid[event.uid].orEmpty().joinToString(","))
+            val eventWithPackage = attributePackages(event, packagesByUid[event.uid].orEmpty())
             val dispatched = JSONObject(
                 HermesAutomationBridge.runLogcatEntryTriggerJson(appContext, eventWithPackage.toTriggerArguments()),
             )
@@ -287,6 +291,35 @@ object HermesLogcatWatcherBridge {
             }
             .take(MAX_PARSED_EVENTS)
             .toList()
+    }
+
+    internal fun attributePackages(event: HermesLogcatEvent, packages: List<String>): HermesLogcatEvent {
+        val candidates = packages
+            .asSequence()
+            .map { packageName -> packageName.trim() }
+            .filter { packageName -> PACKAGE_NAME_REGEX.matches(packageName) }
+            .distinct()
+            .toList()
+        if (candidates.isEmpty()) {
+            return event
+        }
+        val packageFromLogLine = candidates.firstOrNull { packageName ->
+            event.tag.contains(packageName, ignoreCase = true) ||
+                event.message.contains(packageName, ignoreCase = true)
+        }
+        val selectedPackage = packageFromLogLine
+            ?: candidates.singleOrNull()
+            ?: candidates.joinToString(",")
+        val source = when {
+            packageFromLogLine != null -> "message"
+            candidates.size == 1 -> "uid"
+            else -> "uid_shared"
+        }
+        return event.copy(
+            packageName = selectedPackage,
+            packageCandidates = candidates,
+            packageNameSource = source,
+        )
     }
 
     fun parseThreadtimeLogcatLinesJson(output: String): JSONArray {
@@ -391,6 +424,7 @@ object HermesLogcatWatcherBridge {
     private val THREADTIME_WITH_UID_REGEX =
         Regex("""^(\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}\.\d{3})\s+(\d+)\s+(\d+)\s+(\d+)\s+([VDIWEAF])\s+([^:]+):\s?(.*)$""")
     private val UID_PACKAGE_REGEX = Regex("""^package:([A-Za-z0-9._-]+)\s+uid:(\d+)$""")
+    private val PACKAGE_NAME_REGEX = Regex("""^[A-Za-z0-9._-]+$""")
     private val UID_REGEX = Regex("""^\d{1,10}$""")
 
     private const val DEFAULT_SCAN_INTERVAL_SECONDS = 30

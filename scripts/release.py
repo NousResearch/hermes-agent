@@ -879,6 +879,7 @@ AUTHOR_MAP = {
     "acc001k@pm.me": "acc001k",  # PR #19358
     "kowenhao@users.noreply.github.com": "kowenhaoai",  # PR #19376
     "hedirman@gmail.com": "hedirman",  # PR #19410
+    "lucianopacheco@gmail.com": "LucianoSP",  # PR #19412
     "lxl694522264@gmail.com": "EvilDrag0n",  # PR #20651
 }
 

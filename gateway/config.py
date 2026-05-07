@@ -899,6 +899,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
+                ac = telegram_cfg.get("allowed_chats")
+                if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
                 ignored_threads = telegram_cfg.get("ignored_threads")
                 if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
                     if isinstance(ignored_threads, list):
@@ -982,11 +988,34 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = str(frc)
+                # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
+                ac = dingtalk_cfg.get("allowed_chats")
+                if ac is not None and not os.getenv("DINGTALK_ALLOWED_CHATS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
                 allowed = dingtalk_cfg.get("allowed_users")
                 if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
                     if isinstance(allowed, list):
                         allowed = ",".join(str(v) for v in allowed)
                     os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+
+            # Mattermost settings → env vars (env vars take precedence)
+            mattermost_cfg = yaml_cfg.get("mattermost", {})
+            if isinstance(mattermost_cfg, dict):
+                if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
+                    os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+                frc = mattermost_cfg.get("free_response_channels")
+                if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = str(frc)
+                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                ac = mattermost_cfg.get("allowed_channels")
+                if ac is not None and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
 
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
@@ -998,6 +1027,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
+                # allowed_rooms: if set, bot ONLY responds in these rooms (whitelist)
+                ar = matrix_cfg.get("allowed_rooms")
+                if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
+                    if isinstance(ar, list):
+                        ar = ",".join(str(v) for v in ar)
+                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):

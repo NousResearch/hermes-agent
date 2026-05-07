@@ -84,6 +84,47 @@ def _sanitize_single_tool(tool: dict) -> dict:
     # argument coercion (``model_tools._schema_allows_null``) can still
     # map a model-emitted ``"null"`` string to Python ``None``.
     fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
+    # Strip top-level combinators that strict backends (OpenAI's Codex
+    # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
+    # combinators inside properties are preserved.
+    fn["parameters"] = _strip_top_level_combinators(
+        fn["parameters"], path=fn.get("name", "<tool>")
+    )
+    return out
+
+
+_TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
+
+
+def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
+    """Drop combinator keywords from the top-level of a function parameters schema.
+
+    OpenAI's Codex backend (``chatgpt.com/backend-api/codex``) is stricter
+    than the public Functions API and rejects requests with::
+
+        Invalid schema for function 'X': schema must have type 'object' and
+        not have 'oneOf'/'anyOf'/'allOf'/'enum'/'not' at the top level.
+
+    These keywords are typically used for conditional required-fields hints
+    (``allOf: [{if: ..., then: {required: [...]}}]``). Removing them at the
+    top level discards the hint but does not change which argument *values*
+    are valid — the tool handler always re-validates required fields.
+
+    Only the *top* level is stripped; combinators nested inside a property's
+    schema are preserved (the strict rule only applies to the outermost
+    parameters object).
+    """
+    if not isinstance(params, dict):
+        return params
+    out = dict(params)
+    for key in _TOP_LEVEL_FORBIDDEN_KEYS:
+        if key in out:
+            logger.debug(
+                "schema_sanitizer[%s]: stripped top-level %r combinator "
+                "from tool parameters (strict-backend compat)",
+                path, key,
+            )
+            out.pop(key, None)
     return out
 
 

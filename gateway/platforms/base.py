@@ -1304,37 +1304,52 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
-        except Exception as exc:
-            logger.warning("Failed to write runtime status (connected) for %s: %s", self.platform.value, exc)
+        self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
 
     def _mark_disconnected(self) -> None:
         self._running = False
         if self.has_fatal_error:
             return
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
-        except Exception as exc:
-            logger.warning("Failed to write runtime status (disconnected) for %s: %s", self.platform.value, exc)
+        self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
+        self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
+
+    def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
+        """Write runtime status; log first failure per context at warning, rest at debug.
+
+        Status writes can fail on permissions, ENOSPC, missing status dir, etc.
+        A persistently failing status dir used to be silent (``except: pass``).
+        Logging every failure would spam the log on reconnect loops, so this
+        surfaces the first failure per (platform, context) at warning level and
+        downgrades subsequent failures to debug.
+        """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(
-                platform=self.platform.value,
-                platform_state="fatal",
-                error_code=code,
-                error_message=message,
-            )
+            write_runtime_status(platform=self.platform.value, **kwargs)
         except Exception as exc:
-            logger.warning("Failed to write runtime status (fatal) for %s: %s", self.platform.value, exc)
+            # Use getattr so object.__new__(...) test harnesses that skip __init__
+            # don't blow up on attribute access.
+            logged = getattr(self, "_status_write_logged", None)
+            if logged is None:
+                logged = set()
+                try:
+                    self._status_write_logged = logged
+                except Exception:
+                    pass
+            key = (self.platform.value, context)
+            if key not in logged:
+                logger.warning(
+                    "Failed to write runtime status (%s) for %s: %s (further failures at debug level)",
+                    context, self.platform.value, exc,
+                )
+                logged.add(key)
+            else:
+                logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler

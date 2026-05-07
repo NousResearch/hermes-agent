@@ -110,6 +110,23 @@ class PlatformEntry:
     # Do not use markdown.").  Empty string = no hint.
     platform_hint: str = ""
 
+    # ── Default home channel (for cron / notification delivery) ──
+    # Env var name to read for the default chat ID (e.g. "IRC_HOME_CHANNEL").
+    # When set and the env var is non-empty, the gateway populates
+    # ``config.platforms[<name>].home_channel`` automatically.  The optional
+    # ``<env>_NAME`` and ``<env>_THREAD_ID`` siblings are also read for the
+    # display name and thread/topic ID respectively.  Empty string disables
+    # the auto-bootstrap (config.yaml or programmatic setup must supply it).
+    home_channel_env: str = ""
+
+    # ── Default session reset policy ──
+    # Applied when ``config.reset_by_platform`` does not already define one
+    # for this platform.  Lets a plugin ship a sensible default
+    # (e.g. ``SessionResetPolicy(auto_resume_on_restart=True)``) without
+    # forcing users to write it into config.yaml.  ``None`` = use the
+    # gateway-wide default.
+    default_reset_policy: Optional[Any] = None
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

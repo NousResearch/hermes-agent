@@ -487,10 +487,13 @@ class PluginContext:
         ``check_fn()`` before instantiation to verify dependencies.
 
         Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
-        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
-        Unknown keys raise TypeError from the dataclass constructor.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``,
+        ``home_channel_env``, ``default_reset_policy``).  Unknown keys raise
+        TypeError from the dataclass constructor.
 
         Example::
+
+            from gateway.config import SessionResetPolicy
 
             ctx.register_platform(
                 name="irc",
@@ -499,6 +502,11 @@ class PluginContext:
                 check_fn=lambda: True,
                 emoji="💬",
                 setup_fn=irc_interactive_setup,
+                # Auto-load `IRC_HOME_CHANNEL` (and _NAME / _THREAD_ID
+                # siblings) into config.platforms[Platform("irc")].home_channel.
+                home_channel_env="IRC_HOME_CHANNEL",
+                # Default to auto-resume sessions after gateway restart.
+                default_reset_policy=SessionResetPolicy(auto_resume_on_restart=True),
             )
         """
         from gateway.platform_registry import platform_registry, PlatformEntry

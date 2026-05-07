@@ -1616,7 +1616,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
     # blocks above; plugins expose check_fn() which is the single source of
     # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.
+    # platform is enabled so start() will create its adapter.  Also applies
+    # the plugin's declared default home_channel (read from env) and default
+    # reset policy — built-ins do these inline above; plugins declare them
+    # via PlatformEntry.home_channel_env / default_reset_policy.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
@@ -1632,5 +1635,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
+
+            # Apply plugin-declared default home_channel (from env vars).
+            # Mirrors the <PLATFORM>_HOME_CHANNEL[_NAME|_THREAD_ID] convention
+            # used by built-ins, with the env var name supplied by the plugin
+            # so naming need not collide with PlatformEntry.name (e.g. a
+            # plugin named "irc" can declare "IRC_HOME_CHANNEL").
+            if entry.home_channel_env and config.platforms[platform].home_channel is None:
+                home_chat_id = os.getenv(entry.home_channel_env, "").strip()
+                if home_chat_id:
+                    config.platforms[platform].home_channel = HomeChannel(
+                        platform=platform,
+                        chat_id=home_chat_id,
+                        name=os.getenv(f"{entry.home_channel_env}_NAME", "Home"),
+                        thread_id=os.getenv(f"{entry.home_channel_env}_THREAD_ID") or None,
+                    )
+
+            # Apply plugin-declared default reset policy when the user has
+            # not set one in config.yaml.  Lets a plugin ship a sensible
+            # default (e.g. auto_resume_on_restart=True) without forcing
+            # users to write it into their config.
+            if entry.default_reset_policy is not None and platform not in config.reset_by_platform:
+                config.reset_by_platform[platform] = entry.default_reset_policy
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

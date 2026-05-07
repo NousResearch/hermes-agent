@@ -187,6 +187,63 @@ class TestMSGraphNotifications:
         assert len(scheduled) == 1
 
     @pytest.mark.anyio
+    async def test_notifications_without_id_are_not_deduped(self):
+        adapter = _make_adapter()
+        scheduled: list[tuple[dict, object]] = []
+
+        async def _capture(notification, event):
+            scheduled.append((notification, event))
+
+        adapter.set_notification_scheduler(_capture)
+        payload = {
+            "value": [
+                {
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-3",
+                    "clientState": "expected-client-state",
+                    "resourceData": {"id": "meeting-3"},
+                }
+            ]
+        }
+
+        first = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        second = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+
+        assert first.status == 202
+        assert second.status == 202
+        second_data = json.loads(second.text)
+        assert second_data["accepted"] == 1
+        assert second_data["duplicates"] == 0
+        assert second_data["scheduled"] == 1
+
+        await asyncio.sleep(0.05)
+
+        assert len(scheduled) == 2
+
+    @pytest.mark.anyio
+    async def test_resource_patterns_accept_leading_slash(self):
+        adapter = _make_adapter(accepted_resources=["/communications/onlineMeetings"])
+        payload = {
+            "value": [
+                {
+                    "id": "notif-slash",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-4",
+                    "clientState": "expected-client-state",
+                }
+            ]
+        }
+
+        resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        data = json.loads(resp.text)
+
+        assert resp.status == 202
+        assert data["accepted"] == 1
+        assert data["rejected"] == 0
+
+    @pytest.mark.anyio
     async def test_seen_receipts_are_bounded(self):
         adapter = _make_adapter(max_seen_receipts=2)
 

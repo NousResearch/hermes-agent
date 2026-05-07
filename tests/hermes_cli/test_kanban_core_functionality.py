@@ -3636,6 +3636,100 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
         conn.close()
 
 
+def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
+    """A worker that exited rc=0 while its task was still ``running``
+    is a protocol violation (agent answered conversationally without
+    calling kanban_complete / kanban_block). Retrying will just loop,
+    so auto-block immediately instead of waiting for the breaker to
+    trip at ``DEFAULT_FAILURE_LIMIT``.
+
+    Regression test for the respawn-loop-after-completion bug reported
+    against small local models (gemma4-e2b q4) where the model writes
+    the answer as plain text and the CLI exits rc=0 cleanly.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999998
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Simulate the reap loop having recorded a clean exit for this pid.
+        # os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
+        _kb._record_worker_exit(fake_pid, 0)
+        # Force liveness check to say "dead" for the fake pid.
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result_crashed, "should be detected as crashed"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"protocol violation should auto-block on first occurrence, "
+            f"got status={task.status}"
+        )
+        assert "kanban_complete" in (task.last_failure_error or ""), (
+            f"expected protocol-violation message, got {task.last_failure_error!r}"
+        )
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds, (
+            f"expected 'protocol_violation' event, got {kinds}"
+        )
+        # The ``crashed`` event would be misleading here — the worker
+        # didn't crash, it returned 0.
+        assert "crashed" not in kinds, (
+            f"should NOT emit 'crashed' event on clean exit, got {kinds}"
+        )
+        assert "gave_up" in kinds, (
+            f"breaker should trip, expected 'gave_up' event, got {kinds}"
+        )
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
+    """A worker that exited non-zero (real error / crash) uses the
+    normal counter path — one failure doesn't trip the breaker.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # W_EXITCODE(1, 0) == 256 — WIFEXITED True, WEXITSTATUS == 1.
+        _kb._record_worker_exit(fake_pid, 256)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            f"single non-zero crash shouldn't auto-block, got {task.status}"
+        )
+        assert task.consecutive_failures == 1
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "crashed" in kinds
+        assert "protocol_violation" not in kinds
+    finally:
+        conn.close()
+
+
 def test_reclaim_task_clears_failure_counter(kanban_home):
     """Operator reclaim wipes the counter so the next retry gets a fresh
     budget."""

@@ -54,6 +54,7 @@ AUTHOR_MAP = {
     "ngusev@astralinux.ru": "NikolayGusev-astra",
     "liuguangyong201@hellobike.com": "liuguangyong93",
     "2093036+exiao@users.noreply.github.com": "exiao",
+    "kevyan1998@gmail.com": "kyan12",
     "rylen.anil@gmail.com": "rylena",
     "godnanijatin@gmail.com": "jatingodnani",
     "252811164+adybag14-cyber@users.noreply.github.com": "adybag14-cyber",

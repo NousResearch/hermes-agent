@@ -2759,44 +2759,67 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    # Drain-timeout reasons set by _stop_impl() when a still-running turn is
+    # force-interrupted; "restart_interrupted" is set by
+    # SessionStore.suspend_recently_active() on crash recovery (no
+    # .clean_shutdown marker).  All three mean "the agent was mid-turn and
+    # we killed it" — eligible for startup auto-resume.
+    _AUTO_RESUME_REASONS = frozenset(
+        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+    )
+
     def _schedule_resume_pending_sessions(self) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
-        ``resume_pending`` already preserves the transcript and injects the
-        recovery system note on the next user message.  This method closes the
-        restart UX gap by synthesizing that next message once adapters are back
-        online, so users do not have to send a placeholder ping after restart.
+        ``resume_pending`` already preserves the transcript AND the existing
+        ``_is_resume_pending`` branch in ``_handle_message_with_agent``
+        injects a reason-aware recovery system note on the next turn.  This
+        method closes the UX gap by synthesizing that next turn once
+        adapters are back online — the event text is empty so the existing
+        injection path owns the wording and we never double up.
+
+        Adapters that are not yet ready (adapter missing from
+        ``self.adapters``) are skipped silently; their sessions stay
+        ``resume_pending`` and will auto-resume on the next real user
+        message, or on the next gateway startup.
         """
+        window = _auto_continue_freshness_window()
         try:
-            entries = self.session_store.list_resume_pending(
-                window_secs=_auto_continue_freshness_window(),
-                allowed_reasons={"restart_timeout", "shutdown_timeout"},
-            )
+            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                candidates = [
+                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
+                    if entry.resume_pending
+                    and not entry.suspended
+                    and entry.origin is not None
+                    and entry.resume_reason in self._AUTO_RESUME_REASONS
+                ]
         except Exception as exc:
-            logger.warning("Failed to list resume-pending sessions: %s", exc)
+            logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
 
+        now = datetime.now()
         scheduled = 0
-        for entry in entries:
-            source = getattr(entry, "origin", None)
-            platform = getattr(source, "platform", None)
-            adapter = self.adapters.get(platform) if platform is not None else None
-            if source is None or adapter is None:
+        for entry in candidates:
+            marker = entry.last_resume_marked_at or entry.updated_at
+            if marker is not None and (now - marker).total_seconds() > window:
+                continue
+
+            source = entry.origin
+            adapter = self.adapters.get(source.platform)
+            if adapter is None:
                 logger.debug(
-                    "Skipping auto-resume for %s: adapter unavailable for %s",
-                    getattr(entry, "session_key", "?"),
-                    getattr(platform, "value", platform),
+                    "Skipping auto-resume for %s: adapter not ready for %s",
+                    entry.session_key,
+                    getattr(source.platform, "value", source.platform),
                 )
                 continue
 
+            # Empty-text internal event — the _is_resume_pending branch in
+            # _handle_message_with_agent prepends the proper reason-aware
+            # system note before the turn runs.
             event = MessageEvent(
-                text=(
-                    "[System note: The gateway restarted after interrupting "
-                    "this session. Resume the previous turn now. Reconcile "
-                    "the transcript first: if tool results are already present, "
-                    "process them before taking new action; never claim work "
-                    "completed unless it is visible in the transcript/tool output.]"
-                ),
+                text="",
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
@@ -2807,7 +2830,10 @@ class GatewayRunner:
             scheduled += 1
 
         if scheduled:
-            logger.info("Scheduled auto-resume for %d restart-interrupted session(s)", scheduled)
+            logger.info(
+                "Scheduled auto-resume for %d restart-interrupted session(s)",
+                scheduled,
+            )
         return scheduled
 
     async def start(self) -> bool:

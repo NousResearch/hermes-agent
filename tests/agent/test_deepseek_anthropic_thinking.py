@@ -240,3 +240,43 @@ class TestDeepSeekAnthropicPreservesThinking:
             "Non-DeepSeek third-party endpoints must keep the generic "
             "strip-all-thinking behaviour — unsigned blocks get rejected."
         )
+
+    def test_signed_thinking_block_survives_replay(self) -> None:
+        """DeepSeek returns thinking with its OWN UUID signature (= message id).
+        DeepSeek self-validates on replay; stripping causes 400. Bug observed
+        2026-05-07 multi-turn session 20260507_115607_60c148: 7th turn 400'd
+        because Hermes treated DeepSeek's UUID signature as Anthropic-signed
+        and stripped it. Signed thinking must survive for DeepSeek.
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "the user said hi",
+                        "signature": "91cfbb94-554b-4136-8e21-fa02280d56ed",
+                    },
+                    {"type": "text", "text": "Hi there!"},
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        _system, converted = convert_messages_to_anthropic(
+            messages, base_url="https://api.deepseek.com/anthropic"
+        )
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        thinking_blocks = [
+            b for b in assistant_msg["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(thinking_blocks) == 1, (
+            "DeepSeek-signed thinking block must be preserved; got "
+            f"{thinking_blocks!r}"
+        )
+        assert thinking_blocks[0].get("signature") == (
+            "91cfbb94-554b-4136-8e21-fa02280d56ed"
+        ), "Signature should be preserved verbatim for DeepSeek to validate."

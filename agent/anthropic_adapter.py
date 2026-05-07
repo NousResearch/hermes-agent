@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import subprocess
 from pathlib import Path
 
@@ -460,6 +461,28 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     if not normalized:
         return False
     return "/anthropic" in normalized.rstrip("/").lower()
+
+
+_DEEPSEEK_UUID_SIGNATURE_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _is_deepseek_thinking_signature(sig: str | None) -> bool:
+    """Return True for DeepSeek's own thinking signatures (UUID format).
+
+    DeepSeek's /anthropic endpoint signs thinking blocks with the message id
+    (8-4-4-4-12 hex UUID). Anthropic-proprietary signatures are base64 long
+    strings. Distinguishing by format lets us preserve DeepSeek's own signed
+    blocks (DeepSeek self-validates) while still stripping Anthropic-signed
+    blocks that may have leaked through (DeepSeek can't validate Anthropic's).
+
+    Observation: signature value equals message id (e.g.
+    "91cfbb94-554b-4136-8e21-fa02280d56ed"), 2026-05+. See #16748.
+    """
+    if not sig:
+        return False
+    return bool(_DEEPSEEK_UUID_SIGNATURE_RE.match(sig.lower()))
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -1691,20 +1714,35 @@ def convert_messages_to_anthropic(
 
         if _preserve_unsigned_thinking:
             # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
-            # thinking server-side and require unsigned thinking blocks on
-            # replayed assistant tool-call messages.  Strip signed Anthropic
-            # blocks (neither upstream can validate Anthropic signatures) but
-            # preserve the unsigned ones we synthesised from reasoning_content.
+            # thinking server-side and require thinking blocks to round-trip
+            # on replayed assistant tool-call messages.
+            #
+            # Kimi: keep unsigned thinking (synthesised from reasoning_content),
+            # strip Anthropic-signed blocks (Kimi can't validate them).
+            #
+            # DeepSeek: also keep DeepSeek-own-signed blocks (UUID format =
+            # message id, not Anthropic's base64). DeepSeek self-validates
+            # these on replay; stripping causes "content[].thinking must be
+            # passed back" 400s. Anthropic-signed leaks (e.g. base64 sig)
+            # still get stripped — DeepSeek can't validate Anthropic's.
+            # See hermes-agent#16748 (originally documented as unsigned, but
+            # 2026-05+ responses include UUID-format DeepSeek signatures).
+            is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
-                if b.get("signature") or b.get("data"):
-                    # Anthropic-signed block — upstream can't validate, strip
+                sig = b.get("signature")
+                if sig or b.get("data"):
+                    if is_deepseek and _is_deepseek_thinking_signature(sig):
+                        # DeepSeek's own UUID signature — keep, DeepSeek validates
+                        new_content.append(b)
+                        continue
+                    # Anthropic-signed block (base64) or other unrecognized —
+                    # neither Kimi nor DeepSeek can validate, strip.
                     continue
-                # Unsigned thinking (synthesised from reasoning_content) —
-                # keep it: the upstream needs it for message-history validation.
+                # Unsigned thinking (synthesised from reasoning_content) — keep
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:

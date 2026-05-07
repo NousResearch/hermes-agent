@@ -1,7 +1,7 @@
 ---
 name: fdroid-merge-request-debugging
 description: Use when preparing, debugging, or responding to F-Droid fdroiddata merge requests, especially app inclusion metadata, reproducible Binaries checks, checkupdates/autoupdate fixes, reviewer discussion resolution, and GitLab pipeline triage.
-version: 1.0.0
+version: 1.0.1
 metadata:
   hermes:
     tags: [fdroid, android, reproducible-builds, gitlab, release]
@@ -85,6 +85,23 @@ stable:
 - inner ZIP timestamps are normalized when the app normalizer requires it
 - `build.json` references the actual `requirements-*.imy` SHA-1
 
+If `fdroid build` compiles the source successfully but then fails while
+retrieving `Binaries`, check the upstream release asset URL before changing
+metadata. A `404` for a URL like
+`https://github.com/<owner>/<repo>/releases/download/v%v/<apk-name>.apk` means
+the source build may already be good and the failure is the missing signed
+reference APK. Fix the upstream GitHub Release workflow or upload process,
+verify the APK URL returns `200 OK`, then retry or retrigger the GitLab MR
+pipeline. Do not leave the MR red when the only failure is a delayed release
+asset upload.
+
+For GitHub release workflows that remain queued on hosted runners, first check
+the job labels and whether a repo variable such as `HERMES_ANDROID_RUNNER`
+overrides `runs-on`. A temporary self-hosted runner can unblock a release asset
+upload only when the repo secrets stay in GitHub Actions and the runner is
+ephemeral, non-root on Linux, and deregisters after one job. Remove any temporary
+runner override variable immediately after the release job completes.
+
 ## Local Validation
 
 Run the cheap local gates before commit:
@@ -120,10 +137,17 @@ credential helper over Git Credential Manager prompts:
 ```powershell
 gh auth status
 gh auth setup-git --hostname github.com
-git config --local credential.helper ""
-git config --local credential.https://github.com.helper "!gh auth git-credential"
+git config --local --unset-all credential.helper 2>$null
+git config --local --add credential.helper ""
+git config --local --add credential.helper "!gh auth git-credential"
+git config --local credential.interactive never
 git config --local credential.useHttpPath true
 ```
+
+For GitLab/fdroiddata pushes, do not assume the cached Git credential is also a
+REST API token. If `git push` works but GitLab API calls return `401
+Unauthorized`, keep the branch and pipeline updated and give the exact reviewer
+reply text for the user to paste.
 
 Monitor the source-project pipeline, then inspect failed job logs directly:
 

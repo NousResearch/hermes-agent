@@ -250,6 +250,42 @@ def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_exhausted_401_entry_resets_after_five_minutes(tmp_path, monkeypatch):
+    """Transient auth failures should not strand single-key setups for an hour."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 310,
+                        "last_error_code": 401,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host
@@ -922,6 +958,43 @@ def test_get_custom_provider_pool_key(tmp_path, monkeypatch):
     assert get_custom_provider_pool_key("http://localhost:8080/v1") == "custom:my-local-server"
     assert get_custom_provider_pool_key("https://unknown.example.com/v1") is None
     assert get_custom_provider_pool_key("") is None
+
+
+def test_get_custom_provider_pool_key_prefers_name_over_base_url(tmp_path, monkeypatch):
+    """When two custom providers share the same base_url, provider_name resolves to the correct one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "provider-a",
+                "base_url": "http://gateway:8080/v1",
+                "api_key": "sk-aaa",
+            },
+            {
+                "name": "provider-b",
+                "base_url": "http://gateway:8080/v1",
+                "api_key": "sk-bbb",
+            },
+        ]
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key
+
+    # Without provider_name, first match wins (backward compatible)
+    assert get_custom_provider_pool_key("http://gateway:8080/v1") == "custom:provider-a"
+
+    # With provider_name, exact name match wins regardless of order
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="provider-b") == "custom:provider-b"
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="provider-a") == "custom:provider-a"
+
+    # Name match with non-matching base_url still works via fallback
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="nonexistent") == "custom:provider-a"
+
+    # Empty provider_name is same as None (backward compatible)
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="") == "custom:provider-a"
 
 
 def test_list_custom_pool_providers(tmp_path, monkeypatch):

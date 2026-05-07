@@ -242,6 +242,12 @@ def _handle_send(args):
 
     from gateway.platforms.base import BasePlatformAdapter
 
+    # Capture [[as_document]] directive before extract_media strips it.
+    # Image-extension files in this batch will route through send_document
+    # instead of send_photo so the original bytes survive (e.g. info-graph
+    # JPGs where Telegram's sendPhoto recompresses to 1280px).
+    force_document_attachments = "[[as_document]]" in message
+
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
@@ -277,6 +283,7 @@ def _handle_send(args):
                 cleaned_message,
                 thread_id=thread_id,
                 media_files=media_files,
+                force_document=force_document_attachments,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -437,7 +444,7 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk):
     return {"error": f"No live adapter for platform '{platform.value}'. Is the gateway running with this platform connected?"}
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -514,6 +521,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
+                force_document=force_document,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -667,7 +675,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -750,7 +758,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
-                    if ext in _IMAGE_EXTS:
+                    if ext in _IMAGE_EXTS and not force_document:
                         last_msg = await bot.send_photo(
                             chat_id=int_chat_id, photo=f, **thread_kwargs
                         )

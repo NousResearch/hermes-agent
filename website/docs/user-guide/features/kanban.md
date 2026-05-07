@@ -335,10 +335,19 @@ Any profile that should be able to work kanban tasks must load the `kanban-worke
 3. Call `kanban_heartbeat(note="...")` every few minutes during long operations.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
 
-Load it with (this one is **you**, installing into a profile — not a tool call):
+`kanban-worker` is a bundled skill, synced into every profile during install and
+update — there is no separate Skills Hub install step. Verify it is present in
+whichever profile you use for kanban workers (`researcher`, `writer`, `ops`,
+etc.):
 
 ```bash
-hermes skills install devops/kanban-worker
+hermes -p <your-worker-profile> skills list | grep kanban-worker
+```
+
+If the bundled copy is missing, restore it for that profile:
+
+```bash
+hermes -p <your-worker-profile> skills reset kanban-worker --restore
 ```
 
 The dispatcher also auto-passes `--skills kanban-worker` when spawning every worker, so the worker always has the pattern library available even if a profile's default skills config doesn't include it.
@@ -403,10 +412,18 @@ kanban_complete(
 )
 ```
 
-Load it into your orchestrator profile:
+`kanban-orchestrator` is a bundled skill. It is synced into each profile during
+install and update, so there is no separate Skills Hub install step. Verify it is
+present in your orchestrator profile:
 
 ```bash
-hermes skills install devops/kanban-orchestrator
+hermes -p orchestrator skills list | grep kanban-orchestrator
+```
+
+If the bundled copy is missing, restore it for that profile:
+
+```bash
+hermes -p orchestrator skills reset kanban-orchestrator --restore
 ```
 
 For best results, pair it with a profile whose toolsets are restricted to board operations (`kanban`, `gateway`, `memory`) so the orchestrator literally cannot execute implementation tasks even if it tries.

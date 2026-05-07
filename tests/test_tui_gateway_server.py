@@ -204,6 +204,7 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert resp["result"]["status"] == "recording"
         assert captured["silence_threshold"] == 200
         assert captured["silence_duration"] == 3.0
+        assert captured["auto_restart"] is False
 
     # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
     # of ``int``, so the naive ``isinstance(threshold, (int, float))``
@@ -232,6 +233,80 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert (
             captured["silence_duration"] == 3.0
         ), f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        assert captured["auto_restart"] is False
+
+
+def test_voice_record_stop_forces_transcription(monkeypatch):
+    captured: dict = {}
+
+    def fake_stop_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: None,
+            stop_continuous=fake_stop_continuous,
+        ),
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop",
+            "method": "voice.record",
+            "params": {"action": "stop"},
+        }
+    )
+
+    assert resp["result"]["status"] == "stopped"
+    assert captured["force_transcribe"] is True
+
+
+def test_voice_record_stop_updates_event_session_id(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: True,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(server, "_voice_event_sid", "old-session")
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop-session",
+            "method": "voice.record",
+            "params": {"action": "stop", "session_id": "new-session"},
+        }
+    )
+
+    assert resp["result"]["status"] == "stopped"
+    assert server._voice_event_sid == "new-session"
+
+
+def test_voice_record_start_reports_busy_when_stop_is_in_progress(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: False,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-busy",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        }
+    )
+
+    assert resp["result"]["status"] == "busy"
 
 
 def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
@@ -448,6 +523,24 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
         {"context": "resume", "name": "search_files", "role": "tool"},
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
+    ]
+
+
+def test_history_to_messages_renders_multimodal_content():
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look here"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        },
+        {"role": "assistant", "content": "saw it"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "look here\n[image]"},
+        {"role": "assistant", "text": "saw it"},
     ]
 
 
@@ -3526,6 +3619,100 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
         )
 
     mock_title.assert_not_called()
+
+
+def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
+    """When the backend fails with no visible response (e.g. invalid model slug
+    → provider 4xx), the TUI must surface result['error'] as visible text
+    instead of emitting a blank message.complete turn."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": None,
+                "messages": [],
+                "api_calls": 0,
+                "completed": False,
+                "failed": True,
+                "error": "HTTP 400: invalid model id 'kimi-k2.6'",
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    assert payload.get("status") == "error"
+    assert payload.get("text", "").startswith("Error:")
+    assert "kimi-k2.6" in payload.get("text", "")
+
+
+def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
+    """An empty final_response with NO backend error must stay empty — do not
+    synthesize an error string. Preserves the existing None/empty-sentinel
+    semantics owned by downstream handlers."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": None,
+                "messages": [],
+                "api_calls": 1,
+                "completed": True,
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    # Status stays "complete" because no error flag was set
+    assert payload.get("status") == "complete"
+    # Text stays empty — we did NOT fabricate an "Error:" string
+    text = payload.get("text", "")
+    assert text in ("", None), f"expected empty text, got {text!r}"
 
 
 # ── session.most_recent ──────────────────────────────────────────────

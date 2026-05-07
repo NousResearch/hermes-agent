@@ -107,6 +107,14 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+def get_default_config_path() -> Path:
+    """Return the default profile's config.yaml path.
+    
+    Used for inheritance resolution when loading profile configs.
+    """
+    return get_default_hermes_root() / "config.yaml"
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 

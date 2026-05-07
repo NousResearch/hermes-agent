@@ -1030,3 +1030,65 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+# ===================================================================
+# TestConfigInheritance
+# ===================================================================
+
+class TestProfileInheritance:
+    """Tests for profile config inheritance feature."""
+
+    def test_create_profile_with_inheritance_default(self, profile_env):
+        """New profiles inherit from default by default."""
+        tmp_path = profile_env
+        
+        profile_dir = create_profile("engineer", no_alias=True)
+        config_path = profile_dir / "config.yaml"
+        
+        assert config_path.exists()
+        content = config_path.read_text()
+        assert "# This profile inherits" in content
+
+    def test_create_profile_with_inheritance_explicit(self, profile_env):
+        """New profiles can explicitly enable inheritance."""
+        tmp_path = profile_env
+        
+        profile_dir = create_profile("researcher", no_alias=True, inherits=True)
+        config_path = profile_dir / "config.yaml"
+        
+        assert config_path.exists()
+        content = config_path.read_text()
+        assert "# This profile inherits" in content
+
+    def test_create_profile_no_inheritance(self, profile_env):
+        """Profiles can opt-out of inheritance."""
+        tmp_path = profile_env
+        
+        profile_dir = create_profile("sandbox", no_alias=True, inherits=False)
+        config_path = profile_dir / "config.yaml"
+        
+        assert config_path.exists()
+        content = config_path.read_text()
+        # Should have standalone config template, not inheritance comment
+        assert "# This profile inherits" not in content
+        assert "# Standalone profile" in content
+
+    def test_create_profile_clone_overrides_inheritance(self, profile_env):
+        """Cloning a profile preserves the cloned config (no new skeleton)."""
+        tmp_path = profile_env
+        
+        # Create source profile
+        source_dir = create_profile("source", no_alias=True, inherits=True)
+        (source_dir / "config.yaml").write_text("model: custom-model\n")
+        
+        # Clone from source
+        target_dir = create_profile("target", clone_from="source", clone_config=True, no_alias=True)
+        config_path = target_dir / "config.yaml"
+        
+        assert config_path.exists()
+        content = config_path.read_text()
+        # Should have cloned content, not inheritance skeleton
+        assert "model: custom-model" in content
+        # Since we cloned, it shouldn't have the inheritance skeleton
+        # (unless the source had it)

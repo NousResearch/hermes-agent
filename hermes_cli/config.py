@@ -240,8 +240,11 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, get_default_config_path  # noqa: F811,E402
 from utils import atomic_replace
+
+# Sentinel value for load_config: auto-detect inheritance from config content.
+_AUTO_INHERIT = object()
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -3920,8 +3923,77 @@ def read_raw_config() -> Dict[str, Any]:
     return data
 
 
-def load_config() -> Dict[str, Any]:
-    """Load configuration from ~/.hermes/config.yaml.
+def _is_override(key: str, profile_raw: dict, parent_raw: dict) -> bool:
+    """Check if a key in profile config is an explicit override.
+    
+    Returns True if the key is present in profile_raw and differs from
+    parent_raw. Python dict equality handles deep comparison of nested
+    dicts, so nested structures are compared by value, not by reference.
+    Returns False if the key is absent from profile_raw or only present
+    in parent_raw.
+    """
+    if key not in profile_raw:
+        return False
+    if key not in parent_raw:
+        return True  # new key, not inherited
+    # Compare values (deep comparison for dicts)
+    return profile_raw[key] != parent_raw[key]
+
+
+def _should_inherit(config_path: Path) -> Optional[Path]:
+    """Check if profile should inherit from default config.
+
+    Returns the path to inherit from (~/.hermes/config.yaml) if inheritance
+    is enabled, or None if the profile should use standalone config.
+
+    Detection logic:
+    1. If config has explicit `inherit: false` flag → no inheritance
+    2. If config has `# This profile inherits` comment header → inheritance enabled
+    3. Otherwise → no inheritance (backward compatible)
+
+    Returns None if default config doesn't exist (graceful degradation).
+    """
+    if not config_path.exists():
+        # No config file at all → inherit from default if it exists
+        default_path = get_default_config_path()
+        return default_path if default_path.exists() else None
+
+    # Check for explicit inherit flag
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+
+    # Explicit opt-out
+    if raw.get("inherit") is False:
+        return None
+
+    # Check for inheritance comment header (heuristic)
+    content = config_path.read_text(encoding="utf-8")
+    if "# This profile inherits" in content:
+        default_path = get_default_config_path()
+        return default_path if default_path.exists() else None
+
+    # Default: no inheritance for existing configs (backward compatible)
+    return None
+
+
+def load_config(inherit_from: Optional[Path] | type[_AUTO_INHERIT] = _AUTO_INHERIT) -> Dict[str, Any]:
+    """Load configuration with optional inheritance.
+
+    Args:
+        inherit_from: Path to parent config to inherit from.
+            - None → explicitly NO inheritance (uses DEFAULT_CONFIG as base)
+            - _AUTO_INHERIT (default/omit) → auto-detect from config content
+            - <Path> → inherit from specific path
+
+    Resolution order:
+    1. Load parent config (if inherit_from provided or auto-detected)
+    2. Deep merge with profile config (profile values win)
 
     Cached on the config file's (mtime_ns, size). Returns a deepcopy of
     the cached value when unchanged, since most call sites mutate the
@@ -3944,7 +4016,20 @@ def load_config() -> Dict[str, Any]:
     if cached is not None and cache_key is not None and cached[:2] == cache_key:
         return copy.deepcopy(cached[2])
 
-    config = copy.deepcopy(DEFAULT_CONFIG)
+    # Auto-detect inheritance if not explicitly provided
+    if inherit_from is _AUTO_INHERIT:
+        inherit_from = _should_inherit(config_path)
+
+    # Start with parent config if inheritance enabled
+    if inherit_from and inherit_from.exists():
+        try:
+            with open(inherit_from, encoding="utf-8") as f:
+                parent_config = yaml.safe_load(f) or {}
+            config = copy.deepcopy(parent_config) if isinstance(parent_config, dict) else {}
+        except Exception:
+            config = copy.deepcopy(DEFAULT_CONFIG)
+    else:
+        config = copy.deepcopy(DEFAULT_CONFIG)
 
     if cache_key is not None:
         try:
@@ -4047,8 +4132,27 @@ _COMMENTED_SECTIONS = """
 """
 
 
+def _compute_overrides_only(merged: dict, parent: dict) -> dict:
+    """Return only keys in merged that differ from parent (for inherited profiles)."""
+    overrides = {}
+    for key, value in merged.items():
+        if key not in parent:
+            overrides[key] = copy.deepcopy(value)
+        elif isinstance(value, dict) and isinstance(parent.get(key), dict):
+            diff = _compute_overrides_only(value, parent[key])
+            if diff:
+                overrides[key] = diff
+        elif value != parent[key]:
+            overrides[key] = copy.deepcopy(value)
+    return overrides
+
+
 def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+    """Save configuration to ~/.hermes/config.yaml.
+
+    For inherited profiles, only writes keys that differ from the parent
+    config, preserving the inheritance pattern on disk.
+    """
     if is_managed():
         managed_error("save configuration")
         return
@@ -4065,6 +4169,23 @@ def save_config(config: Dict[str, Any]):
             raw_existing,
             _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
         )
+
+    # For inherited profiles, only save overrides (keys that differ from parent)
+    inherit_path = _should_inherit(config_path)
+    if inherit_path and inherit_path.exists():
+        try:
+            with open(inherit_path, encoding="utf-8") as f:
+                parent_config = yaml.safe_load(f) or {}
+            if isinstance(parent_config, dict):
+                # Normalize parent through same pipeline as merged config
+                parent_normalized = _normalize_root_model_keys(_normalize_max_turns_config(parent_config))
+                # Expand env vars on parent for consistent comparison
+                parent_expanded = _expand_env_vars(parent_normalized)
+                overrides = _compute_overrides_only(normalized, parent_expanded)
+                if overrides:
+                    normalized = overrides
+        except Exception:
+            pass  # Fall back to saving full config
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
@@ -4471,18 +4592,64 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    
+
+    # Load raw profile config and parent for inheritance comparison
+    config_path = get_config_path()
+    inherit_path = _should_inherit(config_path)
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw_profile = yaml.safe_load(f) or {}
+    except (FileNotFoundError, OSError):
+        raw_profile = {}
+    if inherit_path and inherit_path.exists():
+        try:
+            with open(inherit_path, encoding="utf-8") as f:
+                parent_raw = yaml.safe_load(f) or {}
+        except (FileNotFoundError, OSError):
+            parent_raw = {}
+    else:
+        parent_raw = None
+
+    # Helper to format inheritance tag for a given top-level key
+    def _tag(key: str, subkey: str = None) -> str:
+        if parent_raw is None:
+            return ""  # standalone config, no tags
+        if subkey is not None:
+            # Compare at subkey level
+            profile_val = raw_profile.get(key, {}).get(subkey)
+            parent_val = parent_raw.get(key, {}).get(subkey)
+            if profile_val is not None and profile_val != parent_val:
+                return color(" (override)", Colors.YELLOW)
+            if profile_val is None and parent_val is not None:
+                return color(" (inherited)", Colors.DIM)
+            return ""  # both absent or both same
+        if _is_override(key, raw_profile, parent_raw):
+            return color(" (override)", Colors.YELLOW)
+        return color(" (inherited)", Colors.DIM)
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
     print(f"  Install:      {get_project_root()}")
+
+    # Profile
+    # Deferred import to avoid circular dependency — profiles.py imports from config.py
+    from hermes_cli.profiles import get_active_profile
+    print()
+    print(color("◆ Profile", Colors.CYAN, Colors.BOLD))
+    active_profile = get_active_profile()
+    print(f"  Active:       {active_profile}")
+    if inherit_path:
+        print(f"  Inherits:     {inherit_path}")
+    else:
+        print(f"  {color('(standalone)', Colors.DIM)}")
     
     # API Keys
     print()
@@ -4510,8 +4677,8 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
+    print(f"  Model:        {config.get('model', 'not set')}{_tag('model')}")
+    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}{_tag('agent')}")
     
     # Display
     print()
@@ -4529,9 +4696,9 @@ def show_config():
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
     terminal = config.get('terminal', {})
-    print(f"  Backend:      {terminal.get('backend', 'local')}")
+    print(f"  Backend:      {terminal.get('backend', 'local')}{_tag('terminal', 'backend')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
-    print(f"  Timeout:      {terminal.get('timeout', 60)}s")
+    print(f"  Timeout:      {terminal.get('timeout', 60)}s{_tag('terminal', 'timeout')}")
     
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
@@ -4568,9 +4735,9 @@ def show_config():
     print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))
     compression = config.get('compression', {})
     enabled = compression.get('enabled', True)
-    print(f"  Enabled:      {'yes' if enabled else 'no'}")
+    print(f"  Enabled:      {'yes' if enabled else 'no'}{_tag('compression')}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%{_tag('compression')}")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})

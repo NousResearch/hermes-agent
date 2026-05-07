@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import textwrap
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -657,3 +658,140 @@ class TestUserMessagePreviewConfig:
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+
+class TestConfigInheritance:
+    """Tests for config inheritance feature (Issue #20270)."""
+
+    def test_deep_merge_nested_override(self):
+        """Test that deep merge correctly handles nested overrides."""
+        from hermes_cli.config import _deep_merge
+
+        base = {
+            "model": "anthropic/claude-sonnet-4",
+            "max_turns": 90,
+            "toolsets": ["terminal", "file"],
+            "terminal": {"backend": "docker", "timeout": 300},
+        }
+        override = {
+            "model": "anthropic/claude-opus-4",
+            "terminal": {"timeout": 600},
+        }
+        result = _deep_merge(base, override)
+        assert result["model"] == "anthropic/claude-opus-4"
+        assert result["max_turns"] == 90
+        assert result["toolsets"] == ["terminal", "file"]
+        assert result["terminal"]["backend"] == "docker"
+        assert result["terminal"]["timeout"] == 600
+
+    def test_deep_merge_empty_override(self):
+        """Test that empty override returns base config."""
+        from hermes_cli.config import _deep_merge
+
+        base = {"model": "test", "toolsets": ["terminal"]}
+        result = _deep_merge(base, {})
+        assert result == base
+        assert result is not base
+
+    def test_should_inherit_with_comment_header(self, tmp_path):
+        """Test inheritance detection with comment header."""
+        from hermes_cli.config import _should_inherit
+        from hermes_constants import get_default_config_path
+
+        default_path = get_default_config_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        default_path.write_text("model: anthropic/claude-sonnet-4\n")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "# This profile inherits from ~/.hermes/config.yaml\nmodel: anthropic/claude-opus-4\n"
+        )
+        inherit_from = _should_inherit(config_path)
+        assert inherit_from == default_path
+
+    def test_should_inherit_explicit_opt_out(self, tmp_path):
+        """Test that explicit inherit: false disables inheritance."""
+        from hermes_cli.config import _should_inherit
+        from hermes_constants import get_default_config_path
+
+        default_path = get_default_config_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        default_path.write_text("model: anthropic/claude-sonnet-4\n")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("inherit: false\nmodel: test-model\n")
+        inherit_from = _should_inherit(config_path)
+        assert inherit_from is None
+
+    def test_should_inherit_no_default_config(self, tmp_path):
+        """Test graceful degradation when default config doesn't exist."""
+        from hermes_cli.config import _should_inherit
+        from hermes_constants import get_default_hermes_root
+
+        default_root = get_default_hermes_root()
+        default_config = default_root / "config.yaml"
+        backup = None
+        if default_config.exists():
+            backup = default_config.read_text()
+            default_config.unlink()
+        try:
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("# Minimal config\n")
+            inherit_from = _should_inherit(config_path)
+            assert inherit_from is None
+        finally:
+            if backup:
+                default_config.write_text(backup)
+
+    def test_load_config_with_explicit_inherit_from(self, tmp_path):
+        """Test load_config with explicit inherit_from path."""
+        from hermes_cli.config import load_config, _LOAD_CONFIG_CACHE
+
+        parent = tmp_path / "parent_config.yaml"
+        parent.write_text(textwrap.dedent("""
+            model: parent-model
+            max_turns: 90
+            toolsets: [terminal, file, web]
+            terminal:
+              backend: docker
+              timeout: 300
+        """).strip())
+        profile = tmp_path / "profile_config.yaml"
+        profile.write_text(textwrap.dedent("""
+            model: profile-model
+            terminal:
+              timeout: 600
+        """).strip())
+        import hermes_cli.config as cfg_mod
+        original_get = cfg_mod.get_config_path
+        cache_backup = _LOAD_CONFIG_CACHE.copy()
+        _LOAD_CONFIG_CACHE.clear()
+        cfg_mod.get_config_path = lambda: profile
+        try:
+            result = load_config(inherit_from=parent)
+            assert result["model"] == "profile-model"
+            assert result["agent"]["max_turns"] == 90
+            assert result["toolsets"] == ["terminal", "file", "web"]
+            assert result["terminal"]["backend"] == "docker"
+            assert result["terminal"]["timeout"] == 600
+        finally:
+            cfg_mod.get_config_path = original_get
+            _LOAD_CONFIG_CACHE.clear()
+            _LOAD_CONFIG_CACHE.update(cache_backup)
+
+    def test_load_config_explicit_no_inherit(self, tmp_path):
+        """Test load_config with inherit_from=None (explicit no inheritance)."""
+        from hermes_cli.config import load_config, _LOAD_CONFIG_CACHE
+
+        profile = tmp_path / "profile_config.yaml"
+        profile.write_text("model: standalone-model\nmax_turns: 50\n")
+        import hermes_cli.config as cfg_mod
+        original_get = cfg_mod.get_config_path
+        cache_backup = _LOAD_CONFIG_CACHE.copy()
+        _LOAD_CONFIG_CACHE.clear()
+        cfg_mod.get_config_path = lambda: profile
+        try:
+            result = load_config(inherit_from=None)
+            assert result["model"] == "standalone-model"
+            assert result["agent"]["max_turns"] == 50
+        finally:
+            cfg_mod.get_config_path = original_get
+            _LOAD_CONFIG_CACHE.clear()
+            _LOAD_CONFIG_CACHE.update(cache_backup)

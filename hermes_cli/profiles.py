@@ -71,6 +71,30 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+# Template for profiles that inherit from default (~/.hermes/config.yaml)
+# Contains only a comment header explaining inheritance
+INHERITANCE_SKELETON_YAML = """\
+# This profile inherits from ~/.hermes/config.yaml (default profile).
+# Only specify overrides here — all other values come from the default.
+#
+# Example: change only the model and max_turns
+# model: anthropic/claude-opus-4
+# max_turns: 120
+#
+# To disable inheritance, delete this file and run:
+#   hermes config set --profile {name} --no-inherit
+"""
+
+# Template for standalone profiles (no inheritance)
+FULL_CONFIG_SKELETON_YAML = """\
+# Standalone profile configuration (no inheritance from default).
+# All configuration values must be specified here.
+#
+# model: anthropic/claude-sonnet-4
+# max_turns: 90
+# toolsets: [terminal, file, web, search]
+"""
+
 
 def _clone_all_copytree_ignore(source_dir: Path):
     """Ignore ``profiles/`` at the root of *source_dir* only.
@@ -427,6 +451,7 @@ def create_profile(
     clone_all: bool = False,
     clone_config: bool = False,
     no_alias: bool = False,
+    inherits: bool = True,
 ) -> Path:
     """Create a new profile directory.
 
@@ -444,6 +469,10 @@ def create_profile(
         skills, and selected profile identity files from the source profile.
     no_alias:
         If True, skip wrapper script creation.
+    inherits:
+        If True (default), create a skeleton config that inherits from
+        ~/.hermes/config.yaml. If False, create a standalone config
+        requiring full specification.
 
     Returns
     -------
@@ -526,6 +555,20 @@ def create_profile(
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
         except Exception:
             pass  # best-effort — don't fail profile creation over this
+
+    # Create skeleton config.yaml only for fresh profiles (not cloning)
+    source_dir = None
+    if clone_from is not None or clone_all or clone_config:
+        # Would have been resolved earlier if cloning
+        pass
+    
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists() and not (clone_from or clone_all or clone_config):
+        # Only create skeleton for fresh profiles, not cloned ones
+        if inherits:
+            config_path.write_text(INHERITANCE_SKELETON_YAML.format(name=name))
+        else:
+            config_path.write_text(FULL_CONFIG_SKELETON_YAML)
 
     return profile_dir
 

@@ -8124,6 +8124,7 @@ def cmd_profile(args):
         clone = getattr(args, "clone", False)
         clone_all = getattr(args, "clone_all", False)
         no_alias = getattr(args, "no_alias", False)
+        inherits = getattr(args, "inherits", True)
 
         try:
             clone_from = getattr(args, "clone_from", None)
@@ -8134,6 +8135,7 @@ def cmd_profile(args):
                 clone_all=clone_all,
                 clone_config=clone,
                 no_alias=no_alias,
+                inherits=inherits,
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
@@ -10522,6 +10524,11 @@ Examples:
     )
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"
+    )
+    profile_create.add_argument(
+        "--inherits/--no-inherit",
+        default=True,
+        help="Enable inheritance from default config (default: enabled)",
     )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")

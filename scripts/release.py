@@ -880,6 +880,7 @@ AUTHOR_MAP = {
     "kowenhao@users.noreply.github.com": "kowenhaoai",  # PR #19376
     "hedirman@gmail.com": "hedirman",  # PR #19410
     "lucianopacheco@gmail.com": "LucianoSP",  # PR #19412
+    "paultian.research@gmail.com": "paul-tian",  # PR #19423
     "lxl694522264@gmail.com": "EvilDrag0n",  # PR #20651
 }
 

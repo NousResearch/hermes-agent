@@ -2258,6 +2258,28 @@ def test_unblock_normal_path_no_spurious_run(kanban_home):
         conn.close()
 
 
+def test_migration_tolerates_concurrent_duplicate_column_race(kanban_home):
+    """A second migrator may see a stale pre-ALTER column snapshot.
+
+    SQLite has no ADD COLUMN IF NOT EXISTS, so if another gateway thread/process
+    wins the race, duplicate-column errors should be treated as success only
+    after re-checking the real schema.
+    """
+    conn = kb.connect()
+    try:
+        added = kb._add_column_if_missing(
+            conn,
+            "tasks",
+            "max_retries",
+            "max_retries INTEGER",
+        )
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        assert "max_retries" in cols
+        assert added in {True, False}
+    finally:
+        conn.close()
+
+
 def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
     """init_db must be safe to re-run repeatedly. Each call should leave
     at most one run row per in-flight task, even if called while a

@@ -973,17 +973,21 @@ def _add_column_if_missing(
     """Run ``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
 
     Returns ``True`` when the column was actually added by this call.
-    Swallows ``duplicate column name`` errors so a concurrent connection
-    that ran the same migration first does not crash the dispatcher tick
-    (issue #21708).
+    Swallows ``duplicate column name`` errors only when a live schema re-check
+    confirms another migrator already added the same column first.
     """
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
         return True
     except sqlite3.OperationalError as exc:
-        if "duplicate column name" in str(exc).lower():
-            return False
-        raise
+        if "duplicate column name" not in str(exc).lower():
+            raise
+        current = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in current:
+            raise
+        return False
 
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:

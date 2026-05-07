@@ -44,9 +44,9 @@ Run this in PowerShell:
 irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
 ```
 
-Native Windows requires **[Git for Windows](https://git-scm.com/download/win)** to be installed — Hermes uses its bundled Git Bash to run terminal commands, matching how Claude Code and other agents work on Windows.  The installer handles everything else (uv, Python 3.11, Node.js, ripgrep, ffmpeg).
+The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install).  Hermes uses this bundled Git Bash to run shell commands.
 
-The installer handles the platform-specific setup for you.
+If you already have Git installed, the installer detects it and uses that instead.  Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >

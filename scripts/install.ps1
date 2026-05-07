@@ -191,19 +191,167 @@ function Test-Python {
     return $false
 }
 
-function Test-Git {
+function Install-Git {
+    <#
+    .SYNOPSIS
+    Ensure Git (and Git Bash) are installed.  Git for Windows bundles bash.exe
+    which Hermes uses to run shell commands.
+
+    Priority order (deliberately simple — no winget, no registry, no system
+    package manager):
+      1. Existing ``git`` on PATH — use it as-is (the common fast path).
+      2. Download portable **MinGit** from the official git-for-windows GitHub
+         release and unpack it to ``%LOCALAPPDATA%\hermes\git`` — never touches
+         system Git, never requires admin, works even on locked-down machines
+         and machines with a broken system Git install.
+
+    We deliberately skip winget because it fails badly when the system Git
+    install is in a half-installed state (partially registered, or uninstall-
+    blocked).  Owning the Hermes copy of Git ourselves is predictable and
+    recoverable: if it ever breaks, ``Remove-Item %LOCALAPPDATA%\hermes\git``
+    and re-running this installer fully recovers.
+
+    After install we locate ``bash.exe`` and persist the path in
+    ``HERMES_GIT_BASH_PATH`` (User scope) so Hermes can find it in a fresh
+    shell without a second PATH refresh.
+    #>
     Write-Info "Checking Git..."
-    
+
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $version = git --version
         Write-Success "Git found ($version)"
+        Set-GitBashEnvVar
         return $true
     }
-    
-    Write-Err "Git not found"
-    Write-Info "Please install Git from:"
-    Write-Info "  https://git-scm.com/download/win"
-    return $false
+
+    # Download portable MinGit into $HermesHome\git.  This always works as
+    # long as we can reach github.com — no admin, no winget, no reliance on
+    # the user's possibly-broken system Git install.
+    Write-Info "Git not found — downloading portable MinGit to $HermesHome\git\ ..."
+    Write-Info "(no admin rights required; isolated from any system Git install)"
+
+    try {
+        $arch = if ([Environment]::Is64BitOperatingSystem) { "64-bit" } else { "32-bit" }
+        # Query the GitHub API for the latest git-for-windows release and pick
+        # the MinGit zip for our architecture.
+        $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
+        $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
+        $assetPattern = if ($arch -eq "64-bit") { "MinGit-*-64-bit.zip" } else { "MinGit-*-32-bit.zip" }
+        # Prefer the non-busybox MinGit — it ships the real bash.exe which is
+        # what Hermes' _find_bash() looks for.  Busybox MinGit replaces bash
+        # with busybox.exe (ash), which Hermes is NOT tested against.
+        $asset = $release.assets | Where-Object { $_.name -like $assetPattern -and $_.name -notlike "*busybox*" } | Select-Object -First 1
+
+        if (-not $asset) {
+            throw "Could not find MinGit zip in latest git-for-windows release"
+        }
+
+        $downloadUrl = $asset.browser_download_url
+        $tmpZip = "$env:TEMP\$($asset.name)"
+        $gitDir = "$HermesHome\git"
+
+        Write-Info "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+
+        if (Test-Path $gitDir) {
+            Write-Info "Removing previous MinGit install at $gitDir ..."
+            Remove-Item -Recurse -Force $gitDir
+        }
+        New-Item -ItemType Directory -Path $gitDir -Force | Out-Null
+        Expand-Archive -Path $tmpZip -DestinationPath $gitDir -Force
+        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+
+        # MinGit layout: cmd\git.exe + mingw64\bin\git.exe + usr\bin\bash.exe.
+        # (Note: MinGit puts bash under usr\bin, NOT bin like the full
+        # Git for Windows installer does.  Our _find_bash() in
+        # tools/environments/local.py checks both locations.)
+        $gitExe = "$gitDir\cmd\git.exe"
+        if (-not (Test-Path $gitExe)) {
+            throw "MinGit extraction did not produce git.exe at $gitExe"
+        }
+
+        # Add cmd\ to session PATH so the rest of this install run (which
+        # needs git clone) can see the new git.exe.
+        $env:Path = "$gitDir\cmd;$env:Path"
+
+        # Also add to persisted User PATH so fresh shells see it.  We add
+        # cmd\ (for git) and usr\bin\ (for bash + coreutils) — without usr\bin,
+        # bash-launched commands like `which`, `env`, `grep` etc. that Hermes
+        # tools call would be missing.
+        $newPathEntries = @("$gitDir\cmd", "$gitDir\usr\bin")
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
+        $changed = $false
+        foreach ($entry in $newPathEntries) {
+            if ($userPathItems -notcontains $entry) {
+                $userPathItems += $entry
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
+        }
+
+        $version = & $gitExe --version
+        Write-Success "Git $version installed to $gitDir (portable, user-scoped)"
+        Set-GitBashEnvVar
+        return $true
+    } catch {
+        Write-Err "Could not install MinGit portable: $_"
+        Write-Info ""
+        Write-Info "Fallback: install Git manually from https://git-scm.com/download/win"
+        Write-Info "then re-run this installer.  Hermes needs Git Bash on Windows to run"
+        Write-Info "shell commands (same as Claude Code and other coding agents)."
+        return $false
+    }
+}
+
+function Set-GitBashEnvVar {
+    <#
+    .SYNOPSIS
+    Locate ``bash.exe`` from an already-installed Git and persist the path in
+    ``HERMES_GIT_BASH_PATH`` (User env scope) so Hermes can find it even before
+    PATH propagation completes in a newly-spawned shell.
+    #>
+    $candidates = @()
+
+    # Our own portable MinGit install is ALWAYS checked first, so a broken
+    # system Git doesn't hijack us.  If the user had a working system Git
+    # we'd have returned early from Install-Git's fast path and never called
+    # this with a system-Git-only installation anyway.
+    $candidates += "$HermesHome\git\usr\bin\bash.exe"   # MinGit layout
+    $candidates += "$HermesHome\git\bin\bash.exe"       # safety — non-MinGit portable layouts
+
+    # git.exe on PATH can tell us where the install root is
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $gitExe = $gitCmd.Source
+        # Git for Windows (full installer): <root>\cmd\git.exe + <root>\bin\bash.exe
+        # MinGit:                           <root>\cmd\git.exe + <root>\usr\bin\bash.exe
+        $gitRoot = Split-Path (Split-Path $gitExe -Parent) -Parent
+        $candidates += "$gitRoot\bin\bash.exe"
+        $candidates += "$gitRoot\usr\bin\bash.exe"
+    }
+
+    # Standard system install locations as a final fallback.  Note:
+    # ProgramFiles(x86) can't be referenced via ${env:...} string interpolation
+    # because of the parens — use [Environment]::GetEnvironmentVariable().
+    $candidates += "${env:ProgramFiles}\Git\bin\bash.exe"
+    $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    if ($pf86) { $candidates += "$pf86\Git\bin\bash.exe" }
+    $candidates += "${env:LocalAppData}\Programs\Git\bin\bash.exe"
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            [Environment]::SetEnvironmentVariable("HERMES_GIT_BASH_PATH", $candidate, "User")
+            $env:HERMES_GIT_BASH_PATH = $candidate
+            Write-Info "Set HERMES_GIT_BASH_PATH=$candidate"
+            return
+        }
+    }
+
+    Write-Warn "Could not locate bash.exe — Hermes may not find Git Bash."
+    Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
 function Test-Node {
@@ -889,7 +1037,7 @@ function Main {
     
     if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
     if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
-    if (-not (Test-Git)) { throw "Git not found — install from https://git-scm.com/download/win" }
+    if (-not (Install-Git)) { throw "Git not available and auto-install failed — install from https://git-scm.com/download/win then re-run" }
     Test-Node              # Auto-installs if missing
     Install-SystemPackages  # ripgrep + ffmpeg in one step
     

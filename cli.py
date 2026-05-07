@@ -5812,7 +5812,16 @@ class HermesCLI:
         return result[0]
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
-        """Prompt for free-text input safely inside or outside prompt_toolkit."""
+        """Prompt for free-text input safely inside or outside prompt_toolkit.
+
+        ``run_in_terminal`` schedules a coroutine on prompt_toolkit's main
+        event loop, so it must be called from the main thread.  When called
+        from a background thread (e.g. ``process_loop``), the coroutine is
+        created but never awaited — the prompt silently never renders and
+        the caller gets ``None`` back without warning to the user.  Mirrors
+        the thread-check guard in ``_run_curses_picker``.
+        """
+        import threading
         result = [None]
 
         def _ask():
@@ -5821,7 +5830,8 @@ class HermesCLI:
             except (KeyboardInterrupt, EOFError):
                 pass
 
-        if self._app:
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if self._app and in_main_thread:
             from prompt_toolkit.application import run_in_terminal
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
@@ -5832,7 +5842,31 @@ class HermesCLI:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
         else:
-            _ask()
+            # Background thread: prompt_toolkit owns stdin via its renderer,
+            # so a bare input() call would race the renderer.  Schedule the
+            # prompt onto the application's event loop and wait for it.
+            if self._app and getattr(self._app, "loop", None):
+                import asyncio
+                from prompt_toolkit.application import run_in_terminal
+                done = threading.Event()
+                was_visible = self._status_bar_visible
+                self._status_bar_visible = False
+
+                async def _scheduled():
+                    try:
+                        await run_in_terminal(_ask)
+                    finally:
+                        done.set()
+
+                try:
+                    self._app.invalidate()
+                    asyncio.run_coroutine_threadsafe(_scheduled(), self._app.loop)
+                    done.wait()
+                finally:
+                    self._status_bar_visible = was_visible
+                    self._app.invalidate()
+            else:
+                _ask()
         return result[0]
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:

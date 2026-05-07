@@ -13,6 +13,16 @@ from tools.slack_tool import (
 )
 
 
+class FakeSlackApiError(Exception):
+    def __init__(self, error, *, needed=None, provided=None):
+        super().__init__(error)
+        self.response = {"ok": False, "error": error}
+        if needed:
+            self.response["needed"] = needed
+        if provided:
+            self.response["provided"] = provided
+
+
 class FakeSlackClient:
     def __init__(self, token="xoxb-test"):
         self.token = token
@@ -95,6 +105,22 @@ def test_read_channel_rejects_not_member():
     result = json.loads(slack_handler(action="read_channel", channel="CNOTMEMBER1"))
     assert result["ok"] is False
     assert "not a member" in result["error"]
+
+
+def test_read_channel_with_explicit_id_skips_groups_read_metadata_check(monkeypatch):
+    class NoGroupsReadClient(FakeSlackClient):
+        def conversations_info(self, channel):
+            raise FakeSlackApiError(
+                "missing_scope",
+                needed="groups:read",
+                provided="app_mentions:read,chat:write,channels:history,channels:read,groups:history,users:read",
+            )
+
+    monkeypatch.setattr(slack_tool, "WebClient", NoGroupsReadClient)
+    result = json.loads(slack_handler(action="read_channel", channel="<#G123456789|sports_product>", limit=10))
+    assert result["ok"] is True
+    assert result["channel_id"] == "G123456789"
+    assert result["count"] == 2
 
 
 def test_read_thread_returns_replies():

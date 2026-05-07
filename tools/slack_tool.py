@@ -336,9 +336,15 @@ def _ensure_bot_is_member(client: Any, channel_id: str) -> Optional[str]:
         if ch and ch.get("is_member") is False:
             return "Bot is not a member of that channel. Invite it first, then retry."
     except Exception as exc:
+        message, extra = _slack_error_details(exc)
+        # Private-channel metadata checks require groups:read. If the user gave
+        # us an explicit channel ID/mention, don't let that lookup block history:
+        # conversations.history will still enforce membership + groups:history.
+        if "missing_scope" in message and "groups:read" in str(extra.get("needed", "")):
+            return None
         # Keep the real Slack failure visible. Most non-members/private channels
         # fail here before history can be read anyway.
-        return json.loads(_slack_error(exc)).get("error", str(exc))
+        return json.loads(_json_error(message, **extra)).get("error", str(exc))
     return None
 
 

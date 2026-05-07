@@ -147,6 +147,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.redact import redact_sensitive_text
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -6665,6 +6666,11 @@ class AIAgent:
             return ""
         return re.sub(r"\s+", " ", text).strip()
 
+    @staticmethod
+    def _redact_agent_output_text(text: Any) -> Any:
+        """Redact secrets at user-facing assistant output boundaries."""
+        return redact_sensitive_text(text, force=True)
+
     def _interim_content_was_streamed(self, content: str) -> bool:
         visible_content = self._normalize_interim_visible_text(
             self._strip_think_blocks(content or "")
@@ -6685,6 +6691,7 @@ class AIAgent:
         visible = self._strip_think_blocks(content or "").strip()
         if not visible or visible == "(empty)":
             return
+        visible = self._redact_agent_output_text(visible)
         already_streamed = self._interim_content_was_streamed(visible)
         try:
             cb(visible, already_streamed=already_streamed)
@@ -6731,6 +6738,7 @@ class AIAgent:
                 self, "_current_streamed_assistant_text", ""
             ):
                 text = text.lstrip("\n")
+            text = self._redact_agent_output_text(text)
         if not text:
             return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
@@ -6749,7 +6757,7 @@ class AIAgent:
         cb = self.reasoning_callback
         if cb is not None:
             try:
-                cb(text)
+                cb(self._redact_agent_output_text(text))
             except Exception:
                 pass
 
@@ -8784,7 +8792,11 @@ class AIAgent:
                 reasoning_text = combined or None
 
         if reasoning_text and self.verbose_logging:
-            logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
+            logging.debug(
+                "Captured reasoning (%d chars): %s",
+                len(reasoning_text),
+                self._redact_agent_output_text(reasoning_text),
+            )
 
         if reasoning_text and self.reasoning_callback:
             # Skip callback when streaming is active — reasoning was already
@@ -8797,7 +8809,7 @@ class AIAgent:
             # CLI post-response display fallback (cli.py _reasoning_shown_this_turn).
             if not self.stream_delta_callback and not self._stream_callback:
                 try:
-                    self.reasoning_callback(reasoning_text)
+                    self.reasoning_callback(self._redact_agent_output_text(reasoning_text))
                 except Exception:
                     pass
 
@@ -8821,6 +8833,9 @@ class AIAgent:
         # compression, title generation.
         if isinstance(_san_content, str) and _san_content:
             _san_content = self._strip_think_blocks(_san_content).strip()
+            _san_content = self._redact_agent_output_text(_san_content)
+        if reasoning_text:
+            reasoning_text = self._redact_agent_output_text(reasoning_text)
 
         msg = {
             "role": "assistant",
@@ -8835,7 +8850,9 @@ class AIAgent:
             if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
                 raw_reasoning_content = model_extra["reasoning_content"]
         if raw_reasoning_content is not None:
-            msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+            msg["reasoning_content"] = self._redact_agent_output_text(
+                _sanitize_surrogates(raw_reasoning_content)
+            )
         elif assistant_tool_calls and self._needs_thinking_reasoning_pad():
             # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
             # both require reasoning_content on every assistant tool-call
@@ -10514,6 +10531,7 @@ class AIAgent:
             if final_response:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                final_response = self._redact_agent_output_text(final_response)
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
@@ -10557,6 +10575,7 @@ class AIAgent:
                 if final_response:
                     if "<think>" in final_response:
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                    final_response = self._redact_agent_output_text(final_response)
                     if final_response:
                         messages.append({"role": "assistant", "content": final_response})
                     else:
@@ -10568,7 +10587,7 @@ class AIAgent:
             logging.warning(f"Failed to get summary response: {e}")
             final_response = f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. Error: {str(e)}"
 
-        return final_response
+        return self._redact_agent_output_text(final_response)
 
     def run_conversation(
         self,
@@ -13886,7 +13905,9 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    final_response = self._strip_think_blocks(final_response).strip()
+                    final_response = self._redact_agent_output_text(
+                        self._strip_think_blocks(final_response).strip()
+                    )
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
@@ -13953,7 +13974,9 @@ class AIAgent:
                 # If we're near the limit, break to avoid infinite loops
                 if api_call_count >= self.max_iterations - 1:
                     _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+                    final_response = self._redact_agent_output_text(
+                        f"I apologize, but I encountered repeated errors: {error_msg}"
+                    )
                     # Append as assistant so the history stays valid for
                     # session resume (avoids consecutive user messages).
                     messages.append({"role": "assistant", "content": final_response})
@@ -13977,6 +14000,9 @@ class AIAgent:
                     "— requesting summary..."
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
+
+        if final_response:
+            final_response = self._redact_agent_output_text(final_response)
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations

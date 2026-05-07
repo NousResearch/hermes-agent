@@ -81,7 +81,8 @@ CUSTOM_POOL_PREFIX = "custom:"
 
 # Fields that are only round-tripped through JSON — never used for logic as attributes.
 _EXTRA_KEYS = frozenset({
-    "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
+    "token_type", "scope", "client_id", "client_secret", "portal_base_url",
+    "issuer", "api_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls",
 })
@@ -575,6 +576,59 @@ class CredentialPool:
             logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
         return entry
 
+    def _sync_railway_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a Railway device-code pool entry from auth.json if tokens differ."""
+        if self.provider != "railway" or entry.source != "device_code":
+            return entry
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "railway")
+            if not state:
+                return entry
+            store_access = state.get("access_token", "")
+            store_refresh = state.get("refresh_token", "")
+            entry_access = entry.access_token or ""
+            entry_refresh = entry.refresh_token or ""
+            if store_access and (
+                store_access != entry_access
+                or (store_refresh and store_refresh != entry_refresh)
+            ):
+                logger.debug(
+                    "Pool entry %s: syncing Railway tokens from auth.json",
+                    entry.id,
+                )
+                field_updates: Dict[str, Any] = {
+                    "access_token": store_access,
+                    "refresh_token": store_refresh or entry.refresh_token,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                if state.get("expires_at"):
+                    field_updates["expires_at"] = state["expires_at"]
+                if state.get("api_base_url"):
+                    field_updates["base_url"] = str(state["api_base_url"]).rstrip("/")
+                extra_updates = dict(entry.extra)
+                for extra_key in (
+                    "token_type", "scope", "client_id", "client_secret",
+                    "issuer", "api_base_url", "obtained_at", "expires_in", "tls",
+                ):
+                    val = state.get(extra_key)
+                    if val is not None:
+                        extra_updates[extra_key] = val
+                updated = replace(entry, extra=extra_updates, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync Railway entry from auth.json: %s", exc)
+        return entry
+
+
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json providers.
 
@@ -585,7 +639,7 @@ class CredentialPool:
         re-seeding a consumed single-use refresh token.
 
         Applies to any OAuth provider whose singleton lives in auth.json
-        (currently Nous and OpenAI Codex).
+        (currently Nous, OpenAI Codex, and Railway).
         """
         if entry.source != "device_code":
             return
@@ -628,6 +682,26 @@ class CredentialPool:
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
                     _save_provider_state(auth_store, "openai-codex", state)
+
+                elif self.provider == "railway":
+                    state = _load_provider_state(auth_store, "railway")
+                    if not isinstance(state, dict):
+                        return
+                    state["access_token"] = entry.access_token
+                    if entry.refresh_token:
+                        state["refresh_token"] = entry.refresh_token
+                    if entry.expires_at:
+                        state["expires_at"] = entry.expires_at
+                    if entry.base_url:
+                        state["api_base_url"] = entry.base_url
+                    for extra_key in (
+                        "token_type", "scope", "client_id", "client_secret",
+                        "issuer", "api_base_url", "obtained_at", "expires_in", "tls",
+                    ):
+                        val = entry.extra.get(extra_key)
+                        if val is not None:
+                            state[extra_key] = val
+                    _save_provider_state(auth_store, "railway", state)
 
                 else:
                     return
@@ -714,6 +788,38 @@ class CredentialPool:
                     elif k in _EXTRA_KEYS:
                         extra_updates[k] = v
                 updated = replace(entry, extra=extra_updates, **field_updates)
+            elif self.provider == "railway":
+                synced = self._sync_railway_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                railway_state = {
+                    "access_token": entry.access_token,
+                    "refresh_token": entry.refresh_token,
+                    "client_id": entry.client_id,
+                    "client_secret": entry.client_secret,
+                    "issuer": entry.issuer,
+                    "api_base_url": entry.api_base_url or entry.base_url,
+                    "token_type": entry.token_type,
+                    "scope": entry.scope,
+                    "obtained_at": entry.obtained_at,
+                    "expires_at": entry.expires_at,
+                    "tls": entry.tls,
+                }
+                refreshed = auth_mod.refresh_railway_oauth_from_state(
+                    railway_state,
+                    force_refresh=True,
+                )
+                field_updates = {}
+                extra_updates = dict(entry.extra)
+                _field_names = {f.name for f in fields(entry)}
+                for k, v in refreshed.items():
+                    if k == "api_base_url" and v:
+                        field_updates["base_url"] = str(v).rstrip("/")
+                    if k in _field_names:
+                        field_updates[k] = v
+                    elif k in _EXTRA_KEYS:
+                        extra_updates[k] = v
+                updated = replace(entry, extra=extra_updates, **field_updates)
             else:
                 return entry
         except Exception as exc:
@@ -778,6 +884,23 @@ class CredentialPool:
                     self._persist()
                     self._sync_device_code_entry_to_auth_store(updated)
                     return updated
+            if self.provider == "railway":
+                synced = self._sync_railway_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug("Railway refresh failed but auth.json has newer tokens — adopting")
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
             self._mark_exhausted(entry, None)
             return None
 
@@ -815,6 +938,11 @@ class CredentialPool:
             # runtime credentials are actually resolved, not merely when the pool
             # is enumerated for listing, migration, or selection.
             return False
+        if self.provider == "railway":
+            return auth_mod._is_expiring(
+                entry.expires_at,
+                auth_mod.RAILWAY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+            )
         return False
 
     def select(self) -> Optional[PooledCredential]:
@@ -849,6 +977,14 @@ class CredentialPool:
                     and entry.source == "device_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
+            # For Railway entries, sync from auth.json before status checks.
+            if (self.provider == "railway"
+                    and entry.source == "device_code"
+                    and entry.last_status == STATUS_EXHAUSTED):
+                synced = self._sync_railway_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -1237,6 +1373,41 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "agent_key_expires_in": state.get("agent_key_expires_in"),
                     "agent_key_reused": state.get("agent_key_reused"),
                     "agent_key_obtained_at": state.get("agent_key_obtained_at"),
+                    "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
+                    "label": seeded_label,
+                },
+            )
+
+    elif provider == "railway":
+        state = _load_provider_state(auth_store, "railway")
+        if state and state.get("access_token") and not _is_suppressed(provider, "device_code"):
+            active_sources.add("device_code")
+            custom_label = str(state.get("label") or "").strip()
+            seeded_label = custom_label or label_from_token(
+                state.get("access_token", ""), "device_code"
+            )
+            api_base_url = str(
+                state.get("api_base_url") or auth_mod.DEFAULT_RAILWAY_API_BASE_URL
+            ).rstrip("/")
+            changed |= _upsert_entry(
+                entries,
+                provider,
+                "device_code",
+                {
+                    "source": "device_code",
+                    "auth_type": AUTH_TYPE_OAUTH,
+                    "access_token": state.get("access_token", ""),
+                    "refresh_token": state.get("refresh_token"),
+                    "expires_at": state.get("expires_at"),
+                    "base_url": api_base_url,
+                    "api_base_url": api_base_url,
+                    "issuer": state.get("issuer") or auth_mod.DEFAULT_RAILWAY_ISSUER,
+                    "token_type": state.get("token_type"),
+                    "scope": state.get("scope"),
+                    "client_id": state.get("client_id"),
+                    "client_secret": state.get("client_secret"),
+                    "obtained_at": state.get("obtained_at"),
+                    "expires_in": state.get("expires_in"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
                     "label": seeded_label,
                 },

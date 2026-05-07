@@ -28,12 +28,12 @@ from agent.credential_pool import (
     load_pool,
 )
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth import PROVIDER_REGISTRY, SERVICE_PROVIDER_NAMES
 from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth", "railway"}
 
 
 def _get_custom_provider_names() -> list:
@@ -160,7 +160,10 @@ def _format_exhausted_status(entry) -> str:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (provider not in PROVIDER_REGISTRY
+            and provider not in SERVICE_PROVIDER_NAMES
+            and provider != "openrouter"
+            and not provider.startswith(CUSTOM_POOL_PREFIX)):
         raise SystemExit(f"Unknown provider: {provider}")
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
@@ -170,7 +173,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -395,6 +398,25 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "railway":
+        scope = auth_mod._railway_scope(getattr(args, "scope", None))
+        creds = auth_mod._railway_device_code_login(
+            client_id=getattr(args, "client_id", None),
+            client_secret=getattr(args, "client_secret", None),
+            scope=scope,
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 15.0,
+            insecure=bool(getattr(args, "insecure", False)),
+            ca_bundle=getattr(args, "ca_bundle", None),
+        )
+        custom_label = (getattr(args, "label", None) or "").strip() or None
+        entry = auth_mod.persist_railway_credentials(creds, label=custom_label)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds.get("access_token", ""), _oauth_default_label(provider, 1)
+        )
+        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
+        return
+
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
 
 
@@ -405,6 +427,7 @@ def auth_list_command(args) -> None:
     else:
         providers = sorted({
             *PROVIDER_REGISTRY.keys(),
+            *SERVICE_PROVIDER_NAMES.keys(),
             "openrouter",
             *list_custom_pool_providers(),
         })
@@ -508,6 +531,29 @@ def auth_spotify_command(args) -> None:
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
+def auth_railway_command(args) -> None:
+    action = str(getattr(args, "railway_action", "") or "sync-env").strip().lower()
+    if action == "sync-env":
+        result = auth_mod.sync_railway_shared_variables_from_env(
+            project_id=getattr(args, "project_id", None),
+            environment_id=getattr(args, "environment_id", None),
+            env_path=getattr(args, "env_path", None),
+            timeout_seconds=getattr(args, "timeout", None) or 15.0,
+        )
+        print(
+            f"Synced {result['count']} Hermes .env variables to Railway shared variables "
+            f"for project {result['project_id']} / environment {result['environment_id']}"
+        )
+        return
+    if action == "status":
+        auth_status_command(SimpleNamespace(provider="railway"))
+        return
+    if action == "logout":
+        auth_logout_command(SimpleNamespace(provider="railway"))
+        return
+    raise SystemExit(f"Unknown Railway auth action: {action}")
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -570,7 +616,7 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
+    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + list(SERVICE_PROVIDER_NAMES.keys()) + ["openrouter"]))
     custom_names = _get_custom_provider_names()
     if custom_names:
         custom_display = [name for name, _key, _provider_key in custom_names]
@@ -587,7 +633,10 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (provider not in PROVIDER_REGISTRY
+            and provider not in SERVICE_PROVIDER_NAMES
+            and provider != "openrouter"
+            and not provider.startswith(CUSTOM_POOL_PREFIX)):
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
@@ -616,7 +665,7 @@ def _interactive_add() -> None:
 
     auth_add_command(SimpleNamespace(
         provider=provider, auth_type=auth_type, label=label, api_key=None,
-        portal_url=None, inference_url=None, client_id=None, scope=None,
+        portal_url=None, inference_url=None, client_id=None, client_secret=None, scope=None,
         no_browser=False, timeout=None, insecure=False, ca_bundle=None,
     ))
 
@@ -713,6 +762,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "railway":
+        auth_railway_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

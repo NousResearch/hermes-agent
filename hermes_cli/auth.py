@@ -110,8 +110,14 @@ DEFAULT_SPOTIFY_SCOPE = " ".join((
     "user-library-read",
     "user-library-modify",
 ))
+DEFAULT_RAILWAY_ISSUER = "https://backboard.railway.com"
+DEFAULT_RAILWAY_API_BASE_URL = "https://backboard.railway.com/graphql/v2"
+DEFAULT_RAILWAY_SCOPE = "openid offline_access project:member ssh_keys"
+RAILWAY_DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+RAILWAY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
+    "railway": "Railway",
 }
 
 # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
@@ -2327,6 +2333,675 @@ def login_spotify_command(args) -> None:
     print("  Provider state saved under providers.spotify")
     print(f"  Docs: {SPOTIFY_DOCS_URL}")
 
+
+# =============================================================================
+# Railway OAuth device authorization — tokens stored in ~/.hermes/auth.json
+# =============================================================================
+
+def _railway_issuer(value: Optional[str] = None, state: Optional[Dict[str, Any]] = None) -> str:
+    raw = (
+        value
+        or (state or {}).get("issuer")
+        or os.getenv("HERMES_RAILWAY_OAUTH_ISSUER")
+        or os.getenv("RAILWAY_OAUTH_ISSUER")
+        or DEFAULT_RAILWAY_ISSUER
+    )
+    return str(raw).strip().rstrip("/") or DEFAULT_RAILWAY_ISSUER
+
+
+def _railway_api_base_url(state: Optional[Dict[str, Any]] = None) -> str:
+    raw = (
+        (state or {}).get("api_base_url")
+        or os.getenv("HERMES_RAILWAY_API_BASE_URL")
+        or os.getenv("RAILWAY_API_BASE_URL")
+        or DEFAULT_RAILWAY_API_BASE_URL
+    )
+    return str(raw).strip().rstrip("/") or DEFAULT_RAILWAY_API_BASE_URL
+
+
+def _railway_scope(raw_scope: Optional[str] = None) -> str:
+    parts = [p for p in str(raw_scope or DEFAULT_RAILWAY_SCOPE).split() if p]
+    for required in ("openid", "offline_access"):
+        if required not in parts:
+            parts.insert(0 if required == "openid" else len(parts), required)
+    return " ".join(dict.fromkeys(parts))
+
+
+def _railway_client_id(
+    explicit_client_id: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hermes_cli.config import get_env_value
+
+    raw = (
+        explicit_client_id
+        or (state or {}).get("client_id")
+        or get_env_value("HERMES_RAILWAY_CLIENT_ID")
+        or get_env_value("HERMES_RAILWAY_OAUTH_CLIENT_ID")
+        or get_env_value("RAILWAY_OAUTH_CLIENT_ID")
+    )
+    client_id = str(raw or "").strip()
+    if client_id:
+        return client_id
+    raise AuthError(
+        "Railway OAuth client_id is required. Create a Native OAuth app in "
+        "Railway workspace Developer settings, then pass `--client-id` or set "
+        "HERMES_RAILWAY_CLIENT_ID.",
+        provider="railway",
+        code="railway_client_id_missing",
+        relogin_required=True,
+    )
+
+
+def _railway_client_secret(
+    explicit_client_secret: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    from hermes_cli.config import get_env_value
+
+    raw = (
+        explicit_client_secret
+        or (state or {}).get("client_secret")
+        or get_env_value("HERMES_RAILWAY_CLIENT_SECRET")
+        or get_env_value("HERMES_RAILWAY_OAUTH_CLIENT_SECRET")
+        or get_env_value("RAILWAY_OAUTH_CLIENT_SECRET")
+    )
+    secret = str(raw or "").strip()
+    return secret or None
+
+
+def _request_railway_device_code(
+    client: httpx.Client,
+    *,
+    issuer: str,
+    client_id: str,
+    client_secret: Optional[str] = None,
+    scope: str,
+) -> Dict[str, Any]:
+    form = {
+        "client_id": client_id,
+        "scope": _railway_scope(scope),
+        "prompt": "consent",
+    }
+    resolved_client_secret = _railway_client_secret(client_secret)
+    if resolved_client_secret:
+        form["client_secret"] = resolved_client_secret
+    response = client.post(
+        f"{issuer.rstrip('/')}/oauth/device/auth",
+        data=form,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+
+    if response.status_code != 200:
+        try:
+            error_payload = response.json()
+        except Exception:
+            response.raise_for_status()
+            raise AuthError(
+                "Railway device authorization failed.",
+                provider="railway",
+                code="railway_device_code_failed",
+            )
+        code = str(error_payload.get("error") or "railway_device_code_failed")
+        description = str(error_payload.get("error_description") or "Railway device authorization failed.")
+        raise AuthError(description, provider="railway", code=code, relogin_required=code == "invalid_client")
+
+    data = response.json()
+    required = ["device_code", "user_code", "verification_uri", "expires_in"]
+    missing = [field for field in required if not data.get(field)]
+    if missing:
+        raise AuthError(
+            f"Railway device authorization response missing fields: {', '.join(missing)}",
+            provider="railway",
+            code="railway_device_code_incomplete",
+        )
+    data.setdefault("interval", 5)
+    data.setdefault("verification_uri_complete", data.get("verification_uri"))
+    return data
+
+
+def _poll_railway_device_token(
+    client: httpx.Client,
+    *,
+    issuer: str,
+    client_id: str,
+    client_secret: Optional[str] = None,
+    device_code: str,
+    expires_in: int,
+    poll_interval: int,
+) -> Dict[str, Any]:
+    deadline = time.time() + max(1, int(expires_in))
+    current_interval = max(1, int(poll_interval or 5))
+    resolved_client_secret = _railway_client_secret(client_secret)
+
+    while time.time() < deadline:
+        time.sleep(current_interval)
+        form = {
+            "grant_type": RAILWAY_DEVICE_CODE_GRANT_TYPE,
+            "client_id": client_id,
+            "device_code": device_code,
+        }
+        if resolved_client_secret:
+            form["client_secret"] = resolved_client_secret
+        response = client.post(
+            f"{issuer.rstrip('/')}/oauth/token",
+            data=form,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            if not payload.get("access_token"):
+                raise AuthError(
+                    "Railway token response did not include access_token.",
+                    provider="railway",
+                    code="railway_token_missing_access_token",
+                    relogin_required=True,
+                )
+            return payload
+        try:
+            error_payload = response.json()
+        except Exception:
+            response.raise_for_status()
+            raise AuthError(
+                "Railway token endpoint returned a non-JSON error response.",
+                provider="railway",
+                code="railway_token_poll_failed",
+            )
+        error_code = str(error_payload.get("error") or "")
+        if error_code == "authorization_pending":
+            continue
+        if error_code == "slow_down":
+            current_interval = min(current_interval + 5, 30)
+            continue
+        description = str(error_payload.get("error_description") or "Railway authorization failed.")
+        raise AuthError(
+            description,
+            provider="railway",
+            code=error_code or "railway_token_poll_failed",
+            relogin_required=error_code in {"access_denied", "expired_token", "invalid_grant", "invalid_client"},
+        )
+
+    raise AuthError(
+        "Timed out waiting for Railway device authorization.",
+        provider="railway",
+        code="railway_device_code_timeout",
+        relogin_required=True,
+    )
+
+
+def _railway_token_payload_to_state(
+    token_payload: Dict[str, Any],
+    *,
+    client_id: str,
+    scope: str,
+    issuer: str,
+    api_base_url: str,
+    client_secret: Optional[str] = None,
+    previous_refresh_token: Optional[str] = None,
+    tls: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    access_token = str(token_payload.get("access_token") or "").strip()
+    refresh_token = str(token_payload.get("refresh_token") or previous_refresh_token or "").strip()
+    if not access_token:
+        raise AuthError(
+            "Railway token response did not include access_token.",
+            provider="railway",
+            code="railway_token_missing_access_token",
+            relogin_required=True,
+        )
+    if not refresh_token:
+        raise AuthError(
+            "Railway token response did not include refresh_token. Ensure the OAuth app "
+            "granted offline_access and rerun `hermes auth add railway --type oauth`.",
+            provider="railway",
+            code="railway_token_missing_refresh_token",
+            relogin_required=True,
+        )
+    now = datetime.now(timezone.utc)
+    ttl = _coerce_ttl_seconds(token_payload.get("expires_in")) or 3600
+    state = {
+        "auth_type": "oauth_device_code",
+        "issuer": issuer.rstrip("/"),
+        "api_base_url": api_base_url.rstrip("/"),
+        "client_id": client_id,
+        "scope": str(token_payload.get("scope") or scope or DEFAULT_RAILWAY_SCOPE),
+        "token_type": str(token_payload.get("token_type") or "Bearer"),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "obtained_at": now.isoformat(),
+        "expires_in": ttl,
+        "expires_at": datetime.fromtimestamp(now.timestamp() + ttl, tz=timezone.utc).isoformat(),
+        "tls": tls or {"insecure": False, "ca_bundle": None},
+    }
+    resolved_client_secret = _railway_client_secret(client_secret)
+    if resolved_client_secret:
+        state["client_secret"] = resolved_client_secret
+    return state
+
+
+def _refresh_railway_access_token(
+    client: httpx.Client,
+    *,
+    issuer: str,
+    client_id: str,
+    client_secret: Optional[str] = None,
+    refresh_token: str,
+) -> Dict[str, Any]:
+    form = {
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+    }
+    resolved_client_secret = _railway_client_secret(client_secret)
+    if resolved_client_secret:
+        form["client_secret"] = resolved_client_secret
+    response = client.post(
+        f"{issuer.rstrip('/')}/oauth/token",
+        data=form,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    if response.status_code == 200:
+        payload = response.json()
+        if not payload.get("access_token"):
+            raise AuthError(
+                "Railway refresh response missing access_token.",
+                provider="railway",
+                code="railway_refresh_missing_access_token",
+                relogin_required=True,
+            )
+        return payload
+    try:
+        error_payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            "Railway refresh token exchange failed.",
+            provider="railway",
+            code="railway_refresh_failed",
+            relogin_required=True,
+        ) from exc
+    code = str(error_payload.get("error") or "invalid_grant")
+    description = str(error_payload.get("error_description") or "Railway refresh token exchange failed.")
+    raise AuthError(
+        description,
+        provider="railway",
+        code=code,
+        relogin_required=code in {"invalid_grant", "invalid_token", "invalid_client"},
+    )
+
+
+def _railway_device_code_login(
+    *,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    scope: Optional[str] = None,
+    issuer: Optional[str] = None,
+    api_base_url: Optional[str] = None,
+    open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+    insecure: bool = False,
+    ca_bundle: Optional[str] = None,
+) -> Dict[str, Any]:
+    resolved_client_id = _railway_client_id(client_id)
+    resolved_client_secret = _railway_client_secret(client_secret)
+    resolved_scope = _railway_scope(scope)
+    resolved_issuer = _railway_issuer(issuer)
+    resolved_api_base_url = str(api_base_url or _railway_api_base_url()).strip().rstrip("/")
+    auth_state = {"tls": {"insecure": bool(insecure), "ca_bundle": ca_bundle}}
+    verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=auth_state)
+    timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
+
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        device = _request_railway_device_code(
+            client,
+            issuer=resolved_issuer,
+            client_id=resolved_client_id,
+            client_secret=resolved_client_secret,
+            scope=resolved_scope,
+        )
+
+        verification_uri = str(device.get("verification_uri") or "")
+        complete_uri = str(device.get("verification_uri_complete") or verification_uri)
+        user_code = str(device.get("user_code") or "")
+        print("To authorize Hermes with Railway:")
+        print(f"  1. Open: {complete_uri or verification_uri}")
+        if user_code:
+            print(f"  2. Enter code: {user_code}")
+        print("Waiting for Railway authorization... (press Ctrl+C to cancel)")
+        if open_browser and complete_uri and not _is_remote_session():
+            try:
+                webbrowser.open(complete_uri)
+            except Exception:
+                pass
+
+        try:
+            token_payload = _poll_railway_device_token(
+                client,
+                issuer=resolved_issuer,
+                client_id=resolved_client_id,
+                client_secret=resolved_client_secret,
+                device_code=str(device["device_code"]),
+                expires_in=int(device.get("expires_in") or 600),
+                poll_interval=int(device.get("interval") or 5),
+            )
+        except KeyboardInterrupt:
+            print("\nRailway login cancelled.")
+            raise SystemExit(130)
+
+    return _railway_token_payload_to_state(
+        token_payload,
+        client_id=resolved_client_id,
+        scope=resolved_scope,
+        issuer=resolved_issuer,
+        api_base_url=resolved_api_base_url,
+        client_secret=resolved_client_secret,
+        tls={"insecure": verify is False, "ca_bundle": ca_bundle},
+    )
+
+
+def refresh_railway_oauth_from_state(
+    state: Dict[str, Any],
+    *,
+    timeout_seconds: float = 15.0,
+    force_refresh: bool = False,
+    refresh_skew_seconds: int = RAILWAY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    if not force_refresh and not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
+        return dict(state)
+    refresh_token = str(state.get("refresh_token") or "").strip()
+    if not refresh_token:
+        raise AuthError(
+            "Railway refresh token missing. Run `hermes auth add railway --type oauth` again.",
+            provider="railway",
+            code="railway_refresh_token_missing",
+            relogin_required=True,
+        )
+    issuer = _railway_issuer(state=state)
+    client_id = _railway_client_id(state=state)
+    client_secret = _railway_client_secret(state=state)
+    tls = state.get("tls") if isinstance(state.get("tls"), dict) else {}
+    verify = _resolve_verify(insecure=tls.get("insecure"), ca_bundle=tls.get("ca_bundle"), auth_state=state)
+    timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        refreshed = _refresh_railway_access_token(
+            client,
+            issuer=issuer,
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+        )
+    updated = dict(state)
+    updated.update(_railway_token_payload_to_state(
+        refreshed,
+        client_id=client_id,
+        scope=str(state.get("scope") or DEFAULT_RAILWAY_SCOPE),
+        issuer=issuer,
+        api_base_url=_railway_api_base_url(state),
+        client_secret=client_secret,
+        previous_refresh_token=refresh_token,
+        tls={"insecure": verify is False, "ca_bundle": tls.get("ca_bundle")},
+    ))
+    if state.get("label"):
+        updated["label"] = state.get("label")
+    return updated
+
+
+def persist_railway_credentials(
+    creds: Dict[str, Any],
+    *,
+    label: Optional[str] = None,
+):
+    from agent.credential_pool import load_pool
+
+    state = dict(creds)
+    if label and str(label).strip():
+        state["label"] = str(label).strip()
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _store_provider_state(auth_store, "railway", state, set_active=False)
+        _save_auth_store(auth_store)
+    pool = load_pool("railway")
+    return next((e for e in pool.entries() if e.source == "device_code"), None)
+
+
+def resolve_railway_runtime_credentials(
+    *,
+    timeout_seconds: float = 15.0,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: int = RAILWAY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "railway")
+        if not state:
+            raise AuthError(
+                "Railway is not authenticated. Run `hermes auth add railway --type oauth --client-id <id>` first.",
+                provider="railway",
+                code="railway_auth_missing",
+                relogin_required=True,
+            )
+        should_refresh = bool(force_refresh)
+        if not should_refresh and refresh_if_expiring:
+            should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
+        if should_refresh:
+            state = refresh_railway_oauth_from_state(
+                state,
+                timeout_seconds=timeout_seconds,
+                force_refresh=True,
+                refresh_skew_seconds=refresh_skew_seconds,
+            )
+            _store_provider_state(auth_store, "railway", state, set_active=False)
+            _save_auth_store(auth_store)
+
+    access_token = str(state.get("access_token") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "Railway access token missing. Run `hermes auth add railway --type oauth` again.",
+            provider="railway",
+            code="railway_access_token_missing",
+            relogin_required=True,
+        )
+    refresh_token = str(state.get("refresh_token") or "").strip()
+    return {
+        "provider": "railway",
+        "access_token": access_token,
+        "api_key": access_token,
+        "refresh_token": refresh_token,
+        "token_type": str(state.get("token_type") or "Bearer"),
+        "base_url": _railway_api_base_url(state),
+        "api_base_url": _railway_api_base_url(state),
+        "issuer": _railway_issuer(state=state),
+        "client_id": _railway_client_id(state=state),
+        "scope": str(state.get("scope") or "").strip(),
+        "expires_at": state.get("expires_at"),
+        "source": "hermes-auth-store",
+        "auth_mode": "oauth_device_code",
+    }
+
+
+def get_railway_auth_status() -> Dict[str, Any]:
+    state = get_provider_auth_state("railway")
+    if not state:
+        return {"logged_in": False}
+    refresh_token = str(state.get("refresh_token") or "").strip()
+    expires_at = state.get("expires_at")
+    return {
+        "logged_in": bool(refresh_token or not _is_expiring(expires_at, 0)),
+        "auth_type": state.get("auth_type", "oauth_device_code"),
+        "client_id": state.get("client_id"),
+        "scope": state.get("scope"),
+        "expires_at": expires_at,
+        "api_base_url": state.get("api_base_url") or DEFAULT_RAILWAY_API_BASE_URL,
+        "has_refresh_token": bool(refresh_token),
+        "has_client_secret": bool(_railway_client_secret(state=state)),
+    }
+
+
+RAILWAY_VARIABLE_COLLECTION_UPSERT_MUTATION = """
+mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) {
+  variableCollectionUpsert(input: $input)
+}
+""".strip()
+
+
+def _load_env_file_for_railway(env_path: Optional[str] = None) -> Dict[str, str]:
+    if env_path is None:
+        from hermes_cli.config import load_env
+
+        return load_env()
+
+    path = Path(env_path).expanduser()
+    if not path.exists():
+        raise AuthError(
+            f"Hermes env file not found: {path}",
+            provider="railway",
+            code="railway_env_file_missing",
+        )
+    env_vars: Dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key:
+            env_vars[key] = value.strip().strip("\"'")
+    return env_vars
+
+
+def _resolve_railway_project_id(explicit_project_id: Optional[str], env_vars: Dict[str, str]) -> str:
+    raw = (
+        explicit_project_id
+        or env_vars.get("RAILWAY_PROJECT_ID")
+        or env_vars.get("HERMES_RAILWAY_PROJECT_ID")
+        or os.getenv("RAILWAY_PROJECT_ID")
+        or os.getenv("HERMES_RAILWAY_PROJECT_ID")
+    )
+    project_id = str(raw or "").strip()
+    if project_id:
+        return project_id
+    raise AuthError(
+        "Railway project_id is required. Pass --project-id or set RAILWAY_PROJECT_ID in ~/.hermes/.env.",
+        provider="railway",
+        code="railway_project_id_missing",
+    )
+
+
+def _resolve_railway_environment_id(explicit_environment_id: Optional[str], env_vars: Dict[str, str]) -> str:
+    raw = (
+        explicit_environment_id
+        or env_vars.get("RAILWAY_ENVIRONMENT_ID")
+        or env_vars.get("HERMES_RAILWAY_ENVIRONMENT_ID")
+        or os.getenv("RAILWAY_ENVIRONMENT_ID")
+        or os.getenv("HERMES_RAILWAY_ENVIRONMENT_ID")
+    )
+    environment_id = str(raw or "").strip()
+    if environment_id:
+        return environment_id
+    raise AuthError(
+        "Railway environment_id is required. Pass --environment-id or set RAILWAY_ENVIRONMENT_ID in ~/.hermes/.env.",
+        provider="railway",
+        code="railway_environment_id_missing",
+    )
+
+
+def sync_railway_shared_variables_from_env(
+    *,
+    project_id: Optional[str] = None,
+    environment_id: Optional[str] = None,
+    env_path: Optional[str] = None,
+    access_token: Optional[str] = None,
+    api_base_url: Optional[str] = None,
+    timeout_seconds: float = 15.0,
+    client_factory: Optional[Any] = None,
+) -> Dict[str, Any]:
+    env_vars = _load_env_file_for_railway(env_path)
+    if not env_vars:
+        raise AuthError(
+            "No variables found in Hermes .env file.",
+            provider="railway",
+            code="railway_env_empty",
+        )
+
+    resolved_project_id = _resolve_railway_project_id(project_id, env_vars)
+    resolved_environment_id = _resolve_railway_environment_id(environment_id, env_vars)
+    runtime = {}
+    resolved_access_token = str(access_token or "").strip()
+    if not resolved_access_token:
+        runtime = resolve_railway_runtime_credentials(timeout_seconds=timeout_seconds)
+        resolved_access_token = str(runtime.get("access_token") or runtime.get("api_key") or "").strip()
+    if not resolved_access_token:
+        raise AuthError(
+            "Railway access token missing. Run `hermes auth add railway --type oauth` first.",
+            provider="railway",
+            code="railway_access_token_missing",
+            relogin_required=True,
+        )
+
+    resolved_api_base_url = str(
+        api_base_url
+        or runtime.get("api_base_url")
+        or runtime.get("base_url")
+        or DEFAULT_RAILWAY_API_BASE_URL
+    ).strip().rstrip("/")
+    payload = {
+        "query": RAILWAY_VARIABLE_COLLECTION_UPSERT_MUTATION,
+        "variables": {
+            "input": {
+                "projectId": resolved_project_id,
+                "environmentId": resolved_environment_id,
+                "variables": env_vars,
+            }
+        },
+    }
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {resolved_access_token}",
+        "Content-Type": "application/json",
+    }
+    factory = client_factory or httpx.Client
+    with factory(timeout=httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)) as client:
+        response = client.post(resolved_api_base_url, json=payload, headers=headers)
+    try:
+        response_payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            "Railway variable sync returned a non-JSON response.",
+            provider="railway",
+            code="railway_variable_sync_invalid_response",
+        ) from exc
+    if response.status_code != 200 or response_payload.get("errors"):
+        errors = response_payload.get("errors")
+        description = "Railway variable sync failed."
+        if isinstance(errors, list) and errors:
+            first = errors[0]
+            if isinstance(first, dict) and first.get("message"):
+                description = str(first["message"])
+        raise AuthError(
+            description,
+            provider="railway",
+            code="railway_variable_sync_failed",
+            relogin_required=response.status_code in {401, 403},
+        )
+
+    return {
+        "count": len(env_vars),
+        "keys": sorted(env_vars),
+        "project_id": resolved_project_id,
+        "environment_id": resolved_environment_id,
+        "api_base_url": resolved_api_base_url,
+        "response": response_payload,
+    }
+
 # =============================================================================
 # SSH / remote session detection
 # =============================================================================
@@ -3854,6 +4529,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     target = provider_id or get_active_provider()
     if target == "spotify":
         return get_spotify_auth_status()
+    if target == "railway":
+        return get_railway_auth_status()
     if target == "nous":
         return get_nous_auth_status()
     if target == "openai-codex":

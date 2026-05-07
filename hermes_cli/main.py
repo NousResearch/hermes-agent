@@ -8862,7 +8862,7 @@ def main():
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "spotify"],
+        choices=["nous", "openai-codex", "spotify", "railway"],
         default=None,
         help="Provider to log out from (default: active provider)",
     )
@@ -8891,6 +8891,9 @@ def main():
     auth_add.add_argument("--portal-url", help="Nous portal base URL")
     auth_add.add_argument("--inference-url", help="Nous inference base URL")
     auth_add.add_argument("--client-id", help="OAuth client id")
+    auth_add.add_argument(
+        "--client-secret", help="OAuth client secret for confidential clients"
+    )
     auth_add.add_argument("--scope", help="OAuth scope override")
     auth_add.add_argument(
         "--no-browser",
@@ -8951,6 +8954,27 @@ def main():
     )
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
+    )
+    auth_railway = auth_subparsers.add_parser(
+        "railway", help="Railway OAuth utilities"
+    )
+    auth_railway.add_argument(
+        "railway_action",
+        nargs="?",
+        choices=["sync-env", "status", "logout"],
+        default="sync-env",
+    )
+    auth_railway.add_argument(
+        "--project-id", help="Railway project ID for shared-variable sync"
+    )
+    auth_railway.add_argument(
+        "--environment-id", help="Railway environment ID for shared-variable sync"
+    )
+    auth_railway.add_argument(
+        "--env-path", help="Path to Hermes .env file (default: ~/.hermes/.env)"
+    )
+    auth_railway.add_argument(
+        "--timeout", type=float, help="Railway API timeout in seconds"
     )
     auth_parser.set_defaults(func=cmd_auth)
 

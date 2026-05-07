@@ -252,6 +252,20 @@ def _remove_nous_device_code(provider: str, removed) -> RemovalResult:
     return result
 
 
+def _remove_railway_device_code(provider: str, removed) -> RemovalResult:
+    """Railway OAuth lives in auth.json providers.railway — clear it and suppress."""
+    from hermes_cli.auth import suppress_credential_source
+
+    result = RemovalResult()
+    if _clear_auth_store_provider(provider):
+        result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
+    suppress_credential_source(provider, "device_code")
+    result.hints.append(
+        "Run `hermes auth add railway --type oauth` to re-enable if needed."
+    )
+    return result
+
+
 def _remove_minimax_oauth(provider: str, removed) -> RemovalResult:
     """MiniMax OAuth lives in auth.json providers.minimax-oauth — clear it.
 
@@ -390,6 +404,12 @@ def _register_all_sources() -> None:
         provider="nous", source_id="device_code",
         remove_fn=_remove_nous_device_code,
         description="auth.json providers.nous",
+    ))
+    register(RemovalStep(
+        provider="railway", source_id="device_code",
+        match_fn=lambda src: src == "device_code" or src.endswith(":device_code"),
+        remove_fn=_remove_railway_device_code,
+        description="auth.json providers.railway",
     ))
     register(RemovalStep(
         provider="openai-codex", source_id="device_code",

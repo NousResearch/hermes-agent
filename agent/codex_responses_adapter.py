@@ -852,7 +852,6 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
@@ -865,6 +864,14 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                 if normalized_phase:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
+
+                # Codex backends can emit user-invisible planning/status text as
+                # `message` items with phase=commentary/analysis while also
+                # emitting structured function_call items. Preserve the raw item
+                # above for replay/debug metadata, but never promote it into
+                # assistant.content/final_response/gateway-visible text.
+                if normalized_phase not in {"commentary", "analysis"}:
+                    content_parts.append(message_text)
         elif item_type == "reasoning":
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:

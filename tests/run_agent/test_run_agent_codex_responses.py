@@ -704,7 +704,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *args, **kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -872,7 +872,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *args, **kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -907,7 +907,7 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *args, **kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -940,7 +940,8 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     )
 
     assert finish_reason == "incomplete"
-    assert "inspect the repository" in (assistant_message.content or "")
+    assert (assistant_message.content or "") == ""
+    assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
 
 
 def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
@@ -1008,6 +1009,49 @@ def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
     # item existed.
     assert (assistant_message.content or "") == ""
     assert assistant_message.tool_calls == []
+
+
+def test_normalize_codex_response_scrubs_commentary_text_when_tool_call_present(monkeypatch):
+    """Codex commentary is debug/replay metadata, not user-visible content.
+
+    This is the Discord leak failure mode: a Responses output contains a
+    phase=commentary message like "Need inspect..." plus a real function_call.
+    Tool calls must still run, but commentary text must not become the assistant
+    content that gateways can stream or deliver.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    leaked_commentary = "Need inspect core context files. Use search for SOUL/AGENTS/MEMORY."
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_commentary",
+                phase="commentary",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=leaked_commentary)],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="search_files",
+                arguments='{"pattern":"SOUL.md"}',
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.5",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.tool_calls
+    assert (assistant_message.content or "") == ""
+    assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+    assert leaked_commentary in assistant_message.codex_message_items[0]["content"][0]["text"]
 
 
 def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_present(monkeypatch):
@@ -1115,10 +1159,9 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
     }
 
 
-def test_interim_commentary_preserves_assistant_content(monkeypatch):
-    """Interim commentary must not silently mutate assistant text containing
-    literal <memory-context> markers — that's legitimate model output (docs,
-    code).  Streaming-path leak prevention happens delta-by-delta upstream."""
+def test_interim_commentary_strips_leaked_memory_context(monkeypatch):
+    """Interim commentary is user-visible in gateways, so leaked injected
+    context fences must be stripped before callback delivery."""
     agent = _build_agent(monkeypatch)
     observed = {}
     agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
@@ -1136,7 +1179,9 @@ def test_interim_commentary_preserves_assistant_content(monkeypatch):
 
     agent._emit_interim_assistant_message({"role": "assistant", "content": content})
 
-    assert "<memory-context>" in observed["text"]
+    assert "<memory-context>" not in observed["text"]
+    assert "Honcho Context" not in observed["text"]
+    assert "stale memory" not in observed["text"]
     assert "I'll inspect the repo structure first." in observed["text"]
 
 
@@ -1259,7 +1304,7 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *args, **kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1278,7 +1323,8 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     assert any(
         msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
-        and "inspect the repo structure" in (msg.get("content") or "")
+        and not (msg.get("content") or "")
+        and "inspect the repo structure" in str(msg.get("codex_message_items") or "")
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
@@ -1295,7 +1341,7 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *args, **kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1336,7 +1382,7 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *args, **kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {

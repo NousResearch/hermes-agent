@@ -303,6 +303,21 @@ class PlatformConfig:
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
 
+        explicit_extra = data.get("extra")
+        extra = dict(explicit_extra) if isinstance(explicit_extra, dict) else {}
+        core_keys = {
+            "enabled",
+            "token",
+            "api_key",
+            "home_channel",
+            "reply_to_mode",
+            "gateway_restart_notification",
+            "extra",
+        }
+        for key, value in data.items():
+            if key not in core_keys and key not in extra:
+                extra[key] = value
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -312,7 +327,7 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(
                 data.get("gateway_restart_notification"), True
             ),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 

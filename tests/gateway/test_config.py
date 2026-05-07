@@ -70,6 +70,41 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_from_dict_merges_top_level_platform_specific_fields_into_extra(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "port": 8643,
+                "host": "127.0.0.1",
+                "key": "secret",
+                "cors_origins": ["https://example.com"],
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.extra == {
+            "port": 8643,
+            "host": "127.0.0.1",
+            "key": "secret",
+            "cors_origins": ["https://example.com"],
+        }
+
+    def test_from_dict_prefers_explicit_extra_over_top_level_platform_values(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "port": 8643,
+                "host": "127.0.0.1",
+                "extra": {"port": 9000, "cors_origins": ["https://explicit.example"]},
+                "cors_origins": ["https://top-level.example"],
+            }
+        )
+
+        assert restored.extra == {
+            "port": 9000,
+            "host": "127.0.0.1",
+            "cors_origins": ["https://explicit.example"],
+        }
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):

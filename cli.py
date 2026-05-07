@@ -2896,6 +2896,14 @@ class HermesCLI:
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
+        # Leading status-bar glyph — skin-overridable. Default ``⚕``
+        # (caduceus, Hermes branding); skins set ``branding.status_glyph``
+        # to swap (e.g. Tanium fork uses ``Ⓣ``).
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _glyph = get_active_skin().get_branding("status_glyph", "⚕")
+        except Exception:
+            _glyph = "⚕"
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -2905,10 +2913,10 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{_glyph} {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"{_glyph} {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2919,18 +2927,24 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"{_glyph} {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"{_glyph} {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _glyph = get_active_skin().get_branding("status_glyph", "⚕")
+        except Exception:
+            _glyph = "⚕"
+        _glyph_padded = f" {_glyph} "
         try:
             snapshot = self._get_status_bar_snapshot()
             # Use prompt_toolkit's own terminal width when running inside the
@@ -2944,7 +2958,7 @@ class HermesCLI:
             effort_label = snapshot.get("effort")
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", _glyph_padded),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -2955,7 +2969,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", _glyph_padded),
                         ("class:status-bar-strong", snapshot["model_short"]),
                     ]
                     if effort_label:
@@ -2980,7 +2994,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", _glyph_padded),
                         ("class:status-bar-strong", snapshot["model_short"]),
                     ]
                     if effort_label:

@@ -784,6 +784,7 @@ $ hermes model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
+[ ] triage_specifier     currently: auto / main model
 ```
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
@@ -880,6 +881,18 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30
+
+  # Kanban triage specifier — `hermes kanban specify <id>` (or the
+  # dashboard's ✨ Specify button on Triage-column cards) uses this
+  # slot to expand a one-liner into a concrete spec and promote the
+  # task to `todo`. Cheap fast models work well here; spec expansion
+  # is short and doesn't need reasoning depth.
+  triage_specifier:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 120
 ```
 
 :::tip

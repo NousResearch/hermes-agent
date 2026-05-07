@@ -71,6 +71,22 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+# Marker file written by `hermes profile create --no-skills`.  When present in
+# a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
+# update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
+# for that profile.  The user can still install skills manually via
+# `hermes skills install` or drop SKILL.md files into the profile's skills/.
+# Delete the marker file to opt back in.
+NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
+
+def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
+    """Return True if the profile opted out of bundled-skill seeding."""
+    try:
+        return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
+    except OSError:
+        return False
+
 
 def _clone_all_copytree_ignore(source_dir: Path):
     """Ignore ``profiles/`` at the root of *source_dir* only.
@@ -427,6 +443,7 @@ def create_profile(
     clone_all: bool = False,
     clone_config: bool = False,
     no_alias: bool = False,
+    no_skills: bool = False,
 ) -> Path:
     """Create a new profile directory.
 
@@ -444,12 +461,22 @@ def create_profile(
         skills, and selected profile identity files from the source profile.
     no_alias:
         If True, skip wrapper script creation.
+    no_skills:
+        If True, create an empty profile with no bundled skills, and write
+        a marker file so ``hermes update`` skips re-seeding this profile's
+        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
+        explicitly copy skills from the source).
 
     Returns
     -------
     Path
         The newly created profile directory.
     """
+    if no_skills and (clone_config or clone_all):
+        raise ValueError(
+            "--no-skills is mutually exclusive with --clone / --clone-all "
+            "(cloning explicitly copies skills from the source profile)."
+        )
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
 
@@ -527,6 +554,19 @@ def create_profile(
         except Exception:
             pass  # best-effort — don't fail profile creation over this
 
+    # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
+    # all-profile sync loop both skip this profile for bundled-skill seeding.
+    if no_skills:
+        try:
+            (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
+                "This profile opted out of bundled-skill seeding "
+                "(`hermes profile create --no-skills`).\n"
+                "Delete this file to re-enable sync on the next `hermes update`.\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # best-effort — the feature still works via the empty skills/ dir
+
     return profile_dir
 
 
@@ -535,7 +575,19 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
     Uses subprocess because sync_skills() caches HERMES_HOME at module level.
     Returns the sync result dict, or None on failure.
+
+    Profiles that opted out of bundled skills (via ``hermes profile create
+    --no-skills`` — which writes ``.no-bundled-skills`` to the profile root)
+    are skipped and get an empty-result dict so callers can report
+    "opted out" instead of "failed".
     """
+    if has_bundled_skills_opt_out(profile_dir):
+        return {
+            "copied": [],
+            "updated": [],
+            "user_modified": [],
+            "skipped_opt_out": True,
+        }
     project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(

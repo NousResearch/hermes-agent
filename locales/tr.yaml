@@ -1,0 +1,24 @@
+# Hermes statik mesaj katalogu -- Turkce
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
+  choose_long:     "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"
+  choose_short:    "      [b]ir kez  |  [o]turum  |  [r]eddet"
+  prompt_long:     "      Seçim [b/o/h/R]: "
+  prompt_short:    "      Seçim [b/o/R]: "
+  timeout:         "      ⏱ Zaman aşımı — komut reddedildi"
+  allowed_once:    "      ✓ Bir kez izin verildi"
+  allowed_session: "      ✓ Bu oturum için izin verildi"
+  allowed_always:  "      ✓ Kalıcı izin listesine eklendi"
+  denied:          "      ✗ Reddedildi"
+  cancelled:       "      ✗ İptal edildi"
+  blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
+
+gateway:
+  approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
+  draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
+  goal_cleared:     "✓ Hedef temizlendi."
+  no_active_goal:   "Aktif hedef yok."
+  config_read_failed: "⚠️ config.yaml okunamadı: {error}"
+  config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"

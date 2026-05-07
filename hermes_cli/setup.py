@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import copy
@@ -208,10 +209,21 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         else:
             value = input(color(display, Colors.YELLOW))
 
-        return value.strip() or default or ""
+        cleaned = _sanitize_pasted_input(value)
+        return cleaned.strip() or default or ""
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)
+
+
+_BRACKETED_PASTE_PATTERN = re.compile(r"\x1b\[\s*200~|\x1b\[\s*201~")
+
+
+def _sanitize_pasted_input(value: str) -> str:
+    """Strip terminal bracketed-paste control markers from pasted text."""
+    if not isinstance(value, str) or not value:
+        return value
+    return _BRACKETED_PASTE_PATTERN.sub("", value)
 
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
@@ -382,7 +394,7 @@ def _print_setup_summary(config: dict, hermes_home):
             label = f"Web Search & Extract ({subscription_features.web.current_provider})"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
+        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, or SEARXNG_URL"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
@@ -2450,6 +2462,9 @@ def setup_gateway(config: dict):
             launchd_start,
             launchd_restart,
             UserSystemdUnavailableError,
+            SystemScopeRequiresRootError,
+            _system_scope_wizard_would_need_root,
+            _print_system_scope_remediation,
         )
 
         service_installed = _is_service_installed()
@@ -2467,7 +2482,9 @@ def setup_gateway(config: dict):
             print()
 
         if service_running:
-            if prompt_yes_no("  Restart the gateway to pick up changes?", True):
+            if supports_systemd and _system_scope_wizard_would_need_root():
+                _print_system_scope_remediation("restart")
+            elif prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
                     if supports_systemd:
                         systemd_restart()
@@ -2477,10 +2494,19 @@ def setup_gateway(config: dict):
                     print_error("  Restart failed — user systemd not reachable:")
                     for line in str(e).splitlines():
                         print(f"  {line}")
+                except SystemScopeRequiresRootError as e:
+                    # Defense in depth: the pre-check above should have
+                    # caught this, but a race (unit file appearing mid-run)
+                    # could still land here. Previously this exited the
+                    # whole wizard via sys.exit(1).
+                    print_error(f"  Restart failed: {e}")
+                    _print_system_scope_remediation("restart")
                 except Exception as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
-            if prompt_yes_no("  Start the gateway service?", True):
+            if supports_systemd and _system_scope_wizard_would_need_root():
+                _print_system_scope_remediation("start")
+            elif prompt_yes_no("  Start the gateway service?", True):
                 try:
                     if supports_systemd:
                         systemd_start()
@@ -2490,6 +2516,9 @@ def setup_gateway(config: dict):
                     print_error("  Start failed — user systemd not reachable:")
                     for line in str(e).splitlines():
                         print(f"  {line}")
+                except SystemScopeRequiresRootError as e:
+                    print_error(f"  Start failed: {e}")
+                    _print_system_scope_remediation("start")
                 except Exception as e:
                     print_error(f"  Start failed: {e}")
         elif supports_service_manager:
@@ -2517,6 +2546,9 @@ def setup_gateway(config: dict):
                             print_error("  Start failed — user systemd not reachable:")
                             for line in str(e).splitlines():
                                 print(f"  {line}")
+                        except SystemScopeRequiresRootError as e:
+                            print_error(f"  Start failed: {e}")
+                            _print_system_scope_remediation("start")
                         except Exception as e:
                             print_error(f"  Start failed: {e}")
                 except Exception as e:

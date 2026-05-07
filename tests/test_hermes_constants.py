@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import (
+    VALID_REASONING_EFFORTS,
+    get_default_hermes_root,
+    is_container,
+    parse_reasoning_effort,
+)
 
 
 class TestGetDefaultHermesRoot:
@@ -17,6 +22,7 @@ class TestGetDefaultHermesRoot:
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
         assert get_default_hermes_root() == tmp_path / ".hermes"
 
     def test_hermes_home_is_native(self, tmp_path, monkeypatch):
@@ -111,3 +117,57 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestParseReasoningEffort:
+    """Tests for parse_reasoning_effort() — string → reasoning config dict."""
+
+    @pytest.mark.parametrize("value", ["", "   ", "\t", "\n"])
+    def test_empty_or_whitespace_returns_none(self, value):
+        """Empty / whitespace-only input falls back to caller default (None)."""
+        assert parse_reasoning_effort(value) is None
+
+    def test_none_disables_reasoning(self):
+        """The literal "none" disables reasoning explicitly."""
+        assert parse_reasoning_effort("none") == {"enabled": False}
+
+    @pytest.mark.parametrize("level", list(VALID_REASONING_EFFORTS))
+    def test_each_valid_level(self, level):
+        """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""
+        assert parse_reasoning_effort(level) == {"enabled": True, "effort": level}
+
+    @pytest.mark.parametrize(
+        "raw, expected_effort",
+        [
+            ("MEDIUM", "medium"),
+            ("High", "high"),
+            ("  low  ", "low"),
+            ("\tXHIGH\n", "xhigh"),
+            ("None", False),
+        ],
+    )
+    def test_case_and_whitespace_normalized(self, raw, expected_effort):
+        """Mixed case and surrounding whitespace are normalized before lookup."""
+        result = parse_reasoning_effort(raw)
+        if expected_effort is False:
+            assert result == {"enabled": False}
+        else:
+            assert result == {"enabled": True, "effort": expected_effort}
+
+    @pytest.mark.parametrize(
+        "value",
+        ["bogus", "very-high", "max", "0", "off", "true", "default"],
+    )
+    def test_unknown_levels_return_none(self, value):
+        """Unrecognized strings fall back to the caller default (None)."""
+        assert parse_reasoning_effort(value) is None
+
+    def test_known_supported_levels_are_documented(self):
+        """Guard against silently dropping a documented level.
+
+        The docstring promises "minimal", "low", "medium", "high", "xhigh".
+        If someone removes one from VALID_REASONING_EFFORTS without updating
+        the docstring, this test will fail and force the call out.
+        """
+        documented = {"minimal", "low", "medium", "high", "xhigh"}
+        assert documented.issubset(set(VALID_REASONING_EFFORTS))

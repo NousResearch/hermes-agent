@@ -44,6 +44,15 @@ services:
       # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
       # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
       # - TEAMS_PORT=${TEAMS_PORT:-3978}
+      # Google Chat — uncomment and fill in to enable the Google Chat gateway.
+      # See website/docs/user-guide/messaging/google_chat.md for the full setup.
+      # The SA JSON path must point to a file mounted into the container —
+      # add a volume entry above (e.g. ``- ~/.hermes/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
+      # then set GOOGLE_CHAT_SERVICE_ACCOUNT_JSON to that mount path.
+      # - GOOGLE_CHAT_PROJECT_ID=${GOOGLE_CHAT_PROJECT_ID}
+      # - GOOGLE_CHAT_SUBSCRIPTION_NAME=${GOOGLE_CHAT_SUBSCRIPTION_NAME}
+      # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
+      # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
     command: ["gateway", "run"]
 
   dashboard:

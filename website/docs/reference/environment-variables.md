@@ -267,6 +267,17 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
+| `GOOGLE_CHAT_PROJECT_ID` | GCP project hosting the Pub/Sub topic (falls back to `GOOGLE_CLOUD_PROJECT`) |
+| `GOOGLE_CHAT_SUBSCRIPTION_NAME` | Full Pub/Sub subscription path, `projects/{proj}/subscriptions/{sub}` (legacy alias: `GOOGLE_CHAT_SUBSCRIPTION`) |
+| `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | Path to Service Account JSON, or the JSON inline (falls back to `GOOGLE_APPLICATION_CREDENTIALS`) |
+| `GOOGLE_CHAT_ALLOWED_USERS` | Comma-separated user emails allowed to chat with the bot |
+| `GOOGLE_CHAT_ALLOW_ALL_USERS` | Allow any Google Chat user to trigger the bot (dev only) |
+| `GOOGLE_CHAT_HOME_CHANNEL` | Default space (e.g. `spaces/AAAA...`) for cron delivery |
+| `GOOGLE_CHAT_HOME_CHANNEL_NAME` | Display name for the Google Chat home space |
+| `GOOGLE_CHAT_MAX_MESSAGES` | Pub/Sub FlowControl max in-flight messages (default: `1`) |
+| `GOOGLE_CHAT_MAX_BYTES` | Pub/Sub FlowControl max in-flight bytes (default: `16777216`, 16 MiB) |
+| `GOOGLE_CHAT_BOOTSTRAP_SPACES` | Comma-separated extra space IDs to probe at startup when resolving the bot's own `users/{id}` |
+| `GOOGLE_CHAT_DEBUG_RAW` | Set to any value to log redacted Pub/Sub envelopes at DEBUG level (debugging only) |
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |

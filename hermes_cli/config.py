@@ -960,6 +960,16 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "pinecone_enabled": False,
+        "pinecone_namespace": "",
+        "pinecone_top_k": 8,
+        "pinecone_min_score": 0.0,
+        "pinecone_max_context_items": 8,
+        "pinecone_retrieval_enabled_platforms": [],
+        "pinecone_ingest_session_summaries": True,
+        "pinecone_ingest_topic_files": True,
+        "pinecone_ingest_skills": True,
+        "pinecone_fail_open": True,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
@@ -1336,7 +1346,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -1352,6 +1362,10 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    24: [
+        "PINECONE_API_KEY", "PINECONE_INDEX_HOST", "PINECONE_INDEX_NAME",
+        "PINECONE_NAMESPACE", "MEMORY_EMBEDDING_MODEL", "MEMORY_EMBEDDING_PROVIDER",
+    ],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1993,6 +2007,52 @@ OPTIONAL_ENV_VARS = {
         "description": "Base URL for self-hosted Honcho instances (no API key needed)",
         "prompt": "Honcho base URL (e.g. http://localhost:8000)",
         "category": "tool",
+    },
+
+    # ── Pinecone memory retrieval ──
+    "PINECONE_API_KEY": {
+        "description": "Pinecone API key for vector memory retrieval",
+        "prompt": "Pinecone API key",
+        "url": "https://app.pinecone.io/",
+        "password": True,
+        "category": "tool",
+    },
+    "PINECONE_INDEX_HOST": {
+        "description": "Pinecone index host URL",
+        "prompt": "Pinecone index host",
+        "url": None,
+        "password": False,
+        "category": "tool",
+    },
+    "PINECONE_INDEX_NAME": {
+        "description": "Pinecone index name",
+        "prompt": "Pinecone index name",
+        "url": None,
+        "password": False,
+        "category": "tool",
+    },
+    "PINECONE_NAMESPACE": {
+        "description": "Default Pinecone namespace for Hermes memory",
+        "prompt": "Pinecone namespace",
+        "url": None,
+        "password": False,
+        "category": "tool",
+    },
+    "MEMORY_EMBEDDING_MODEL": {
+        "description": "Embedding model used for Hermes memory vectors",
+        "prompt": "Memory embedding model",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "MEMORY_EMBEDDING_PROVIDER": {
+        "description": "Provider used for Hermes memory embeddings",
+        "prompt": "Memory embedding provider",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
 
     # ── Langfuse observability ──

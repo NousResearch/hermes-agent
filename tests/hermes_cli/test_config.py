@@ -379,6 +379,53 @@ class TestSanitizeEnvLines:
             assert fixes == 0
 
 
+class TestMemoryPineconeConfig:
+    def test_memory_defaults_include_pinecone_settings(self):
+        memory_cfg = DEFAULT_CONFIG["memory"]
+        assert memory_cfg["pinecone_enabled"] is False
+        assert memory_cfg["pinecone_namespace"] == ""
+        assert memory_cfg["pinecone_top_k"] == 8
+        assert memory_cfg["pinecone_min_score"] == 0.0
+        assert memory_cfg["pinecone_max_context_items"] == 8
+        assert memory_cfg["pinecone_retrieval_enabled_platforms"] == []
+        assert memory_cfg["pinecone_ingest_session_summaries"] is True
+        assert memory_cfg["pinecone_ingest_topic_files"] is True
+        assert memory_cfg["pinecone_ingest_skills"] is True
+        assert memory_cfg["pinecone_fail_open"] is True
+
+    def test_migrate_config_adds_pinecone_defaults_without_overwriting_existing_values(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 23,
+                    "memory": {
+                        "provider": "builtin",
+                        "pinecone_enabled": True,
+                        "pinecone_top_k": 42,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["memory"]["pinecone_enabled"] is True
+        assert raw["memory"]["pinecone_top_k"] == 42
+        assert raw["memory"]["pinecone_namespace"] == ""
+        assert raw["memory"]["pinecone_min_score"] == 0.0
+        assert raw["memory"]["pinecone_max_context_items"] == 8
+        assert raw["memory"]["pinecone_retrieval_enabled_platforms"] == []
+        assert raw["memory"]["pinecone_ingest_session_summaries"] is True
+        assert raw["memory"]["pinecone_ingest_topic_files"] is True
+        assert raw["memory"]["pinecone_ingest_skills"] is True
+        assert raw["memory"]["pinecone_fail_open"] is True
+
+
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
 
@@ -386,6 +433,16 @@ class TestOptionalEnvVarsRegistry:
         """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
+
+    def test_pinecone_and_memory_embedding_env_vars_registered(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert OPTIONAL_ENV_VARS["PINECONE_API_KEY"]["password"] is True
+        assert OPTIONAL_ENV_VARS["PINECONE_INDEX_HOST"]["category"] == "tool"
+        assert OPTIONAL_ENV_VARS["PINECONE_INDEX_NAME"]["category"] == "tool"
+        assert OPTIONAL_ENV_VARS["PINECONE_NAMESPACE"]["category"] == "tool"
+        assert OPTIONAL_ENV_VARS["MEMORY_EMBEDDING_MODEL"]["advanced"] is True
+        assert OPTIONAL_ENV_VARS["MEMORY_EMBEDDING_PROVIDER"]["advanced"] is True
 
     def test_tavily_api_key_is_tool_category(self):
         """TAVILY_API_KEY is in the 'tool' category."""

@@ -894,7 +894,7 @@ def _file_lock(
         lock_path.write_text(" ", encoding="utf-8")
 
     with lock_path.open("r+" if msvcrt else "a+") as lock_file:
-        deadline = time.time() + max(1.0, timeout_seconds)
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
         while True:
             try:
                 if fcntl:
@@ -904,7 +904,7 @@ def _file_lock(
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
                 break
             except (BlockingIOError, OSError, PermissionError):
-                if time.time() >= deadline:
+                if time.monotonic() >= deadline:
                     raise TimeoutError(timeout_message)
                 time.sleep(0.05)
 
@@ -1974,9 +1974,9 @@ def _spotify_wait_for_callback(
 
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
     thread.start()
-    deadline = time.time() + max(5.0, timeout_seconds)
+    deadline = time.monotonic() + max(5.0, timeout_seconds)
     try:
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if result["code"] or result["error"]:
                 return result
             time.sleep(0.1)
@@ -2739,10 +2739,10 @@ def _poll_for_token(
     poll_interval: int,
 ) -> Dict[str, Any]:
     """Poll the token endpoint until the user approves or the code expires."""
-    deadline = time.time() + max(1, expires_in)
+    deadline = time.monotonic() + max(1, expires_in)
     current_interval = max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         response = client.post(
             f"{portal_base_url}/api/oauth/token",
             data={

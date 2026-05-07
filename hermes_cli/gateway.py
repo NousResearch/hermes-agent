@@ -585,10 +585,10 @@ def _wait_for_systemd_service_restart(
 
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     printed_runtime_wait = False
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         props = _read_systemd_unit_properties(system=system)
         active_state = props.get("ActiveState", "")
         sub_state = props.get("SubState", "")

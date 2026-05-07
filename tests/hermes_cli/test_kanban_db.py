@@ -605,6 +605,57 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_dispatch_max_spawn_counts_existing_running_tasks(
+    kanban_home, all_assignees_spawnable
+):
+    """max_spawn is a live concurrency cap, not a per-tick spawn cap.
+
+    Without counting tasks already in ``running``, every dispatcher tick can
+    launch up to ``max_spawn`` more workers while previous workers are still
+    alive. Long-running boards then accumulate unbounded worker subprocesses.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running_a = kb.create_task(conn, title="running-a", assignee="alice")
+        running_b = kb.create_task(conn, title="running-b", assignee="bob")
+        ready = kb.create_task(conn, title="ready", assignee="carol")
+        kb.claim_task(conn, running_a)
+        kb.claim_task(conn, running_b)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
+
+        assert res.spawned == []
+        assert spawns == []
+        assert kb.get_task(conn, ready).status == "ready"
+
+
+def test_dispatch_max_spawn_fills_remaining_capacity(
+    kanban_home, all_assignees_spawnable
+):
+    """When below cap, dispatch only fills available worker slots."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="bob")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="carol")
+        kb.claim_task(conn, running)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
+
+        assert len(res.spawned) == 1
+        assert spawns == [ready_a]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="alice")

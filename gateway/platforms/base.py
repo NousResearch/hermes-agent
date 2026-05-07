@@ -909,6 +909,8 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+    # Per-channel model override (model name string, inherits global provider).
+    channel_model: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -1145,6 +1147,34 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_model(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel model override from platform config.
+
+    Looks up ``channel_models`` in the adapter's ``config.extra`` dict.
+    Prefers exact match on *channel_id*; falls back to *parent_id*
+    (forum threads inherit parent channel model).
+
+    Returns the model name string, or None if no match.
+    """
+    models = config_extra.get("channel_models") or {}
+    if not isinstance(models, dict):
+        return None
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        model = models.get(key)
+        if model is None:
+            continue
+        model = str(model).strip()
+        if model:
+            return model
     return None
 
 

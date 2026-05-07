@@ -776,6 +776,12 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if "channel_models" in platform_cfg:
+                    channel_models = platform_cfg["channel_models"]
+                    if isinstance(channel_models, dict):
+                        bridged["channel_models"] = {str(k): str(v) for k, v in channel_models.items()}
+                    else:
+                        bridged["channel_models"] = channel_models
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

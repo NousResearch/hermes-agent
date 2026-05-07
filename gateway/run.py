@@ -258,13 +258,18 @@ def _ensure_ssl_certs() -> None:
             return
 
 def _home_target_env_var(platform_name: str) -> str:
-    """Return the configured home-target env var for a platform."""
-    from cron.scheduler import _HOME_TARGET_ENV_VARS
+    """Return the configured home-target env var for a platform.
 
-    return _HOME_TARGET_ENV_VARS.get(
-        platform_name.lower(),
-        f"{platform_name.upper()}_HOME_CHANNEL",
-    )
+    Consults built-in ``_HOME_TARGET_ENV_VARS`` first, then the plugin
+    registry via ``cron.scheduler._resolve_home_env_var``, then falls back
+    to ``<PLATFORM>_HOME_CHANNEL`` for unknown names.
+    """
+    from cron.scheduler import _resolve_home_env_var
+
+    resolved = _resolve_home_env_var(platform_name)
+    if resolved:
+        return resolved
+    return f"{platform_name.upper()}_HOME_CHANNEL"
 
 
 def _home_thread_env_var(platform_name: str) -> str:

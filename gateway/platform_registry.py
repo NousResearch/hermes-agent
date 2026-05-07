@@ -110,6 +110,21 @@ class PlatformEntry:
     # Do not use markdown.").  Empty string = no hint.
     platform_hint: str = ""
 
+    # ── Env-driven auto-configuration ──
+    # Optional: read env vars, return a dict of ``PlatformConfig.extra`` fields
+    # to seed when the platform is auto-enabled.  Called during
+    # ``_apply_env_overrides`` BEFORE the adapter is constructed, so
+    # ``gateway status`` etc. can reflect env-only configuration without
+    # instantiating the adapter.  Return ``None`` (or an empty dict) to skip.
+    # Signature: () -> Optional[dict[str, Any]]
+    env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None
+
+    # Optional: home-channel env var name for cron/notification delivery
+    # (e.g. ``"IRC_HOME_CHANNEL"``).  When set, ``cron.scheduler`` treats this
+    # platform as a valid ``deliver=<name>`` target and reads the env var to
+    # resolve the default chat/room ID.  Empty = no cron home-channel support.
+    cron_deliver_env_var: str = ""
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

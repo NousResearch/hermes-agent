@@ -138,6 +138,7 @@ AUTHOR_MAP = {
     "formulahendry@gmail.com": "formulahendry",
     "93757150+bogerman1@users.noreply.github.com": "bogerman1",
     "132852777+rob-maron@users.noreply.github.com": "rob-maron",
+    "mjc@kernel.org": "mjc",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

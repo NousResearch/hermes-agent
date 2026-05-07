@@ -196,12 +196,16 @@ class TestVoiceAttachmentSSRFProtection:
 
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling
+#
+# Note: The proxy handling logic has been moved into qqbot-agent-sdk's
+# QQWebSocket.open().  This test verifies the SDK-level behavior to ensure
+# the bugfix (044348411) is preserved across the refactor.
 # ---------------------------------------------------------------------------
 
 class TestQQWebSocketProxy:
     @pytest.mark.asyncio
     async def test_open_ws_honors_proxy_env(self, monkeypatch):
-        from gateway.platforms.qqbot import QQAdapter
+        from qqbot_agent_sdk import QQWebSocket, WSCallbacks
 
         for key in (
             "WSS_PROXY",
@@ -214,14 +218,26 @@ class TestQQWebSocketProxy:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
 
-        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        # Minimal no-op callbacks — only open() is exercised here.
+        callbacks = WSCallbacks(
+            on_message_event=mock.AsyncMock(),
+            on_connected=mock.MagicMock(),
+            on_disconnected=mock.MagicMock(),
+            on_fatal_error=mock.MagicMock(),
+            get_token=lambda: "token",
+            get_session=lambda: (None, None),
+            set_session=mock.MagicMock(),
+            set_heartbeat_interval=mock.MagicMock(),
+            clear_token=mock.MagicMock(),
+            fail_pending=mock.MagicMock(),
+            get_gateway_url=lambda: "wss://api.sgroup.qq.com/websocket",
+        )
+        ws = QQWebSocket(callbacks=callbacks, log_tag="TestQQ")
 
-        seen_session_kwargs = {}
         seen_ws_kwargs = {}
 
         class FakeSession:
-            def __init__(self, **kwargs):
-                seen_session_kwargs.update(kwargs)
+            def __init__(self):
                 self.closed = False
 
             async def close(self):
@@ -231,10 +247,9 @@ class TestQQWebSocketProxy:
                 seen_ws_kwargs.update(kwargs)
                 return mock.AsyncMock(closed=False)
 
-        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
-            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+        fake_session = FakeSession()
+        await ws.open("wss://api.sgroup.qq.com/websocket", fake_session)
 
-        assert seen_session_kwargs.get("trust_env") is True
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
 # ---------------------------------------------------------------------------

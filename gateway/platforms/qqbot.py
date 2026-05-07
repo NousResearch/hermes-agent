@@ -100,7 +100,6 @@ from qqbot_agent_sdk import (
     QQWebSocket,
     WSCallbacks,
     append_block,
-    describe_attachment,
     entry_matches,
     is_fatal_send_error,
     parse_qq_timestamp,
@@ -548,18 +547,19 @@ class QQAdapter(BasePlatformAdapter):
         event: InboundEvent,
     ) -> Optional[MessageEvent]:
         """Convert InboundEvent → hermes MessageEvent."""
-        # Process attachments
+        # Process attachments (voice attachments include STT transcript and
+        # local WAV path inside ProcessedAttachment.description).
         processed = await self._att_processor.process(event.attachments)
 
         # Resolve quote
         reply_to_id, reply_to_text = await self._resolve_quote(event)
 
-        # Build text
+        # Build text — same formatting for every kind: just append the
+        # SDK-provided unified description (it already embeds the voice
+        # transcript when available).
         text = event.content
         for att in processed:
-            if att.kind == "voice" and att.transcript:
-                text = append_block(text, f"[Voice] {att.transcript}")
-            elif att.description:
+            if att.description:
                 text = append_block(text, att.description)
 
         # Collect image paths
@@ -599,7 +599,12 @@ class QQAdapter(BasePlatformAdapter):
         self,
         event: InboundEvent,
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Resolve quoted message elements into (ref_id, text) pair."""
+        """Resolve quoted message elements into (ref_id, text) pair.
+
+        Quoted attachments go through the same :class:`AttachmentProcessor`
+        as the main body, so the description format (and any voice STT
+        transcript) is identical for both.
+        """
         if event.message_type != MSG_TYPE_QUOTE or not event.msg_elements:
             return None, None
 
@@ -610,17 +615,16 @@ class QQAdapter(BasePlatformAdapter):
         if elem.content.strip():
             parts.append(elem.content.strip())
 
-        for att in elem.attachments:
-            ct = att.content_type.lower()
-            fname = att.filename
-            url = att.resolved_url
-            cached = None
-            if url:
-                try:
-                    cached = await self._downloader.download(url, ct, fname)
-                except Exception as exc:
-                    logger.debug("[%s] Failed to cache quoted attachment: %s", self._log_tag, exc)
-            parts.append(describe_attachment(ct, fname, cached))
+        if elem.attachments:
+            try:
+                quoted_processed = await self._att_processor.process(elem.attachments)
+            except Exception as exc:
+                logger.debug(
+                    "[%s] Failed to process quoted attachments: %s",
+                    self._log_tag, exc,
+                )
+                quoted_processed = []
+            parts.extend(p.description for p in quoted_processed if p.description)
 
         body = " ".join(parts) if parts else "[empty message]"
         # Wrap in brackets to bypass found_in_history exact match constraint.

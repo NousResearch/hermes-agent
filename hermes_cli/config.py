@@ -4708,11 +4708,19 @@ def edit_config():
     
     # Find editor
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
-    
+
     if not editor:
-        # Try common editors
-        for cmd in ['nano', 'vim', 'vi', 'code', 'notepad']:
-            import shutil
+        # Try common editors — order is platform-aware so Windows users
+        # land on a working editor (notepad) even without Git Bash or nano
+        # installed.  On POSIX, prefer nano/vim over code/notepad because
+        # it's more likely to be present on headless / server systems.
+        import shutil
+        import sys as _sys
+        if _sys.platform == "win32":
+            candidates = ['notepad', 'code', 'vim', 'vi', 'nano']
+        else:
+            candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
+        for cmd in candidates:
             if shutil.which(cmd):
                 editor = cmd
                 break

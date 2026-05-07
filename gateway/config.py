@@ -789,7 +789,7 @@ def load_gateway_config() -> GatewayConfig:
                 if not isinstance(extra, dict):
                     extra = {}
                     plat_data["extra"] = extra
-                if plat == Platform.SLACK and enabled_was_explicit:
+                if plat in (Platform.SLACK, Platform.WHATSAPP) and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
@@ -1155,7 +1155,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if whatsapp_enabled:
         if Platform.WHATSAPP not in config.platforms:
             config.platforms[Platform.WHATSAPP] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP].enabled = True
+            config.platforms[Platform.WHATSAPP].enabled = True
+        else:
+            whatsapp_config = config.platforms[Platform.WHATSAPP]
+            enabled_was_explicit = bool(whatsapp_config.extra.pop("_enabled_explicit", False))
+            if whatsapp_config.enabled or not enabled_was_explicit:
+                whatsapp_config.enabled = True
     whatsapp_home = os.getenv("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
         config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(

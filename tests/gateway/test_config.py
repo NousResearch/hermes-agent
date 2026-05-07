@@ -320,6 +320,44 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
+    def test_whatsapp_enabled_false_overrides_stale_env_enable(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "whatsapp:\n"
+            "  enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WHATSAPP_ENABLED", "true")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WHATSAPP].enabled is False
+        assert Platform.WHATSAPP not in config.get_connected_platforms()
+
+    def test_whatsapp_env_still_enables_when_config_has_no_enabled_decision(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "whatsapp:\n"
+            "  reply_prefix: Bot\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WHATSAPP_ENABLED", "true")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WHATSAPP].enabled is True
+        assert config.platforms[Platform.WHATSAPP].extra["reply_prefix"] == "Bot"
+
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

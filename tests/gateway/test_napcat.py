@@ -489,6 +489,76 @@ class TestSendVideo:
 
 
 class TestSendDocument:
+    def test_existing_local_document_is_stream_uploaded_before_private_upload(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._mark_connected()
+        adapter._stream_upload_chunk_size = 4
+        ws = MagicMock()
+        ws.closed = False
+        adapter._ws = ws
+        adapter._chat_type_map["10001"] = "private"
+        local_file = tmp_path / "hermes_napcat_test.svg"
+        file_bytes = b"<svg>napcat</svg>"
+        local_file.write_bytes(file_bytes)
+        uploaded_path = r"C:\NapCat\Temp\hermes_napcat_test.svg"
+        calls = []
+
+        async def fake_call_action(action, params, *, timeout=None):
+            calls.append((action, params))
+            if action == "upload_file_stream" and params.get("is_complete"):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "status": "file_complete",
+                        "file_path": uploaded_path,
+                        "file_size": len(file_bytes),
+                        "sha256": hashlib.sha256(file_bytes).hexdigest(),
+                    },
+                }
+            if action == "upload_file_stream":
+                return _ok({"received_chunks": params["chunk_index"] + 1}, message_id=None)
+            return _ok(message_id="doc_msg")
+
+        adapter.call_action = fake_call_action
+        adapter._call_action = fake_call_action
+        result = _run(adapter.send_document("10001", str(local_file)))
+
+        assert result.success is True
+        actions = [action for action, _ in calls]
+        assert "upload_file_stream" in actions
+        assert actions[-1] == "upload_private_file"
+        upload_params = calls[-1][1]
+        assert upload_params["user_id"] == 10001
+        assert upload_params["file"] == uploaded_path
+        assert upload_params["name"] == "hermes_napcat_test.svg"
+
+    def test_document_stream_upload_failure_is_reported_with_file_upload_failure(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._mark_connected()
+        ws = MagicMock()
+        ws.closed = False
+        adapter._ws = ws
+        adapter._chat_type_map["10001"] = "private"
+        local_file = tmp_path / "hermes_napcat_test.svg"
+        local_file.write_text("<svg/>")
+
+        async def fake_call_action(action, params, *, timeout=None):
+            if action == "upload_file_stream":
+                return {"status": "failed", "retcode": 404, "message": "STREAM_UNSUPPORTED"}
+            if action == "upload_private_file":
+                return {"status": "failed", "retcode": 1, "message": "识别URL失败"}
+            return _ok(message_id="notice")
+
+        adapter.call_action = fake_call_action
+        adapter._call_action = fake_call_action
+        result = _run(adapter.send_document("10001", str(local_file)))
+
+        assert result.success is False
+        assert result.message_id == "notice"
+        assert "STREAM_UNSUPPORTED" in result.error
+        assert "识别URL失败" in result.error
+
     def test_uploads_via_upload_group_file(self):
         adapter = _make_adapter()
         adapter._mark_connected()

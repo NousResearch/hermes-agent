@@ -68,7 +68,7 @@ Slack, CLI) — Markdown is fine there; ignore this skill.
 | Send a plain text reply              | Just produce text in your final answer. The gateway sends it via `send_msg`. |
 | Send an image URL                    | Embed `MEDIA:https://example.com/image.png` in your reply. Gateway calls `send_image_file`. |
 | Send voice / video URL               | `MEDIA:https://example.com/audio.ogg` → `send_voice`; `.mp4` → `send_video`. |
-| Upload a non-media file              | `napcat_call("upload_group_file", {...})` or `upload_private_file`.          |
+| Upload a non-media file              | Prefer final-answer file attachment tags if available; otherwise use `napcat_call("upload_group_file", {...})` or `upload_private_file`. |
 | Anything else (recall, kick, like…)  | `napcat_call(action, params)`.                                               |
 
 > Prefer `MEDIA:` tags over raw `napcat_call("send_group_msg", …)` for media —
@@ -79,10 +79,11 @@ Slack, CLI) — Markdown is fine there; ignore this skill.
 
 Assume Hermes and NapCat may be running on different machines. A local path that
 exists on the Hermes host is not automatically readable by the NapCat/QQ host.
-For outgoing media through `MEDIA:`, the Hermes gateway can stream-upload an
-existing Hermes-local file to NapCat first when NapCat supports
-`upload_file_stream` (NapCat v4.8.115+). Remote URLs, `base64://...`, and
-`data:` are still passed through directly. Do not invent or echo placeholder
+For outgoing media and file attachments, the Hermes gateway can stream-upload
+an existing Hermes-local file to NapCat first when NapCat supports
+`upload_file_stream` (NapCat v4.8.115+), then send the returned NapCat-local
+temp path through `send_*_msg` or `upload_*_file`. Remote URLs, `base64://...`,
+and `data:` are still passed through directly. Do not invent or echo placeholder
 local paths like `/path/to/...`, `/abs/path/to/...`, or `/home/user/cache/...`
 in final replies.
 
@@ -210,8 +211,8 @@ voice, and video. Use these only when you specifically need NapCat actions:
 | `get_file`              | `file_id`                                               | resolve `[文件:…]` to a local path   |
 | `download_file`         | `url`, `headers?`, `thread_count?`                      | pre-cache a remote file              |
 | `upload_file_stream` *(NapCat v4.8.115+)* | chunked stream params; gateway normally handles this | transfer Hermes-local files to NapCat |
-| `upload_group_file`     | `group_id`, `file` (abs path), `name`, `folder?`        | post a file to a group               |
-| `upload_private_file`   | `user_id`, `file` (abs path), `name`                    | DM a file to a user                  |
+| `upload_group_file`     | `group_id`, `file` (NapCat-readable path), `name`, `folder?` | post a file to a group; gateway stream-uploads Hermes-local paths first |
+| `upload_private_file`   | `user_id`, `file` (NapCat-readable path), `name`        | DM a file to a user; gateway stream-uploads Hermes-local paths first |
 | `can_send_image`        | (none)                                                  | capability probe                     |
 | `can_send_record`       | (none)                                                  | capability probe                     |
 
@@ -355,6 +356,11 @@ napcat_call("upload_group_file", {
   "name": "myapp-2026-04-30.log"
 })
 ```
+
+If `/var/log/myapp.log` only exists on Hermes and not on the NapCat host, prefer
+letting the gateway's file-send path handle it so it can call
+`upload_file_stream` first. If you manually call `upload_group_file` via
+`napcat_call`, the `file` parameter must already be readable by NapCat.
 
 ---
 

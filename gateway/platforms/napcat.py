@@ -962,19 +962,36 @@ class NapCatAdapter(BasePlatformAdapter):
         chat_type, normalized_id = self._resolve_chat_target(chat_id)
         resolved_path = os.path.abspath(os.path.expanduser(str(file_path)))
         display_name = (file_name or os.path.basename(resolved_path) or "file").strip()
+        upload_file_path = resolved_path
+        stream_upload_error: Optional[str] = None
+        local_stream_path = self._local_stream_upload_path(str(file_path))
+        if local_stream_path is not None:
+            uploaded_path, stream_upload_error = await self._upload_local_file_stream(
+                local_stream_path
+            )
+            if uploaded_path:
+                upload_file_path = uploaded_path
+            else:
+                logger.warning(
+                    "[%s] upload_file_stream failed for document %s (%s); "
+                    "falling back to original file path.",
+                    self.name,
+                    local_stream_path,
+                    stream_upload_error,
+                )
 
         if chat_type == "group":
             action = "upload_group_file"
             params: Dict[str, Any] = {
                 "group_id": self._coerce_int(normalized_id),
-                "file": resolved_path,
+                "file": upload_file_path,
                 "name": display_name,
             }
         else:
             action = "upload_private_file"
             params = {
                 "user_id": self._coerce_int(normalized_id),
-                "file": resolved_path,
+                "file": upload_file_path,
                 "name": display_name,
             }
 
@@ -1007,6 +1024,8 @@ class NapCatAdapter(BasePlatformAdapter):
                 or response.get("wording")
                 or f"upload_{chat_type}_file failed"
             )
+        if stream_upload_error and error:
+            error = self._combine_errors(stream_upload_error, error)
 
         logger.warning(
             "[%s] send_document failed (%s); falling back to text notice.",

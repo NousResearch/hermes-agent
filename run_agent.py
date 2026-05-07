@@ -2139,6 +2139,10 @@ class AIAgent:
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         
+        # Token generation speed tracking
+        self._last_api_duration = 0.0
+        self._last_tokens_per_second = 0.0
+        
         # ── Ollama num_ctx injection ──
         # Ollama defaults to 2048 context regardless of the model's capabilities.
         # When running against an Ollama server, detect the model's max context
@@ -2279,6 +2283,8 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        self._last_api_duration = 0.0
+        self._last_tokens_per_second = 0.0
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
@@ -11402,6 +11408,7 @@ class AIAgent:
                         response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
+                    self._last_api_duration = api_duration
                     
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
@@ -11860,6 +11867,11 @@ class AIAgent:
                         )
                         prompt_tokens = canonical_usage.prompt_tokens
                         completion_tokens = canonical_usage.output_tokens
+                        # Track per-call token generation speed
+                        if self._last_api_duration > 0 and completion_tokens > 0:
+                            self._last_tokens_per_second = completion_tokens / self._last_api_duration
+                        else:
+                            self._last_tokens_per_second = 0.0
                         total_tokens = canonical_usage.total_tokens
                         usage_dict = {
                             "prompt_tokens": prompt_tokens,

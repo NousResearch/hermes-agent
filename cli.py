@@ -2649,6 +2649,7 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "last_tokens_per_second": 0.0,
         }
 
         if not agent:
@@ -2662,6 +2663,7 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["last_tokens_per_second"] = getattr(agent, "_last_tokens_per_second", 0.0) or 0.0
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -2866,6 +2868,9 @@ class HermesCLI:
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
+            tps = snapshot.get("last_tokens_per_second", 0.0)
+            if tps > 0:
+                parts.append(f"{tps:.1f} t/s")
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
@@ -2928,6 +2933,11 @@ class HermesCLI:
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                     ]
+                    # Token generation speed (last call)
+                    tps = snapshot.get("last_tokens_per_second", 0.0)
+                    if tps > 0:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", f"{tps:.1f} t/s"))
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

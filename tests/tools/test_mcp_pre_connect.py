@@ -257,7 +257,7 @@ class TestPreConnectHook:
             mock_http.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_non_string_pre_connect_skipped(self):
+    async def test_non_string_pre_connect_skipped(self, caplog):
         """Non-string pre_connect values log a warning and are skipped."""
         import tools.mcp_tool as mcp
 
@@ -281,3 +281,4 @@ class TestPreConnectHook:
             mock_subproc.assert_not_called()
             mock_stdio.assert_awaited_once_with(config)
             mock_http.assert_not_awaited()
+            assert "pre_connect is not a string" in caplog.text

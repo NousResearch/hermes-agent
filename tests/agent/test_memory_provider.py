@@ -162,6 +162,17 @@ class TestMemoryManager:
         assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
 
+    def test_schema_loading_failure_prevents_registration(self):
+        """If get_tool_schemas() raises, the provider is NOT registered (fixes #9948)."""
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("bad")
+        bad.get_tool_schemas = MagicMock(side_effect=RuntimeError("schema boom"))
+
+        mgr.add_provider(bad)  # must not raise
+
+        assert len(mgr.providers) == 0
+        assert mgr.get_provider("bad") is None
+
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")

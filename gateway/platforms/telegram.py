@@ -369,10 +369,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
-        # Mirrors _message_thread_id_for_send: the General forum topic (thread id
-        # "1") is represented as "no thread id" on the wire. User-created topics
-        # keep their real id so typing stays scoped to that topic.
-        if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
+        # Asymmetric with _message_thread_id_for_send on purpose. Telegram's
+        # sendMessage and sendChatAction treat thread id "1" (the forum General
+        # topic) differently: sends reject message_thread_id=1 and must omit it,
+        # but sendChatAction needs message_thread_id=1 to place the typing
+        # bubble in the General topic (omitting it hides the bubble entirely
+        # from the client's view of that topic). Preserve the real id here —
+        # sends still map "1" → None via _message_thread_id_for_send.
+        if not thread_id:
             return None
         return int(thread_id)
 

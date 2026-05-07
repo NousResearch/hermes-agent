@@ -308,6 +308,23 @@ TOOL_CATEGORIES = {
                     {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
                 ],
             },
+            {
+                "name": "Brave Search (Free Tier)",
+                "badge": "free tier · search only",
+                "tag": "2,000 queries/mo free — search only (pair with any extract provider)",
+                "web_backend": "brave-free",
+                "env_vars": [
+                    {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search subscription token", "url": "https://brave.com/search/api/"},
+                ],
+            },
+            {
+                "name": "DuckDuckGo (ddgs)",
+                "badge": "free · no key · search only",
+                "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
+                "web_backend": "ddgs",
+                "env_vars": [],
+                "post_setup": "ddgs",
+            },
         ],
     },
     "image_gen": {
@@ -668,6 +685,32 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
         _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
+
+    elif post_setup_key == "ddgs":
+        try:
+            __import__("ddgs")
+            _print_success("    ddgs is already installed")
+        except ImportError:
+            import subprocess
+            _print_info("    Installing ddgs (DuckDuckGo search package)...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-U", "ddgs", "--quiet"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if result.returncode == 0:
+                    _print_success("    ddgs installed")
+                else:
+                    _print_warning("    ddgs install failed:")
+                    _print_info(f"      {result.stderr.strip()[:300]}")
+                    _print_info("    Run manually: python -m pip install -U ddgs")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    ddgs install timed out (>5min)")
+                _print_info("    Run manually: python -m pip install -U ddgs")
+                return
+        _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
+        _print_info("    Pair with an extract provider if you also need web_extract.")
 
     elif post_setup_key == "spotify":
         # Run the full `hermes auth spotify` flow — if the user has no

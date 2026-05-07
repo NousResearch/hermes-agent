@@ -272,14 +272,24 @@ async def test_probe_skips_when_request_shape_mismatch(caplog):
     via ApplicationBuilder.request() / get_updates_request() can replace the
     tuple, and a PTB minor bump may rename or restructure it. The probe must
     log a warning and skip — never crash, never falsely declare wedge.
+
+    Also pins token redaction: with a realistic-looking token in `base_url`,
+    no log line in any probe path may contain the token literal.
     """
     import logging
     adapter = _make_adapter()
 
+    # Token sentinel — chosen to NOT match GitHub's secret-scanning regex
+    # for Telegram bot tokens (which expects the standard
+    # `<digits>:<35-char-base64ish>` format). Test logic only needs a
+    # distinctive string to assert is absent from logs; it does not need
+    # to look like a real token.
+    test_token = "TEST-FAKE-TOKEN-FOR-CI-DO-NOT-SCAN"
+
     # _request is a non-conforming object: not a sequence with .post on [0].
     mock_bot = MagicMock()
     mock_bot._request = object()  # No __getitem__, no .post
-    mock_bot.base_url = "https://api.telegram.org/bot<REDACTED>"
+    mock_bot.base_url = f"https://api.telegram.org/bot{test_token}"
     mock_bot.get_me = AsyncMock(return_value=MagicMock(id=1, is_bot=True))
 
     mock_updater = MagicMock()
@@ -313,10 +323,14 @@ async def test_probe_skips_when_request_shape_mismatch(caplog):
         "Expected a WARNING log on shape mismatch; got: "
         f"{[rec.message for rec in caplog.records]}"
     )
-    # Token must not leak in any log line.
+    # Token must not leak in ANY captured log line, regardless of message
+    # context. Strong assertion — checks for the literal token, not a
+    # weaker keyword combination.
     for rec in caplog.records:
-        assert "<REDACTED>" not in rec.getMessage() or "base_url" not in rec.getMessage(), \
-            "Probe must not log bot.base_url (contains the token)"
+        msg = rec.getMessage()
+        assert test_token not in msg, (
+            f"Probe log leaks bot token (sentinel {test_token!r}): {msg!r}"
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -352,15 +366,28 @@ async def test_probe_and_drain_mutually_exclude():
 
     drain_held = adapter._probe_drain_lock
     await drain_held.acquire()
+    # Capture real asyncio.sleep BEFORE patching, so our test's scheduling
+    # yields actually advance the event loop. Patching asyncio.sleep with
+    # `new_callable=AsyncMock` would make `await asyncio.sleep(0)` skip the
+    # yield entirely — the probe task would never get CPU and the
+    # `pool0_post.await_count == 0` assertion could pass for the wrong
+    # reason (Codex review on PR #21548).
+    real_sleep = asyncio.sleep
+
+    async def _heartbeat_yield(seconds):
+        # Skip the long heartbeat but yield to the loop once.
+        await real_sleep(0)
+
     try:
-        # Skip the heartbeat sleep so the probe reaches the lock acquisition.
-        with patch("asyncio.sleep", new_callable=AsyncMock):
+        with patch("gateway.platforms.telegram.asyncio.sleep",
+                   side_effect=_heartbeat_yield):
             probe_task = asyncio.create_task(adapter._verify_polling_after_reconnect())
 
-            # Yield several event-loop ticks. The probe must block on the
-            # lock and not have called pool0.post() yet.
+            # Yield several real event-loop ticks. The probe must reach
+            # `async with self._probe_drain_lock` and block there — not
+            # call pool0.post.
             for _ in range(20):
-                await asyncio.sleep(0)
+                await real_sleep(0)
 
             assert pool0_post.await_count == 0, (
                 "Probe must wait on _probe_drain_lock; called pool0.post "

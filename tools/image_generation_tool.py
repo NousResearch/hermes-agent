@@ -993,7 +993,7 @@ def _dispatch_to_plugin_provider(
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
         if reference_images:

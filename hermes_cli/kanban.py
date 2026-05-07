@@ -70,6 +70,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "max_retries": t.max_retries,
     }
 
 
@@ -284,6 +285,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--max-retries", type=int, default=None,
+                          metavar="N",
+                          help="Per-task override for the consecutive-failure "
+                               "circuit breaker. Trip on the Nth failure — "
+                               "e.g. --max-retries 1 blocks on the first "
+                               "failure (no retries), --max-retries 3 allows "
+                               "two retries. Omit to use the dispatcher's "
+                               "kanban.failure_limit config "
+                               f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -982,6 +992,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
+    max_retries = getattr(args, "max_retries", None)
+    if max_retries is not None and max_retries < 1:
+        print(
+            f"kanban: --max-retries must be >= 1 (got {max_retries}); "
+            "use 1 to trip on the first failure.",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect() as conn:
         task_id = kb.create_task(
             conn,
@@ -998,6 +1016,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
+            max_retries=max_retries,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1125,6 +1144,23 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    # Effective retry threshold. Show the per-task override if set,
+    # otherwise the dispatcher's resolved value from config (or the
+    # default if config doesn't set it either). Helps operators see
+    # why a task auto-blocked earlier/later than they expected.
+    if task.max_retries is not None:
+        print(f"  max-retries: {task.max_retries} (task)")
+    else:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            cfg_val = (cfg.get("kanban", {}) or {}).get("failure_limit")
+        except Exception:
+            cfg_val = None
+        if cfg_val is not None and int(cfg_val) != kb.DEFAULT_FAILURE_LIMIT:
+            print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
+        else:
+            print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics section — surface active distress signals at the top

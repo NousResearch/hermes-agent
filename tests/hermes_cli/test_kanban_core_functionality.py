@@ -189,6 +189,137 @@ def test_reassign_resets_failure_counter_for_new_profile(kanban_home, all_assign
         conn.close()
 
 
+def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assignees_spawnable):
+    """Per-task ``max_retries`` overrides both the caller-supplied
+    ``failure_limit`` (gateway config) and the hardcoded default.
+
+    Three-tier resolution order:
+      1. ``task.max_retries`` (set via ``create_task(max_retries=N)`` /
+         ``hermes kanban create --max-retries N``)
+      2. ``failure_limit`` kwarg passed by the caller (gateway threads
+         this from ``kanban.failure_limit`` config)
+      3. ``DEFAULT_FAILURE_LIMIT``
+    """
+    conn = kb.connect()
+    try:
+        # max_retries=1 should trip on the FIRST failure, even though the
+        # caller is asking for failure_limit=10.
+        tid = kb.create_task(
+            conn, title="one-shot", assignee="worker", max_retries=1,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.max_retries == 1, "per-task override must persist"
+
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="first fail",
+            outcome="spawn_failed",
+            failure_limit=10,   # far higher than per-task override
+            release_claim=True,
+            end_run=False,
+        )
+        assert tripped is True, "should auto-block on first failure"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+
+        # gave_up event should record where the threshold came from
+        events = kb.list_events(conn, tid)
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert gave_up, f"expected gave_up event, got {[e.kind for e in events]}"
+        assert gave_up[-1].payload.get("limit_source") == "task"
+        assert gave_up[-1].payload.get("effective_limit") == 1
+    finally:
+        conn.close()
+
+
+def test_per_task_max_retries_allows_more_than_default(kanban_home, all_assignees_spawnable):
+    """A task with ``max_retries=5`` does NOT auto-block at the default
+    limit of 2 — it must reach the per-task override first."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="flaky-retry", assignee="worker", max_retries=5,
+        )
+        # Four failures — still below the per-task threshold, should stay ready.
+        for i in range(1, 5):
+            kb.claim_task(conn, tid)
+            tripped = kb._record_task_failure(
+                conn, tid,
+                error=f"fail {i}",
+                outcome="spawn_failed",
+                # Caller passes the default so the dispatcher tier matches
+                # ``DEFAULT_FAILURE_LIMIT``; without the per-task override
+                # the breaker would have tripped at failure 2.
+                release_claim=True,
+                end_run=False,
+            )
+            assert tripped is False, f"shouldn't trip at failure {i} with max_retries=5"
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", f"at failure {i} status was {task.status}"
+
+        # Fifth failure trips the per-task limit.
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="fail 5",
+            outcome="spawn_failed",
+            release_claim=True,
+            end_run=False,
+        )
+        assert tripped is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 5
+    finally:
+        conn.close()
+
+
+def test_max_retries_none_falls_through_to_dispatcher_limit(kanban_home, all_assignees_spawnable):
+    """``max_retries=None`` (the default) falls through to the caller-
+    supplied ``failure_limit`` — the gateway config tier."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="standard", assignee="worker")
+        task = kb.get_task(conn, tid)
+        assert task.max_retries is None
+
+        # Caller passes failure_limit=4 (simulates kanban.failure_limit=4).
+        # Should trip at 4, not at the DEFAULT_FAILURE_LIMIT of 2.
+        for i in range(1, 4):
+            kb.claim_task(conn, tid)
+            tripped = kb._record_task_failure(
+                conn, tid,
+                error=f"fail {i}",
+                outcome="spawn_failed",
+                failure_limit=4,
+                release_claim=True,
+                end_run=False,
+            )
+            assert tripped is False, f"premature trip at failure {i}"
+
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="fail 4",
+            outcome="spawn_failed",
+            failure_limit=4,
+            release_claim=True,
+            end_run=False,
+        )
+        assert tripped is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+
+        events = kb.list_events(conn, tid)
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert gave_up[-1].payload.get("limit_source") == "dispatcher"
+        assert gave_up[-1].payload.get("effective_limit") == 4
+    finally:
+        conn.close()
+
+
 def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spawnable):
     """`dir:` workspace with no path should fail workspace resolution AND
     count against the failure budget — not just crash the tick."""

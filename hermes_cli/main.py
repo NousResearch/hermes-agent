@@ -230,6 +230,7 @@ except Exception:
     pass  # best-effort — don't crash if config isn't available yet
 
 import logging
+import threading
 import time as _time
 from datetime import datetime
 
@@ -6445,6 +6446,45 @@ def _load_installable_optional_extras() -> list[str]:
     return referenced
 
 
+def _run_install_with_heartbeat(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    heartbeat_interval_seconds: int = 30,
+) -> None:
+    """Run dependency install command with periodic heartbeat output.
+
+    Some resolvers/build backends (especially when compiling Rust/C extensions)
+    can stay quiet for minutes. Emit a simple elapsed-time heartbeat so users
+    know ``hermes update`` is still progressing even if pip/uv itself is silent.
+    """
+    done = threading.Event()
+    start = _time.time()
+
+    def _heartbeat() -> None:
+        # Wait first, then print, so short installs don't emit noise.
+        while not done.wait(heartbeat_interval_seconds):
+            elapsed = int(_time.time() - start)
+            print(
+                f"  … still installing dependencies ({elapsed}s elapsed)"
+                " — compiling Rust/C extensions can take several minutes",
+                flush=True,
+            )
+
+    t = threading.Thread(target=_heartbeat, daemon=True)
+    t.start()
+    try:
+        subprocess.run(
+            cmd,
+            cwd=PROJECT_ROOT,
+            check=True,
+            env=env,
+        )
+    finally:
+        done.set()
+        t.join(timeout=0.2)
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -6461,12 +6501,13 @@ def _install_python_dependencies_with_optional_fallback(
     Collecting/Building/Installing step), so keeping it visible costs
     nothing on fast hardware and prevents the "hermes update hangs" reports
     on slow hardware.
+
+    We also add periodic heartbeat lines in case the resolver/build backend is
+    itself silent for long stretches.
     """
     try:
-        subprocess.run(
+        _run_install_with_heartbeat(
             install_cmd_prefix + ["install", "-e", ".[all]"],
-            cwd=PROJECT_ROOT,
-            check=True,
             env=env,
         )
         return
@@ -6475,10 +6516,8 @@ def _install_python_dependencies_with_optional_fallback(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )
 
-    subprocess.run(
+    _run_install_with_heartbeat(
         install_cmd_prefix + ["install", "-e", "."],
-        cwd=PROJECT_ROOT,
-        check=True,
         env=env,
     )
 
@@ -6486,10 +6525,8 @@ def _install_python_dependencies_with_optional_fallback(
     installed_extras: list[str] = []
     for extra in _load_installable_optional_extras():
         try:
-            subprocess.run(
+            _run_install_with_heartbeat(
                 install_cmd_prefix + ["install", "-e", f".[{extra}]"],
-                cwd=PROJECT_ROOT,
-                check=True,
                 env=env,
             )
             installed_extras.append(extra)

@@ -348,6 +348,21 @@ class GatewayStreamConsumer:
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
+                    buffer_hook = getattr(self.adapter, "should_buffer_stream_update", None)
+                    if (
+                        not got_done
+                        and not got_segment_break
+                        and commentary_text is None
+                        and callable(buffer_hook)
+                    ):
+                        try:
+                            should_buffer = buffer_hook(self._accumulated) is True
+                        except Exception:
+                            should_buffer = False
+                        if should_buffer:
+                            await asyncio.sleep(0.05)
+                            continue
+
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (

@@ -415,6 +415,87 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_feishu_card_sentinel_as_interactive_without_truncating(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        card = {
+            "schema": "2.0",
+            "config": {"update_multi": True, "width_mode": "fill"},
+            "header": {"title": {"tag": "plain_text", "content": "Card"}},
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "element_id": "longBody",
+                        "content": "**重要**\n" + ("x" * 5000),
+                    }
+                ]
+            },
+        }
+        content = "FEISHU_CARD_JSON_2_0\n" + json.dumps(card, ensure_ascii=False)
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send("oc_chat", content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertEqual(len(captured["calls"]), 1)
+        body = captured["calls"][0].request_body
+        self.assertEqual(body.msg_type, "interactive")
+        self.assertEqual(json.loads(body.content)["schema"], "2.0")
+        self.assertEqual(json.loads(body.content)["body"]["elements"][0]["element_id"], "longBody")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_json2_sentinel_parser_accepts_single_wrapping_fence(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        card = {"schema": "2.0", "body": {"elements": []}}
+        content = "```json\nFEISHU_CARD_JSON_2_0\n" + json.dumps(card) + "\n```"
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(json.loads(payload)["schema"], "2.0")
+        self.assertTrue(json.loads(payload)["config"]["update_multi"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_json2_sentinel_parser_does_not_accept_prefaced_prose(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        card = {"schema": "2.0", "body": {"elements": []}}
+        msg_type, payload = adapter._build_outbound_payload(
+            "Here is a card:\nFEISHU_CARD_JSON_2_0\n" + json.dumps(card)
+        )
+
+        self.assertNotEqual(msg_type, "interactive")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

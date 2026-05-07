@@ -162,6 +162,7 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_CARD_JSON2_SENTINEL = "FEISHU_CARD_JSON_2_0"
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1706,7 +1707,13 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if self._extract_card_json2_payload(formatted) is not None:
+            # Card JSON must be sent atomically as an interactive message.  If it
+            # goes through normal text chunking, Feishu sees partial JSON and the
+            # user gets raw FEISHU_CARD_JSON_2_0 text instead of a native card.
+            chunks = [formatted]
+        else:
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
         try:
@@ -4004,7 +4011,78 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    @staticmethod
+    def _strip_single_markdown_fence(content: str) -> str:
+        """Strip one whole-message Markdown fence if present."""
+        stripped = (content or "").strip()
+        lines = stripped.splitlines()
+        if len(lines) >= 2 and _MARKDOWN_FENCE_OPEN_RE.match(lines[0]) and _MARKDOWN_FENCE_CLOSE_RE.match(lines[-1]):
+            return "\n".join(lines[1:-1]).strip()
+        return stripped
+
+    @classmethod
+    def _extract_card_json2_payload(cls, content: str) -> Optional[str]:
+        """Return normalized Feishu Card JSON 2.0 payload after the sentinel.
+
+        Cron/jobs can emit ``FEISHU_CARD_JSON_2_0\n{...}`` as an explicit
+        transport contract.  Treat that as a native Feishu ``interactive``
+        message instead of letting Markdown/text handling expose the raw JSON.
+        The sentinel must be the first meaningful content, optionally inside a
+        single wrapping Markdown fence; prefaced prose deliberately stays text.
+        """
+        stripped = cls._strip_single_markdown_fence(content)
+        if not stripped.startswith(_FEISHU_CARD_JSON2_SENTINEL):
+            return None
+
+        raw_json = stripped[len(_FEISHU_CARD_JSON2_SENTINEL):].lstrip()
+        raw_json = cls._strip_single_markdown_fence(raw_json)
+        if not raw_json:
+            raise ValueError("Feishu card sentinel was provided without a JSON payload")
+        try:
+            card = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid Feishu Card JSON 2.0 payload: {exc}") from exc
+        if not isinstance(card, dict):
+            raise ValueError("Feishu Card JSON 2.0 payload must be a JSON object")
+        if card.get("schema") != "2.0":
+            raise ValueError('Feishu Card JSON 2.0 payload must include schema: "2.0"')
+        if not isinstance(card.get("body"), dict):
+            raise ValueError("Feishu Card JSON 2.0 payload must include a body object")
+
+        config = card.setdefault("config", {})
+        if not isinstance(config, dict):
+            raise ValueError("Feishu Card JSON 2.0 config must be a JSON object")
+        config["update_multi"] = True
+        config.setdefault("width_mode", "fill")
+        return json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+
+    def should_buffer_stream_update(self, content: str) -> bool:
+        """Buffer partial streaming updates while a Feishu JSON2 card is forming."""
+        stripped = self._strip_single_markdown_fence(content)
+        if not stripped.startswith(_FEISHU_CARD_JSON2_SENTINEL):
+            return False
+        try:
+            self._extract_card_json2_payload(stripped)
+        except ValueError as exc:
+            # Keep buffering only for incomplete JSON while the stream is still
+            # arriving.  Semantically invalid but syntactically complete payloads
+            # should flow through the normal send path and surface the parser
+            # error instead of hanging the stream forever.
+            message = str(exc)
+            return (
+                "Invalid Feishu Card JSON 2.0 payload" in message
+                and (
+                    "Expecting" in message
+                    or "Unterminated" in message
+                    or "Invalid control character" in message
+                )
+            )
+        return False
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        card_payload = self._extract_card_json2_payload(content)
+        if card_payload is not None:
+            return "interactive", card_payload
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.

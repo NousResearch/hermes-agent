@@ -1493,3 +1493,34 @@ class TestOnNewMessageCallback:
         await consumer.run()
 
         assert consumer.already_sent is True
+
+
+class TestFeishuCardJson2StreamingBuffer:
+    """Verify native-card sentinel streams are not leaked as raw partial JSON."""
+
+    @pytest.mark.asyncio
+    async def test_buffers_partial_card_until_done(self):
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.should_buffer_stream_update.side_effect = lambda text: text.startswith("FEISHU_CARD_JSON_2_0") and not text.endswith("}")
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_card"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_card"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.0, buffer_threshold=1),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta('FEISHU_CARD_JSON_2_0\n{"schema":"2.0",')
+        await asyncio.sleep(0.15)
+        adapter.send.assert_not_called()
+
+        consumer.on_delta('"body":{}}')
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=2)
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args[1]["content"] == 'FEISHU_CARD_JSON_2_0\n{"schema":"2.0","body":{}}'
+        assert consumer.final_response_sent is True

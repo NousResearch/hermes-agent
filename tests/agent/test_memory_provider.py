@@ -1060,3 +1060,169 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+# ---------------------------------------------------------------------------
+# New hooks: before_prompt_build, on_recall_used, on_tool_call_observed
+# ---------------------------------------------------------------------------
+
+
+class SystemPromptProvider(FakeMemoryProvider):
+    """Provider that opts into the new before_prompt_build hook."""
+
+    def __init__(self, name="sysprompt", block: str = ""):
+        super().__init__(name=name)
+        self._dynamic_block = block
+        self.before_prompt_calls: list[dict] = []
+        self.recall_used_calls: list[tuple[str, str]] = []
+        self.tool_calls_observed: list[tuple[str, dict, object, bool]] = []
+
+    def before_prompt_build(self, turn_state):
+        self.before_prompt_calls.append(turn_state)
+        return self._dynamic_block
+
+    def on_recall_used(self, response_text, *, session_id=""):
+        self.recall_used_calls.append((response_text, session_id))
+
+    def on_tool_call_observed(self, tool_name, args, result, *, session_id="", success=True):
+        self.tool_calls_observed.append((tool_name, args, result, success))
+
+
+class TestNewHookABCDefaults:
+    """Default no-op behaviour for the new hooks on a provider that
+    doesn't override them."""
+
+    def test_before_prompt_build_default_returns_empty(self):
+        p = FakeMemoryProvider()
+        assert p.before_prompt_build({"query": "x"}) == ""
+
+    def test_on_recall_used_default_no_op(self):
+        p = FakeMemoryProvider()
+        p.on_recall_used("response", session_id="s")  # must not raise
+
+    def test_on_tool_call_observed_default_no_op(self):
+        p = FakeMemoryProvider()
+        # Must not raise for either success or failure
+        p.on_tool_call_observed("read_file", {"path": "/x"}, "content", success=True)
+        p.on_tool_call_observed("read_file", {"path": "/x"}, "Error: ...", success=False)
+
+
+class TestBeforePromptBuildDispatch:
+    """MemoryManager.build_dynamic_system_prompt + prefetch skip."""
+
+    def test_dispatches_to_overriding_provider(self):
+        mgr = MemoryManager()
+        provider = SystemPromptProvider(block="DYNAMIC SYS BLOCK")
+        mgr.add_provider(provider)
+        out = mgr.build_dynamic_system_prompt({"query": "hi", "session_id": "s1"})
+        assert out == "DYNAMIC SYS BLOCK"
+        assert provider.before_prompt_calls == [{"query": "hi", "session_id": "s1"}]
+
+    def test_skips_provider_that_does_not_override(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider(name="legacy")
+        provider._prefetch_result = "legacy prefetch text"
+        mgr.add_provider(provider)
+        out = mgr.build_dynamic_system_prompt({})
+        assert out == ""
+
+    def test_prefetch_skipped_when_before_prompt_overridden(self):
+        """Providers that override before_prompt_build do NOT also have
+        prefetch called — that would double-inject memory."""
+        mgr = MemoryManager()
+        provider = SystemPromptProvider(block="sys")
+        provider._prefetch_result = "would-be-prefetched-but-skipped"
+        mgr.add_provider(provider)
+        out = mgr.prefetch_all("query")
+        assert out == ""
+        assert provider.prefetch_queries == [], (
+            "prefetch should be skipped for providers overriding before_prompt_build"
+        )
+
+    def test_legacy_provider_still_gets_prefetch(self):
+        mgr = MemoryManager()
+        legacy = FakeMemoryProvider(name="legacy")
+        legacy._prefetch_result = "legacy prefetch"
+        mgr.add_provider(legacy)
+        out = mgr.prefetch_all("q")
+        assert out == "legacy prefetch"
+        assert legacy.prefetch_queries == ["q"]
+
+    def test_provider_exception_in_before_prompt_build_swallowed(self):
+        """Failures in one provider's before_prompt_build don't block
+        the manager from collecting from others."""
+        class CrashingProvider(SystemPromptProvider):
+            def before_prompt_build(self, turn_state):
+                raise RuntimeError("boom")
+
+        mgr = MemoryManager()
+        mgr.add_provider(CrashingProvider())
+        # Should not raise
+        out = mgr.build_dynamic_system_prompt({"query": "x"})
+        assert out == ""
+
+
+class TestOnRecallUsedDispatch:
+    def test_notify_fans_out_to_all_providers(self):
+        mgr = MemoryManager()
+        p1 = SystemPromptProvider(name="p1")
+        p2 = SystemPromptProvider(name="p2")
+        mgr.add_provider(p1)
+        # Adding two providers via the public API requires the second to
+        # be a non-external provider — but the test here is about the
+        # dispatch fan-out, so we register p2 directly on the internal
+        # list to bypass the one-external-provider rule.
+        mgr._providers.append(p2)
+
+        mgr.notify_recall_used("the assistant response", session_id="s1")
+        assert p1.recall_used_calls == [("the assistant response", "s1")]
+        assert p2.recall_used_calls == [("the assistant response", "s1")]
+
+    def test_provider_exception_swallowed(self):
+        class CrashingProvider(SystemPromptProvider):
+            def on_recall_used(self, response_text, *, session_id=""):
+                raise RuntimeError("recall boom")
+
+        mgr = MemoryManager()
+        mgr._providers.append(CrashingProvider(name="crashy"))
+        # Should not raise
+        mgr.notify_recall_used("response", session_id="s")
+
+
+class TestOnToolCallObservedDispatch:
+    def test_notify_fans_out_to_all_providers(self):
+        mgr = MemoryManager()
+        p1 = SystemPromptProvider(name="p1")
+        mgr._providers.append(p1)
+
+        mgr.notify_tool_call(
+            "read_file",
+            {"path": "/foo/bar"},
+            "file contents",
+            session_id="s1",
+            success=True,
+        )
+        assert p1.tool_calls_observed == [
+            ("read_file", {"path": "/foo/bar"}, "file contents", True)
+        ]
+
+    def test_failure_flag_propagates(self):
+        mgr = MemoryManager()
+        p1 = SystemPromptProvider(name="p1")
+        mgr._providers.append(p1)
+
+        mgr.notify_tool_call(
+            "broken_tool", {}, "Error: oops",
+            session_id="s1", success=False,
+        )
+        assert p1.tool_calls_observed[0][3] is False
+
+    def test_provider_exception_swallowed(self):
+        class CrashingProvider(SystemPromptProvider):
+            def on_tool_call_observed(self, tool_name, args, result, *, session_id="", success=True):
+                raise RuntimeError("tool obs boom")
+
+        mgr = MemoryManager()
+        mgr._providers.append(CrashingProvider(name="crashy"))
+        # Should not raise
+        mgr.notify_tool_call("any_tool", {}, "result", session_id="s")

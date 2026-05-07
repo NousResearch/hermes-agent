@@ -97,9 +97,47 @@ class MemoryProvider(ABC):
         should be fast — use background threads for the actual recall
         and return cached results here.
 
+        Result is injected into the **user's current message** (appended
+        under a ``<memory-context>`` block). For providers that prefer
+        their context to land in the **system prompt** instead — more
+        authoritative position; cleaner separation between agent
+        context and user input — override ``before_prompt_build``
+        instead. When a provider overrides ``before_prompt_build``, its
+        ``prefetch`` is skipped to avoid double-injection.
+
         session_id is provided for providers serving concurrent sessions
         (gateway group chats, cached agents). Providers that don't need
         per-session scoping can ignore it.
+        """
+        return ""
+
+    def before_prompt_build(self, turn_state: Dict[str, Any]) -> str:
+        """Per-turn dynamic system-prompt context (alternative to ``prefetch``).
+
+        Called once per turn before the API-call loop, after the user
+        message is known. The returned text is appended to the **system
+        prompt** of every API call in the turn — a more authoritative
+        position than ``prefetch`` (which appends to the user message).
+
+        Use this when the LLM should treat the recalled context as
+        "framing the agent's behaviour" rather than "supplied by the
+        user this turn". Memory plugins typically prefer this hook.
+
+        ``turn_state`` is a dict with keys the provider can introspect
+        as needed:
+
+        - ``query`` (str): the user's current message
+        - ``session_id`` (str): the active session id
+        - ``parent_session_id`` (str): for subagents
+        - ``turn_number`` (int): 1-indexed turn count
+        - ``model`` (str): the LLM model name
+        - ``platform`` (str): "cli", "telegram", "discord", etc.
+        - ``agent_id`` (str): the active agent identity (profile name)
+
+        Providers that override this method have their ``prefetch``
+        SKIPPED for the same turn — pick one injection point or the
+        other, never both. Default returns ``""`` so legacy providers
+        keep their ``prefetch``-based injection unchanged.
         """
         return ""
 
@@ -276,4 +314,53 @@ class MemoryProvider(ABC):
           ``parent_session_id``, ``platform``, and ``tool_name``.
 
         Use to mirror built-in memory writes to your backend.
+        """
+
+    def on_recall_used(
+        self,
+        response_text: str,
+        *,
+        session_id: str = "",
+    ) -> None:
+        """Called once per turn after the assistant response is built.
+
+        Lets providers attribute "memory was actually useful" credit by
+        comparing the response text against the memories they injected
+        this turn. Hermes-agent passes the full assistant response; the
+        provider runs whatever heuristic it likes (anchor-text match,
+        embedding similarity, etc.) and updates its own internal
+        bookkeeping (e.g. access counts).
+
+        Distinct from ``sync_turn`` — sync_turn persists the exchange
+        as a new memory; ``on_recall_used`` credits *existing*
+        memories that were referenced in producing the response.
+
+        Default no-op. Providers that don't track per-recall usage can
+        ignore this hook; the legacy ``sync_turn`` still fires.
+        """
+
+    def on_tool_call_observed(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        *,
+        session_id: str = "",
+        success: bool = True,
+    ) -> None:
+        """Called after every tool call (memory-provider-owned or not).
+
+        Lets providers learn from agent behaviour beyond conversation:
+        a path read 30 times this week is a high-utility entity; a
+        function failing repeatedly is a pattern worth remembering.
+        Providers can extract entities / track frequencies / etc.
+
+        ``result`` may be a string (the typical tool-result content) or
+        a richer object — providers should `str()`-coerce defensively.
+        ``success`` is False when the tool raised or returned an error
+        marker; providers can use this to weight observations.
+
+        Default no-op. Fires after both successful and failed tool
+        calls (the tool dispatcher catches exceptions and converts
+        them to error markers before this hook runs).
         """

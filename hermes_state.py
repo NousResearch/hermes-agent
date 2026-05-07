@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -86,7 +86,13 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    -- Anthropic-native: full assistant content array captured verbatim
+    -- from response.content. Replayed on subsequent turns to preserve
+    -- thinking-block positions (signed against position; reordering
+    -- triggers HTTP 400 under context_management.clear_thinking_20251015).
+    -- JSON list of block dicts. Added v14.
+    anthropic_content_blocks TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1449,6 +1455,7 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        anthropic_content_blocks: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1469,6 +1476,10 @@ class SessionDB:
             json.dumps(codex_message_items)
             if codex_message_items else None
         )
+        anthropic_content_blocks_json = (
+            json.dumps(anthropic_content_blocks)
+            if anthropic_content_blocks else None
+        )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -1484,8 +1495,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, anthropic_content_blocks)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1501,6 +1512,7 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    anthropic_content_blocks_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1551,6 +1563,9 @@ class SessionDB:
                 codex_message_items = (
                     msg.get("codex_message_items") if role == "assistant" else None
                 )
+                anthropic_content_blocks = (
+                    msg.get("anthropic_content_blocks") if role == "assistant" else None
+                )
 
                 reasoning_details_json = (
                     json.dumps(reasoning_details) if reasoning_details else None
@@ -1561,14 +1576,17 @@ class SessionDB:
                 codex_message_items_json = (
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
+                anthropic_content_blocks_json = (
+                    json.dumps(anthropic_content_blocks) if anthropic_content_blocks else None
+                )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, anthropic_content_blocks)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1584,6 +1602,7 @@ class SessionDB:
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,
+                        anthropic_content_blocks_json,
                     ),
                 )
                 total_messages += 1
@@ -1703,7 +1722,7 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
+                "codex_reasoning_items, codex_message_items, anthropic_content_blocks "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
                 tuple(session_ids),
             ).fetchall()
@@ -1752,6 +1771,12 @@ class SessionDB:
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_message_items, falling back to None")
                         msg["codex_message_items"] = None
+                if row["anthropic_content_blocks"]:
+                    try:
+                        msg["anthropic_content_blocks"] = json.loads(row["anthropic_content_blocks"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("Failed to deserialize anthropic_content_blocks, falling back to None")
+                        msg["anthropic_content_blocks"] = None
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)

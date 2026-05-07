@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    anthropic_content_blocks TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
@@ -96,8 +97,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
-- `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
+- `reasoning_details`, `codex_reasoning_items`, `codex_message_items`, and `anthropic_content_blocks` are stored as JSON strings
 - `reasoning` stores the raw reasoning text for providers that expose it
+- `anthropic_content_blocks` holds the full assistant content array captured verbatim from `response.content`. Replayed in original block order on subsequent turns so signed thinking blocks stay in the positions Anthropic signed them against — required for `interleaved-thinking-2025-05-14` plus `context_management.clear_thinking_20251015` strict validation.
 - Timestamps are Unix epoch floats (`time.time()`)
 
 ### FTS5 Full-Text Search
@@ -133,7 +135,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **11**
+Current schema version: **14**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -150,6 +152,9 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
 | 10 | Add `messages_fts_trigram` virtual table (trigram tokenizer for CJK / substring search) and backfill existing rows |
 | 11 | Re-index `messages_fts` and `messages_fts_trigram` to cover `tool_name` + `tool_calls` and switch from external-content to inline mode; drop old triggers and backfill every message row |
+| 12 | Add `api_calls` table for per-call response telemetry (latency, cache split, request_id) |
+| 13 | Recreate `api_calls` with `ON DELETE CASCADE` on its `session_id` FK so `prune_sessions` retention sweeps no longer fail on sessions with telemetry rows |
+| 14 | Add `anthropic_content_blocks` column to messages — verbatim assistant content array for Anthropic-protocol replay; preserves thinking-block positions across turns so `clear_thinking_20251015` strict validation accepts them |
 
 Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 

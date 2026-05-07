@@ -367,7 +367,7 @@ class TestApiCallsSchema:
             ver = migrated._conn.execute(
                 "SELECT version FROM schema_version"
             ).fetchone()[0]
-            assert ver == 13
+            assert ver == 14
 
             # Session row survives.
             row = migrated._conn.execute(
@@ -656,6 +656,59 @@ class TestMessageStorage:
         msg = conv[0]
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
+
+    def test_anthropic_content_blocks_persisted_and_restored(self, db):
+        """anthropic_content_blocks round-trips so resumed sessions keep the
+        verbatim block array.  Without this, the rebuild path on resume
+        falls back to recomposition, reorders interleaved thinking blocks,
+        and trips clear_thinking_20251015 strict validation on the next
+        Anthropic API call."""
+        db.create_session(session_id="s1", source="cli")
+        blocks = [
+            {"type": "thinking", "thinking": "step 1", "signature": "sig_A"},
+            {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {"q": "x"}},
+            {"type": "thinking", "thinking": "step 2", "signature": "sig_B"},
+            {"type": "tool_use", "id": "tu_2", "name": "lookup", "input": {"q": "y"}},
+        ]
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            anthropic_content_blocks=blocks,
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        msg = conv[0]
+        # Order and signatures preserved verbatim
+        assert msg["anthropic_content_blocks"] == blocks
+        assert [b["type"] for b in msg["anthropic_content_blocks"]] == [
+            "thinking",
+            "tool_use",
+            "thinking",
+            "tool_use",
+        ]
+
+    def test_anthropic_content_blocks_only_persisted_for_assistant(self, db):
+        """User/tool messages don't carry signed thinking blocks; the field
+        should never round-trip onto a non-assistant role even if upstream
+        accidentally tags it."""
+        db.create_session(session_id="s1", source="cli")
+        # Inject the field on a user message via replace_messages (the only
+        # path that reads msg["anthropic_content_blocks"] from arbitrary dicts)
+        db.replace_messages(
+            "s1",
+            [
+                {
+                    "role": "user",
+                    "content": "hi",
+                    "anthropic_content_blocks": [{"type": "text", "text": "leak"}],
+                },
+            ],
+        )
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert "anthropic_content_blocks" not in conv[0]
 
     def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
         """finish_reason on assistant messages must survive conversation replay.
@@ -1671,7 +1724,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 13
+        assert version == 14
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1968,7 +2021,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 13
+        assert cursor.fetchone()[0] == 14
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -3163,7 +3216,7 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 13
+            assert version == 14
         finally:
             session_db.close()
 

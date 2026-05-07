@@ -90,6 +90,20 @@ google = [
   "google-auth-oauthlib>=1.0,<2",
   "google-auth-httplib2>=0.2,<1",
 ]
+google_chat = [
+  # Google Chat gateway adapter (plugins/platforms/google_chat/): Pub/Sub for
+  # inbound events, Chat REST API for outbound. Shares the api-client and
+  # httplib2 transport with [google] but adds the Pub/Sub library.
+  # google-auth-oauthlib is required for the user-OAuth consent flow that
+  # backs native attachment delivery — Chat's media.upload endpoint rejects
+  # service-account auth, so the user grants chat.messages.create once via
+  # /setup-files in chat. See plugins/platforms/google_chat/oauth.py.
+  "google-cloud-pubsub>=2.20,<3",
+  "google-api-python-client>=2.100,<3",
+  "google-auth>=2.20,<3",
+  "google-auth-httplib2>=0.2,<1",
+  "google-auth-oauthlib>=1.0,<2",
+]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 rl = [
@@ -124,6 +138,7 @@ all = [
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[google]",
+  "hermes-agent[google_chat]",
   "hermes-agent[mistral]",
   "hermes-agent[bedrock]",
   "hermes-agent[web]",

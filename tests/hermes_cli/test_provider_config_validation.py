@@ -5,9 +5,6 @@ accepted as base_url, and unknown keys go unreported.
 """
 
 import logging
-from unittest.mock import patch
-
-import pytest
 
 from hermes_cli.config import _normalize_custom_provider_entry
 
@@ -114,6 +111,7 @@ class TestNormalizeCustomProviderEntry:
         with caplog.at_level(logging.WARNING):
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
+        assert result["discover_models"] is False
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
     def test_camel_case_warning_logged(self, caplog):

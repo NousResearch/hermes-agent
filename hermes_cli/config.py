@@ -2831,6 +2831,9 @@ def _normalize_custom_provider_entry(
             str(m): {} for m in models if isinstance(m, str) and m.strip()
         }
 
+    if "discover_models" in entry:
+        normalized["discover_models"] = entry["discover_models"]
+
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
         normalized["context_length"] = context_length

@@ -270,6 +270,15 @@ def _has_any_provider_configured() -> bool:
 
     _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
     cfg = load_config()
+    # Apply ``display.skin`` from config to the active skin engine. Without
+    # this call, ``init_skin_from_config`` is unreachable and skin selection
+    # falls back to the hardcoded "default" — leaving custom skins (banner
+    # logo / hero / palette / branding) inert no matter what config says.
+    try:
+        from hermes_cli.skin_engine import init_skin_from_config
+        init_skin_from_config(cfg)
+    except Exception:
+        pass  # Skin init is non-fatal; fall through to default look.
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
         _model_name = (model_cfg.get("default") or "").strip()

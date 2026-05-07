@@ -7965,10 +7965,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(
                         f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM — force-killing"
                     )
+                    from gateway.status import terminate_pid as _terminate_pid
                     for pid in _stuck:
                         try:
-                            os.kill(pid, _signal.SIGKILL)
-                        except (ProcessLookupError, PermissionError):
+                            # Routes through taskkill /T /F on Windows,
+                            # SIGKILL on POSIX — _signal.SIGKILL doesn't
+                            # exist on Windows so the old raw os.kill call
+                            # used to crash the entire update path.
+                            _terminate_pid(pid, force=True)
+                        except (ProcessLookupError, PermissionError, OSError):
                             pass
                     # Give the OS a beat to reap the processes so the
                     # watchers see them exit and respawn.
@@ -8774,6 +8779,13 @@ def _build_provider_choices() -> list[str]:
 
 def main():
     """Main entry point for hermes CLI."""
+    # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
+    try:
+        from hermes_cli.stdio import configure_windows_stdio
+        configure_windows_stdio()
+    except Exception:
+        pass
+
     from hermes_cli._parser import build_top_level_parser
 
     parser, subparsers, chat_parser = build_top_level_parser()

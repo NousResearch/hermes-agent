@@ -812,7 +812,6 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
 def _stop_gateway_process(profile_dir: Path) -> None:
     """Stop a running gateway process via its PID file."""
-    import signal as _signal
     import time as _time
 
     pid_file = profile_dir / "gateway.pid"
@@ -823,19 +822,27 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text().strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, _signal.SIGTERM)
+        # Route through terminate_pid so Windows uses the appropriate
+        # primitive (taskkill / TerminateProcess) — raw os.kill with
+        # _signal.SIGKILL raises AttributeError at import time on Windows,
+        # and raw os.kill with SIGTERM doesn't cascade to child processes
+        # the same way taskkill /T does.
+        from gateway.status import terminate_pid as _terminate_pid
+        _terminate_pid(pid)  # graceful first
         # Wait up to 10s for graceful shutdown
         for _ in range(20):
             _time.sleep(0.5)
             try:
                 os.kill(pid, 0)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
+                # OSError covers Windows' WinError 87 "invalid parameter"
+                # returned for an invalid/gone PID probe.
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
         # Force kill
         try:
-            os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
+            _terminate_pid(pid, force=True)
+        except (ProcessLookupError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):

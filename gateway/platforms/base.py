@@ -2096,9 +2096,52 @@ class BasePlatformAdapter(ABC):
 
         ``generation`` lets callers tie the callback to a specific gateway run
         generation so stale runs cannot clear callbacks owned by a fresher run.
+
+        If a callback for the same ``session_key`` (and generation, when set)
+        is already registered, the new callback is chained — both fire, in
+        registration order, with per-callback exception isolation. This lets
+        independent features (background-review release + temporary-bubble
+        cleanup) coexist without clobbering each other. Stale-generation
+        callers never overwrite a fresher generation's slot.
         """
         if not session_key or not callable(callback):
             return
+
+        existing = self._post_delivery_callbacks.get(session_key)
+        if existing is not None:
+            if isinstance(existing, tuple) and len(existing) == 2:
+                existing_gen, existing_cb = existing
+            else:
+                existing_gen, existing_cb = None, existing
+            # Stale-generation registrations never overwrite a fresher slot.
+            if (
+                existing_gen is not None
+                and generation is not None
+                and int(generation) < int(existing_gen)
+            ):
+                return
+            # Same-or-newer generation: chain with the existing callback so
+            # both fire in registration order.
+            if callable(existing_cb) and (
+                existing_gen is None
+                or generation is None
+                or int(existing_gen) == int(generation)
+            ):
+                _prev = existing_cb
+                _new = callback
+
+                def _chained() -> None:
+                    try:
+                        _prev()
+                    except Exception:
+                        logger.debug("Post-delivery callback failed", exc_info=True)
+                    try:
+                        _new()
+                    except Exception:
+                        logger.debug("Post-delivery callback failed", exc_info=True)
+
+                callback = _chained
+
         if generation is None:
             self._post_delivery_callbacks[session_key] = callback
         else:

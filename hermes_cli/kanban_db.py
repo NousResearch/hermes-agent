@@ -1859,34 +1859,47 @@ def heartbeat_claim(
         return False
 
 
-def release_stale_claims(conn: sqlite3.Connection) -> int:
+def release_stale_claims(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> int:
     """Reset any ``running`` task whose claim has expired.
 
     Returns the number of stale claims reclaimed.  Safe to call often.
     """
     now = int(time.time())
     reclaimed = 0
-    with write_txn(conn):
-        stale = conn.execute(
-            "SELECT id, claim_lock FROM tasks "
-            "WHERE status = 'running' AND claim_expires IS NOT NULL AND claim_expires < ?",
-            (now,),
-        ).fetchall()
-        for row in stale:
-            conn.execute(
+    stale = conn.execute(
+        "SELECT id, claim_lock, worker_pid FROM tasks "
+        "WHERE status = 'running' AND claim_expires IS NOT NULL AND claim_expires < ?",
+        (now,),
+    ).fetchall()
+    for row in stale:
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+        )
+        with write_txn(conn):
+            cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (row["id"],),
+                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                (row["id"], row["claim_lock"], now),
             )
+            if cur.rowcount != 1:
+                continue
             run_id = _end_run(
                 conn, row["id"],
                 outcome="reclaimed", status="reclaimed",
                 error=f"stale_lock={row['claim_lock']}",
+                metadata=termination,
             )
+            payload = {"stale_lock": row["claim_lock"]}
+            payload.update(termination)
             _append_event(
                 conn, row["id"], "reclaimed",
-                {"stale_lock": row["claim_lock"]},
+                payload,
                 run_id=run_id,
             )
             reclaimed += 1
@@ -1898,6 +1911,7 @@ def reclaim_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    signal_fn=None,
 ) -> bool:
     """Operator-driven reclaim: release the claim and reset to ``ready``.
 
@@ -1910,24 +1924,29 @@ def reclaim_task(
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return False
+    if row["status"] != "running" and row["claim_lock"] is None:
+        # Nothing to reclaim — already ready / blocked / done.
+        return False
+    prev_lock = row["claim_lock"]
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+    )
     with write_txn(conn):
-        row = conn.execute(
-            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if not row:
-            return False
-        if row["status"] != "running" and row["claim_lock"] is None:
-            # Nothing to reclaim — already ready / blocked / done.
-            return False
-        prev_lock = row["claim_lock"]
-        prev_pid = row["worker_pid"]
-        conn.execute(
+        cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked')",
-            (task_id,),
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+            "AND claim_lock IS ?",
+            (task_id, prev_lock),
         )
+        if cur.rowcount != 1:
+            return False
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
@@ -1935,15 +1954,17 @@ def reclaim_task(
                 f"manual_reclaim: {reason}" if reason
                 else f"manual_reclaim lock={prev_lock}"
             ),
+            metadata=termination,
         )
+        payload = {
+            "manual": True,
+            "reason": reason,
+            "prev_lock": prev_lock,
+        }
+        payload.update(termination)
         _append_event(
             conn, task_id, "reclaimed",
-            {
-                "manual": True,
-                "reason": reason,
-                "prev_lock": prev_lock,
-                "prev_pid": prev_pid,
-            },
+            payload,
             run_id=run_id,
         )
     # Operator intervention — they've looked at the task, so the
@@ -2650,6 +2671,59 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
+
+
+def _terminate_reclaimed_worker(
+    pid: Optional[int],
+    claim_lock: Optional[str],
+    *,
+    signal_fn=None,
+) -> dict[str, Any]:
+    """Best-effort host-local worker termination for reclaim paths."""
+    import signal
+
+    info: dict[str, Any] = {
+        "prev_pid": int(pid) if pid else None,
+        "host_local": False,
+        "termination_attempted": False,
+        "terminated": False,
+        "sigkill": False,
+    }
+    if not pid or pid <= 0 or not claim_lock:
+        return info
+
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    if not str(claim_lock).startswith(host_prefix):
+        return info
+    info["host_local"] = True
+
+    kill = signal_fn if signal_fn is not None else (
+        os.kill if hasattr(os, "kill") else None
+    )
+    if kill is None:
+        return info
+
+    info["termination_attempted"] = True
+    try:
+        kill(int(pid), signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        return info
+
+    for _ in range(10):
+        if not _pid_alive(pid):
+            info["terminated"] = True
+            return info
+        time.sleep(0.5)
+
+    if _pid_alive(pid):
+        try:
+            kill(int(pid), signal.SIGKILL)
+            info["sigkill"] = True
+        except (ProcessLookupError, OSError):
+            return info
+
+    info["terminated"] = not _pid_alive(pid)
+    return info
 
 
 def heartbeat_worker(

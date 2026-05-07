@@ -13830,6 +13830,10 @@ class GatewayRunner:
                 if entry:
                     entry.session_id = agent.session_id
                     self.session_store._save()
+                    try:
+                        self._record_telegram_topic_binding(source, entry)
+                    except Exception:
+                        logger.exception("Failed to refresh telegram topic binding after session split")
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

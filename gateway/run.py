@@ -5611,6 +5611,21 @@ class GatewayRunner:
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "mcp":
+            args_text = event.get_command_args().strip().lower()
+            if args_text in ("reload", "r"):
+                return await self._handle_reload_mcp_command(event)
+            try:
+                from hermes_cli.mcp_config import _format_mcp_doctor_text
+                from tools.mcp_tool import get_mcp_diagnostics
+                refresh = args_text in ("verbose", "v", "refresh", "doctor", "diagnose")
+                verbose = args_text in ("verbose", "v")
+                diagnostics = await asyncio.to_thread(get_mcp_diagnostics, refresh=refresh)
+                return _format_mcp_doctor_text(diagnostics, verbose=verbose)
+            except Exception as exc:
+                from tools.mcp_tool import _redact_mcp_diagnostic_text
+                return f"MCP diagnostics failed: {_redact_mcp_diagnostic_text(str(exc))}"
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 

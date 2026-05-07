@@ -6837,6 +6837,19 @@ class HermesCLI:
             # The auto-reload path (file watcher) calls _reload_mcp directly
             # without this confirmation.
             self._confirm_and_reload_mcp(cmd_original)
+        elif canonical == "mcp":
+            parts = cmd_original.split(maxsplit=1)
+            arg_text = parts[1].strip().lower() if len(parts) > 1 else ""
+            if arg_text in ("reload", "r"):
+                self._confirm_and_reload_mcp(cmd_original)
+            else:
+                from hermes_cli.mcp_config import _format_mcp_doctor_text
+                from tools.mcp_tool import get_mcp_diagnostics
+                refresh = arg_text in ("verbose", "v", "refresh", "doctor", "diagnose")
+                verbose = arg_text in ("verbose", "v")
+                with self._busy_command("Checking MCP diagnostics..."):
+                    diagnostics = get_mcp_diagnostics(refresh=refresh)
+                print(_format_mcp_doctor_text(diagnostics, verbose=verbose))
         elif canonical == "reload-skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_skills()

@@ -169,6 +169,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
+    CommandDef("mcp", "Show MCP diagnostics or reload MCP servers", "Tools & Skills",
+               args_hint="[verbose|doctor|reload]", subcommands=("verbose", "doctor", "diagnose", "reload")),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",

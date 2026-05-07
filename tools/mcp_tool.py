@@ -270,11 +270,8 @@ _CREDENTIAL_PATTERN = re.compile(
     r"ghp_[A-Za-z0-9_]{1,255}"           # GitHub PAT
     r"|sk-[A-Za-z0-9_]{1,255}"           # OpenAI-style key
     r"|Bearer\s+\S+"                      # Bearer token
-    r"|token=[^\s&,;\"']{1,255}"         # token=...
-    r"|key=[^\s&,;\"']{1,255}"           # key=...
-    r"|API_KEY=[^\s&,;\"']{1,255}"       # API_KEY=...
-    r"|password=[^\s&,;\"']{1,255}"      # password=...
-    r"|secret=[^\s&,;\"']{1,255}"        # secret=...
+    r"|(?:api[_-]?key|access[_-]?token|token|key|password|secret)=[^\s&,;\"']{1,255}"  # key=value secrets
+    r"|--(?:api[_-]?key|access[_-]?token|token|key|password|secret)\s+[^\s&,;\"']{1,255}"  # --key value secrets
     r")",
     re.IGNORECASE,
 )
@@ -3174,6 +3171,203 @@ def discover_mcp_tools() -> List[str]:
         logger.info(summary)
 
     return tool_names
+
+
+def _redact_mcp_diagnostic_text(text: str) -> str:
+    """Redact secrets in MCP diagnostic strings, including query params."""
+    if not text:
+        return ""
+    raw = str(text)
+    try:
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        split = urlsplit(raw)
+        if split.scheme and split.netloc:
+            sensitive = {"key", "token", "secret", "password", "api_key", "apikey", "access_token"}
+            query_parts = []
+            for key, value in parse_qsl(split.query, keep_blank_values=True):
+                lowered = key.lower()
+                if any(marker in lowered for marker in sensitive):
+                    query_parts.append(f"{key}=[REDACTED]")
+                else:
+                    query_parts.append(urlencode({key: _sanitize_error(value)}))
+            return urlunsplit((
+                split.scheme,
+                split.netloc,
+                _sanitize_error(split.path),
+                "&".join(query_parts),
+                _sanitize_error(split.fragment),
+            ))
+    except Exception:
+        pass
+    return _sanitize_error(raw)
+
+
+def _mcp_transport_label(cfg: dict) -> str:
+    if "url" in cfg:
+        transport = cfg.get("transport") or "http"
+        return f"{transport} → {_redact_mcp_diagnostic_text(str(cfg.get('url') or ''))}"
+    command = str(cfg.get("command") or "?")
+    args = cfg.get("args") or []
+    arg_count = len(args) if isinstance(args, list) else 0
+    suffix = f" ({arg_count} arg{'s' if arg_count != 1 else ''} hidden)" if arg_count else ""
+    return _redact_mcp_diagnostic_text(f"stdio → {command}{suffix}")
+
+
+def _mcp_error_needs_auth(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in (
+        "401", "unauthorized", "forbidden", "oauth", "auth", "token", "api key",
+    ))
+
+
+def _mcp_next_action(entry: dict) -> str:
+    name = entry.get("name", "<name>")
+    if not entry.get("configured"):
+        return "Add it with `hermes mcp add <name> --url <endpoint>` or `--command <cmd>`."
+    if not entry.get("enabled", True):
+        return f"Enable `mcp_servers.{name}.enabled` in config.yaml, then run `/reload-mcp`."
+    if entry.get("connected") and entry.get("tool_count", 0) > 0:
+        return "No action needed."
+    if entry.get("needs_auth"):
+        if entry.get("auth_type") == "oauth":
+            return f"Run `hermes mcp login {name}`, then `/reload-mcp`."
+        return f"Check auth headers/env vars for `{name}`, then run `hermes mcp doctor {name} --refresh`."
+    if entry.get("tools_list_failed"):
+        return f"Inspect server logs and run `hermes mcp test {name}`."
+    if entry.get("connected") and entry.get("tool_count", 0) == 0:
+        return f"Server connected but exposed zero tools; run `hermes mcp configure {name}` after confirming the server supports tools/list."
+    if entry.get("attempted"):
+        return f"Fix the transport/process failure, then run `hermes mcp doctor {name} --refresh`."
+    return f"Run `hermes mcp doctor {name} --refresh` to probe it."
+
+
+def get_mcp_diagnostics(name: Optional[str] = None, refresh: bool = False) -> List[dict]:
+    """Return operator-friendly diagnostics for configured MCP servers.
+
+    The default path is read-only against current in-process state. With
+    ``refresh=True``, Hermes actively probes disconnected enabled servers and
+    re-runs ``tools/list`` for connected servers. All user-facing strings are
+    redacted before returning.
+    """
+    configured = _load_mcp_config()
+    if name:
+        configured = {name: configured[name]} if name in configured else {}
+    with _lock:
+        active_servers = dict(_servers)
+
+    diagnostics: List[dict] = []
+    for server_name, cfg in configured.items():
+        enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+        server = active_servers.get(server_name)
+        connected = bool(server and server.session is not None)
+        registered_tool_count = 0
+        raw_tool_count = 0
+        sampling = None
+        last_error = ""
+        if server is not None:
+            registered_tool_count = len(getattr(server, "_registered_tool_names", []) or [])
+            raw_tool_count = len(getattr(server, "_tools", []) or [])
+            if getattr(server, "_sampling", None):
+                sampling = dict(server._sampling.metrics)
+            if getattr(server, "_error", None):
+                last_error = _format_connect_error(server._error)
+
+        auth_type = str(cfg.get("auth") or ("header" if cfg.get("headers") else "none"))
+        entry = {
+            "name": server_name,
+            "configured": True,
+            "enabled": enabled,
+            "attempted": bool(refresh or connected or last_error),
+            "connected": connected,
+            "transport": _mcp_transport_label(cfg),
+            "tool_count": registered_tool_count or raw_tool_count,
+            "registered_tool_count": registered_tool_count,
+            "raw_tool_count": raw_tool_count,
+            "needs_auth": False,
+            "tools_list_failed": False,
+            "process_or_http_failure": False,
+            "last_error": _redact_mcp_diagnostic_text(last_error),
+            "auth_type": auth_type,
+        }
+        if sampling:
+            entry["sampling"] = sampling
+
+        if not enabled:
+            entry["next_action"] = _mcp_next_action(entry)
+            diagnostics.append(entry)
+            continue
+
+        if refresh and connected and server is not None and server.session is not None:
+            entry["attempted"] = True
+            async def _list_tools(_server=server):
+                async with _server._rpc_lock:
+                    return await _server.session.list_tools()
+            try:
+                tools_result = _run_on_mcp_loop(_list_tools(), timeout=float(cfg.get("timeout", _DEFAULT_TOOL_TIMEOUT)))
+                tools = tools_result.tools if hasattr(tools_result, "tools") else []
+                entry["raw_tool_count"] = len(tools)
+                entry["tool_count"] = registered_tool_count or len(tools)
+            except Exception as exc:
+                msg = _format_connect_error(exc)
+                entry["tools_list_failed"] = True
+                entry["last_error"] = _redact_mcp_diagnostic_text(msg)
+                entry["needs_auth"] = _mcp_error_needs_auth(msg)
+
+        elif refresh and not connected:
+            entry["attempted"] = True
+            if not _MCP_AVAILABLE:
+                entry["last_error"] = "MCP SDK not installed"
+                entry["process_or_http_failure"] = True
+            else:
+                _ensure_mcp_loop()
+                async def _probe_once():
+                    probe = await asyncio.wait_for(
+                        _connect_server(server_name, cfg),
+                        timeout=float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)) + 5,
+                    )
+                    try:
+                        tools = list(getattr(probe, "_tools", []) or [])
+                        return len(tools), len(getattr(probe, "_registered_tool_names", []) or [])
+                    finally:
+                        await probe.shutdown()
+                try:
+                    raw_count, reg_count = _run_on_mcp_loop(_probe_once(), timeout=float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)) + 15)
+                    entry["connected"] = True
+                    entry["raw_tool_count"] = raw_count
+                    entry["registered_tool_count"] = reg_count
+                    entry["tool_count"] = reg_count or raw_count
+                    entry["last_error"] = ""
+                except Exception as exc:
+                    msg = _format_connect_error(exc)
+                    entry["last_error"] = _redact_mcp_diagnostic_text(msg)
+                    entry["needs_auth"] = _mcp_error_needs_auth(msg)
+                    entry["process_or_http_failure"] = not entry["needs_auth"]
+
+        if entry["last_error"] and not entry["needs_auth"]:
+            entry["needs_auth"] = _mcp_error_needs_auth(entry["last_error"])
+        entry["next_action"] = _mcp_next_action(entry)
+        diagnostics.append(entry)
+
+    if name and not diagnostics:
+        diagnostics.append({
+            "name": name,
+            "configured": False,
+            "enabled": False,
+            "attempted": False,
+            "connected": False,
+            "transport": "not configured",
+            "tool_count": 0,
+            "registered_tool_count": 0,
+            "raw_tool_count": 0,
+            "needs_auth": False,
+            "tools_list_failed": False,
+            "process_or_http_failure": False,
+            "last_error": "Server not found in mcp_servers config",
+            "auth_type": "none",
+            "next_action": "Add it with `hermes mcp add <name> --url <endpoint>` or `--command <cmd>`."
+        })
+    return diagnostics
 
 
 def get_mcp_status() -> List[dict]:

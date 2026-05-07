@@ -9,6 +9,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -583,6 +584,67 @@ def _interpolate_value(value: str) -> str:
     return re.sub(r"\$\{(\w+)\}", _replace, value)
 
 
+def _format_mcp_doctor_text(diagnostics: List[dict], *, verbose: bool = False) -> str:
+    """Render MCP diagnostics as operator-friendly text."""
+    if not diagnostics:
+        return "No MCP servers configured. Add one with `hermes mcp add <name> --url <endpoint>`."
+    lines = ["MCP diagnostics:"]
+    for item in diagnostics:
+        name = item.get("name", "?")
+        if not item.get("configured", True):
+            status = "not configured"
+        elif not item.get("enabled", True):
+            status = "disabled"
+        elif item.get("connected") and item.get("tool_count", 0) > 0:
+            status = "connected"
+        elif item.get("connected"):
+            status = "zero tools"
+        elif item.get("needs_auth"):
+            status = "needs auth"
+        elif item.get("tools_list_failed"):
+            status = "tools/list failed"
+        elif item.get("process_or_http_failure"):
+            status = "process/http failure"
+        else:
+            status = "not connected"
+        lines.append(f"- {name}: {status}")
+        lines.append(f"  transport: {item.get('transport', '?')}")
+        lines.append(
+            "  tools: "
+            f"{item.get('tool_count', 0)} "
+            f"(registered={item.get('registered_tool_count', 0)}, raw={item.get('raw_tool_count', 0)})"
+        )
+        lines.append(
+            "  flags: "
+            f"attempted={bool(item.get('attempted'))}, "
+            f"connected={bool(item.get('connected'))}, "
+            f"needs_auth={bool(item.get('needs_auth'))}, "
+            f"tools_list_failed={bool(item.get('tools_list_failed'))}, "
+            f"process_or_http_failure={bool(item.get('process_or_http_failure'))}"
+        )
+        if item.get("last_error"):
+            lines.append(f"  error: {item['last_error']}")
+        if verbose and item.get("sampling"):
+            lines.append(f"  sampling: {item['sampling']}")
+        lines.append(f"  next: {item.get('next_action', 'No action needed.')}")
+    return "\n".join(lines)
+
+
+def cmd_mcp_doctor(args):
+    """Run MCP diagnostics for one or all configured servers."""
+    from tools.mcp_tool import get_mcp_diagnostics
+
+    name = getattr(args, "name", None)
+    refresh = bool(getattr(args, "refresh", False))
+    diagnostics = get_mcp_diagnostics(name=name, refresh=refresh)
+    if getattr(args, "json", False):
+        print(json.dumps(diagnostics, indent=2, ensure_ascii=False))
+        return
+    print()
+    print(_format_mcp_doctor_text(diagnostics, verbose=getattr(args, "verbose", False)))
+    print()
+
+
 # ─── hermes mcp login ────────────────────────────────────────────────────────
 
 def cmd_mcp_login(args):
@@ -757,6 +819,8 @@ def mcp_command(args):
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
         "test": cmd_mcp_test,
+        "doctor": cmd_mcp_doctor,
+        "diagnose": cmd_mcp_doctor,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
@@ -776,6 +840,7 @@ def mcp_command(args):
         _info("hermes mcp remove <name>                      Remove a server")
         _info("hermes mcp list                               List servers")
         _info("hermes mcp test <name>                        Test connection")
+        _info("hermes mcp doctor [name] [--refresh] [--json] Diagnose MCP servers")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")
         print()

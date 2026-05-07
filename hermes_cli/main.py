@@ -10068,6 +10068,20 @@ Examples:
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
 
+    mcp_doctor_p = mcp_sub.add_parser(
+        "doctor",
+        aliases=["diagnose"],
+        help="Diagnose configured MCP servers",
+    )
+    mcp_doctor_p.add_argument("name", nargs="?", help="Optional server name to diagnose")
+    mcp_doctor_p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Actively probe disconnected servers and re-run tools/list",
+    )
+    mcp_doctor_p.add_argument("--json", action="store_true", help="Print diagnostics as JSON")
+    mcp_doctor_p.add_argument("-v", "--verbose", action="store_true", help="Include extra runtime metrics")
+
     mcp_cfg_p = mcp_sub.add_parser(
         "configure", aliases=["config"], help="Toggle tool selection"
     )

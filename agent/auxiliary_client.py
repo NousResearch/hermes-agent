@@ -2870,9 +2870,13 @@ def call_llm(
                 return _validate_llm_response(
                     client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                # If the max_tokens retry also hits a payment, auth, or
+                # connection error, fall through to the fallback chain below.
+                if not (
+                    _is_auth_error(retry_err)
+                    or _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                ):
                     raise
                 first_err = retry_err
 
@@ -2905,19 +2909,34 @@ def call_llm(
         # common case where a user runs out of OpenRouter credits but has
         # Codex OAuth or another provider available.
         #
+        # ── Auth error fallback ──────────────────────────────────────
+        # When a provider returns 401 (bad/expired API key) and the auth
+        # refresh above didn't help, try alternative providers.  This
+        # handles the case where the key is genuinely invalid and the
+        # fallback chain should move to the next provider.
+        #
         # ── Connection error fallback ────────────────────────────────
         # When a provider endpoint is unreachable (DNS failure, connection
         # refused, timeout), try alternative providers.  This handles stale
         # Codex/OAuth tokens that authenticate but whose endpoint is down,
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        should_fallback = (
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+        )
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
+                reason = "payment error"
+            else:
+                reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -3091,9 +3110,13 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                # If the max_tokens retry also hits a payment, auth, or
+                # connection error, fall through to the fallback chain below.
+                if not (
+                    _is_auth_error(retry_err)
+                    or _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                ):
                     raise
                 first_err = retry_err
 
@@ -3119,11 +3142,20 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await refreshed_client.chat.completions.create(**kwargs), task)
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        # ── Auth / payment / connection fallback (mirrors sync call_llm) ─
+        should_fallback = (
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+        )
         is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
+                reason = "payment error"
+            else:
+                reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(

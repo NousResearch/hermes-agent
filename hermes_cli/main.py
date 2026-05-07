@@ -2412,6 +2412,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in {
+        "openai-api",
         "gemini",
         "deepseek",
         "xai",

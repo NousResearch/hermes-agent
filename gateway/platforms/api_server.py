@@ -62,6 +62,13 @@ MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
+# 审批选项显示 -> 内部值映射，可在 config.yaml api_server.approval_options 中覆盖
+_DEFAULT_APPROVAL_OPTIONS = [
+    {"label": "仅本次", "value": "once"},
+    {"label": "当前会话", "value": "session"},
+    {"label": "永久允许", "value": "always"},
+    {"label": "拒绝", "value": "deny"},
+]
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
@@ -555,6 +562,25 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
+def _get_approval_options() -> list[dict]:
+    """Read approval option display mappings from config, fallback to default."""
+    try:
+        from hermes_cli.config import load_config
+        cfg_options = load_config().get("api_server", {}).get("approval_options")
+        if isinstance(cfg_options, list) and all(
+            isinstance(o, dict) and "label" in o and "value" in o for o in cfg_options
+        ):
+            return cfg_options
+    except Exception:
+        pass
+    return _DEFAULT_APPROVAL_OPTIONS
+
+
+def _build_approval_value_map() -> dict[str, str]:
+    """Build reverse map: display label -> internal value."""
+    return {o["label"]: o["value"] for o in _get_approval_options()}
+
+
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
@@ -824,12 +850,13 @@ class APIServerAdapter(BasePlatformAdapter):
             """Called from the agent thread when approval is needed."""
             import uuid
             approval_id = str(uuid.uuid4())
+            options = _get_approval_options()
             payload = {
                 "event": "hermes.approval_required",
                 "approval_id": approval_id,
                 "command": approval_data.get("command", ""),
                 "description": approval_data.get("description", ""),
-                "options": ["once", "session", "always", "deny"],
+                "options": [o["label"] for o in options],
                 "timestamp": time.time(),
             }
             try:
@@ -3288,17 +3315,19 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
             approval_id = str(body.get("approval_id", "")).strip()
-            action = str(body.get("action", "deny")).strip().lower()
+            action = str(body.get("action", "")).strip()
         except Exception:
             return web.json_response(
                 {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
                 status=400,
             )
 
-        # Validate action
+        # Map display label -> internal value, default to deny
+        value_map = _build_approval_value_map()
+        action = value_map.get(action, "deny")
         if action not in ("once", "session", "always", "deny"):
             return web.json_response(
-                {"error": {"message": "Invalid action. Must be: once, session, always, deny", "type": "invalid_request_error"}},
+                {"error": {"message": "Invalid action.", "type": "invalid_request_error"}},
                 status=400,
             )
 

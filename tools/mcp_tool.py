@@ -3251,6 +3251,9 @@ def discover_mcp_tools_async() -> None:
         return
 
     loop = _mcp_loop
+    if loop is None:
+        logger.error("MCP event loop missing -- async discovery abandoned")
+        return
 
     # Store the Future so unexpected exceptions in _discover_all() are
     # reported through the loop's exception handler instead of silently

@@ -179,3 +179,16 @@ exclude = ["tinker-atropos"]
 [tool.ruff]
 exclude = ["tinker-atropos"]
 select = [] # disable all lints for now, until we've wrangled typechecks a bit more :3
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[dependency-groups]
+dev = [
+    "fastapi>=0.133.1",
+    "faster-whisper>=1.2.1",
+    "mcp>=1.26.0",
+    "pytest-asyncio>=1.3.0",
+    "starlette>=0.52.1",
+    "uvicorn>=0.41.0",
+]

@@ -267,17 +267,34 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
-      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-        try {
-          console.log(JSON.stringify({
-            event: 'ignored',
-            reason: 'allowlist_mismatch',
-            chatId,
-            senderId,
-          }));
-        } catch {}
-        continue;
+      // Handle !fromMe messages (from other people) based on mode.
+      // Self-chat mode only responds to the user's own messages to
+      // themselves — stranger DMs / group pings must never reach the
+      // Python gateway, otherwise a pairing-code reply fires in response
+      // to arbitrary incoming messages (#8389).
+      if (!msg.key.fromMe) {
+        if (WHATSAPP_MODE === 'self-chat') {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'self_chat_mode_rejects_non_self',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          continue;
+        }
+        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'allowlist_mismatch',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          continue;
+        }
       }
 
       const messageContent = getMessageContent(msg);
@@ -676,8 +693,12 @@ if (PAIR_ONLY) {
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
+    } else if (WHATSAPP_MODE === 'self-chat') {
+      console.log(`🔒 Self-chat mode — only your own messages to yourself are processed.`);
     } else {
-      console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
+      console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
+      console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
+      console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
     }
     console.log();
     startSocket();

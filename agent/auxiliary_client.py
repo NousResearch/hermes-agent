@@ -159,6 +159,10 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    # Bare "ollama" = local server: route through the custom branch so
+    # base_url from config.yaml is honored. "ollama-cloud" is a separate
+    # API-key provider and is left unmapped. Mirrors hermes_cli/providers.py.
+    "ollama": "custom",
 }
 
 

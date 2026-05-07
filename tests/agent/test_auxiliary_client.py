@@ -83,6 +83,15 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_bare_ollama_maps_to_custom(self):
+        # `provider: ollama` in config.yaml must route auxiliary traffic
+        # through the custom branch so the configured base_url is honored;
+        # otherwise it would silently fall back to OpenRouter when an
+        # OPENROUTER_API_KEY is set in the environment.
+        assert _normalize_aux_provider("ollama") == "custom"
+        # `ollama-cloud` is a separate API-key provider — keep it untouched.
+        assert _normalize_aux_provider("ollama-cloud") == "ollama-cloud"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

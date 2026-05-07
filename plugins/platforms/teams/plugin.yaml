@@ -1,4 +1,5 @@
 name: teams-platform
+label: Microsoft Teams
 kind: platform
 version: 1.0.0
 description: >
@@ -7,7 +8,41 @@ description: >
   between Teams chats (personal DMs, group chats, channel posts) and
   the Hermes agent. Supports Adaptive Card approval prompts.
 author: Aamir Jawaid
+# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
+# platform-plugin env var injector in ``hermes_cli/config.py``.
 requires_env:
-  - TEAMS_CLIENT_ID
-  - TEAMS_CLIENT_SECRET
-  - TEAMS_TENANT_ID
+  - name: TEAMS_CLIENT_ID
+    description: "Azure AD application (Bot Framework) client ID"
+    prompt: "Teams / Azure AD client ID"
+    url: "https://portal.azure.com/"
+    password: false
+  - name: TEAMS_CLIENT_SECRET
+    description: "Azure AD application client secret"
+    prompt: "Teams / Azure AD client secret"
+    url: "https://portal.azure.com/"
+    password: true
+  - name: TEAMS_TENANT_ID
+    description: "Azure AD tenant ID hosting the bot application"
+    prompt: "Teams / Azure AD tenant ID"
+    password: false
+optional_env:
+  - name: TEAMS_PORT
+    description: "Webhook listen port (Bot Framework default: 3978)"
+    prompt: "Webhook port"
+    password: false
+  - name: TEAMS_ALLOWED_USERS
+    description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: TEAMS_ALLOW_ALL_USERS
+    description: "Allow any Teams user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: TEAMS_HOME_CHANNEL
+    description: "Default chat/channel ID for cron / notification delivery"
+    prompt: "Home channel (or empty)"
+    password: false
+  - name: TEAMS_HOME_CHANNEL_NAME
+    description: "Display name for the Teams home channel"
+    prompt: "Home channel display name"
+    password: false

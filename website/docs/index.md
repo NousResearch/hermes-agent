@@ -28,7 +28,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 | 📖 **[Quickstart Tutorial](/docs/getting-started/quickstart)** | Your first conversation and key features to try |
 | 🗺️ **[Learning Path](/docs/getting-started/learning-path)** | Find the right docs for your experience level |
 | ⚙️ **[Configuration](/docs/user-guide/configuration)** | Config file, providers, models, and options |
-| 💬 **[Messaging Gateway](/docs/user-guide/messaging)** | Set up Telegram, Discord, Slack, or WhatsApp |
+| 💬 **[Messaging Gateway](/docs/user-guide/messaging)** | Set up Telegram, Discord, Slack, WhatsApp, Teams, or more |
 | 🔧 **[Tools & Toolsets](/docs/user-guide/features/tools)** | 68 built-in tools and how to configure them |
 | 🧠 **[Memory System](/docs/user-guide/features/memory)** | Persistent memory that grows across sessions |
 | 📚 **[Skills System](/docs/user-guide/features/skills)** | Procedural memory the agent creates and reuses |
@@ -47,7 +47,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 
 - **A closed learning loop** — Agent-curated memory with periodic nudges, autonomous skill creation, skill self-improvement during use, FTS5 cross-session recall with LLM summarization, and [Honcho](https://github.com/plastic-labs/honcho) dialectic user modeling
 - **Runs anywhere, not just your laptop** — 6 terminal backends: local, Docker, SSH, Daytona, Singularity, Modal. Daytona and Modal offer serverless persistence — your environment hibernates when idle, costing nearly nothing
-- **Lives where you do** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, BlueBubbles, Home Assistant — 15+ platforms from one gateway
+- **Lives where you do** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, BlueBubbles, Home Assistant, Microsoft Teams — 15+ platforms from one gateway
 - **Built by model trainers** — Created by [Nous Research](https://nousresearch.com), the lab behind Hermes, Nomos, and Psyche. Works with [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, or any endpoint
 - **Scheduled automations** — Built-in cron with delivery to any platform
 - **Delegates & parallelizes** — Spawn isolated subagents for parallel workstreams. Programmatic Tool Calling via `execute_code` collapses multi-step pipelines into single inference calls

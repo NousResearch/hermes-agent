@@ -152,6 +152,42 @@ def is_connected(config) -> bool:
     return validate_config(config)
 
 
+def _env_enablement() -> dict | None:
+    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook BEFORE adapter
+    construction, so ``gateway status`` and ``get_connected_platforms()``
+    reflect env-only configuration without instantiating the Teams SDK.
+    Returns ``None`` when Teams isn't minimally configured.
+
+    The special ``home_channel`` key in the returned dict becomes a proper
+    ``HomeChannel`` dataclass on the ``PlatformConfig`` via the core hook.
+    """
+    client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
+    client_secret = os.getenv("TEAMS_CLIENT_SECRET", "").strip()
+    tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()
+    if not (client_id and client_secret and tenant_id):
+        return None
+    seed: dict = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "tenant_id": tenant_id,
+    }
+    port = os.getenv("TEAMS_PORT", "").strip()
+    if port:
+        try:
+            seed["port"] = int(port)
+        except ValueError:
+            pass
+    home = os.getenv("TEAMS_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("TEAMS_HOME_CHANNEL_NAME", "Home"),
+        }
+    return seed
+
+
 # Keep the old name as an alias so existing test imports don't break.
 check_teams_requirements = check_requirements
 
@@ -371,8 +407,25 @@ class TeamsAdapter(BasePlatformAdapter):
             )
 
         # Only authorized users may click approval buttons.
+        # Default-deny: require either TEAMS_ALLOWED_USERS or an explicit
+        # TEAMS_ALLOW_ALL_USERS=true opt-in. Without one of these set, the
+        # bot silently treated every clicker as authorized — meaning any
+        # Teams user who could message the bot could approve dangerous commands.
         allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
-        if allowed_csv:
+        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+
+        if not allow_all:
+            if not allowed_csv:
+                logger.warning(
+                    "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "
+                    "and TEAMS_ALLOW_ALL_USERS not set — default deny"
+                )
+                return InvokeResponse(
+                    status=200,
+                    body=AdaptiveCardActionMessageResponse(
+                        value="⛔ Approval buttons require TEAMS_ALLOWED_USERS to be configured."
+                    ),
+                )
             from_account = ctx.activity.from_
             clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
@@ -509,7 +562,20 @@ class TeamsAdapter(BasePlatformAdapter):
 
         for chunk in chunks:
             try:
-                result = await self._app.send(chat_id, chunk)
+                if reply_to and reply_to.isdigit() and reply_to != "0":
+                    try:
+                        result = await self._app.reply(chat_id, reply_to, chunk)
+                    except Exception as reply_err:
+                        # Group chats 400 on threaded sends; the Teams SDK
+                        # doesn't expose typed HTTP errors, so fall back on
+                        # any exception and log for diagnostics.
+                        logger.debug(
+                            "Teams reply() failed, falling back to flat send: %s",
+                            reply_err,
+                        )
+                        result = await self._app.send(chat_id, chunk)
+                else:
+                    result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
@@ -672,6 +738,14 @@ def register(ctx) -> None:
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
         install_hint="pip install microsoft-teams-apps aiohttp",
         setup_fn=interactive_setup,
+        # Env-driven auto-configuration — seeds PlatformConfig.extra with
+        # client_id/secret/tenant + port + home_channel so env-only setups
+        # show up in gateway status without instantiating the Teams SDK.
+        env_enablement_fn=_env_enablement,
+        # Cron home-channel delivery support.  Lets deliver=teams cron
+        # jobs route to the configured Teams chat/channel without editing
+        # cron/scheduler.py's hardcoded sets.
+        cron_deliver_env_var="TEAMS_HOME_CHANNEL",
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="TEAMS_ALLOWED_USERS",
         allow_all_env="TEAMS_ALLOW_ALL_USERS",

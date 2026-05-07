@@ -365,6 +365,20 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _dingtalk_allowed_chats(self) -> Set[str]:
+        """Return the whitelist of group chat IDs the bot will respond in.
+
+        When non-empty, group messages from chats NOT in this set are silently
+        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        Empty set means no restriction (fully backward compatible).
+        """
+        raw = self.config.extra.get("allowed_chats") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("DINGTALK_ALLOWED_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
@@ -443,13 +457,21 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         DMs remain unrestricted (subject to ``allowed_users`` which is enforced
         earlier). Group messages are accepted when:
+        - the chat passes the ``allowed_chats`` whitelist (when set)
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the bot is @mentioned (``is_in_at_list``)
         - the text matches a configured regex wake-word pattern
+
+        When ``allowed_chats`` is non-empty, it acts as a hard gate — messages
+        from any group chat not in the list are ignored regardless of the
+        other rules.
         """
         if not is_group:
             return True
+        allowed = self._dingtalk_allowed_chats()
+        if allowed and chat_id and chat_id not in allowed:
+            return False
         if chat_id and chat_id in self._dingtalk_free_response_chats():
             return True
         if not self._dingtalk_require_mention():

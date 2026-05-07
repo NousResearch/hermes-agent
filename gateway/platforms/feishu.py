@@ -153,6 +153,9 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
+# Detect markdown tables: a line starting with | followed by a separator line.
+# Feishu post-type 'md' elements do not render tables, so we force text mode.
+_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -3862,47 +3865,50 @@ class FeishuAdapter(BasePlatformAdapter):
         and self-sent bot event filtering.
 
         Populates ``_bot_open_id`` and ``_bot_name`` from /open-apis/bot/v3/info
-        (no extra scopes required beyond the tenant access token). Falls back to
-        the application info endpoint for ``_bot_name`` only when the first probe
-        doesn't return it. Each field is hydrated independently — a value already
-        supplied via env vars (FEISHU_BOT_OPEN_ID / FEISHU_BOT_USER_ID /
-        FEISHU_BOT_NAME) is preserved and skips its probe.
+        (no extra scopes required beyond the tenant access token). The probe
+        always runs when a client is available so stale env vars from app/bot
+        migrations do not break group @mention gating. Falls back to the
+        application info endpoint for ``_bot_name`` only when the first probe
+        doesn't return it. If the probe fails, env-provided values are preserved.
         """
         if not self._client:
-            return
-        if self._bot_open_id and self._bot_name:
-            # Everything the self-send filter and precise mention gate need is
-            # already in place; nothing to probe.
             return
 
         # Primary probe: /open-apis/bot/v3/info — returns bot_name + open_id, no
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
-        if not self._bot_open_id or not self._bot_name:
-            try:
-                req = (
-                    BaseRequest.builder()
-                    .http_method(HttpMethod.GET)
-                    .uri("/open-apis/bot/v3/info")
-                    .token_types({AccessTokenType.TENANT})
-                    .build()
-                )
-                resp = await asyncio.to_thread(self._client.request, req)
-                content = getattr(getattr(resp, "raw", None), "content", None)
-                if content:
-                    payload = json.loads(content)
-                    parsed = _parse_bot_response(payload) or {}
-                    open_id = (parsed.get("bot_open_id") or "").strip()
-                    bot_name = (parsed.get("bot_name") or "").strip()
-                    if open_id and not self._bot_open_id:
-                        self._bot_open_id = open_id
-                    if bot_name and not self._bot_name:
-                        self._bot_name = bot_name
-            except Exception:
-                logger.debug(
-                    "[Feishu] /bot/v3/info probe failed during hydration",
-                    exc_info=True,
-                )
+        try:
+            req = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri("/open-apis/bot/v3/info")
+                .token_types({AccessTokenType.TENANT})
+                .build()
+            )
+            resp = await asyncio.to_thread(self._client.request, req)
+            content = getattr(getattr(resp, "raw", None), "content", None)
+            if content:
+                payload = json.loads(content)
+                parsed = _parse_bot_response(payload) or {}
+                open_id = (parsed.get("bot_open_id") or "").strip()
+                bot_name = (parsed.get("bot_name") or "").strip()
+                if open_id:
+                    if self._bot_open_id and self._bot_open_id != open_id:
+                        logger.warning(
+                            "[Feishu] FEISHU_BOT_OPEN_ID is stale; using /bot/v3/info open_id for group @mention gating."
+                        )
+                    self._bot_open_id = open_id
+                if bot_name:
+                    if self._bot_name and self._bot_name != bot_name:
+                        logger.info(
+                            "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
+                        )
+                    self._bot_name = bot_name
+        except Exception:
+            logger.debug(
+                "[Feishu] /bot/v3/info probe failed during hydration",
+                exc_info=True,
+            )
 
         # Fallback probe for _bot_name only: application info endpoint. Needs
         # admin:app.info:readonly or application:application:self_manage scope,
@@ -3947,7 +3953,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if isinstance(seen_data, list):
             entries: Dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
         elif isinstance(seen_data, dict):
-            entries = {k: float(v) for k, v in seen_data.items() if isinstance(k, str) and k.strip()}
+            entries = {}
+            for key, value in seen_data.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                try:
+                    entries[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
         else:
             return
         # Filter out TTL-expired entries (entries saved with ts=0.0 are treated as immortal
@@ -3992,6 +4005,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Feishu post-type 'md' elements do not render markdown tables; sending
+        # table content as post causes the message to appear blank on the client.
+        # Force plain text for anything that looks like a markdown table.
+        if _MARKDOWN_TABLE_RE.search(content):
+            text_payload = {"text": content}
+            return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
@@ -4070,15 +4089,18 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        effective_reply_to = reply_to
+        if not effective_reply_to and metadata and metadata.get("thread_id"):
+            effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
-        if reply_to:
+        if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_reply_message_request(reply_to, body)
+            request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
         body = self._build_create_message_body(
@@ -4087,7 +4109,15 @@ class FeishuAdapter(BasePlatformAdapter):
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
+        # Feishu API expects receive_id_type="open_id" for user DMs (ou_ prefix)
+        # and receive_id_type="chat_id" for group chats (oc_ prefix, which IS
+        # the chat_id format — see https://open.feishu.cn/document/).
+        if chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
+        else:
+            receive_id_type = "chat_id"
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -4561,12 +4591,12 @@ def _poll_registration(
     Returns dict with app_id, app_secret, domain, open_id on success.
     Returns None on failure.
     """
-    deadline = time.time() + expire_in
+    deadline = time.monotonic() + expire_in
     current_domain = domain
     domain_switched = False
     poll_count = 0
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         base_url = _accounts_base_url(current_domain)
         try:
             res = _post_registration(base_url, {

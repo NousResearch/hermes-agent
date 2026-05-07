@@ -544,12 +544,25 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
-    
+
+    "web": {
+        "backend": "",           # shared fallback — applies to both search and extract
+        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
+        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # Browser engine for local mode.  Passed as ``--engine <value>`` to
+        # agent-browser v0.25.3+.
+        # "auto"       — use Chrome (default, don't pass --engine at all)
+        # "lightpanda" — use Lightpanda (1.3-5.8x faster navigation, no screenshots)
+        # "chrome"     — explicitly request Chrome
+        # Also settable via AGENT_BROWSER_ENGINE env var.
+        "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
@@ -567,21 +580,39 @@ DEFAULT_CONFIG = {
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once per
-    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    # When enabled, the agent takes a snapshot of the working directory once
+    # per conversation turn (on first write_file/patch call).  Use /rollback
+    # to restore.
+    #
+    # Defaults changed in v2 (single shared shadow store, real pruning):
+    #   - enabled: True -> False   (opt-in; most users never use /rollback)
+    #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
+    #   - auto_prune:   False -> True (orphans/stale pruned automatically)
+    # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
     "checkpoints": {
-        "enabled": True,
-        "max_snapshots": 50,  # Max checkpoints to keep per directory
-        # Auto-maintenance: shadow repos accumulate forever under
-        # ~/.hermes/checkpoints/ (one per cd'd working directory). Field
-        # reports put the typical offender at 1000+ repos / ~12 GB. When
-        # auto_prune is on, hermes sweeps at startup (at most once per
-        # min_interval_hours) and deletes:
-        #   * orphan repos: HERMES_WORKDIR no longer exists on disk
-        #   * stale repos:  newest mtime older than retention_days
-        # Opt-in so users who rely on /rollback against long-ago sessions
-        # never lose data silently.
-        "auto_prune": False,
+        "enabled": False,
+        # Max checkpoints to keep per working directory.  Pre-v2 this only
+        # limited the `/rollback` listing; v2 actually rewrites the ref and
+        # garbage-collects older commits.
+        "max_snapshots": 20,
+        # Hard ceiling on total ``~/.hermes/checkpoints/`` size (MB).  When
+        # exceeded, the oldest checkpoint per project is dropped in a
+        # round-robin pass until total size falls under the cap.
+        # 0 disables the size cap.
+        "max_total_size_mb": 500,
+        # Skip any single file larger than this when staging a checkpoint.
+        # Prevents accidental snapshotting of datasets, model weights, and
+        # other large generated assets.  0 disables the filter.
+        "max_file_size_mb": 10,
+        # Auto-maintenance: hermes sweeps the checkpoint base at startup
+        # (at most once per ``min_interval_hours``) and:
+        #   * deletes project entries whose workdir no longer exists (orphan)
+        #   * deletes project entries whose last_touch is older than
+        #     ``retention_days``
+        #   * GCs the single shared store to reclaim unreachable objects
+        #   * enforces ``max_total_size_mb`` across remaining projects
+        #   * deletes ``legacy-*`` archives older than ``retention_days``
+        "auto_prune": True,
         "retention_days": 7,
         "delete_orphans": True,
         "min_interval_hours": 24,
@@ -749,6 +780,19 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        # Triage specifier — flesh out a rough one-liner in the Kanban
+        # Triage column into a concrete spec, then promote it to ``todo``.
+        # Invoked by ``hermes kanban specify`` (single id or --all). Set a
+        # cheap, capable model here (gemini-flash works well); the main
+        # model is overkill for short spec expansion.
+        "triage_specifier": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+        },
         # Curator — skill-usage review fork. Timeout is generous because the
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat
@@ -778,9 +822,19 @@ DEFAULT_CONFIG = {
         "show_reasoning": False,
         "streaming": False,
         "final_response_markdown": "strip",  # render | strip | raw
+        # Preserve recent classic CLI output across Ctrl+L, /redraw, and
+        # terminal resize full-screen clears. Disable if a terminal emulator
+        # behaves badly with replayed scrollback.
+        "persistent_output": True,
+        "persistent_output_max_lines": 200,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # UI language for static user-facing messages (approval prompts, a
+        # handful of gateway slash-command replies).  Does NOT affect agent
+        # responses, log lines, tool outputs, or slash-command descriptions.
+        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+        "language": "en",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
@@ -809,6 +863,7 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
     # Web dashboard settings
@@ -1058,6 +1113,14 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Slack platform settings (gateway mode)
+    "slack": {
+        "require_mention": True,       # Require @mention to respond in channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
@@ -1066,6 +1129,12 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
+        # authorizes only guild messages in the role's own guild — DMs require
+        # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also
+        # authorize DMs from members of that one trusted guild holding the
+        # allowed role. Unset / empty / 0 = secure default (DM role-auth off).
+        "dm_role_auth_guild": "",
         # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
@@ -1088,16 +1157,22 @@ DEFAULT_CONFIG = {
     "telegram": {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
-    },
-
-    # Slack platform settings (gateway mode)
-    "slack": {
-        "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
     },
 
     # Mattermost platform settings (gateway mode)
     "mattermost": {
+        "require_mention": True,       # Require @mention to respond in channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
+    # Matrix platform settings (gateway mode)
+    "matrix": {
+        "require_mention": True,       # Require @mention to respond in rooms
+        "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
+        "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },
 
     # Approval mode for dangerous commands:
@@ -1149,7 +1224,7 @@ DEFAULT_CONFIG = {
     # Pre-exec security scanning via tirith
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
-        "redact_secrets": False,
+        "redact_secrets": True,
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -1188,6 +1263,10 @@ DEFAULT_CONFIG = {
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+        # Auto-block after this many consecutive non-success attempts for the
+        # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
+        # resets the streak for the new profile.
+        "failure_limit": 2,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -1790,6 +1869,22 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "SEARXNG_URL": {
+        "description": "URL of your SearXNG instance for free self-hosted web search",
+        "prompt": "SearXNG URL (e.g. http://localhost:8080)",
+        "url": "https://searxng.github.io/searxng/",
+        "tools": ["web_search"],
+        "password": False,
+        "category": "tool",
+    },
+    "BRAVE_SEARCH_API_KEY": {
+        "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
+        "prompt": "Brave Search subscription token",
+        "url": "https://brave.com/search/api/",
+        "tools": ["web_search"],
+        "password": True,
+        "category": "tool",
+    },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",
@@ -1820,6 +1915,15 @@ OPTIONAL_ENV_VARS = {
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
         "category": "tool",
+    },
+    "AGENT_BROWSER_ENGINE": {
+        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
+        "prompt": "Browser engine (auto/lightpanda/chrome)",
+        "url": "https://github.com/vercel-labs/agent-browser",
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
@@ -1899,7 +2003,7 @@ OPTIONAL_ENV_VARS = {
     "LINEAR_API_KEY": {
         "description": "Linear personal API key (used by the `linear` skill)",
         "prompt": "Linear API key",
-        "url": "https://linear.app/settings/api",
+        "url": "https://linear.app/settings/account/security",
         "password": True,
         "category": "skill",
         "advanced": True,
@@ -3915,10 +4019,10 @@ def load_config() -> Dict[str, Any]:
 
 _SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is OFF by default — tool output (terminal stdout,
-# read_file results, web content) passes through unmodified. Set
-# redact_secrets to true to mask strings that look like API keys, tokens,
-# and passwords before they enter the model context and logs.
+# Secret redaction is ON by default — strings that look like API keys,
+# tokens, and passwords are masked in tool output, logs, and chat
+# responses before the model or user ever sees them. Set redact_secrets
+# to false to disable (e.g. when developing the redactor itself).
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
@@ -3946,6 +4050,7 @@ _FALLBACK_COMMENT = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3957,8 +4062,8 @@ _FALLBACK_COMMENT = """
 
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is OFF by default. Set to true to mask strings that
-# look like API keys, tokens, and passwords in tool output and logs.
+# Secret redaction is ON by default. Set to false to pass tool output,
+# logs, and chat responses through unmodified (e.g. for redactor dev).
 #
 # security:
 #   redact_secrets: true
@@ -3977,6 +4082,7 @@ _COMMENTED_SECTIONS = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -4834,3 +4940,142 @@ def config_command(args):
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")
         sys.exit(1)
+
+
+# ── Profile-driven env var injection ─────────────────────────────────────────
+# Any provider registered in providers/ with auth_type="api_key" automatically
+# gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
+# Runs once at import time.
+
+_profile_env_vars_injected = False
+
+
+def _inject_profile_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    """
+    global _profile_env_vars_injected
+    if _profile_env_vars_injected:
+        return
+    _profile_env_vars_injected = True
+    try:
+        from providers import list_providers
+        for _pp in list_providers():
+            if _pp.auth_type not in ("api_key",):
+                continue
+            for _var in _pp.env_vars:
+                if _var in OPTIONAL_ENV_VARS:
+                    continue
+                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
+                OPTIONAL_ENV_VARS[_var] = {
+                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
+                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                    "url": _pp.signup_url or None,
+                    "password": _is_key,
+                    "category": "provider",
+                    "advanced": True,
+                }
+    except Exception:
+        pass
+
+
+# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
+_inject_profile_env_vars()
+
+
+# ── Platform-plugin env var injection ────────────────────────────────────────
+# Bundled platform plugins under ``plugins/platforms/*/plugin.yaml`` declare
+# their required env vars via ``requires_env``.  This mirror of
+# ``_inject_profile_env_vars`` surfaces them in ``hermes config`` UI so users
+# can configure Teams / IRC / Google Chat without the core repo ever needing
+# to know they exist.
+#
+# Each ``requires_env`` entry may be a bare string (name only) or a dict:
+#
+#   requires_env:
+#     - TEAMS_CLIENT_ID                          # minimal
+#     - name: TEAMS_CLIENT_SECRET                # rich
+#       description: "Teams bot client secret"
+#       url: "https://portal.azure.com/"
+#       password: true
+#       prompt: "Teams client secret"
+#
+# An optional ``optional_env`` block surfaces non-required vars the same way
+# (e.g. allowlist, home channel).
+
+_platform_plugin_env_vars_injected = False
+
+
+def _inject_platform_plugin_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+    """
+    global _platform_plugin_env_vars_injected
+    if _platform_plugin_env_vars_injected:
+        return
+    _platform_plugin_env_vars_injected = True
+    try:
+        import yaml  # type: ignore
+
+        # Resolve the bundled plugins dir from this file's location so the
+        # injector works regardless of CWD.
+        repo_root = Path(__file__).resolve().parents[1]
+        platforms_dir = repo_root / "plugins" / "platforms"
+        if not platforms_dir.is_dir():
+            return
+        for child in platforms_dir.iterdir():
+            if not child.is_dir():
+                continue
+            manifest_path = child / "plugin.yaml"
+            if not manifest_path.exists():
+                manifest_path = child / "plugin.yml"
+            if not manifest_path.exists():
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            label = manifest.get("label") or manifest.get("name") or child.name
+            # Merge required + optional env var declarations.
+            entries = list(manifest.get("requires_env") or [])
+            entries.extend(manifest.get("optional_env") or [])
+            for entry in entries:
+                if isinstance(entry, str):
+                    name = entry
+                    meta: dict = {}
+                elif isinstance(entry, dict) and entry.get("name"):
+                    name = entry["name"]
+                    meta = entry
+                else:
+                    continue
+                if name in OPTIONAL_ENV_VARS:
+                    continue  # hardcoded entry wins (back-compat)
+                # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
+                # is a password field unless explicitly overridden.
+                name_upper = name.upper()
+                is_secret = bool(meta.get("password") or meta.get("secret"))
+                if not is_secret and not meta.get("password") is False:
+                    is_secret = any(
+                        name_upper.endswith(suf)
+                        for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
+                    )
+                OPTIONAL_ENV_VARS[name] = {
+                    "description": (
+                        meta.get("description")
+                        or f"{label} configuration"
+                    ),
+                    "prompt": meta.get("prompt") or name,
+                    "url": meta.get("url") or None,
+                    "password": is_secret,
+                    "category": meta.get("category") or "messaging",
+                }
+    except Exception:
+        pass
+
+
+# Eagerly inject so that platform plugin env vars show up in the setup wizard.
+_inject_platform_plugin_env_vars()

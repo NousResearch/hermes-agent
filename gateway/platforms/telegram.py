@@ -86,6 +86,22 @@ from gateway.platforms.telegram_network import (
 )
 from utils import atomic_replace
 
+_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_TELEGRAM_IMAGE_MIME_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_TELEGRAM_IMAGE_EXT_TO_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available."""
@@ -353,6 +369,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
+        # Asymmetric with _message_thread_id_for_send on purpose. Telegram's
+        # sendMessage and sendChatAction treat thread id "1" (the forum General
+        # topic) differently: sends reject message_thread_id=1 and must omit it,
+        # but sendChatAction needs message_thread_id=1 to place the typing
+        # bubble in the General topic (omitting it hides the bubble entirely
+        # from the client's view of that topic). Preserve the real id here —
+        # sends still map "1" → None via _message_thread_id_for_send.
         if not thread_id:
             return None
         return int(thread_id)
@@ -687,6 +710,29 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, name, chat_id, e,
                 )
             return None
+
+    async def rename_dm_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+    ) -> None:
+        """Rename a forum topic in a private (DM) chat."""
+        if not self._bot:
+            return
+        try:
+            chat_id_arg = int(chat_id)
+        except (TypeError, ValueError):
+            chat_id_arg = chat_id
+        await self._bot.edit_forum_topic(
+            chat_id=chat_id_arg,
+            message_thread_id=int(thread_id),
+            name=name,
+        )
+        logger.info(
+            "[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'",
+            self.name, chat_id, thread_id, name,
+        )
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
@@ -2485,21 +2531,16 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                try:
-                    await self._bot.send_chat_action(
-                        chat_id=int(chat_id),
-                        action="typing",
-                        message_thread_id=message_thread_id,
-                    )
-                except Exception as e:
-                    if message_thread_id is not None and self._is_thread_not_found_error(e):
-                        await self._bot.send_chat_action(
-                            chat_id=int(chat_id),
-                            action="typing",
-                            message_thread_id=None,
-                        )
-                    else:
-                        raise
+                # No retry-without-thread fallback here: _message_thread_id_for_typing
+                # already maps the forum General topic to None, so any non-None value
+                # reaching this call is a user-created topic. If Telegram rejects it
+                # (e.g. topic deleted mid-session), we swallow the failure rather than
+                # showing a typing indicator in the wrong chat/All Messages.
+                await self._bot.send_chat_action(
+                    chat_id=int(chat_id),
+                    action="typing",
+                    message_thread_id=message_thread_id,
+                )
             except Exception as e:
                 # Typing failures are non-fatal; log at debug level only.
                 logger.debug(
@@ -2734,6 +2775,20 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_allowed_chats(self) -> set[str]:
+        """Return the whitelist of group/supergroup chat IDs the bot will respond in.
+
+        When non-empty, group messages from chats NOT in this set are silently
+        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        Empty set means no restriction (fully backward compatible).
+        """
+        raw = self.config.extra.get("allowed_chats")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_ALLOWED_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
@@ -2882,13 +2937,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """Apply Telegram group trigger rules.
 
         DMs remain unrestricted. Group/supergroup messages are accepted when:
+        - the chat passes the ``allowed_chats`` whitelist (when set)
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
 
-        When ``require_mention`` is enabled, slash commands are not given
+        When ``allowed_chats`` is non-empty, it acts as a hard gate — messages
+        from any chat not in the list are ignored regardless of the other
+        rules.  When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
         as any other group message.  Users can still trigger commands via
         the Telegram bot menu (``/command@botname``) or by explicitly
@@ -2897,6 +2955,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
+        # allowed_chats check (whitelist — must pass before other gating).
+        # When set, group messages from chats NOT in this whitelist are
+        # silently ignored, even if @mentioned.  DMs are already excluded above.
+        allowed = self._telegram_allowed_chats()
+        if allowed:
+            chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+            if chat_id_str not in allowed:
+                return False
         thread_id = getattr(message, "message_thread_id", None)
         if thread_id is not None:
             try:
@@ -3218,10 +3284,59 @@ class TelegramAdapter(BasePlatformAdapter):
                     _, ext = os.path.splitext(original_filename)
                     ext = ext.lower()
 
+                # Normalize mime_type for robust comparisons (some clients send
+                # uppercase like "IMAGE/PNG").
+                doc_mime = (doc.mime_type or "").lower()
+
                 # If no extension from filename, reverse-lookup from MIME type
-                if not ext and doc.mime_type:
-                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                    ext = mime_to_ext.get(doc.mime_type, "")
+                if not ext and doc_mime:
+                    ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
+                    if not ext:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                        ext = mime_to_ext.get(doc_mime, "")
+
+                # Check file size early so image documents cannot bypass the
+                # document size limit by taking the image path.
+                MAX_DOC_BYTES = 20 * 1024 * 1024
+                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                    event.text = (
+                        "The document is too large or its size could not be verified. "
+                        "Maximum: 20 MB."
+                    )
+                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
+                    await self.handle_message(event)
+                    return
+
+                # Telegram may deliver screenshots/photos as documents. If the
+                # payload is actually an image, route it through the image cache
+                # and batching path instead of rejecting it as a document.
+                if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                    try:
+                        cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                    except ValueError as e:
+                        logger.warning("[Telegram] Failed to cache image document: %s", e, exc_info=True)
+                        event.text = (
+                            f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
+                            "could not be read as an image."
+                        )
+                        await self.handle_message(event)
+                        return
+
+                    event.message_type = MessageType.PHOTO
+                    event.media_urls = [cached_path]
+                    event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
+                    logger.info("[Telegram] Cached user image-document at %s", cached_path)
+
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        batch_key = self._photo_batch_key(event, msg)
+                        self._enqueue_photo_event(batch_key, event)
+                    return
 
                 if not ext and doc.mime_type:
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
@@ -3246,17 +3361,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Supported types: {supported_list}"
                     )
                     logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
-                    return
-
-                # Check file size (Telegram Bot API limit: 20 MB)
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
-                    event.text = (
-                        "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
-                    )
-                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)
                     return
 

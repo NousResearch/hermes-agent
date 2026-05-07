@@ -1451,58 +1451,6 @@ class MCPServerTask:
                 self.name,
             )
 
-        # Optional pre-connect hook — e.g. docker pull for container-based
-        # servers.  Runs before each transport connect cycle so image pulls
-        # stay fresh; idempotent hooks (cached image pull) are near-instant.
-        pre_connect = config.get("pre_connect")
-        if pre_connect:
-            if not isinstance(pre_connect, str):
-                logger.warning(
-                    "MCP server '%s': pre_connect is not a string (type=%s), skipping",
-                    self.name, type(pre_connect).__name__,
-                )
-            else:
-                logger.info(
-                    "MCP server '%s': running pre_connect: %s",
-                    self.name, pre_connect[:120],
-                )
-                pre_connect_timeout = config.get(
-                    "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
-                )
-                try:
-                    proc = await asyncio.create_subprocess_shell(
-                        pre_connect,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(),
-                        timeout=pre_connect_timeout,
-                    )
-                    if proc.returncode != 0:
-                        logger.warning(
-                            "MCP server '%s': pre_connect failed (exit %d): %s",
-                            self.name, proc.returncode,
-                            (stderr or stdout or b"").decode(
-                                errors="replace",
-                            )[:200],
-                        )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "MCP server '%s': pre_connect timed out after %ds",
-                        self.name, pre_connect_timeout,
-                    )
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                except Exception as exc:
-                    logger.warning(
-                        "MCP server '%s': pre_connect raised: %s",
-                        self.name, exc,
-                    )
-                # pre_connect failure is non-fatal — proceed with connect
-
         retries = 0
         initial_retries = 0
         backoff = 1.0

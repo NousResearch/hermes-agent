@@ -2911,7 +2911,10 @@ def _terminate_reclaimed_worker(
 
     if _pid_alive(pid):
         try:
-            kill(int(pid), signal.SIGKILL)
+            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
+            # (which maps to TerminateProcess via the stdlib shim).
+            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            kill(int(pid), _sigkill)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -3035,7 +3038,9 @@ def enforce_max_runtime(
                 time.sleep(0.5)
             if _pid_alive(pid):
                 try:
-                    kill(pid, signal.SIGKILL)
+                    # signal.SIGKILL doesn't exist on Windows.
+                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                    kill(pid, _sigkill)
                     killed = True
                 except (ProcessLookupError, OSError):
                     pass

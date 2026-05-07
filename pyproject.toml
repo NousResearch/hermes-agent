@@ -36,6 +36,12 @@ dependencies = [
   "edge-tts>=7.2.7,<8",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
+  # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
+  # out of the box.  ``tzdata`` ships the Olson database as a data package
+  # Python resolves automatically.  No-op on Linux/macOS (which have
+  # /usr/share/zoneinfo).  Credits: PR #13182 (@sprmn24).
+  "tzdata>=2023.3; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

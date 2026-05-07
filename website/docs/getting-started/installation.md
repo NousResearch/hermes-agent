@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, WSL2, or Android via Termux"
+description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, or Android via Termux"
 ---
 
 # Installation
@@ -15,6 +15,20 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
+
+### Windows (native, PowerShell)
+
+Open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+The native Windows installer provisions `uv`, Python 3.11, Node.js 22, `ripgrep`, and `ffmpeg`, clones the repo under `%LOCALAPPDATA%\hermes\hermes-agent`, creates a virtualenv, and adds `hermes` to your **User PATH**.  Restart your terminal (or open a new PowerShell window) after the install so PATH picks up.
+
+**Prerequisite:** Install [Git for Windows](https://git-scm.com/download/win) first.  Hermes uses the bundled Git Bash to execute terminal commands — the same approach Claude Code and other coding agents take on Windows.  If you install Git to a non-default location, set `HERMES_GIT_BASH_PATH` in your environment to point at `bash.exe`.
+
+If you prefer WSL2, the Linux installer above works inside it; both native and WSL installs can coexist without conflict (native data lives under `%LOCALAPPDATA%\hermes`, WSL data lives under `~/.hermes`).
 
 ### Android / Termux
 
@@ -33,8 +47,17 @@ The installer detects Termux automatically and switches to a tested Android flow
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
-:::warning Windows
-Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
+:::note Windows Feature Parity
+
+Everything except the browser-based dashboard chat terminal runs natively on Windows:
+- **CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …)** — native, uses your default terminal
+- **Gateway (Telegram, Discord, Slack, …)** — native, runs as a background PowerShell process
+- **Cron scheduler** — native
+- **Browser tool** — native (Chromium via Node.js)
+- **MCP servers** — native (stdio and HTTP transports both supported)
+- **Dashboard `/chat` terminal pane** — **WSL2 only** (uses a POSIX PTY; native Windows has no equivalent).  The rest of the dashboard (sessions, jobs, metrics) works natively — only the embedded PTY terminal tab is gated.
+
+Set `HERMES_DISABLE_WINDOWS_UTF8=1` in your environment if you hit an encoding-related bug and want to fall back to the legacy cp1252 stdio path (useful for bisecting).
 :::
 
 ### What the Installer Does

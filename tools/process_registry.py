@@ -407,7 +407,11 @@ class ProcessRegistry:
         try:
             os.kill(pid, 0)
             return True
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
+            # OSError covers Windows' WinError 87 for a gone PID, and the
+            # ``WinError 5 Access denied`` case — treat both as "can't probe
+            # or process is gone", which matches the conservative
+            # "not alive" semantics callers already handle.
             return False
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:

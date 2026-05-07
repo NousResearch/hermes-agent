@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import base64
 import logging
-import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from agent.image_data_url import detect_image_mime
 
 logger = logging.getLogger(__name__)
 
@@ -144,23 +145,6 @@ def decide_image_input_mode(
 # it fires, which is cheaper than permanent quality loss.
 
 
-def _guess_mime(path: Path) -> str:
-    mime, _ = mimetypes.guess_type(str(path))
-    if mime and mime.startswith("image/"):
-        return mime
-    # mimetypes on some Linux distros mis-maps .jpg; default to jpeg when
-    # the suffix looks imagey.
-    suffix = path.suffix.lower()
-    return {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-    }.get(suffix, "image/jpeg")
-
-
 def _file_to_data_url(path: Path) -> Optional[str]:
     """Encode a local image as a base64 data URL at its native size.
 
@@ -170,15 +154,22 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
     quality tax just because one other provider is stricter.
 
-    Returns None only if the file can't be read (missing, permission
-    denied, etc.); the caller reports those paths in ``skipped``.
+    Returns None if the file can't be read or does not start with a supported
+    image magic-byte sequence; the caller reports those paths in ``skipped``.
     """
     try:
         raw = path.read_bytes()
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path)
+    mime = detect_image_mime(raw)
+    if mime is None:
+        logger.warning(
+            "image_routing: skipping invalid image bytes at %s (size=%d)",
+            path,
+            len(raw),
+        )
+        return None
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

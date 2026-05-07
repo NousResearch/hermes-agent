@@ -474,6 +474,26 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
 
     adapter._client = SimpleNamespace(request=_fake_request)
 
+    # When lark-oapi is absent, BaseRequest / HttpMethod / AccessTokenType are
+    # undefined in the feishu module, so _hydrate_bot_identity's try block raises
+    # NameError before ever calling self._client.request().  Mock them so the
+    # builder chain works and our _fake_request is actually reached.
+    import gateway.platforms.feishu as _feishu_mod
+    from unittest.mock import MagicMock
+
+    if not getattr(_feishu_mod, "BaseRequest", None):
+        _mock_req = MagicMock()
+        _mock_req.uri = "/open-apis/bot/v3/info"
+        _mock_req.http_method = "GET"
+        _mock_builder = MagicMock()
+        _mock_builder.http_method.return_value = _mock_builder
+        _mock_builder.uri.return_value = _mock_builder
+        _mock_builder.token_types.return_value = _mock_builder
+        _mock_builder.build.return_value = _mock_req
+        _feishu_mod.BaseRequest = MagicMock(builder=MagicMock(return_value=_mock_builder))  # type: ignore[attr-defined]
+        _feishu_mod.HttpMethod = MagicMock(GET="GET")  # type: ignore[attr-defined]
+        _feishu_mod.AccessTokenType = MagicMock(TENANT="tenant")  # type: ignore[attr-defined]
+
     asyncio.run(adapter._hydrate_bot_identity())
 
     assert captured["uri"] == "/open-apis/bot/v3/info"

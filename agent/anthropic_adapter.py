@@ -1973,9 +1973,9 @@ def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> No
                 break
 
 
-def _restore_tool_search_variant_types(content: Any) -> None:
-    """Rewrite canonical ``tool_search_tool_result`` block types back to
-    their wire-form variant suffix (``tool_search_tool_<variant>_tool_result``).
+def _canonicalize_tool_search_result_types(content: Any) -> None:
+    """Rewrite variant-suffixed ``tool_search_tool_<variant>_tool_result``
+    block types to the bare canonical form ``tool_search_tool_result``.
 
     Why this exists:
 
@@ -1986,29 +1986,29 @@ def _restore_tool_search_variant_types(content: Any) -> None:
     ``BetaToolSearchToolResultBlock`` model declares
     ``type: Literal["tool_search_tool_result"]`` — the bare canonical
     form — and Pydantic silently coerces the wire value to that literal
-    when parsing. By the time the response object reaches our code, the
-    variant suffix is gone.
+    when parsing.
 
-    Anthropic's *input* validator, however, still expects the variant
-    suffix on assistant-message replays. Replaying the canonical bare
-    type fails the input pairing check: the validator can't match the
-    result back to its ``server_tool_use``, treats both as orphaned,
-    and reports the leftmost client-side ``tool_use`` as the unpaired
-    block in a 400 response with a misleading error message about
-    ``tool_use`` ids "without ``tool_result`` blocks immediately after".
+    Empirically (verified live against api.anthropic.com on 2026-05-07,
+    request_id ``req_011Cap2RUgsJp1CVsGAR6LTa``), Anthropic's INPUT
+    validator's accept list contains ``tool_search_tool_result`` —
+    the bare canonical — and rejects any variant-suffixed form with:
 
-    The variant is recoverable from the paired ``server_tool_use.name``
-    field — we walk the content array, build an
-    ``id -> server_tool_use.name`` map for any
-    ``server_tool_use`` whose ``name`` starts with
-    ``tool_search_tool_``, then rewrite each paired
-    ``tool_search_tool_result`` block's ``type`` to
-    ``<server_tool_use.name>_tool_result``. Mutates ``content`` in
-    place.
+      "Input tag '<variant>_tool_result' found using 'type' does not
+       match any of the expected tags: ..., 'tool_search_tool_result',
+       'tool_use', ..."
 
-    Safe to call repeatedly: blocks already carrying the variant
-    suffix are skipped (the rewrite only fires when ``type`` is
-    exactly the canonical ``tool_search_tool_result``).
+    A prior workaround in this file (``_normalize_tool_search_result_for_input``,
+    docstring still in place for historical reference but its behavior
+    is fixed here) claimed the opposite — that the variant suffix was
+    REQUIRED and that re-emitting the canonical bare form failed the
+    pairing check. That claim was either out of date or misdiagnosed;
+    the validator's own error message today is unambiguous about which
+    tag is accepted.
+
+    So: any block whose type starts with ``tool_search_tool_`` and ends
+    with ``_tool_result`` gets its type collapsed to the bare canonical
+    form. Mutates ``content`` in place. Idempotent — the bare canonical
+    is its own fixed point.
 
     Accepts either a single content array (``List[Dict]``) or a full
     message list (``List[Dict]`` where each dict has ``role``/
@@ -2026,56 +2026,46 @@ def _restore_tool_search_variant_types(content: Any) -> None:
         for m in content:
             mc = m.get("content")
             if isinstance(mc, list):
-                _restore_tool_search_variant_types(mc)
+                _canonicalize_tool_search_result_types(mc)
         return
 
-    # Single content array — build id → server_tool_use.name index for
-    # tool-search server_tool_uses, then rewrite paired result blocks.
-    name_by_id: Dict[str, str] = {}
+    # Single content array — collapse any variant-suffixed type.
     for b in content:
         if not isinstance(b, dict):
             continue
-        if b.get("type") != "server_tool_use":
+        t = b.get("type")
+        if not isinstance(t, str):
             continue
-        nm = b.get("name")
-        if not isinstance(nm, str) or not nm.startswith("tool_search_tool_"):
-            continue
-        bid = b.get("id")
-        if isinstance(bid, str):
-            name_by_id[bid] = nm
-    if not name_by_id:
-        return
-    for b in content:
-        if not isinstance(b, dict):
-            continue
-        if b.get("type") != "tool_search_tool_result":
-            continue  # already variant-suffixed or unrelated — leave alone
-        tu_id = b.get("tool_use_id")
-        if not isinstance(tu_id, str):
-            continue
-        variant_name = name_by_id.get(tu_id)
-        if not variant_name:
-            continue
-        b["type"] = f"{variant_name}_tool_result"
+        if t == "tool_search_tool_result":
+            continue  # already canonical
+        if t.startswith("tool_search_tool_") and t.endswith("_tool_result"):
+            b["type"] = "tool_search_tool_result"
 
 
 def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip response-only fields from a tool_search result block while
-    preserving the variant-suffixed type the API requires for pairing.
+    """Strip response-only fields from a tool_search result block and emit
+    the bare canonical ``tool_search_tool_result`` type.
 
-    Empirically (verified via HERMES_DUMP_REQUESTS), Anthropic's input
-    validator pairs a ``server_tool_use`` named ``tool_search_tool_<variant>``
-    against a result block typed ``tool_search_tool_<variant>_tool_result``
-    — i.e. the variant suffix on the result block must match the tool_use
-    name. The Python SDK's BetaToolSearchToolResultBlockParam declares the
-    type as the canonical ``tool_search_tool_result`` but rewriting to that
-    canonical form fails the API's pairing check ("tool use ... was found
-    without a corresponding tool_search_tool_<variant>_tool_result block").
+    Anthropic's INPUT validator (verified live 2026-05-07,
+    request_id ``req_011Cap2RUgsJp1CVsGAR6LTa``) accepts only the bare
+    ``tool_search_tool_result`` type. Variant-suffixed types
+    (``tool_search_tool_regex_tool_result``, etc.) — which appear on
+    the wire OUTPUT — fail the input tag check. The SDK's
+    ``BetaToolSearchToolResultBlockParam`` declares the same bare
+    canonical form, which is the right contract.
 
-    So preserve whatever ``type`` came back on the response. Strip only the
-    response-only fields (``text``, ``citations``, etc.) that fail input
-    validation with "Extra inputs are not permitted". Recursively allowlist
-    inner content the same way.
+    A prior version of this function preserved whatever ``type`` came
+    back on the response under the assumption that the variant suffix
+    was required for pairing. That was wrong. The response Pydantic
+    coerces the wire variant to the bare canonical anyway, so for
+    fresh responses ``sb["type"]`` is already correct. Old persisted
+    sessions and any path that bypasses the SDK Pydantic layer can
+    still carry a variant suffix; this function is the choke point
+    that normalizes them.
+
+    Strip response-only fields (``text``, ``citations``, etc.) that
+    fail input validation with "Extra inputs are not permitted".
+    Recursively allowlist inner content the same way.
     """
     inner = sb.get("content")
     if isinstance(inner, list):
@@ -2085,7 +2075,10 @@ def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any
     else:
         normalized_inner = _normalize_tool_search_result_inner(inner)
     out: Dict[str, Any] = {
-        "type": sb.get("type"),
+        # Always the bare canonical — ignore whatever variant suffix
+        # may have leaked in from a persisted session or a non-SDK
+        # construction path.
+        "type": "tool_search_tool_result",
         "tool_use_id": sb.get("tool_use_id"),
         "content": normalized_inner,
     }
@@ -2497,15 +2490,16 @@ def convert_messages_to_anthropic(
     # owns the matching server_tool_use.
     _relocate_orphaned_tool_search_results(result)
 
-    # Defense-in-depth: restore variant-suffixed type on
-    # tool_search_tool_*_tool_result blocks. The capture-time fix in
-    # ``agent/transports/anthropic.py`` handles fresh responses, but
-    # sessions persisted before that fix landed (and any other code path
-    # that bypasses the transport — direct memory injection, test
-    # harnesses, future block-construction sites) need the same
-    # rewrite at outbound request time. Idempotent: blocks already
-    # carrying the variant suffix are skipped.
-    _restore_tool_search_variant_types(result)
+    # Defense-in-depth: canonicalize tool_search_tool_*_tool_result block
+    # types to the bare ``tool_search_tool_result`` form. The capture-time
+    # fix in ``agent/transports/anthropic.py`` handles fresh responses,
+    # but sessions persisted with a variant-suffixed type (e.g. from an
+    # earlier broken Hermes version that stored the wire variant, or
+    # any code path that bypasses the SDK Pydantic layer) need the same
+    # rewrite at outbound request time so Anthropic's input validator
+    # doesn't reject them with 400. Idempotent: bare canonical is the
+    # fixed point.
+    _canonicalize_tool_search_result_types(result)
 
     return system, result
 

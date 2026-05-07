@@ -3,8 +3,15 @@
 The tool_search server-side tool produces blocks whose response shape
 diverges from the input shape. The API will 400 on resubmit if any
 response-only field (``text``, ``citations``, etc.) leaks back, or if
-the type discriminator carries a variant suffix (e.g.
-``tool_search_tool_regex_tool_result``).
+the type discriminator carries a wire-form variant suffix (e.g.
+``tool_search_tool_regex_tool_result``) — the input validator only
+accepts the bare canonical ``tool_search_tool_result``.
+
+The wire OUTPUT carries the variant suffix; the SDK Pydantic models
+strip it to the canonical bare form during parse. Our pipeline
+canonicalizes any leaked variant suffix at capture time and again at
+request-build time so persisted sessions and SDK-bypass paths all
+emit the bare canonical type Anthropic expects.
 
 This module validates every code path that touches these blocks against
 the Anthropic SDK's documented input TypedDicts so we don't have to
@@ -20,10 +27,10 @@ import pytest
 
 from agent.anthropic_adapter import (
     _normalize_tool_reference_for_input,
+    _canonicalize_tool_search_result_types,
     _normalize_tool_search_result_for_input,
     _normalize_tool_search_result_inner,
     _relocate_orphaned_tool_search_results,
-    _restore_tool_search_variant_types,
     convert_messages_to_anthropic,
 )
 
@@ -200,27 +207,29 @@ class TestNormalizeInnerSearchResult:
 # ---------------------------------------------------------------------------
 class TestNormalizeOuterToolSearchResult:
     @pytest.mark.parametrize("variant", ["regex", "bm25"])
-    def test_preserves_variant_suffixed_type(self, variant):
-        """Verified empirically via HERMES_DUMP_REQUESTS: Anthropic's
-        validator pairs server_tool_use named ``tool_search_tool_<variant>``
-        against a result typed ``tool_search_tool_<variant>_tool_result``.
-        Rewriting to the SDK's nominal canonical ``tool_search_tool_result``
-        breaks the pairing — keep the variant suffix from the response."""
+    def test_collapses_variant_suffix_to_canonical_type(self, variant):
+        """Anthropic's INPUT validator (verified live 2026-05-07,
+        request_id ``req_011Cap2RUgsJp1CVsGAR6LTa``) accepts only the
+        bare canonical ``tool_search_tool_result`` type. Variant-suffixed
+        forms — which appear on the wire OUTPUT — are rejected with
+        "Input tag '<variant>_tool_result' ... does not match any of
+        the expected tags". Inversion of an earlier wrong invariant
+        held by this codebase: the variant-suffix-must-be-preserved
+        claim was a misdiagnosis of an earlier 400 with a different
+        cause."""
         sb = _sample_outer_response(variant=variant)
         out = _normalize_tool_search_result_for_input(sb)
-        assert out["type"] == f"tool_search_tool_{variant}_tool_result"
+        assert out["type"] == "tool_search_tool_result"
 
     def test_strips_response_only_fields_at_outer_level(self):
         sb = _sample_outer_response(with_text=True, with_citations=True)
         out = _normalize_tool_search_result_for_input(sb)
         assert "text" not in out
         assert "citations" not in out
-        # Outer keys minus the variant ``type`` must be a subset of the SDK
-        # TypedDict's declared keys (the SDK declares type as the canonical
-        # literal but the live API requires variant suffix — we keep the
-        # variant; everything else stays allowlisted).
-        non_type_keys = set(out.keys()) - {"type"}
-        assert non_type_keys.issubset(OUTER_KEYS - {"type"} | {"tool_use_id", "content", "cache_control"})
+        # Outer keys must be a subset of the SDK TypedDict's declared keys
+        # — type is collapsed to the bare canonical so the result is a
+        # legal BetaToolSearchToolResultBlockParam.
+        assert set(out.keys()).issubset(OUTER_KEYS)
 
     def test_preserves_required_fields(self):
         sb = _sample_outer_response()
@@ -298,18 +307,31 @@ class TestConvertMessagesRoundTrip:
             for v in obj:
                 yield from self._walk(v)
 
-    def test_full_message_preserves_variant_suffixed_type(self):
+    def test_full_message_collapses_variant_suffix_to_canonical(self):
+        """Inverted from an earlier (wrong) version that asserted the
+        variant suffix was preserved. Anthropic accepts only the bare
+        canonical ``tool_search_tool_result`` on input."""
         sb = _sample_outer_response(variant="regex")
         msg = self._build_assistant_msg([sb])
         _, out_msgs = convert_messages_to_anthropic(
             [{"role": "user", "content": "hi"}, msg]
         )
-        # Find the variant-suffixed result block in the output.
-        ts_blocks = [
+        # Find the canonical result block in the output.
+        ts_canonical = [
             d for d in self._walk(out_msgs)
-            if isinstance(d, dict) and d.get("type") == "tool_search_tool_regex_tool_result"
+            if isinstance(d, dict) and d.get("type") == "tool_search_tool_result"
         ]
-        assert len(ts_blocks) == 1
+        assert len(ts_canonical) == 1
+        # And no variant-suffixed forms remain.
+        ts_variant = [
+            d for d in self._walk(out_msgs)
+            if isinstance(d, dict)
+            and isinstance(d.get("type"), str)
+            and d["type"].startswith("tool_search_tool_")
+            and d["type"].endswith("_tool_result")
+            and d["type"] != "tool_search_tool_result"
+        ]
+        assert ts_variant == []
 
     def test_full_message_strips_all_response_only_fields(self):
         sb = _sample_outer_response(with_text=True, with_citations=True)
@@ -339,22 +361,28 @@ class TestConvertMessagesRoundTrip:
                 assert "citations" not in d
 
     @pytest.mark.parametrize("variant", ["regex", "bm25"])
-    def test_variant_suffix_is_preserved_through_round_trip(self, variant):
+    def test_variant_suffix_is_collapsed_through_round_trip(self, variant):
+        """Inverted: any variant_suffix on the inbound block must be
+        gone from the outbound payload — Anthropic only accepts the
+        bare canonical type on input. The ``variant`` parameter
+        verifies the collapse works regardless of which variant the
+        wire delivered."""
         sb = _sample_outer_response(variant=variant)
         msg = self._build_assistant_msg([sb])
         _, out_msgs = convert_messages_to_anthropic(
             [{"role": "user", "content": "hi"}, msg]
         )
-        expected_type = f"tool_search_tool_{variant}_tool_result"
+        unwanted_type = f"tool_search_tool_{variant}_tool_result"
         types_seen = [
             d.get("type") for d in self._walk(out_msgs)
             if isinstance(d.get("type"), str)
             and d.get("type").startswith("tool_search_tool_")
             and d.get("type").endswith("_tool_result")
         ]
-        assert expected_type in types_seen
-        # And no canonical-type rewrites snuck in.
-        assert "tool_search_tool_result" not in types_seen
+        # No variant suffix anywhere.
+        assert unwanted_type not in types_seen
+        # The bare canonical IS present.
+        assert "tool_search_tool_result" in types_seen
 
     def test_full_message_outputs_only_sdk_declared_keys(self):
         """Strict allowlist for inner blocks: every emitted block (except
@@ -624,49 +652,61 @@ class TestRelocateOrphanedResults:
         # Find the assistant messages in output (by role).
         assistants = [m for m in out_msgs if m["role"] == "assistant"]
         # The first assistant message must contain BOTH the server_tool_use
-        # AND the (variant-suffixed) tool_search result in same content list.
+        # AND the tool_search result (collapsed to canonical type) in same
+        # content list.
         first = assistants[0]["content"]
         types = [b.get("type") for b in first]
         assert "server_tool_use" in types
-        assert "tool_search_tool_regex_tool_result" in types
+        assert "tool_search_tool_result" in types
+        # The variant-suffixed wire type must NOT survive — Anthropic
+        # rejects it on input.
+        assert "tool_search_tool_regex_tool_result" not in types
         stu_idx = types.index("server_tool_use")
         assert (
-            first[stu_idx + 1]["type"] == "tool_search_tool_regex_tool_result"
+            first[stu_idx + 1]["type"] == "tool_search_tool_result"
         )
         # And response-only fields are stripped on the relocated block.
         assert "text" not in first[stu_idx + 1]
         assert "citations" not in first[stu_idx + 1]
-        # The later assistant message no longer carries the result.
+        # The later assistant message no longer carries the result
+        # (in any form — bare canonical OR variant-suffixed).
         last_types = [b.get("type") for b in assistants[-1]["content"]]
+        assert "tool_search_tool_result" not in last_types
         assert "tool_search_tool_regex_tool_result" not in last_types
 
 
 # ---------------------------------------------------------------------------
-# Variant-suffix restoration (regression for HTTP 400 "tool_use ids were
-# found without tool_result blocks immediately after")
+# Variant-suffix canonicalization (regression for HTTP 400 "Input tag
+# '<variant>_tool_result' ... does not match any of the expected tags")
 # ---------------------------------------------------------------------------
 
-class TestRestoreToolSearchVariantTypes:
-    """The Anthropic SDK's BetaToolSearchToolResultBlock model declares
-    ``type: Literal["tool_search_tool_result"]`` — Pydantic strips the
-    variant suffix that arrived on the wire. The input validator on
-    subsequent turns still expects the variant-suffixed type, so verbatim
-    replay of the canonical bare type fails with a misleading 400 about
-    ``tool_use`` ids "without tool_result blocks immediately after"
-    (the validator can't pair the search result with its server_tool_use,
-    treats both as orphaned, and reports the leftmost client-side tool_use
-    as the unpaired block).
+class TestCanonicalizeToolSearchResultTypes:
+    """Anthropic's INPUT validator (live verification 2026-05-07,
+    request_id ``req_011Cap2RUgsJp1CVsGAR6LTa``) accepts ONLY the bare
+    canonical ``tool_search_tool_result`` type. Variant-suffixed types
+    (``tool_search_tool_regex_tool_result``, etc.) — which appear on
+    the wire OUTPUT — are rejected with:
 
-    These tests guard against regression by exercising the restoration
-    helper at every code path: capture-time (transports/anthropic.py),
-    request-build-time (convert_messages_to_anthropic), and the helper
-    in isolation.
+      "Input tag '<variant>_tool_result' found using 'type' does not
+       match any of the expected tags: ..., 'tool_search_tool_result',
+       'tool_use', ..."
+
+    The Pydantic SDK model strips the variant during response parse, so
+    fresh responses already carry the canonical type. But persisted
+    sessions captured before the fix and any path that bypasses the
+    SDK's parser can still leak the wire variant. The
+    ``_canonicalize_tool_search_result_types`` helper normalizes them.
+
+    These tests guard against regression by exercising the helper at
+    every code path: capture-time (transports/anthropic.py), request-
+    build-time (convert_messages_to_anthropic), and the helper in
+    isolation.
     """
 
     # ------------------------------------------------------------------
     # Helper-level unit tests
     # ------------------------------------------------------------------
-    def test_canonical_type_is_rewritten_to_variant_form(self):
+    def test_variant_suffixed_type_is_collapsed_to_bare_canonical(self):
         content = [
             {"type": "tool_use", "id": "toolu_x", "name": "terminal", "input": {}},
             {
@@ -676,59 +716,58 @@ class TestRestoreToolSearchVariantTypes:
                 "input": {"pattern": ".*"},
             },
             {
-                "type": "tool_search_tool_result",  # canonical bare form
+                "type": "tool_search_tool_regex_tool_result",  # wire variant
                 "tool_use_id": "srvtoolu_a",
                 "content": {"type": "tool_search_tool_search_result", "tool_references": []},
             },
         ]
-        _restore_tool_search_variant_types(content)
-        assert content[2]["type"] == "tool_search_tool_regex_tool_result"
+        _canonicalize_tool_search_result_types(content)
+        assert content[2]["type"] == "tool_search_tool_result"
         # Other blocks unchanged
         assert content[0]["type"] == "tool_use"
         assert content[1]["type"] == "server_tool_use"
 
-    def test_already_variant_suffixed_is_left_alone(self):
-        """Idempotent — second pass must not re-suffix into
-        tool_search_tool_regex_tool_result_tool_result."""
+    def test_idempotent_on_already_canonical(self):
+        """Bare canonical is the fixed point — repeated passes don't
+        mutate it."""
         content = [
             {
-                "type": "server_tool_use",
-                "id": "srvtoolu_b",
-                "name": "tool_search_tool_regex",
-                "input": {},
-            },
-            {
-                "type": "tool_search_tool_regex_tool_result",
+                "type": "tool_search_tool_result",
                 "tool_use_id": "srvtoolu_b",
                 "content": {"type": "tool_search_tool_search_result", "tool_references": []},
             },
         ]
-        _restore_tool_search_variant_types(content)
-        assert content[1]["type"] == "tool_search_tool_regex_tool_result"
+        _canonicalize_tool_search_result_types(content)
+        assert content[0]["type"] == "tool_search_tool_result"
         # And again
-        _restore_tool_search_variant_types(content)
-        assert content[1]["type"] == "tool_search_tool_regex_tool_result"
-
-    def test_unpaired_result_is_left_alone(self):
-        """No matching server_tool_use → can't infer variant, leave as-is."""
-        content = [
-            {
-                "type": "tool_search_tool_result",
-                "tool_use_id": "srvtoolu_orphan",
-                "content": {"type": "tool_search_tool_search_result", "tool_references": []},
-            },
-        ]
-        _restore_tool_search_variant_types(content)
+        _canonicalize_tool_search_result_types(content)
         assert content[0]["type"] == "tool_search_tool_result"
 
-    def test_non_tool_search_server_tool_use_is_ignored(self):
-        """server_tool_use blocks for OTHER tools (e.g. web_search) must
-        not interfere with the variant lookup."""
+    def test_handles_multiple_variants(self):
+        """Any ``tool_search_tool_<variant>_tool_result`` collapses,
+        regardless of which variant — bm25, regex, substring, future ones."""
+        for variant in ("regex", "bm25", "substring", "future_variant_v2"):
+            content = [
+                {
+                    "type": f"tool_search_tool_{variant}_tool_result",
+                    "tool_use_id": "srvtoolu_x",
+                    "content": {
+                        "type": "tool_search_tool_search_result",
+                        "tool_references": [],
+                    },
+                },
+            ]
+            _canonicalize_tool_search_result_types(content)
+            assert content[0]["type"] == "tool_search_tool_result", variant
+
+    def test_non_tool_search_blocks_unchanged(self):
+        """web_search and other server-side tool blocks must not be
+        touched by this normalizer."""
         content = [
             {
                 "type": "server_tool_use",
                 "id": "srvtoolu_web",
-                "name": "web_search_20250305",  # different server tool
+                "name": "web_search_20250305",
                 "input": {"query": "x"},
             },
             {
@@ -736,11 +775,17 @@ class TestRestoreToolSearchVariantTypes:
                 "tool_use_id": "srvtoolu_web",
                 "content": [],
             },
+            {
+                "type": "code_execution_tool_result",
+                "tool_use_id": "srvtoolu_code",
+                "content": {},
+            },
         ]
-        _restore_tool_search_variant_types(content)
-        # web_search blocks unchanged
+        _canonicalize_tool_search_result_types(content)
+        # All blocks unchanged
         assert content[0]["name"] == "web_search_20250305"
         assert content[1]["type"] == "web_search_tool_result"
+        assert content[2]["type"] == "code_execution_tool_result"
 
     def test_message_list_dispatch_per_message(self):
         """Helper auto-detects message-list shape and dispatches per-message."""
@@ -756,62 +801,65 @@ class TestRestoreToolSearchVariantTypes:
                         "input": {},
                     },
                     {
-                        "type": "tool_search_tool_result",
+                        "type": "tool_search_tool_regex_tool_result",
                         "tool_use_id": "srvtoolu_m",
-                        "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+                        "content": {
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [],
+                        },
                     },
                 ],
             },
         ]
-        _restore_tool_search_variant_types(messages)
-        assert messages[1]["content"][1]["type"] == "tool_search_tool_regex_tool_result"
+        _canonicalize_tool_search_result_types(messages)
+        assert messages[1]["content"][1]["type"] == "tool_search_tool_result"
 
     def test_empty_and_non_list_inputs_are_safe(self):
         """No exceptions on edge-case inputs."""
-        _restore_tool_search_variant_types([])
-        _restore_tool_search_variant_types(None)
-        _restore_tool_search_variant_types("not a list")
-        _restore_tool_search_variant_types([{"type": "text", "text": "x"}])
+        _canonicalize_tool_search_result_types([])
+        _canonicalize_tool_search_result_types(None)
+        _canonicalize_tool_search_result_types("not a list")
+        _canonicalize_tool_search_result_types([{"type": "text", "text": "x"}])
 
     # ------------------------------------------------------------------
     # End-to-end via convert_messages_to_anthropic
     # ------------------------------------------------------------------
-    def test_canonical_type_in_anthropic_content_blocks_is_rewritten_on_send(self):
-        """Reproduces the HTTP 400 scenario:
+    def test_variant_suffixed_type_is_collapsed_on_send(self):
+        """Reproduces the HTTP 400 scenario observed live on
+        ``request_id req_011Cap2RUgsJp1CVsGAR6LTa``:
 
-        Sequence captured from a live failing payload (session
-        20260507_172048_d372f2, dump 20260507_172126_174497):
           msg[0] user
           msg[1] assistant content = [
-            tool_use(toolu_0176) name=terminal,
-            server_tool_use(srvtoolu_011) name=tool_search_tool_regex,
-            tool_search_tool_result(srvtoolu_011)  ← CANONICAL TYPE (BUG)
+            tool_use(toolu_x) name=tanium_developer_whoami,
+            server_tool_use(srvtoolu_y) name=tool_search_tool_regex,
+            tool_search_tool_regex_tool_result(srvtoolu_y)  ← VARIANT (BUG)
           ]
-          msg[2] user content = [tool_result(toolu_0176)]
+          msg[2] user content = [tool_result(toolu_x)]
 
-        Anthropic returned 400 because the canonical-typed result block
-        couldn't be paired with its server_tool_use, which made the
-        terminal tool_use look orphaned to the validator. The fix
-        rewrites the result block's type to
-        ``tool_search_tool_regex_tool_result`` before the request is
-        serialized.
+        Anthropic rejected the variant-suffixed type with:
+          "Input tag 'tool_search_tool_regex_tool_result' found using
+           'type' does not match any of the expected tags: ...,
+           'tool_search_tool_result', 'tool_use', ..."
+
+        The fix collapses the type to the bare canonical
+        ``tool_search_tool_result`` before the request is serialized.
         """
         anthropic_blocks = [
             {
                 "type": "tool_use",
-                "id": "toolu_0176",
-                "name": "terminal",
-                "input": {"command": "echo hi"},
+                "id": "toolu_x",
+                "name": "tanium_developer_whoami",
+                "input": {},
             },
             {
                 "type": "server_tool_use",
-                "id": "srvtoolu_011",
+                "id": "srvtoolu_y",
                 "name": "tool_search_tool_regex",
                 "input": {"pattern": "tanium"},
             },
             {
-                "type": "tool_search_tool_result",  # the bug's signature
-                "tool_use_id": "srvtoolu_011",
+                "type": "tool_search_tool_regex_tool_result",  # the bug
+                "tool_use_id": "srvtoolu_y",
                 "content": {
                     "type": "tool_search_tool_search_result",
                     "tool_references": [
@@ -830,29 +878,29 @@ class TestRestoreToolSearchVariantTypes:
             },
             {
                 "role": "tool",
-                "tool_call_id": "toolu_0176",
+                "tool_call_id": "toolu_x",
                 "content": "ok",
             },
         ]
         _, out_msgs = convert_messages_to_anthropic(messages)
 
         # Find the assistant message and verify the search result block's
-        # type was restored to its variant-suffixed form.
+        # type was collapsed to the bare canonical form.
         asst = next(m for m in out_msgs if m["role"] == "assistant")
         types = [b.get("type") for b in asst["content"]]
-        assert "tool_search_tool_regex_tool_result" in types, types
-        # And the canonical bare form is GONE — that's the bug that
+        assert "tool_search_tool_result" in types, types
+        # And the variant-suffixed form is GONE — that's the bug that
         # caused the 400.
-        assert "tool_search_tool_result" not in types, types
+        assert "tool_search_tool_regex_tool_result" not in types, types
 
-    def test_capture_time_restoration_via_normalize_response(self):
-        """The restoration also fires at capture time inside the
+    def test_capture_time_canonicalization_via_normalize_response(self):
+        """The canonicalization also fires at capture time inside the
         Anthropic transport. We can't easily exercise the transport
         without mocking the SDK response object, so this test invokes
         the helper directly on a list shaped like ``server_tool_blocks``
         — which is what the transport stores under that key on the
         provider_data dict. The transport calls
-        ``_restore_tool_search_variant_types(server_tool_blocks)``
+        ``_canonicalize_tool_search_result_types(server_tool_blocks)``
         before persisting; this verifies the helper handles that exact
         list shape correctly."""
         server_tool_blocks = [
@@ -863,10 +911,10 @@ class TestRestoreToolSearchVariantTypes:
                 "input": {"pattern": ".*"},
             },
             {
-                "type": "tool_search_tool_result",
+                "type": "tool_search_tool_regex_tool_result",
                 "tool_use_id": "srvtoolu_capture",
                 "content": {"type": "tool_search_tool_search_result", "tool_references": []},
             },
         ]
-        _restore_tool_search_variant_types(server_tool_blocks)
-        assert server_tool_blocks[1]["type"] == "tool_search_tool_regex_tool_result"
+        _canonicalize_tool_search_result_types(server_tool_blocks)
+        assert server_tool_blocks[1]["type"] == "tool_search_tool_result"

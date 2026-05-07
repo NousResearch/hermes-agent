@@ -813,7 +813,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
     # Cron expression (5-6 fields). Letters are allowed so named months/weekdays (JAN-DEC, MON-FRI)
     # reach croniter, which supports them.
     parts = schedule.split()
-    if len(parts) >= 5 and all(re.match(r'^[A-Za-z\d\*\-,/]+$', p) for p in parts[:5]):
+    if len(parts) >= 5 and all(re.match(r'^[A-Za-z\d\*\-,/#?]+$', p) for p in parts[:5]):
         return _cron_schedule(
             schedule, schedule, "Cron expressions require 'croniter' package.", "cron expression")
 

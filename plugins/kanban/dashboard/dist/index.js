@@ -1777,6 +1777,10 @@
           onChange: function (e) { setAssignee(e.target.value); },
           placeholder: props.columnName === "triage" ? "specifier" : "assignee",
           className: "h-7 text-xs flex-1",
+          style: { textTransform: "none" },
+          autoCapitalize: "none",
+          autoCorrect: "off",
+          spellCheck: false,
         }),
         h(Input, {
           type: "number",
@@ -2325,6 +2329,10 @@
         },
         placeholder: "(empty = unassign)",
         className: "h-7 text-xs flex-1",
+        style: { textTransform: "none" },
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        spellCheck: false,
       }),
     );
   }

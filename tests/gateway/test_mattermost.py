@@ -280,6 +280,55 @@ class TestMattermostWebSocketParsing:
         assert msg_event.message_id == "post_abc"
 
     @pytest.mark.asyncio
+    async def test_dm_leading_space_slash_command_is_command(self):
+        """Mattermost users can escape slash commands by prefixing a space."""
+        post_data = {
+            "id": "post_slash",
+            "user_id": "user_123",
+            "channel_id": "dm_456",
+            "message": " /stop",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/stop"
+        assert msg_event.message_type.name == "COMMAND"
+
+    @pytest.mark.asyncio
+    async def test_dm_non_command_leading_space_is_preserved(self):
+        """Only slash commands should be lstripped."""
+        post_data = {
+            "id": "post_text_space",
+            "user_id": "user_123",
+            "channel_id": "dm_456",
+            "message": "  hello",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "  hello"
+        assert msg_event.message_type.name == "TEXT"
+
+    @pytest.mark.asyncio
     async def test_ignore_own_messages(self):
         """Messages from the bot's own user_id should be ignored."""
         post_data = {

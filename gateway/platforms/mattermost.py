@@ -748,6 +748,13 @@ class MattermostAdapter(BasePlatformAdapter):
         # Thread support: if the post is in a thread, use root_id.
         thread_id = post.get("root_id") or None
 
+        # Mattermost asks users to prefix unsupported slash commands with a
+        # space, e.g. " /stop". Treat those as commands while preserving
+        # leading whitespace for normal text.
+        stripped_message_text = message_text.lstrip()
+        if stripped_message_text.startswith("/"):
+            message_text = stripped_message_text
+
         # Determine message type.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
